@@ -1,1 +1,133 @@
-// TODO: memory files (T10)
+use std::path::Path;
+
+use tracing::{debug, info};
+
+/// Stores project and global memory files (CLAUDE.md, MEMORY.md).
+pub struct MemoryStore {
+    pub project_claude_md: Option<String>,
+    pub project_memory_md: Option<String>,
+    pub global_claude_md: Option<String>,
+    pub global_memory_md: Option<String>,
+}
+
+impl MemoryStore {
+    /// Load all memory files from disk.
+    pub fn load(project_root: &Path) -> Self {
+        let store = Self {
+            project_claude_md: Self::read_optional(&project_root.join("CLAUDE.md")),
+            project_memory_md: Self::read_optional(&project_root.join("MEMORY.md")),
+            global_claude_md: Self::read_global(".claude", "CLAUDE.md"),
+            global_memory_md: Self::read_global(".claude", "MEMORY.md"),
+        };
+
+        info!(
+            "memory: loaded project_claude={}, project_memory={}, global_claude={}, global_memory={}",
+            store.project_claude_md.is_some(),
+            store.project_memory_md.is_some(),
+            store.global_claude_md.is_some(),
+            store.global_memory_md.is_some(),
+        );
+
+        store
+    }
+
+    /// Reload all memory files from disk.
+    pub fn reload(&self, project_root: &Path) -> Self {
+        debug!("memory: reloading from disk");
+        Self::load(project_root)
+    }
+
+    /// Format all memory content into a string for the system prompt.
+    pub fn to_system_prompt_fragment(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(ref content) = self.project_claude_md {
+            parts.push(format!("## Project Instructions\n\n{content}"));
+        }
+
+        if let Some(ref content) = self.project_memory_md {
+            parts.push(format!("## Project Memory\n\n{content}"));
+        }
+
+        if let Some(ref content) = self.global_claude_md {
+            parts.push(format!("## Global Instructions\n\n{content}"));
+        }
+
+        if let Some(ref content) = self.global_memory_md {
+            parts.push(format!("## Global Memory\n\n{content}"));
+        }
+
+        parts.join("\n\n")
+    }
+
+    // ── helpers ──
+
+    fn read_optional(path: &Path) -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    None
+                } else {
+                    debug!("memory: read {}", path.display());
+                    Some(content)
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn read_global(dir: &str, filename: &str) -> Option<String> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()?;
+        Self::read_optional(&Path::new(&home).join(dir).join(filename))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_project_memory_when_present() {
+        let root = std::env::current_dir().unwrap();
+        let store = MemoryStore::load(&root);
+        // CLAUDE.md exists in project root
+        assert!(store.project_claude_md.is_some());
+    }
+
+    #[test]
+    fn missing_memory_is_none() {
+        let store = MemoryStore::load(Path::new("/nonexistent/path"));
+        assert!(store.project_claude_md.is_none());
+        assert!(store.project_memory_md.is_none());
+    }
+
+    #[test]
+    fn formatting_includes_non_empty() {
+        let store = MemoryStore {
+            project_claude_md: Some("# Rules\n\nBe concise.".into()),
+            project_memory_md: None,
+            global_claude_md: None,
+            global_memory_md: Some("Remember X".into()),
+        };
+        let fragment = store.to_system_prompt_fragment();
+        assert!(fragment.contains("## Project Instructions"));
+        assert!(fragment.contains("Be concise"));
+        assert!(fragment.contains("## Global Memory"));
+        assert!(fragment.contains("Remember X"));
+        assert!(!fragment.contains("## Project Memory")); // None → excluded
+    }
+
+    #[test]
+    fn reload_reads_disk_changes() {
+        let root = std::env::current_dir().unwrap();
+        let store = MemoryStore::load(&root);
+        let reloaded = store.reload(&root);
+        // After reload, CLAUDE.md should still be present
+        assert_eq!(
+            store.project_claude_md.is_some(),
+            reloaded.project_claude_md.is_some()
+        );
+    }
+}

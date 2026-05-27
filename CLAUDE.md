@@ -21,7 +21,7 @@ cargo clippy -- -D warnings                          # Lint (treat warnings as e
 cargo fmt -- --check                                  # Format check
 ```
 
-No tests exist yet. TDD from scratch following the implementation plan.
+Tests in `src/agent/agent_loop.rs`, `src/api/client.rs`, `src/tools/mod.rs`. Test fixture at `tests/fixtures/chat_response.json`.
 
 ## Architecture
 
@@ -63,11 +63,25 @@ DeepSeek API (OpenAI-format chat completions)
 
 ## Implementation Status
 
-Pre-implementation. See `docs/plans/` for full spec and step-by-step checklist:
-- `2026-05-27-deepseek-harness-interview.md` — requirements spec (from /interview)
-- `2026-05-27-deepseek-harness-implementation-plan.md` — 5-phase, 13-task checklist
+Phase 1-2 complete. Core modules filled in with implementations, tests, and TUI shell.
 
-Next: Phase 0, Task T1 — project scaffolding and dependency setup.
+**Done:**
+- API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json)
+- Agent loop: turn cycle, tool execution, session reset, system prompt rebuild
+- Tools: Bash, Read, Write, Reset (Tool trait + ToolRegistry + permission check)
+- Config: Settings loading from project/global JSON, PermissionsConfig, HooksConfig
+- Context: ThinkingStore with relevance decay
+- Hooks: HookRunner with JSON stdin/stdout for lifecycle events
+- Memory: MemoryManager loading CLAUDE.md/MEMORY.md
+- Skills: Skill loader parsing .md with YAML frontmatter
+- Hemisphere: Stub for Phase 3 dual-model
+- TUI: Ratatui shell with input/output panels, event channel
+
+**Tests:** `agent_loop.rs` (6 tests), `client.rs` (1 test), `tools/mod.rs` (4 tests), `tests/fixtures/chat_response.json`.
+
+**Next:** Phase 3 (hemisphere model) or integration wiring.
+
+See `docs/plans/2026-05-27-deepseek-harness-implementation-plan.md` for full task checklist.
 
 ## Platform
 
