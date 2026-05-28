@@ -45,7 +45,7 @@ DeepSeek API (OpenAI-format chat completions)
 
 **Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
-**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
+**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout; `shell` param accepts `auto`/`cmd`/`powershell`; auto-detects powershell/pwsh commands and runs directly via `Command::new("powershell")` to avoid cmd.exe inner-quote mangling), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Claude Code files):
 - `settings.json` — project root or `~/.claude/`. Model, permissions, hooks config.
@@ -79,7 +79,7 @@ Phase 1-2 complete. Core modules filled in with implementations, tests, and nati
 - Hemisphere: Stub for Phase 3 dual-model
 - GUI: egui/eframe native GUI with output scroll, input bar, status bar, StreamEvent channel
 
-**Tests:** `agent_loop.rs` (6 tests), `client.rs` (1 test), `tools/mod.rs` (4 tests), `tests/fixtures/chat_response.json`.
+**Tests:** 67 tests across `agent_loop.rs` (6), `api/client.rs` (1), `tools/bash.rs` (11), `tools/mod.rs` (4), `tools/read.rs` (3), `tools/write.rs` (2), `tests/fixtures/chat_response.json`.
 
 **Next:** Phase 3 (hemisphere model), hook execution integration, or skill injection into agent context.
 
@@ -95,6 +95,6 @@ See `docs/plans/2026-05-27-deepseek-harness-implementation-plan.md` for full tas
 
 ## Platform
 
-**Windows native.** Batch files have BOM and percent-sign issues in Git Bash; use PowerShell (`.ps1`) for automation scripts. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`.
+**Windows native.** Batch files have BOM and percent-sign issues in Git Bash; use PowerShell (`.ps1`) for automation scripts. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`. Bash tool defaults to `cmd /C`; auto-detects commands starting with `powershell`/`pwsh` and runs them directly (avoids `cmd.exe` inner-quote mangling). Use `shell` param for explicit control.
 
 RTK convention: prefix commands with `rtk` for token savings on build/test/git output.

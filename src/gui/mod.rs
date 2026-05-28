@@ -79,7 +79,7 @@ impl DeepSeekGui {
                 } else {
                     Color32::from_rgb(0, 200, 0)
                 };
-                let preview: String = output.lines().take(3).collect::<Vec<_>>().join("\n");
+                let preview: String = output.lines().take(10).collect::<Vec<_>>().join("\n");
                 if is_error {
                     warn!(tool=%tool, error=%output, "tool call failed");
                 } else {
