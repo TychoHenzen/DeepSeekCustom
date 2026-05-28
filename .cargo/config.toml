@@ -1,0 +1,3 @@
+# Disable incremental compilation — ballooned to 10+ GB temp after a few runs
+[build]
+incremental = false
