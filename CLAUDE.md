@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DeepSeekCustom — Rust-based experimental AI coding harness. Runs DeepSeek models (v4 flash/pro) in an agent loop with tool calling, terminal UI, skills, and hooks. Piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md) so the same project config works with either harness.
 
-**Target:** Rust edition 2024, DeepSeek API v4 (OpenAI-compatible format), Ratatui TUI.
+**Target:** Rust edition 2024, DeepSeek API v4 (OpenAI-compatible format), egui/eframe native GUI.
 
 ## Build & Test
 
@@ -41,7 +41,9 @@ DeepSeek API (OpenAI-format chat completions)
            fm)        cmds)      MEMORY.md)
 ```
 
-**Agent loop:** user input → build messages (system prompt + history + tools) → call DeepSeek API → parse response (text or tool calls) → execute tools via `ToolRegistry` → append tool results to history → repeat. Max turns guard (default 100). Streaming via `reqwest` + `tokio::sync::mpsc`.
+**Agent loop:** user input → build messages (system prompt + history + tools) → call DeepSeek API → parse response (text or tool calls) → execute tools via `ToolRegistry` → append tool results to history → repeat. Max turns guard (default 100). Streaming via `reqwest` + `tokio::sync::mpsc`. Events sent to GUI via `StreamEvent` enum over unbounded channel — decouples agent from UI layer.
+
+**Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
 **Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
 
@@ -63,7 +65,7 @@ DeepSeek API (OpenAI-format chat completions)
 
 ## Implementation Status
 
-Phase 1-2 complete. Core modules filled in with implementations, tests, and TUI shell.
+Phase 1-2 complete. Core modules filled in with implementations, tests, and native GUI.
 
 **Done:**
 - API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json)
@@ -75,11 +77,19 @@ Phase 1-2 complete. Core modules filled in with implementations, tests, and TUI 
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md
 - Skills: Skill loader parsing .md with YAML frontmatter
 - Hemisphere: Stub for Phase 3 dual-model
-- TUI: Ratatui shell with input/output panels, event channel
+- GUI: egui/eframe native GUI with output scroll, input bar, status bar, StreamEvent channel
 
 **Tests:** `agent_loop.rs` (6 tests), `client.rs` (1 test), `tools/mod.rs` (4 tests), `tests/fixtures/chat_response.json`.
 
-**Next:** Phase 3 (hemisphere model) or integration wiring.
+**Next:** Phase 3 (hemisphere model), hook execution integration, or skill injection into agent context.
+
+## API Key Resolution
+
+Priority chain: `DEEPSEEK_API_KEY` env → `ANTHROPIC_AUTH_TOKEN` env → `settings.json` (project) → `settings.json` (~/.claude) → `CustomClaude.ps1` on PATH (parses `ANTHROPIC_AUTH_TOKEN` assignment). Sourced via `resolve_api_key()` in `api/client.rs`.
+
+## Logging
+
+Dual output: stderr (colored, human-readable) + `deepseek_custom.log` file (no ANSI). Project root discovered by walking up from cwd until `CLAUDE.md` found. Env filter: `RUST_LOG` or defaults to `info`.
 
 See `docs/plans/2026-05-27-deepseek-harness-implementation-plan.md` for full task checklist.
 

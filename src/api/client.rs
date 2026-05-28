@@ -267,7 +267,7 @@ impl DeepSeekClient {
 ///
 /// Priority: `DEEPSEEK_API_KEY` env var → `settings.json` `api_key` field → error.
 pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
-    // 1. Try environment variable
+    // 1. DEEPSEEK_API_KEY env var
     if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
         if !key.is_empty() {
             debug!("api_key resolved from DEEPSEEK_API_KEY env var");
@@ -275,20 +275,28 @@ pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
         }
     }
 
-    // 2. Try settings.json in project root
+    // 2. ANTHROPIC_AUTH_TOKEN env var (set by CustomClaude launcher)
+    if let Ok(key) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+        if !key.is_empty() {
+            debug!("api_key resolved from ANTHROPIC_AUTH_TOKEN env var");
+            return Ok(key);
+        }
+    }
+
+    // 3. settings.json in project root
     let settings_path = project_root.join("settings.json");
     if let Ok(contents) = std::fs::read_to_string(&settings_path) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
             if let Some(key) = json.get("api_key").and_then(|v| v.as_str()) {
                 if !key.is_empty() {
-                    debug!("api_key resolved from settings.json");
+                    debug!("api_key resolved from project settings.json");
                     return Ok(key.to_string());
                 }
             }
         }
     }
 
-    // 3. Try ~/.claude/settings.json
+    // 4. ~/.claude/settings.json
     if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let global_settings = std::path::Path::new(&home).join(".claude").join("settings.json");
         if let Ok(contents) = std::fs::read_to_string(&global_settings) {
@@ -303,9 +311,47 @@ pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
         }
     }
 
+    // 5. Extract from CustomClaude script on PATH
+    if let Some(key) = extract_key_from_customclaude() {
+        debug!("api_key resolved from CustomClaude script on PATH");
+        return Ok(key);
+    }
+
     Err(HarnessError::Config(
         "DEEPSEEK_API_KEY not set. Get one at https://platform.deepseek.com/api_keys".to_string(),
     ))
+}
+
+/// Search PATH for CustomClaude.ps1 and extract the API key from it.
+fn extract_key_from_customclaude() -> Option<String> {
+    let path_var = std::env::var("PATH").ok()?;
+
+    for dir in std::env::split_paths(&path_var) {
+        let script = dir.join("CustomClaude.ps1");
+        if script.exists() {
+            let contents = std::fs::read_to_string(&script).ok()?;
+            return parse_auth_token_from_ps1(&contents);
+        }
+    }
+    None
+}
+
+/// Extract `$env:ANTHROPIC_AUTH_TOKEN = "sk-..."` from a PowerShell script.
+fn parse_auth_token_from_ps1(contents: &str) -> Option<String> {
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if let Some(idx) = trimmed.find("ANTHROPIC_AUTH_TOKEN") {
+            // Find the value after '=' sign, between double quotes
+            let after_eq = &trimmed[idx..];
+            let start_quote = after_eq.find('"')?;
+            let end_quote = after_eq[start_quote + 1..].find('"')?;
+            let key = &after_eq[start_quote + 1..start_quote + 1 + end_quote];
+            if key.starts_with("sk-") && !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -314,8 +360,14 @@ mod tests {
 
     #[test]
     fn missing_api_key_returns_clear_error() {
-        // Skip if DEEPSEEK_API_KEY is already set in the environment
+        // Skip if any key source is available in the environment
         if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            return;
+        }
+        if std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok() {
+            return;
+        }
+        if extract_key_from_customclaude().is_some() {
             return;
         }
 

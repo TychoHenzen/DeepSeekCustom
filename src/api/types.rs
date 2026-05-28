@@ -43,18 +43,23 @@ pub enum Role {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    #[serde(default)]
     pub id: String,
     #[serde(rename = "type")]
+    #[serde(default)]
     pub call_type: String,
-    pub function: FunctionCall,
+    #[serde(default)]
+    pub function: Option<FunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FunctionCall {
-    pub name: String,
-    pub arguments: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

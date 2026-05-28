@@ -1,7 +1,7 @@
 pub mod api;
 pub mod agent;
 pub mod tools;
-pub mod tui;
+pub mod gui;
 pub mod config;
 pub mod skills;
 pub mod hooks;

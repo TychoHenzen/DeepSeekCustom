@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api::client::DeepSeekClient;
 use crate::api::types::{ChatRequest, Message, Role, ToolCall};
@@ -36,7 +36,7 @@ pub enum StreamEvent {
     /// A tool call completed.
     ToolCallEnd { turn: u32, tool: String, output: String, is_error: bool },
     /// The agent has finished its turn.
-    TurnEnd { turn: u32, finish_reason: String },
+    TurnEnd { turn: u32, finish_reason: String, total_tokens: usize },
     /// Session was reset.
     SessionReset,
     /// An error occurred.
@@ -103,20 +103,17 @@ impl AgentLoop {
                 stream: true,
                 temperature: Some(0.7),
                 max_tokens: Some(4096),
-                thinking: if self.config.thinking {
-                    Some(crate::api::types::ThinkingConfig {
-                        thinking_type: "enabled".into(),
-                        reasoning_effort: None,
-                    })
-                } else {
-                    None
-                },
+                thinking: Some(crate::api::types::ThinkingConfig {
+                    thinking_type: if self.config.thinking { "enabled".into() } else { "disabled".into() },
+                    reasoning_effort: None,
+                }),
             };
 
             // Call API (streaming)
             let mut rx = self.client.chat_stream(&request);
 
             let mut stream_text = String::new();
+            let mut stream_reasoning = String::new();
             let mut stream_tool_calls: Vec<ToolCall> = Vec::new();
             let mut finish_reason = String::new();
 
@@ -133,10 +130,14 @@ impl AgentLoop {
                                         text: content.clone(),
                                     });
                                 }
-                                // Accumulate tool calls
+                                // Accumulate reasoning_content (must be echoed back to API)
+                                if let Some(ref reasoning) = choice.delta.reasoning_content {
+                                    stream_reasoning.push_str(reasoning);
+                                }
+                                // Merge tool call deltas by index
                                 if let Some(ref tcs) = choice.delta.tool_calls {
                                     for tc in tcs {
-                                        stream_tool_calls.push(tc.clone());
+                                        merge_tool_call(&mut stream_tool_calls, tc);
                                     }
                                 }
                                 // Track finish reason
@@ -147,6 +148,7 @@ impl AgentLoop {
                         }
                     }
                     Err(e) => {
+                        error!("stream error: {e}");
                         self.send_event(StreamEvent::Error {
                             message: format!("{e}"),
                         });
@@ -155,9 +157,18 @@ impl AgentLoop {
                 }
             }
 
+            debug!(
+                "stream complete: text_len={}, reasoning_len={}, tool_calls={}, finish={}",
+                stream_text.len(),
+                stream_reasoning.len(),
+                stream_tool_calls.len(),
+                finish_reason,
+            );
+
             self.send_event(StreamEvent::TurnEnd {
                 turn: turn + 1,
                 finish_reason: finish_reason.clone(),
+                total_tokens: self.history.estimated_tokens(),
             });
 
             // Handle tool calls or text response
@@ -168,25 +179,26 @@ impl AgentLoop {
                     content: if stream_text.is_empty() { None } else { Some(stream_text.clone()) },
                     tool_calls: Some(stream_tool_calls.clone()),
                     tool_call_id: None,
-                    reasoning_content: None,
+                    reasoning_content: if stream_reasoning.is_empty() { None } else { Some(stream_reasoning.clone()) },
                 });
 
                 // Execute each tool call
                 for tc in &stream_tool_calls {
-                    let tool_name = &tc.function.name;
-                    let tool_args = &tc.function.arguments;
+                    let func = tc.function.as_ref();
+                    let tool_name = func.and_then(|f| f.name.as_deref()).unwrap_or("unknown");
+                    let tool_args = func.and_then(|f| f.arguments.as_deref()).unwrap_or("{}");
 
                     self.send_event(StreamEvent::ToolCallStart {
                         turn: turn + 1,
-                        tool: tool_name.clone(),
-                        args: tool_args.clone(),
+                        tool: tool_name.to_string(),
+                        args: tool_args.to_string(),
                     });
 
                     let result = self.execute_tool(tool_name, tool_args).await;
 
                     self.send_event(StreamEvent::ToolCallEnd {
                         turn: turn + 1,
-                        tool: tool_name.clone(),
+                        tool: tool_name.to_string(),
                         output: result.content.clone(),
                         is_error: result.is_error,
                     });
@@ -210,7 +222,7 @@ impl AgentLoop {
                     content: Some(stream_text.clone()),
                     tool_calls: None,
                     tool_call_id: None,
-                    reasoning_content: None,
+                    reasoning_content: if stream_reasoning.is_empty() { None } else { Some(stream_reasoning.clone()) },
                 });
                 break;
             }
@@ -226,7 +238,16 @@ impl AgentLoop {
 
     /// Execute a tool by name, handling SessionReset specially.
     async fn execute_tool(&self, name: &str, args: &str) -> ToolOutput {
-        let input: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+        let input: serde_json::Value = match serde_json::from_str(args) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("execute_tool: failed to parse args for '{}': {}", name, e);
+                return ToolOutput {
+                    content: format!("Tool error: Invalid input: {e}"),
+                    is_error: true,
+                };
+            }
+        };
 
         match self.tools.get(name) {
             Some(tool) => match tool.execute(input).await {
@@ -287,6 +308,56 @@ impl AgentLoop {
         let tools = self.tools.to_api_definitions();
         let new_prompt = builder.build(memory_fragment, skills_fragment, &tools);
         self.history = MessageHistory::new(new_prompt);
+    }
+}
+
+/// Merge a streaming tool call delta into the accumulated tool calls list.
+///
+/// DeepSeek streams tool calls across multiple chunks:
+/// - First chunk: `{index: 0, id: "call_xxx", function: {name: "read", arguments: ""}}`
+/// - Subsequent chunks: `{index: 0, function: {arguments: "more_json"}}`
+///
+/// Matches by index and merges partial fields.
+fn merge_tool_call(accumulated: &mut Vec<ToolCall>, delta: &ToolCall) {
+    let idx = delta.index;
+
+    // Find existing entry by index
+    if let Some(existing) = accumulated.iter_mut().find(|tc| tc.index == idx) {
+        // Merge id (first chunk has it)
+        if existing.id.is_empty() && !delta.id.is_empty() {
+            existing.id = delta.id.clone();
+        }
+        // Merge function fields
+        if let Some(ref delta_func) = delta.function {
+            let existing_func = existing.function.get_or_insert_with(Default::default);
+            if let Some(ref name) = delta_func.name {
+                if existing_func.name.is_none() {
+                    debug!(index=?idx, name=%name, "merge_tool_call: set name");
+                    existing_func.name = Some(name.clone());
+                }
+            }
+            if let Some(ref args) = delta_func.arguments {
+                if let Some(ref mut existing_args) = existing_func.arguments {
+                    existing_args.push_str(args);
+                } else {
+                    existing_func.arguments = Some(args.clone());
+                }
+            }
+        }
+    } else {
+        // New tool call — ensure function and arguments exist
+        let mut tc = delta.clone();
+        let func = tc.function.get_or_insert_with(Default::default);
+        if func.arguments.is_none() {
+            func.arguments = Some(String::new());
+        }
+        debug!(
+            index=?idx,
+            name=?func.name,
+            args_len=func.arguments.as_ref().map_or(0, |a| a.len()),
+            "merge_tool_call: new"
+        );
+        accumulated.push(tc);
     }
 }
 

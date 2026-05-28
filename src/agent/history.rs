@@ -75,8 +75,14 @@ fn estimate_message_tokens(msg: &Message) -> usize {
     }
     if let Some(ref tcs) = msg.tool_calls {
         for tc in tcs {
-            chars += tc.function.name.chars().count();
-            chars += tc.function.arguments.chars().count();
+            if let Some(ref func) = tc.function {
+                if let Some(ref name) = func.name {
+                    chars += name.chars().count();
+                }
+                if let Some(ref args) = func.arguments {
+                    chars += args.chars().count();
+                }
+            }
         }
     }
     chars.div_ceil(4)
