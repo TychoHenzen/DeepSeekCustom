@@ -41,7 +41,7 @@ DeepSeek API (OpenAI-format chat completions)
            fm)        cmds)      MEMORY.md)
 ```
 
-**Agent loop:** user input → build messages (system prompt + history + tools) → call DeepSeek API → parse response (text or tool calls) → execute tools via `ToolRegistry` → append tool results to history → repeat. Max turns guard (default 100). Streaming via `reqwest` + `tokio::sync::mpsc`. Events sent to GUI via `StreamEvent` enum over unbounded channel — decouples agent from UI layer.
+**Agent loop:** user input → build messages (system prompt + history + tools) → call DeepSeek API → parse response (text or tool calls) → execute tools via `ToolRegistry` → append tool results to history → repeat. Max turns guard (default 100). Streaming via `reqwest` + `tokio::sync::mpsc`. Events sent to GUI via `StreamEvent` enum over unbounded channel — decouples agent from UI layer. User interrupt via `Arc<AtomicBool>` flag: GUI sets it on Escape, agent checks during stream receive and before tool execution, sends `StreamEvent::Interrupted`.
 
 **Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
@@ -77,7 +77,13 @@ Phase 1-2 complete. Core modules filled in with implementations, tests, and nati
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md
 - Skills: Skill loader parsing .md with YAML frontmatter
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI with output scroll, input bar, status bar, StreamEvent channel
+- GUI: egui/eframe native GUI with output scroll, input bar, status bar, settings sidebar (model selector + thinking toggle, Tab key), StreamEvent channel, Escape-to-interrupt agent, Ctrl+Q to quit
+
+**GUI key bindings:**
+- `Enter` — send message to agent
+- `Escape` — interrupt running agent (does not quit)
+- `Tab` — toggle settings sidebar (model selector, thinking toggle)
+- `Ctrl+Q` — quit application
 
 **Tests:** 67 tests across `agent_loop.rs` (6), `api/client.rs` (1), `tools/bash.rs` (11), `tools/mod.rs` (4), `tools/read.rs` (3), `tools/write.rs` (2), `tests/fixtures/chat_response.json`.
 

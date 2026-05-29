@@ -144,6 +144,9 @@ async fn main() {
 
     agent.set_event_sender(tx_events);
 
+    // Share interrupt flag between GUI and agent
+    let interrupt_flag = agent.interrupt_flag();
+
     // ── Spawn agent task ────────────────────────────────────
 
     tokio::spawn(async move {
@@ -165,7 +168,7 @@ async fn main() {
     // ── Run GUI (blocking, main thread) ─────────────────────
 
     info!("starting GUI");
-    let gui = DeepSeekGui::new(rx_events, tx_input);
+    let gui = DeepSeekGui::new(rx_events, tx_input, interrupt_flag);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

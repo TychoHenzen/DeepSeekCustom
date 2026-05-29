@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -41,6 +44,8 @@ pub enum StreamEvent {
     SessionReset,
     /// An error occurred.
     Error { message: String },
+    /// Agent was interrupted by user (Escape key).
+    Interrupted { message: String },
 }
 
 /// Core agent loop: user input → API call → tool execution → repeat.
@@ -50,6 +55,8 @@ pub struct AgentLoop {
     history: MessageHistory,
     config: AgentConfig,
     tx_events: Option<mpsc::UnboundedSender<StreamEvent>>,
+    /// Flag set by GUI when user presses Escape to interrupt streaming.
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 impl AgentLoop {
@@ -66,12 +73,18 @@ impl AgentLoop {
             history: MessageHistory::new(system_prompt),
             config,
             tx_events: None,
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Set the event sender for streaming output.
     pub fn set_event_sender(&mut self, tx: mpsc::UnboundedSender<StreamEvent>) {
         self.tx_events = Some(tx);
+    }
+
+    /// Return a clone of the interrupt flag so the GUI can signal interruption.
+    pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.interrupt_flag)
     }
 
     /// Run the agent loop for a single user message.
@@ -118,6 +131,11 @@ impl AgentLoop {
             let mut finish_reason = String::new();
 
             while let Some(chunk_result) = rx.recv().await {
+                // Check for user interrupt before processing chunk
+                if self.interrupt_flag.load(Ordering::SeqCst) {
+                    debug!("interrupt detected during stream receive");
+                    break;
+                }
                 match chunk_result {
                     Ok(chunk) => {
                         if let Some(ref choices) = chunk.choices {
@@ -157,6 +175,18 @@ impl AgentLoop {
                 }
             }
 
+            // Check if stream was interrupted
+            if self.interrupt_flag.swap(false, Ordering::SeqCst) {
+                info!("agent: user interrupted stream");
+                if !stream_text.is_empty() {
+                    assistant_texts.push(stream_text.clone());
+                }
+                self.send_event(StreamEvent::Interrupted {
+                    message: "Interrupted by user (Escape)".into(),
+                });
+                break;
+            }
+
             debug!(
                 "stream complete: text_len={}, reasoning_len={}, tool_calls={}, finish={}",
                 stream_text.len(),
@@ -184,6 +214,16 @@ impl AgentLoop {
 
                 // Execute each tool call
                 for tc in &stream_tool_calls {
+                    // Check for user interrupt before each tool call
+                    if self.interrupt_flag.load(Ordering::SeqCst) {
+                        info!("agent: user interrupted before tool execution");
+                        self.interrupt_flag.store(false, Ordering::SeqCst);
+                        self.send_event(StreamEvent::Interrupted {
+                            message: "Interrupted by user (Escape)".into(),
+                        });
+                        return Ok(assistant_texts);
+                    }
+
                     let func = tc.function.as_ref();
                     let tool_name = func.and_then(|f| f.name.as_deref()).unwrap_or("unknown");
                     let tool_args = func.and_then(|f| f.arguments.as_deref()).unwrap_or("{}");
