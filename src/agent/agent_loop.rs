@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -46,6 +46,8 @@ pub enum StreamEvent {
     Error { message: String },
     /// Agent was interrupted by user (Escape key).
     Interrupted { message: String },
+    /// Reasoning/thinking chunk received (when thinking is enabled).
+    Reasoning { turn: u32, text: String },
 }
 
 /// Core agent loop: user input → API call → tool execution → repeat.
@@ -57,6 +59,10 @@ pub struct AgentLoop {
     tx_events: Option<mpsc::UnboundedSender<StreamEvent>>,
     /// Flag set by GUI when user presses Escape to interrupt streaming.
     interrupt_flag: Arc<AtomicBool>,
+    /// Shared flag: GUI sets this to enable/disable thinking.
+    thinking_flag: Arc<AtomicBool>,
+    /// Shared model name: GUI sets this when user changes model in settings.
+    model_name: Arc<Mutex<String>>,
 }
 
 impl AgentLoop {
@@ -67,6 +73,8 @@ impl AgentLoop {
         system_prompt: String,
         config: AgentConfig,
     ) -> Self {
+        let thinking = config.thinking;
+        let model = config.model.clone();
         Self {
             client,
             tools,
@@ -74,6 +82,8 @@ impl AgentLoop {
             config,
             tx_events: None,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
+            thinking_flag: Arc::new(AtomicBool::new(thinking)),
+            model_name: Arc::new(Mutex::new(model)),
         }
     }
 
@@ -87,9 +97,25 @@ impl AgentLoop {
         Arc::clone(&self.interrupt_flag)
     }
 
+    /// Return a clone of the thinking flag so the GUI can toggle thinking.
+    pub fn thinking_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.thinking_flag)
+    }
+
+    /// Return a clone of the model name so the GUI can change the model.
+    pub fn model_flag(&self) -> Arc<Mutex<String>> {
+        Arc::clone(&self.model_name)
+    }
+
     /// Run the agent loop for a single user message.
     /// Returns the final assistant text or an error.
     pub async fn run(&mut self, user_input: &str) -> Result<Vec<String>> {
+        // Sync dynamic config from GUI before building requests
+        self.config.thinking = self.thinking_flag.load(Ordering::SeqCst);
+        if let Ok(model) = self.model_name.lock() {
+            self.config.model.clone_from(&*model);
+        }
+
         // Add user message
         self.history.push(Message {
             role: Role::User,
@@ -108,6 +134,9 @@ impl AgentLoop {
             let tools = self.tools.to_api_definitions();
             let messages = self.history.to_api_messages();
 
+            let thinking_mode = if self.config.thinking { "thinking" } else { "non-thinking" };
+            info!(thinking_mode = thinking_mode, "building API request");
+
             let request = ChatRequest {
                 model: self.config.model.clone(),
                 messages,
@@ -116,10 +145,8 @@ impl AgentLoop {
                 stream: true,
                 temperature: Some(0.7),
                 max_tokens: Some(4096),
-                thinking: Some(crate::api::types::ThinkingConfig {
-                    thinking_type: if self.config.thinking { "enabled".into() } else { "disabled".into() },
-                    reasoning_effort: None,
-                }),
+                thinking: None,
+                thinking_mode: Some(thinking_mode.to_string()),
             };
 
             // Call API (streaming)
@@ -151,6 +178,10 @@ impl AgentLoop {
                                 // Accumulate reasoning_content (must be echoed back to API)
                                 if let Some(ref reasoning) = choice.delta.reasoning_content {
                                     stream_reasoning.push_str(reasoning);
+                                    self.send_event(StreamEvent::Reasoning {
+                                        turn: turn + 1,
+                                        text: reasoning.clone(),
+                                    });
                                 }
                                 // Merge tool call deltas by index
                                 if let Some(ref tcs) = choice.delta.tool_calls {
@@ -201,8 +232,29 @@ impl AgentLoop {
                 total_tokens: self.history.estimated_tokens(),
             });
 
-            // Handle tool calls or text response
-            if !stream_tool_calls.is_empty() {
+            // Filter out tool calls lacking a function name (can appear as
+            // empty deltas in V4 thinking mode during reasoning phase).
+            let valid_tool_calls: Vec<ToolCall> = stream_tool_calls
+                .iter()
+                .filter(|tc| {
+                    tc.function
+                        .as_ref()
+                        .and_then(|f| f.name.as_ref())
+                        .is_some()
+                })
+                .cloned()
+                .collect();
+            let filtered_out = stream_tool_calls.len() - valid_tool_calls.len();
+            if filtered_out > 0 {
+                info!(
+                    total = stream_tool_calls.len(),
+                    valid = valid_tool_calls.len(),
+                    "filtered out {filtered_out} nameless tool call(s) from thinking delta"
+                );
+            }
+            if !valid_tool_calls.is_empty() {
+                // Use only valid tool calls for execution
+                stream_tool_calls = valid_tool_calls;
                 // Append assistant message with tool calls
                 self.history.push(Message {
                     role: Role::Assistant,
@@ -254,6 +306,12 @@ impl AgentLoop {
                 }
             } else {
                 // Text-only response — done
+                info!(
+                    turn = turn + 1,
+                    text_len = stream_text.len(),
+                    reasoning_len = stream_reasoning.len(),
+                    "text-only response, completing turn"
+                );
                 if !stream_text.is_empty() {
                     assistant_texts.push(stream_text.clone());
                 }
@@ -484,5 +542,96 @@ mod tests {
         let output = agent.execute_tool("nonexistent", "{}").await;
         assert!(output.is_error);
         assert!(output.content.contains("Unknown tool"));
+    }
+
+    /// Integration test: spawn a mock HTTP server returning SSE with reasoning_content,
+    /// run the full agent loop, and verify Reasoning events are emitted.
+    #[tokio::test]
+    async fn thinking_enabled_emits_reasoning_events() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        // Bind to port 0 so the OS assigns a free port
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+
+        // SSE response with reasoning_content, then text, then stop + [DONE]
+        let response_body = concat!(
+            "data: {\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":",
+            "{\"content\":null,\"reasoning_content\":\"I should think about this\"},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":",
+            "{\"content\":\"The answer is 42\"},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},",
+            "\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        // Spawn mock server thread
+        let response = response_body.to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // Read the HTTP request (header part)
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            // Write HTTP response
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response,
+            );
+            let _ = stream.write_all(http_response.as_bytes());
+            let _ = stream.flush();
+            // Keep connection alive briefly so client can read
+            thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        // Create client pointing at mock server
+        let client = DeepSeekClient::new(
+            "sk-test".into(),
+            Some(format!("http://127.0.0.1:{port}")),
+            Some("deepseek-v4-flash".into()),
+        );
+
+        let tools = ToolRegistry::new();
+        let mut config = AgentConfig::default();
+        config.thinking = true;
+
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), config);
+
+        // Capture events via channel
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        agent.set_event_sender(tx);
+
+        // Run the agent
+        let result = agent.run("hello").await;
+        assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+        let responses = result.unwrap();
+        assert!(!responses.is_empty(), "should have response text");
+
+        // Collect all events
+        let mut events: Vec<StreamEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+
+        // Verify Reasoning events were emitted
+        let reasoning_events: Vec<_> = events.iter().filter(|e| matches!(e, StreamEvent::Reasoning { .. })).collect();
+        assert!(!reasoning_events.is_empty(), "expected at least one Reasoning event, got events: {:?}", events.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", "));
+
+        // Verify reasoning content is correct
+        let reasoning: String = reasoning_events.iter().filter_map(|e| {
+            if let StreamEvent::Reasoning { text, .. } = e { Some(text.clone()) } else { None }
+        }).collect();
+        assert_eq!(reasoning, "I should think about this");
+
+        // Verify Text events were also emitted
+        let text_count = events.iter().filter(|e| matches!(e, StreamEvent::Text { .. })).count();
+        assert!(text_count > 0, "expected at least one Text event");
     }
 }

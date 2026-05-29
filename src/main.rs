@@ -146,6 +146,8 @@ async fn main() {
 
     // Share interrupt flag between GUI and agent
     let interrupt_flag = agent.interrupt_flag();
+    let thinking_flag = agent.thinking_flag();
+    let model_flag = agent.model_flag();
 
     // ── Spawn agent task ────────────────────────────────────
 
@@ -168,7 +170,7 @@ async fn main() {
     // ── Run GUI (blocking, main thread) ─────────────────────
 
     info!("starting GUI");
-    let gui = DeepSeekGui::new(rx_events, tx_input, interrupt_flag);
+    let gui = DeepSeekGui::new(rx_events, tx_input, interrupt_flag, thinking_flag, model_flag);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

@@ -15,8 +15,12 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Legacy format for deepseek-chat: `{"type": "enabled"}`. Not used for V4 models.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// DeepSeek V4 format: `"thinking"`, `"non-thinking"`, or `"thinking_max"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +182,7 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: Some(1024),
             thinking: None,
+            thinking_mode: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -191,6 +196,76 @@ mod tests {
         assert_eq!(parsed["temperature"], 0.7);
         assert_eq!(parsed["max_tokens"], 1024);
         assert!(parsed.get("thinking").is_none());
+        assert!(parsed.get("thinking_mode").is_none());
+    }
+
+    #[test]
+    fn thinking_enabled_serializes_correctly() {
+        let req = ChatRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hello".into()),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: None,
+            tool_choice: None,
+            stream: true,
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            thinking: None,
+            thinking_mode: Some("thinking".into()),
+        };
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["thinking_mode"], "thinking");
+        assert!(parsed.get("thinking").is_none());
+    }
+
+    #[test]
+    fn thinking_disabled_serializes_correctly() {
+        let req = ChatRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hello".into()),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: None,
+            tool_choice: None,
+            stream: true,
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            thinking: None,
+            thinking_mode: Some("non-thinking".into()),
+        };
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["thinking_mode"], "non-thinking");
+        assert!(parsed.get("thinking").is_none());
+    }
+
+    #[test]
+    fn stream_chunk_parses_reasoning_content() {
+        let data = r#"{"id":"chatcmpl-xyz","object":"chat.completion.chunk","created":1716902400,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"First I will think about this problem carefully"},"finish_reason":null}]}"#;
+        let chunk: StreamChunk = serde_json::from_str(data).expect("parse");
+
+        let choices = chunk.choices.as_ref().unwrap();
+        assert_eq!(
+            choices[0].delta.reasoning_content.as_deref(),
+            Some("First I will think about this problem carefully")
+        );
+        assert!(choices[0].delta.content.is_none());
     }
 
     #[test]

@@ -55,6 +55,8 @@ DeepSeek API (OpenAI-format chat completions)
 
 **API format decision:** Start with OpenAI-compatible format (`https://api.deepseek.com/chat/completions`) — simpler SDK support in Rust. Anthropic format added later only if content block streaming needed for thinking interleave.
 
+**Thinking mode:** DeepSeek V4 uses `thinking_mode` string field (`"thinking"`, `"non-thinking"`, `"thinking_max"`) instead of legacy `thinking: {type: "enabled"}` object. Set in `ChatRequest.thinking_mode`; `thinking` field kept but always `None` for V4. Reasoning content streamed via `delta.reasoning_content` and must be echoed back in subsequent requests or API returns 400.
+
 **Models:** `deepseek-v4-flash` (default, thinking toggleable), `deepseek-v4-pro` (heavy tasks).
 
 **Key architectural choices:**
@@ -62,14 +64,15 @@ DeepSeek API (OpenAI-format chat completions)
 - Session reset is hard cut (clear context, reload memory files, start fresh with prompt)
 - Context pruning is gradual (relevance-score decay) not discrete compression turns
 - Hemisphere model (Phase 3): two model instances, different system prompts, right side sees compressed context
+- Dynamic config sync: agent reads `thinking_flag` (AtomicBool) and `model_name` (Mutex<String>) from GUI each turn before building API request
 
 ## Implementation Status
 
 Phase 1-2 complete. Core modules filled in with implementations, tests, and native GUI.
 
 **Done:**
-- API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json)
-- Agent loop: turn cycle, tool execution, session reset, system prompt rebuild
+- API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json, V4 thinking_mode format)
+- Agent loop: turn cycle, tool execution, session reset, system prompt rebuild, reasoning_content echo-back, nameless tool call filtering (V4 thinking deltas), dynamic config sync from GUI (thinking_flag, model_flag), reasoning events via StreamEvent::Reasoning
 - Tools: Bash, Read, Write, Reset (Tool trait + ToolRegistry + permission check)
 - Config: Settings loading from project/global JSON, PermissionsConfig, HooksConfig
 - Context: ThinkingStore with relevance decay
@@ -77,7 +80,7 @@ Phase 1-2 complete. Core modules filled in with implementations, tests, and nati
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md
 - Skills: Skill loader parsing .md with YAML frontmatter
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI with output scroll, input bar, status bar, settings sidebar (model selector + thinking toggle, Tab key), StreamEvent channel, Escape-to-interrupt agent, Ctrl+Q to quit
+- GUI: egui/eframe native GUI with output scroll, input bar, status bar, settings sidebar (model selector + thinking toggle, Tab key), markdown rendering via egui_commonmark (white text = markdown, non-white = raw/styled), raw/output display toggle, StreamEvent channel, Escape-to-interrupt agent, Ctrl+Q to quit
 
 **GUI key bindings:**
 - `Enter` — send message to agent
@@ -85,7 +88,7 @@ Phase 1-2 complete. Core modules filled in with implementations, tests, and nati
 - `Tab` — toggle settings sidebar (model selector, thinking toggle)
 - `Ctrl+Q` — quit application
 
-**Tests:** 67 tests across `agent_loop.rs` (6), `api/client.rs` (1), `tools/bash.rs` (11), `tools/mod.rs` (4), `tools/read.rs` (3), `tools/write.rs` (2), `tests/fixtures/chat_response.json`.
+**Tests:** 78 tests across `agent_loop.rs` (7), `api/client.rs` (1), `api/types.rs` (7), `gui/mod.rs` (7), `tools/bash.rs` (11), `tools/mod.rs` (4), `tools/read.rs` (3), `tools/write.rs` (2), `tests/fixtures/chat_response.json`.
 
 **Next:** Phase 3 (hemisphere model), hook execution integration, or skill injection into agent context.
 

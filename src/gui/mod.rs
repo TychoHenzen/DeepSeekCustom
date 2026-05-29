@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText, ScrollArea, TextEdit};
 use eframe::App;
+use egui_commonmark::CommonMarkCache;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -26,9 +27,16 @@ pub struct DeepSeekGui {
 
     // ── Settings panel ──
     settings_visible: bool,
-    thinking_enabled: bool,
     model_options: Vec<String>,
     selected_model_idx: usize,
+
+    // ── Shared state with agent ──
+    thinking_flag: Arc<AtomicBool>,
+    model_flag: Arc<Mutex<String>>,
+
+    // ── Output display ──
+    show_raw_output: bool,
+    markdown_cache: CommonMarkCache,
 }
 
 impl DeepSeekGui {
@@ -36,15 +44,22 @@ impl DeepSeekGui {
         rx_events: mpsc::UnboundedReceiver<StreamEvent>,
         tx_input: mpsc::UnboundedSender<String>,
         interrupt_flag: Arc<AtomicBool>,
+        thinking_flag: Arc<AtomicBool>,
+        model_flag: Arc<Mutex<String>>,
     ) -> Self {
         let model_options = vec![
             "deepseek-v4-flash".to_string(),
             "deepseek-v4-pro".to_string(),
         ];
+        let current_model = model_flag.lock().unwrap().clone();
+        let model_idx = model_options
+            .iter()
+            .position(|m| *m == current_model)
+            .unwrap_or(0);
         Self {
             output_lines: Vec::new(),
             input_buffer: String::new(),
-            model: model_options[0].clone(),
+            model: current_model,
             token_count: "0".into(),
             session_status: "Ready".into(),
             rx_events,
@@ -52,9 +67,12 @@ impl DeepSeekGui {
             auto_scroll: false,
             interrupt_flag,
             settings_visible: false,
-            thinking_enabled: false,
             model_options,
-            selected_model_idx: 0,
+            selected_model_idx: model_idx,
+            thinking_flag,
+            model_flag,
+            show_raw_output: false,
+            markdown_cache: CommonMarkCache::default(),
         }
     }
 
@@ -144,6 +162,28 @@ impl DeepSeekGui {
                 ));
                 self.session_status = "Interrupted".into();
             }
+            StreamEvent::Reasoning { text, .. } => {
+                let parts: Vec<&str> = text.split('\n').collect();
+                let reason_color = Color32::from_rgb(160, 160, 160);
+                for (i, part) in parts.iter().enumerate() {
+                    if i == 0 {
+                        let can_append = self
+                            .output_lines
+                            .last()
+                            .map(|(_, color)| *color == reason_color)
+                            .unwrap_or(false);
+                        if can_append {
+                            if let Some((last, _)) = self.output_lines.last_mut() {
+                                last.push_str(part);
+                            }
+                        } else {
+                            self.output_lines.push((part.to_string(), reason_color));
+                        }
+                    } else {
+                        self.output_lines.push((part.to_string(), reason_color));
+                    }
+                }
+            }
         }
     }
 }
@@ -181,9 +221,13 @@ impl App for DeepSeekGui {
                             }
                         });
                     if self.selected_model_idx != prev_idx {
-                        self.model = self.model_options[self.selected_model_idx].clone();
+                        let new_model = self.model_options[self.selected_model_idx].clone();
+                        self.model = new_model.clone();
+                        if let Ok(mut model) = self.model_flag.lock() {
+                            *model = new_model.clone();
+                        }
                         info!(
-                            model = %self.model,
+                            model = %new_model,
                             "model changed via settings panel"
                         );
                     }
@@ -191,10 +235,32 @@ impl App for DeepSeekGui {
                     ui.add_space(8.0);
 
                     // ── Thinking toggle ──
-                    ui.checkbox(&mut self.thinking_enabled, "Thinking enabled");
-                    if self.thinking_enabled {
+                    let mut thinking = self.thinking_flag.load(Ordering::SeqCst);
+                    if ui.checkbox(&mut thinking, "Thinking enabled").changed() {
+                        self.thinking_flag.store(thinking, Ordering::SeqCst);
+                        info!(thinking = thinking, "thinking toggled via settings panel");
+                    }
+                    if thinking {
                         ui.label(
                             RichText::new("  Model will output reasoning trace")
+                                .color(Color32::GRAY)
+                                .small(),
+                        );
+                    }
+
+                    ui.add_space(8.0);
+
+                    // ── Output display toggle ──
+                    ui.checkbox(&mut self.show_raw_output, "Show raw output");
+                    if self.show_raw_output {
+                        ui.label(
+                            RichText::new("  Plain text with ANSI-like coloring")
+                                .color(Color32::GRAY)
+                                .small(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("  Rendered markdown")
                                 .color(Color32::GRAY)
                                 .small(),
                         );
@@ -242,8 +308,32 @@ impl App for DeepSeekGui {
             ScrollArea::vertical()
                 .stick_to_bottom(self.auto_scroll)
                 .show(ui, |ui| {
-                    for (text, color) in &self.output_lines {
-                        ui.label(RichText::new(text).color(*color));
+                    if self.show_raw_output {
+                        for (text, color) in &self.output_lines {
+                            ui.label(RichText::new(text).color(*color));
+                        }
+                    } else {
+                        // Group consecutive WHITE (model output) lines as markdown blocks;
+                        // non-white lines (tool calls, errors, user input, reasoning) stay raw.
+                        let mut md_buf: Vec<&str> = Vec::new();
+                        for (text, color) in &self.output_lines {
+                            if *color == Color32::WHITE {
+                                md_buf.push(text);
+                            } else {
+                                if !md_buf.is_empty() {
+                                    let md = md_buf.join("\n");
+                                    egui_commonmark::CommonMarkViewer::new()
+                                        .show(ui, &mut self.markdown_cache, &md);
+                                    md_buf.clear();
+                                }
+                                ui.label(RichText::new(text.as_str()).color(*color));
+                            }
+                        }
+                        if !md_buf.is_empty() {
+                            let md = md_buf.join("\n");
+                            egui_commonmark::CommonMarkViewer::new()
+                                .show(ui, &mut self.markdown_cache, &md);
+                        }
                     }
                 });
         });
@@ -320,7 +410,7 @@ impl App for DeepSeekGui {
                             .color(Color32::from_rgb(0, 200, 0)),
                     );
                     ui.separator();
-                    let thinking_label = if self.thinking_enabled {
+                    let thinking_label = if self.thinking_flag.load(Ordering::SeqCst) {
                         "Think: ON"
                     } else {
                         "Think: OFF"
@@ -342,5 +432,147 @@ impl App for DeepSeekGui {
                     );
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_gui() -> DeepSeekGui {
+        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        let (tx_input, _rx_input) = mpsc::unbounded_channel();
+        DeepSeekGui::new(
+            rx_events,
+            tx_input,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new("deepseek-v4-flash".into())),
+        )
+    }
+
+    #[test]
+    fn reasoning_event_adds_payload_line() {
+        let mut gui = make_gui();
+        gui.handle_stream_event(StreamEvent::Reasoning {
+            turn: 1,
+            text: "Let me think about this...".into(),
+        });
+        assert_eq!(gui.output_lines.len(), 1);
+        assert_eq!(gui.output_lines[0].0, "Let me think about this...");
+        assert_eq!(gui.output_lines[0].1, Color32::from_rgb(160, 160, 160));
+    }
+
+    #[test]
+    fn reasoning_event_appends_to_last_reasoning_line() {
+        let mut gui = make_gui();
+        gui.handle_stream_event(StreamEvent::Reasoning {
+            turn: 1,
+            text: "First".into(),
+        });
+        gui.handle_stream_event(StreamEvent::Reasoning {
+            turn: 1,
+            text: "Second".into(),
+        });
+        assert_eq!(gui.output_lines.len(), 1);
+        assert_eq!(gui.output_lines[0].0, "FirstSecond");
+    }
+
+    #[test]
+    fn text_event_creates_white_payload_lines() {
+        let mut gui = make_gui();
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "Hello world".into(),
+        });
+        assert_eq!(gui.output_lines.len(), 1);
+        assert_eq!(gui.output_lines[0].0, "Hello world");
+        assert_eq!(gui.output_lines[0].1, Color32::WHITE);
+    }
+
+    #[test]
+    fn user_input_line_is_blue_not_white() {
+        let mut gui = make_gui();
+        // Simulate what happens when user presses Enter:
+        gui.output_lines.push((
+            "> pick a number between 1 and 100".into(),
+            Color32::from_rgb(100, 149, 237),
+        ));
+        let (text, color) = &gui.output_lines[0];
+        assert_ne!(*color, Color32::WHITE, "user input must not be white (would render as markdown)");
+        assert_eq!(*color, Color32::from_rgb(100, 149, 237));
+        assert!(text.starts_with("> "), "user input starts with > which would be blockquote in markdown");
+    }
+
+    #[test]
+    fn model_output_is_white_for_markdown_rendering() {
+        let mut gui = make_gui();
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "**bold** and *italic*".into(),
+        });
+        let (_, color) = &gui.output_lines[0];
+        assert_eq!(*color, Color32::WHITE, "model output must be white to trigger markdown rendering");
+    }
+
+    /// Simulates a full thinking-enabled interaction: user input → reasoning → text → turn end.
+    /// Proves: user input is blue (won't be markdown), reasoning is grey, model output is white.
+    #[test]
+    fn full_thinking_interaction_produces_correct_colors() {
+        let mut gui = make_gui();
+
+        // 1. Simulate user pressing Enter with "> " prefixed input (as the GUI does at line 364-365)
+        gui.output_lines.push((
+            "> pick a number between 1 and 100 but don't tell me".into(),
+            Color32::from_rgb(100, 149, 237), // blue — matches gui code
+        ));
+
+        // 2. Reasoning chunk arrives from agent (thinking enabled)
+        gui.handle_stream_event(StreamEvent::Reasoning {
+            turn: 1,
+            text: "The user wants me to pick a secret number.".into(),
+        });
+
+        // 3. More reasoning (appends to same line)
+        gui.handle_stream_event(StreamEvent::Reasoning {
+            turn: 1,
+            text: " I'll pick 42.".into(),
+        });
+
+        // 4. Model text response (markdown)
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "I've picked a number between 1 and 100.".into(),
+        });
+
+        // 5. Turn end
+        gui.handle_stream_event(StreamEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "stop".into(),
+            total_tokens: 150,
+        });
+
+        assert_eq!(gui.output_lines.len(), 4, "expected 4 lines: user input, reasoning, text, turn end");
+
+        // Line 0: user input — must NOT be white (would become markdown)
+        let (text0, color0) = &gui.output_lines[0];
+        assert_ne!(*color0, Color32::WHITE, "user input must not be white (markdown)");
+        assert_eq!(*color0, Color32::from_rgb(100, 149, 237), "user input must be blue");
+        assert!(text0.starts_with("> "), "user input has > prefix that would be blockquote in markdown");
+
+        // Line 1: reasoning — grey, visible in output
+        let (text1, color1) = &gui.output_lines[1];
+        assert_eq!(*color1, Color32::from_rgb(160, 160, 160), "reasoning must be grey");
+        assert_eq!(text1, "The user wants me to pick a secret number. I'll pick 42.");
+
+        // Line 2: model output — white, will be rendered as markdown
+        let (text2, color2) = &gui.output_lines[2];
+        assert_eq!(*color2, Color32::WHITE, "model output must be white for markdown rendering");
+        assert_eq!(text2, "I've picked a number between 1 and 100.");
+
+        // Line 3: turn end — grey status
+        let (text3, color3) = &gui.output_lines[3];
+        assert_eq!(*color3, Color32::from_rgb(128, 128, 128), "turn end must be grey");
+        assert!(text3.contains("turn end"), "turn end line must contain 'turn end'");
     }
 }

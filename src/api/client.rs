@@ -120,6 +120,7 @@ impl DeepSeekClient {
 
         tokio::spawn(async move {
             info!("chat stream started: model={}", model);
+            debug!("chat stream request body: {}", request_body);
 
             let response = Self::connect_stream_with_retry(
                 &client, &url, &auth, &request_body, max_retries, base_delay_ms,
