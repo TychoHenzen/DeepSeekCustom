@@ -7,5 +7,68 @@
     "exempt": false,
     "at": "2026-08-02T08:42:49.790Z",
     "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1467: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1503: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1520: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1532: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1541: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:25:04.554Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1477: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1513: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1530: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1542: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1551: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:25:21.015Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1526: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1562: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1579: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1591: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1600: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:26:07.774Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1547: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1583: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1600: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1612: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1621: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:26:37.758Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1631: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1667: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1684: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1696: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1705: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:27:32.059Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1635: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1671: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1688: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1700: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1709: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:29:02.760Z",
+    "acknowledged": true
+  },
+  {
+    "file": "src/gui/mod.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [long-sentence] sentence is 26 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:31: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:67: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1644: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1680: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1697: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1709: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\gui\\mod.rs:1718: ERROR [punctuation] em dash is banned on this machine, it corrupts on re-encode. Use -."
+    ],
+    "exempt": false,
+    "at": "2026-08-03T17:29:40.922Z",
+    "acknowledged": true
   }
 ]

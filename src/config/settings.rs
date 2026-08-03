@@ -34,6 +34,10 @@ pub struct Settings {
     /// Which entry in `backends` is active by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_backend: Option<String>,
+    /// Depth limit for subagent dispatch through the `Task` tool.
+    /// Defaults to 2. See `Settings::subagent_max_depth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_depth: Option<u32>,
 }
 
 impl Default for Settings {
@@ -49,6 +53,7 @@ impl Default for Settings {
             show_raw_output: None,
             backends: None,
             default_backend: None,
+            subagent_max_depth: None,
         }
     }
 }
@@ -268,6 +273,14 @@ impl Settings {
         self.backends.as_ref().and_then(|b| b.get(name))
     }
 
+    /// Depth limit for subagent dispatch through the `Task` tool.
+    /// Defaults to 2. Depth 0 is the main session. The default lets it
+    /// dispatch a depth-1 subagent. That subagent may dispatch one more
+    /// at depth 2. Depth 2 may not dispatch further.
+    pub fn subagent_max_depth(&self) -> u32 {
+        self.subagent_max_depth.unwrap_or(2)
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -314,6 +327,9 @@ impl Settings {
         }
         if other.default_backend.is_some() {
             self.default_backend = other.default_backend;
+        }
+        if other.subagent_max_depth.is_some() {
+            self.subagent_max_depth = other.subagent_max_depth;
         }
     }
 }
@@ -489,6 +505,10 @@ pub enum BackendConfig {
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+        /// Explicit model list override. A user listing models by hand
+        /// always wins over live discovery. Absent means "discover".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        models: Option<Vec<String>>,
     },
     ClaudeCli {
         model: String,
@@ -496,6 +516,10 @@ pub enum BackendConfig {
         permission_mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<HashMap<String, String>>,
+        /// Explicit model list override. See the `Api` variant's field of
+        /// the same name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        models: Option<Vec<String>>,
     },
 }
 
@@ -649,6 +673,7 @@ mod tests {
             show_raw_output: Some(true),
             backends: None,
             default_backend: None,
+            subagent_max_depth: Some(3),
         };
 
         original.save(&dir).unwrap();
@@ -686,6 +711,7 @@ mod tests {
         assert_eq!(loaded.autopilot_policy_path().unwrap(), "custom-policy.md");
         assert_eq!(loaded.autopilot_answerer_model(), "deepseek-v4-pro");
         assert_eq!(loaded.autopilot_task().unwrap(), "do the thing");
+        assert_eq!(loaded.subagent_max_depth(), 3);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -751,6 +777,7 @@ mod tests {
             show_raw_output: None,
             backends: None,
             default_backend: None,
+            subagent_max_depth: None,
         };
         s.save(&dir).unwrap();
         let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
@@ -758,6 +785,7 @@ mod tests {
         assert!(!text.contains("api_key"));
         assert!(!text.contains("context_budget"));
         assert!(!text.contains("show_raw_output"));
+        assert!(!text.contains("subagent_max_depth"));
         assert!(!text.contains("null"));
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -851,11 +879,13 @@ mod tests {
                 model,
                 base_url,
                 api_key,
+                models,
             } => {
                 assert_eq!(provider, ApiProvider::DeepSeek);
                 assert_eq!(model, "deepseek-v4-pro");
                 assert!(base_url.is_none());
                 assert!(api_key.is_none());
+                assert!(models.is_none());
             }
             BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
         }
@@ -868,6 +898,7 @@ mod tests {
             model: "qwen2.5-coder:7b-instruct-q4_K_M".into(),
             base_url: Some("http://localhost:11434/v1".into()),
             api_key: Some("sk-local".into()),
+            models: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
@@ -877,11 +908,13 @@ mod tests {
                 model,
                 base_url,
                 api_key,
+                models,
             } => {
                 assert_eq!(provider, ApiProvider::Ollama);
                 assert_eq!(model, "qwen2.5-coder:7b-instruct-q4_K_M");
                 assert_eq!(base_url.as_deref(), Some("http://localhost:11434/v1"));
                 assert_eq!(api_key.as_deref(), Some("sk-local"));
+                assert!(models.is_none());
             }
             BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
         }
@@ -896,6 +929,7 @@ mod tests {
             model: "opus".into(),
             permission_mode: Some("bypassPermissions".into()),
             env: Some(env),
+            models: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
@@ -904,12 +938,14 @@ mod tests {
                 model,
                 permission_mode,
                 env,
+                models,
             } => {
                 assert_eq!(model, "opus");
                 assert_eq!(permission_mode.as_deref(), Some("bypassPermissions"));
                 let env = env.unwrap();
                 assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
                 assert_eq!(env.get("BAZ").map(String::as_str), Some("qux"));
+                assert!(models.is_none());
             }
             BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
         }
@@ -922,10 +958,75 @@ mod tests {
             model: "deepseek-v4-pro".into(),
             base_url: None,
             api_key: None,
+            models: None,
         };
         let json = serde_json::to_string(&backend).unwrap();
         assert!(!json.contains("base_url"));
         assert!(!json.contains("api_key"));
+        assert!(!json.contains("models"));
+    }
+
+    #[test]
+    fn models_override_round_trips_on_api_backend() {
+        let original = BackendConfig::Api {
+            provider: ApiProvider::DeepSeek,
+            model: "deepseek-v4-pro".into(),
+            base_url: None,
+            api_key: None,
+            models: Some(vec!["deepseek-v4-pro".into(), "deepseek-v4-flash".into()]),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
+        match loaded {
+            BackendConfig::Api { models, .. } => {
+                assert_eq!(
+                    models,
+                    Some(vec!["deepseek-v4-pro".to_string(), "deepseek-v4-flash".to_string()])
+                );
+            }
+            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        }
+    }
+
+    #[test]
+    fn models_override_round_trips_on_claude_cli_backend() {
+        let original = BackendConfig::ClaudeCli {
+            model: "opus".into(),
+            permission_mode: None,
+            env: None,
+            models: Some(vec!["opus".into(), "sonnet".into()]),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
+        match loaded {
+            BackendConfig::ClaudeCli { models, .. } => {
+                assert_eq!(
+                    models,
+                    Some(vec!["opus".to_string(), "sonnet".to_string()])
+                );
+            }
+            BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
+        }
+    }
+
+    #[test]
+    fn models_field_absent_from_json_when_none() {
+        let api = BackendConfig::Api {
+            provider: ApiProvider::DeepSeek,
+            model: "deepseek-v4-pro".into(),
+            base_url: None,
+            api_key: None,
+            models: None,
+        };
+        assert!(!serde_json::to_string(&api).unwrap().contains("models"));
+
+        let claude = BackendConfig::ClaudeCli {
+            model: "opus".into(),
+            permission_mode: None,
+            env: None,
+            models: None,
+        };
+        assert!(!serde_json::to_string(&claude).unwrap().contains("models"));
     }
 
     #[test]
@@ -938,6 +1039,7 @@ mod tests {
                 model: "deepseek-v4-pro".into(),
                 base_url: None,
                 api_key: None,
+                models: None,
             },
         );
         let s = Settings {
@@ -954,6 +1056,45 @@ mod tests {
         }
         assert!(s.resolve_backend("nonexistent").is_none());
         assert_eq!(s.default_backend(), Some("deepseek"));
+    }
+
+    #[test]
+    fn subagent_max_depth_defaults_to_two() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.subagent_max_depth(), 2);
+    }
+
+    #[test]
+    fn subagent_max_depth_round_trips_through_serialize_and_deserialize() {
+        let s = Settings {
+            subagent_max_depth: Some(4),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"subagent_max_depth\":4"));
+
+        let loaded: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.subagent_max_depth(), 4);
+    }
+
+    #[test]
+    fn subagent_max_depth_absent_settings_serialize_without_key() {
+        let s = Settings::default();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("subagent_max_depth"));
+    }
+
+    #[test]
+    fn subagent_max_depth_takes_part_in_merge() {
+        let mut base = Settings::default();
+        assert_eq!(base.subagent_max_depth(), 2);
+
+        let other = Settings {
+            subagent_max_depth: Some(5),
+            ..Default::default()
+        };
+        base.merge(other);
+        assert_eq!(base.subagent_max_depth(), 5);
     }
 
     #[test]
@@ -1014,6 +1155,7 @@ mod tests {
             model: "deepseek-v4-pro".into(),
             base_url: None,
             api_key: None,
+            models: None,
         };
         let api_json = serde_json::to_string(&api_backend).unwrap();
         assert!(api_json.contains("\"kind\":\"api\""));
@@ -1022,6 +1164,7 @@ mod tests {
             model: "opus".into(),
             permission_mode: None,
             env: None,
+            models: None,
         };
         let claude_json = serde_json::to_string(&claude_backend).unwrap();
         assert!(claude_json.contains("\"kind\":\"claude_cli\""));

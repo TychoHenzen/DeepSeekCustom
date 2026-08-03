@@ -19,7 +19,7 @@ use crate::error::{HarnessError, Result};
 use super::events::parse_line;
 use super::map::EventMapper;
 
-const CLAUDE_CLI_PATH_KEY: &str = "CLAUDE_CLI_PATH";
+pub(super) const CLAUDE_CLI_PATH_KEY: &str = "CLAUDE_CLI_PATH";
 
 /// Token budget placeholder. Claude Code manages its own context
 /// compaction, so this value is never read by anything. It only exists so
@@ -401,7 +401,7 @@ fn spawn_stdout_reader(
     });
 }
 
-fn spawn_stderr_drain(stderr: tokio::process::ChildStderr) {
+pub(super) fn spawn_stderr_drain(stderr: tokio::process::ChildStderr) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         loop {

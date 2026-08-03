@@ -11,7 +11,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::agent::agent_loop::StreamEvent;
 use crate::agent::repeat::RepeatCommand;
-use crate::config::settings::{Settings, TriggerMode};
+use crate::api::models::list_models;
+use crate::config::settings::{BackendConfig, Settings, TriggerMode};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
 /// Kokoro voice ids offered by the settings panel's voice selector. A
@@ -71,6 +72,18 @@ pub struct DeepSeekGui {
     /// Sorted backend names, the keys of `settings.backends()`.
     backend_options: Vec<String>,
     selected_backend_idx: usize,
+    /// Options for the model dropdown, resolved for the selected backend.
+    /// Seeded synchronously with that backend's declared model, so the
+    /// dropdown is never empty. Replaced once the background fetch in
+    /// `spawn_model_list_fetch` completes.
+    model_options: Vec<String>,
+    /// Background model-discovery results, tagged with the backend name
+    /// they were resolved for. `update()` drains this each frame. A
+    /// result tagged for a backend that is no longer selected is dropped.
+    model_list_rx: mpsc::UnboundedReceiver<(String, Vec<String>)>,
+    /// Sender half of `model_list_rx`. Cloned into each background fetch
+    /// spawned by `spawn_model_list_fetch`.
+    model_list_tx: mpsc::UnboundedSender<(String, Vec<String>)>,
 
     // ── Shared state with agent ──
     thinking_flag: Arc<AtomicBool>,
@@ -163,6 +176,13 @@ impl DeepSeekGui {
             .and_then(|name| backend_options.iter().position(|b| b == name))
             .unwrap_or(0);
         let current_model = model_flag.lock().unwrap().clone();
+        let (model_list_tx, model_list_rx) = mpsc::unbounded_channel::<(String, Vec<String>)>();
+        let model_options = vec![current_model.clone()];
+        if let Some(name) = backend_options.get(selected_backend_idx) {
+            if let Some(cfg) = settings.resolve_backend(name) {
+                spawn_model_list_fetch(model_list_tx.clone(), name.clone(), cfg.clone());
+            }
+        }
         let initial_tts_enabled = settings.voice_tts_enabled();
         voice_mode_flag.store(
             voice_mode_flag_for_tts(initial_tts_enabled),
@@ -198,6 +218,9 @@ impl DeepSeekGui {
             settings_visible: false,
             backend_options,
             selected_backend_idx,
+            model_options,
+            model_list_rx,
+            model_list_tx,
             thinking_flag,
             voice_mode_flag,
             context_budget_flag,
@@ -250,6 +273,63 @@ impl DeepSeekGui {
     fn persist_settings(&self) {
         if let Err(e) = self.settings.save(&self.project_root) {
             warn!(error = %e, "failed to save settings.json");
+        }
+    }
+
+    /// Handle the backend picker's selection changing.
+    ///
+    /// Switches the active model to the new backend's declared model.
+    /// Seeds `model_options` with it, so the dropdown is never empty.
+    /// Kicks off a background refetch of the full list. Persists the new
+    /// default backend.
+    fn switch_backend(&mut self, new_backend: String) {
+        if let Some(cfg) = self.settings.resolve_backend(&new_backend) {
+            let new_model = cfg.model().to_string();
+            self.model = new_model.clone();
+            if let Ok(mut model) = self.model_flag.lock() {
+                *model = new_model;
+            }
+            self.model_options = vec![cfg.model().to_string()];
+            spawn_model_list_fetch(self.model_list_tx.clone(), new_backend.clone(), cfg.clone());
+        }
+        info!(backend = %new_backend, "backend changed via settings panel");
+        apply_default_backend(&mut self.settings, &new_backend);
+        self.persist_settings();
+    }
+
+    /// Handle the model dropdown's selection changing.
+    ///
+    /// Writes the new model into `model_flag` for the next turn, and
+    /// persists it onto the currently selected backend's entry in
+    /// `settings.json`.
+    fn switch_model(&mut self, new_model: String) {
+        if let Ok(mut model) = self.model_flag.lock() {
+            *model = new_model.clone();
+        }
+        if let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned() {
+            info!(backend = %backend_name, model = %new_model, "model changed via settings panel");
+            apply_backend_model(&mut self.settings, &backend_name, &new_model);
+            self.persist_settings();
+        }
+    }
+
+    /// Apply one background model-discovery result.
+    ///
+    /// Ignored when `backend_name` no longer matches the selected backend.
+    /// That result is already stale by the time it arrives. The currently
+    /// active model is added if the fetch omitted it, so the dropdown
+    /// never loses the current selection.
+    fn apply_fetched_model_list(&mut self, backend_name: &str, models: Vec<String>) {
+        let current_backend = self
+            .backend_options
+            .get(self.selected_backend_idx)
+            .map(String::as_str);
+        if current_backend != Some(backend_name) {
+            return;
+        }
+        self.model_options = models;
+        if !self.model_options.contains(&self.model) {
+            self.model_options.push(self.model.clone());
         }
     }
 
@@ -615,6 +695,10 @@ impl App for DeepSeekGui {
                 self.handle_voice_event(event);
             }
         }
+        // Poll background model-list fetches each frame.
+        while let Ok((backend_name, models)) = self.model_list_rx.try_recv() {
+            self.apply_fetched_model_list(&backend_name, models);
+        }
         // Keep polling at ~20fps even when no user input
         ctx.request_repaint_after(Duration::from_millis(50));
 
@@ -643,28 +727,32 @@ impl App for DeepSeekGui {
                         });
                     if self.selected_backend_idx != prev_idx {
                         let new_backend = self.backend_options[self.selected_backend_idx].clone();
-                        if let Some(cfg) = self.settings.resolve_backend(&new_backend) {
-                            let new_model = cfg.model().to_string();
-                            self.model = new_model.clone();
-                            if let Ok(mut model) = self.model_flag.lock() {
-                                *model = new_model;
-                            }
-                        }
-                        info!(
-                            backend = %new_backend,
-                            "backend changed via settings panel"
-                        );
-                        apply_default_backend(&mut self.settings, &new_backend);
-                        self.persist_settings();
+                        self.switch_backend(new_backend);
                     }
-                    ui.label(
-                        RichText::new(format!("Model: {}", self.model))
-                            .color(Color32::GRAY)
-                            .small(),
-                    );
+
+                    // ── Model selector ──
+                    let prev_model = self.model.clone();
+                    egui::ComboBox::from_label("Model")
+                        .selected_text(self.model.clone())
+                        .show_ui(ui, |ui| {
+                            for opt in &self.model_options {
+                                ui.selectable_value(&mut self.model, opt.clone(), opt);
+                            }
+                        });
+                    if self.model != prev_model {
+                        self.switch_model(self.model.clone());
+                    }
+
                     ui.label(
                         RichText::new(
                             "Switching backends takes effect on the next app start.",
+                        )
+                        .color(Color32::GRAY)
+                        .small(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Model changes apply next turn (DeepSeek, Ollama). Claude respawns its child.",
                         )
                         .color(Color32::GRAY)
                         .small(),
@@ -1177,6 +1265,31 @@ fn speed_command(speed: f32) -> VoiceCommand {
     VoiceCommand::SetSpeed(speed)
 }
 
+// ── Background model discovery ──
+//
+// `list_models` is async. The paint loop must never block on it. Each
+// call below spawns one fetch and returns right away. A plain `#[test]`
+// has no Tokio runtime. Spawning without one panics, so the spawn is
+// skipped there instead.
+
+/// Fetch `cfg`'s model list in the background.
+///
+/// Sends it tagged with `backend_name`. That lets a result be told apart
+/// from one resolved for a backend the user has since switched away from.
+fn spawn_model_list_fetch(
+    tx: mpsc::UnboundedSender<(String, Vec<String>)>,
+    backend_name: String,
+    cfg: BackendConfig,
+) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let models = list_models(&cfg).await;
+        let _ = tx.send((backend_name, models));
+    });
+}
+
 // ── Control-to-settings mapping ──
 //
 // Each function below takes the plain value a settings-panel control just
@@ -1189,6 +1302,23 @@ fn speed_command(speed: f32) -> VoiceCommand {
 /// Store the backend picker's selection.
 fn apply_default_backend(settings: &mut Settings, name: &str) {
     settings.default_backend = Some(name.to_string());
+}
+
+/// Store the model dropdown's selection onto the named backend's entry.
+///
+/// A name that does not resolve to any backend is a no-op. A stale
+/// selection must never write to the wrong entry or panic.
+fn apply_backend_model(settings: &mut Settings, backend_name: &str, model: &str) {
+    let Some(backends) = settings.backends.as_mut() else {
+        return;
+    };
+    let Some(entry) = backends.get_mut(backend_name) else {
+        return;
+    };
+    match entry {
+        BackendConfig::Api { model: m, .. } => *m = model.to_string(),
+        BackendConfig::ClaudeCli { model: m, .. } => *m = model.to_string(),
+    }
 }
 
 /// Store the thinking checkbox's value.
@@ -1327,6 +1457,7 @@ mod tests {
                 model: "alpha-model".to_string(),
                 base_url: None,
                 api_key: None,
+                models: None,
             },
         );
         backends.insert(
@@ -1335,6 +1466,7 @@ mod tests {
                 model: "beta-model".to_string(),
                 permission_mode: None,
                 env: None,
+                models: None,
             },
         );
         Settings {
@@ -1363,6 +1495,67 @@ mod tests {
         let gui = make_gui_with_settings(&settings_with_backends(Some("nonexistent")));
         assert_eq!(gui.selected_backend_idx, 0);
         assert_eq!(gui.backend_options[0], "alpha");
+    }
+
+    #[test]
+    fn apply_backend_model_writes_onto_named_backend_and_round_trips() {
+        let dir = unique_temp_dir("apply-backend-model-roundtrip");
+        let mut settings = settings_with_backends(Some("alpha"));
+        apply_backend_model(&mut settings, "alpha", "new-model");
+        settings.save(&dir).unwrap();
+
+        let loaded = Settings::load(&dir).unwrap();
+        match loaded.resolve_backend("alpha").unwrap() {
+            BackendConfig::Api { model, .. } => assert_eq!(model, "new-model"),
+            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn apply_backend_model_on_unknown_backend_is_a_no_op() {
+        let mut settings = settings_with_backends(Some("alpha"));
+        apply_backend_model(&mut settings, "nonexistent", "new-model");
+        match settings.resolve_backend("alpha").unwrap() {
+            BackendConfig::Api { model, .. } => assert_eq!(model, "alpha-model"),
+            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        }
+    }
+
+    #[test]
+    fn apply_backend_model_works_for_the_claude_cli_variant() {
+        let mut settings = settings_with_backends(Some("beta"));
+        apply_backend_model(&mut settings, "beta", "sonnet");
+        match settings.resolve_backend("beta").unwrap() {
+            BackendConfig::ClaudeCli { model, .. } => assert_eq!(model, "sonnet"),
+            BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
+        }
+    }
+
+    #[test]
+    fn switch_backend_updates_selected_model_to_the_new_backends_declared_model() {
+        let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
+        gui.switch_backend("beta".to_string());
+        assert_eq!(gui.model, "beta-model");
+        gui.switch_backend("alpha".to_string());
+        assert_eq!(gui.model, "alpha-model");
+    }
+
+    #[test]
+    fn switch_backend_seeds_model_options_with_the_declared_model() {
+        let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
+        gui.switch_backend("beta".to_string());
+        assert!(gui.model_options.contains(&"beta-model".to_string()));
+    }
+
+    #[tokio::test]
+    async fn model_options_always_contain_the_backends_declared_model_after_a_fetch() {
+        let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
+        let (backend_name, models) = gui.model_list_rx.recv().await.unwrap();
+        assert_eq!(backend_name, "alpha");
+        gui.apply_fetched_model_list(&backend_name, models);
+        assert!(gui.model_options.contains(&gui.model));
     }
 
     #[test]

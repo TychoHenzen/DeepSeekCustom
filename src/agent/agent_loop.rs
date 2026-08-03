@@ -83,6 +83,10 @@ pub struct AgentLoop {
     config: AgentConfig,
     tx_events: Option<mpsc::UnboundedSender<StreamEvent>>,
     /// Flag set by GUI when user presses Escape to interrupt streaming.
+    /// Injected at construction rather than created here, so a subagent
+    /// built through `BackendFactory` can share the same flag the GUI
+    /// holds for the main session. Escape then reaches a dispatched
+    /// subagent, not just the turn in front of the user.
     interrupt_flag: Arc<AtomicBool>,
     /// Shared flag: GUI sets this to enable/disable thinking.
     thinking_flag: Arc<AtomicBool>,
@@ -102,12 +106,15 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    /// Create a new AgentLoop.
+    /// Create a new AgentLoop. `interrupt_flag` comes from the caller
+    /// rather than being created here, so `BackendFactory` can hand every
+    /// backend it builds, main session or subagent, the same shared flag.
     pub fn new(
         client: ApiClient,
         tools: ToolRegistry,
         system_prompt: String,
         config: AgentConfig,
+        interrupt_flag: Arc<AtomicBool>,
     ) -> Self {
         let thinking = config.thinking;
         let model = config.model.clone();
@@ -117,7 +124,7 @@ impl AgentLoop {
             history: MessageHistory::new(system_prompt),
             config,
             tx_events: None,
-            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            interrupt_flag,
             thinking_flag: Arc::new(AtomicBool::new(thinking)),
             model_name: Arc::new(Mutex::new(model)),
             voice_mode_flag: Arc::new(AtomicBool::new(false)),
@@ -160,6 +167,14 @@ impl AgentLoop {
     /// stop a `run_repeat` loop between iterations.
     pub fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.repeat_interrupt_flag)
+    }
+
+    /// Test-only: names of every registered tool. Lets a test in another
+    /// module (`src/backend/factory_tests.rs`) assert on depth-gated tool
+    /// registration without a production getter over the tool registry.
+    #[cfg(test)]
+    pub(crate) fn tool_names(&self) -> Vec<String> {
+        self.tools.list().iter().map(|t| t.name().to_string()).collect()
     }
 
     /// Rebuild history from just the base system prompt, dropping every
@@ -649,7 +664,13 @@ mod tests {
     fn agent_loop_creates_with_history() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test prompt".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         assert_eq!(agent.history().len(), 0);
     }
 
@@ -658,7 +679,13 @@ mod tests {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
-        let mut agent = AgentLoop::new(client, tools, "initial".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "initial".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
 
         // Push a user message then reset
         agent.history.push(Message::user("hello".into()));
@@ -670,10 +697,42 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_flag_is_the_injected_arc_not_a_fresh_one() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let gui_flag = Arc::new(AtomicBool::new(false));
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::clone(&gui_flag),
+        );
+
+        // Set the flag through the handle the GUI would hold, never
+        // through the agent's own getter, then check the agent's flag
+        // reads true. That only happens if both point at the same
+        // underlying `AtomicBool`.
+        gui_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(
+            agent
+                .interrupt_flag()
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    #[test]
     fn voice_mode_flag_defaults_to_false() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         assert!(
             !agent
                 .voice_mode_flag()
@@ -685,7 +744,13 @@ mod tests {
     fn voice_mode_flag_handle_observes_writes() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let flag = agent.voice_mode_flag();
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(
@@ -699,7 +764,13 @@ mod tests {
     fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent
             .voice_mode_flag()
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -720,7 +791,13 @@ mod tests {
     fn sync_dynamic_config_clears_voice_suffix_when_flag_false() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent
             .voice_mode_flag()
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -751,7 +828,13 @@ mod tests {
     fn context_budget_flag_defaults_to_100000() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         assert_eq!(
             agent
                 .context_budget_flag()
@@ -764,7 +847,13 @@ mod tests {
     fn context_budget_flag_handle_observes_writes() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let flag = agent.context_budget_flag();
         flag.store(42_000, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(
@@ -779,7 +868,13 @@ mod tests {
     fn apply_prune_is_noop_under_budget() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent.history.push(Message::user("hello".into()));
         let before = agent.history().estimated_tokens();
 
@@ -795,7 +890,13 @@ mod tests {
     fn apply_prune_reduces_oversized_history_to_low_water() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
 
         // Push far more content than a small test budget allows. The last
         // two groups are pinned and never touched by any tier, so keep
@@ -834,7 +935,13 @@ mod tests {
     fn apply_prune_with_none_scores_does_not_panic() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         for i in 0..10 {
             agent.history.push(Message::user(format!("q{i}")));
             agent.history.push(Message::assistant(format!("a{i}")));
@@ -852,7 +959,13 @@ mod tests {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
-        let mut agent = AgentLoop::new(client, tools, "initial".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "initial".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent.history.push(Message::user("hi".into()));
 
         agent.rebuild_system_prompt(Some("memory"), Some("skills"));
@@ -864,7 +977,13 @@ mod tests {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
 
         let output = agent.execute_tool("echo", "{}").await;
         assert!(!output.is_error);
@@ -875,7 +994,13 @@ mod tests {
     async fn execute_unknown_tool_returns_error() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
 
         let output = agent.execute_tool("nonexistent", "{}").await;
         assert!(output.is_error);
@@ -941,7 +1066,13 @@ mod tests {
         let mut config = AgentConfig::default();
         config.thinking = true;
 
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), config);
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            config,
+            Arc::new(AtomicBool::new(false)),
+        );
 
         // Capture events via channel
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1003,7 +1134,13 @@ mod tests {
     fn clear_history_drops_messages_keeps_system_prompt() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent.history.push(Message::user("hello".into()));
         assert_eq!(agent.history().len(), 1);
 
@@ -1019,7 +1156,13 @@ mod tests {
     fn clear_history_after_voice_suffix_still_produces_working_system_message() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         agent
             .voice_mode_flag()
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1050,7 +1193,13 @@ mod tests {
     async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         agent.set_event_sender(tx);
 
@@ -1074,7 +1223,13 @@ mod tests {
     async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         agent.set_event_sender(tx);
         agent
@@ -1156,7 +1311,13 @@ mod tests {
         );
 
         let tools = ToolRegistry::new();
-        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         agent.set_event_sender(tx);
 

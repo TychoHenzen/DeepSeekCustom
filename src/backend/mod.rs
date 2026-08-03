@@ -5,6 +5,8 @@
 //! the difference: both variants expose the same six shared flags.
 
 pub mod claude_cli;
+pub mod factory;
+pub mod subagent;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

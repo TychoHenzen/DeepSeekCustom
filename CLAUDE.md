@@ -49,7 +49,7 @@ Tests in `src/agent/agent_loop.rs`, `src/api/client.rs`, `src/tools/mod.rs`. Tes
 
 Both variants read the same `Settings` and stream `StreamEvent` values to the GUI over the same channel. The GUI does not need to know which one is active.
 
-**Backend kinds:** `src/backend/mod.rs` defines `enum Backend { Api(Box<AgentLoop>), ClaudeCli(ClaudeCliDriver) }`. `main.rs` builds one variant at startup from the resolved config entry and never switches at runtime.
+**Backend kinds:** `src/backend/mod.rs` defines `enum Backend { Api(Box<AgentLoop>), ClaudeCli(ClaudeCliDriver) }`. `main.rs` builds one variant at startup from the resolved config entry and never switches at runtime. The build path itself lives in `src/backend/factory.rs`'s `BackendFactory`, extracted from `main.rs`. It runs again at runtime, on a possibly different entry, whenever the `Task` tool dispatches a subagent. See "Task tool (subagent dispatch)" below.
 
 The `Api` variant is the harness's own in-process HTTP client. It serves both DeepSeek and Ollama. Everything this harness does applies to it: its own `ToolRegistry`, `HookRunner`, `MemoryStore`, skills, context pruning, and relevance scoring, all described below.
 
@@ -98,7 +98,7 @@ The budget lives on a slider in the Experimental section of the settings sidebar
 
 **Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
-**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash, Read, Write, Reset, and AskUserQuestion. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset does a hard session reset. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Permission check via settings `allow`/`deny` lists.
+**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Six tools now: Bash, Read, Write, Reset, AskUserQuestion, and Task. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset does a hard session reset. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Task dispatches a subagent onto a named backend. See "Task tool (subagent dispatch)" below. It is the one tool that is conditional. Past the configured depth limit, a backend's registry gets no Task tool at all, so a subagent cannot dispatch one of its own. Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Claude Code files):
 - `settings.json` - project root or `~/.claude/`. Backend definitions, permissions, hooks, voice config, autopilot config, `context_budget`, and `show_raw_output`. See "Config" below for the `backends` block. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
@@ -167,12 +167,42 @@ Startup runs the other direction. `DeepSeekGui::new` seeds every panel control f
 
 | `kind` | Fields |
 |---|---|
-| `api` | `provider` (`"deepseek"` or `"ollama"`), `model`, optional `base_url`, optional `api_key` |
-| `claude_cli` | `model`, optional `permission_mode`, optional `env` map |
+| `api` | `provider` (`"deepseek"` or `"ollama"`), `model`, optional `base_url`, optional `api_key`, optional `models` |
+| `claude_cli` | `model`, optional `permission_mode`, optional `env` map, optional `models` |
 
-`default_backend` names the active entry. `main.rs::resolve_active_backend` looks it up, defaulting to `"deepseek"` when `default_backend` is absent. An unknown name is a hard startup error naming both the requested entry and the entries that exist. It never falls back silently. Switching backends takes effect on the next app start, since the client and driver are both built once at startup.
+`default_backend` names the active entry. `BackendFactory::default_backend_name` reads it, falling back to `"deepseek"` when the field is absent. `main.rs` calls that, then `BackendFactory::build` at depth 0 to construct the main session's own backend. An unknown name is a hard startup error naming both the requested entry and the entries that exist. It never falls back silently. Switching backends still takes effect only on the next app start, since the client or driver is built once at startup.
 
 The repo `settings.json` ships three entries: `deepseek` (model `deepseek-v4-pro`), `ollama` (model `qwen2.5-coder:7b-instruct-q4_K_M`), and `claude` (model `opus`), with `default_backend` set to `deepseek`.
+
+**Task tool (subagent dispatch):** `src/tools/task.rs` adds a tool named `Task`, registered on every `Api` backend's tool registry, subject to the depth limit below. Its schema: `description`, a short label for the model's own bookkeeping, never read back. `prompt`, required, is the subagent's full self-contained instruction. `backend`, required, names an entry in the `backends` map in settings.json. `model` is optional and overrides what that entry declares. The tool dispatches a subagent onto the named backend and returns only that subagent's final text.
+
+The subagent starts with no conversation history of its own. It sees only `prompt`, nothing else from the calling conversation. Its output never streams into the main transcript. Interleaving several models' token streams into one window would be unreadable. Progress logs at `info` instead, inside `run_subagent` in `src/backend/subagent.rs`. One line fires when a subagent starts, naming its backend and depth. Another fires when it finishes, adding elapsed time and the resolved model.
+
+The purpose, in the user's own words: a strong model plans, a cheaper model orchestrates, and a local model iterates on small pieces. The `Task` tool exists to serve that chain: dispatch one well-specified piece of work to whichever backend fits it best.
+
+Errors never kill the caller's turn. An unknown backend name, a subagent failure, or an interrupt all come back as a tool error, never a hard `Result::Err` from `execute`. An unknown name lists the backends that do exist, from `resolve_named_backend` in `src/backend/factory.rs`.
+
+**Subagent depth limit:** `subagent_max_depth` in settings.json controls how deep the dispatch chain can go. It defaults to 2 (`Settings::subagent_max_depth`). The main session dispatches at depth 1. That subagent dispatches at depth 2, if it still carries a `Task` tool. At the limit, a subagent's tool registry carries no `Task` tool at all. So it cannot dispatch further. `may_dispatch(depth, max_depth)` in `src/backend/factory.rs` is the predicate. It is true while `depth < max_depth`. `BackendFactory::build` registers the tool only when the check holds. That happens one depth deeper than the backend it just built.
+
+The limit exists for two reasons. It fits the intended three-level chain: plan, orchestrate, iterate. It also stops a subagent from spawning subagents without bound.
+
+**Subagent machinery:** `src/backend/factory.rs` holds `BackendFactory`, pulled out of `main.rs` so a backend can be built at runtime the same way startup builds one. `BackendFactory::build(self: &Arc<Self>, name, model_override, tx_events, depth)` resolves a named entry. The `depth` argument is what `may_dispatch` gates the `Task` tool on.
+
+`src/backend/subagent.rs` holds `run_subagent`, which builds the backend through the factory, runs it to completion, and returns the final text. Each subagent gets its own event channel. `spawn_event_drain` drains and discards it on a background task, so nothing a subagent streams ever reaches the GUI.
+
+`src/backend/claude_cli/one_shot.rs` holds `ClaudeCliDriver::run_once`. A `claude_cli` subagent runs through this, not the long-lived child `process.rs` owns. The prompt is a positional argument here, there is no `--input-format` flag, and the process exits once the answer is done.
+
+`AgentLoop` now takes an injected interrupt flag instead of creating its own. That lets the same flag the GUI's Escape handler sets reach a running subagent, not just the main turn.
+
+**Model picker:** the settings sidebar now has a model dropdown under the backend picker. `list_models` in `src/api/models.rs` fills it. An explicit `models` array on the backend entry always wins. Otherwise discovery runs by kind and provider. Ollama is queried live at `/api/tags`. DeepSeek returns the known pair `deepseek-v4-flash` and `deepseek-v4-pro`. `claude_cli` returns the known aliases `opus`, `sonnet`, `haiku`, and `fable`. When discovery yields nothing, the result falls back to the model the entry declares. That way the dropdown is never empty and always holds the current selection.
+
+Ollama being down must never stop the GUI from opening. `query_ollama_models` turns every failure into an empty list instead of an error: a connection error, a timeout, a bad status, or malformed JSON. `apply_fallback` covers an empty list from there.
+
+The list resolves on a background task, `spawn_model_list_fetch`, and arrives over a channel the paint loop polls each frame. No network call happens on the paint loop itself. A result tagged with a backend name the user has since switched away from gets dropped as stale.
+
+A model change writes `model_flag` and persists onto that backend's entry in settings.json, through `apply_backend_model`. It takes effect on the next turn for DeepSeek and Ollama, since `sync_dynamic_config` re-reads `model_flag` every turn. The `claude_cli` backend instead respawns its child to pick up a new model, since `--model` is a spawn-time flag. A backend change itself still needs an app restart, same as before.
+
+The new optional `models` array sits on a backend entry in settings.json. It is `Option<Vec<String>>` on both the `Api` and `ClaudeCli` variants of `BackendConfig`, absent by default.
 
 **Key architectural choices:**
 - No conversation persistence between runs (only memory files and `settings.json` survive)
@@ -184,20 +214,22 @@ The repo `settings.json` ships three entries: `deepseek` (model `deepseek-v4-pro
 
 ## Implementation Status
 
-Phase 1-2 complete, plus a voice subsystem and a second backend kind. Core modules filled in with implementations, tests, and native GUI. Voice adds local speech to text and text to speech, confirmed working against a real microphone and real speakers. The `ClaudeCli` backend was confirmed end to end against the real `claude` binary: a turn went through `ClaudeCliDriver` and `Text` plus `TurnEnd` events came back on the channel.
+Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent dispatch. Core modules filled in with implementations, tests, and native GUI. Voice adds local speech to text and text to speech, confirmed working against a real microphone and real speakers. The `ClaudeCli` backend was confirmed end to end against the real `claude` binary: a turn went through `ClaudeCliDriver` and `Text` plus `TurnEnd` events came back on the channel. The `Task` tool was also confirmed end to end. A dispatch onto the `ollama` backend returned that subagent's real reply. `list_models` returned the real models installed on that Ollama instance.
 
 **Done:**
 - Backend: `src/backend/mod.rs` (the `Backend` enum and its shared flags), `src/backend/claude_cli/process.rs` (`ClaudeCliDriver`, the child process owner), `src/backend/claude_cli/events.rs` (stream-json event parsing), `src/backend/claude_cli/map.rs` (`EventMapper`, mapping to `StreamEvent`). See the Backend section above for the full mechanism.
 - API client: `ApiClient` talks to both DeepSeek and Ollama. It streams replies, retries on failure, and reads its key from an env var or `settings.json`. It uses the V4 thinking_mode format. `prepare_request` changes the outgoing request to fit whichever provider is active.
 - Agent loop: turn cycle, tool execution, session reset, system prompt rebuild. Echoes reasoning_content back. Filters nameless tool calls (V4 thinking deltas). Syncs config from the GUI each turn (thinking_flag, model_flag, voice_mode_flag). Emits StreamEvent::Reasoning, ToolCallStart, ToolCallEnd, and TurnEnd. TurnEnd carries the prompt cache hit and miss counts.
-- Tools: Bash, Read, Write, Reset (Tool trait + ToolRegistry + permission check)
+- Tools: Bash, Read, Write, Reset, AskUserQuestion, Task (Tool trait + ToolRegistry + permission check). See "Task tool (subagent dispatch)" above for Task.
+- Subagent dispatch: `src/backend/factory.rs` (`BackendFactory`, `may_dispatch`), `src/backend/subagent.rs` (`run_subagent`), `src/backend/claude_cli/one_shot.rs` (`ClaudeCliDriver::run_once`), `src/tools/task.rs` (the `Task` tool). See "Task tool (subagent dispatch)", "Subagent depth limit", and "Subagent machinery" above.
+- Model picker: `src/api/models.rs` (`list_models`, live Ollama discovery, static DeepSeek and claude_cli lists, fallback to the declared model). See "Model picker" above.
 - Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig, the `backends` map and `default_backend` (see "Config" above)
 - Context: `src/agent/pruning.rs` (three-tier prune over the message vector) and `src/context/relevance.rs` (relevance scoring call), both `Api`-only. `src/context/mod.rs` now holds only `ThinkingStore` and `parse_thinking_tags`, both still unused by the agent, since `ContextPruner` was deleted from it
 - Hooks: HookRunner with JSON stdin/stdout for lifecycle events, `Api`-only
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md, `Api`-only
 - Skills: Skill loader parsing .md with YAML frontmatter, `Api`-only
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. The sidebar holds a backend picker, a thinking toggle, voice controls, and an Experimental section with a context budget slider. The backend picker lists the names from the `backends` map. Beneath it, a read-only line shows the selected backend's model. A grey caption says a switch takes effect on the next start. That budget slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count. The status bar shows `Backend: name (model)`.
+- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. The sidebar holds a backend picker, a model picker, a thinking toggle, voice controls, and an Experimental section with a context budget slider. The backend picker lists the names from the `backends` map. Beneath it sits a model dropdown, filled by `list_models` resolved in the background. A grey caption says a backend switch takes effect on the next start. A second grey caption says a model change applies next turn for DeepSeek and Ollama, and that claude respawns its child. That budget slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count. The status bar shows `Backend: name (model)`.
 - Voice: `src/voice/` module. Local speech to text via whisper-rs. Local speech output via Kokoro through kokoro-en. Push-to-talk and wake-word triggers, switchable by `trigger_mode`. A `VoiceService` state machine drives it, wired into `main.rs` and the GUI. Speech to text and text to speech degrade independently if a model file is missing. See `docs/voice-setup.md` for model setup. The settings sidebar's voice section has checkboxes for voice enabled, speech to text, and text to speech. It also has trigger mode radio buttons, a wake phrase box, a Kokoro voice picker, and a speed slider.
 - Autopilot: `src/autopilot/` (policy file and decision log, plus the policy-driven answerer), `src/agent/repeat.rs` (the `RepeatTarget` trait and the shared `run_repeat` runner, driving both backend kinds), and the `AskUserQuestion` tool in `src/tools/ask.rs`. See the Autopilot section above for the full mechanism.
 
@@ -209,28 +241,32 @@ Phase 1-2 complete, plus a voice subsystem and a second backend kind. Core modul
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 417 total, all passing. That is 411 lib tests plus 6 tests in the binary target (`backend_resolution_tests` in `src/main.rs`, covering `resolve_active_backend`). No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 464 total, all lib tests, all passing. The binary target carries 0 tests now. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
-| `agent/agent_loop.rs` | 22 |
+| `agent/agent_loop.rs` | 23 |
 | `agent/history.rs` | 10 |
 | `agent/prompt.rs` | 5 |
 | `agent/pruning.rs` | 10 |
 | `agent/repeat.rs` | 5 |
 | `api/client.rs` | 11 |
+| `api/models.rs` | 14 |
 | `api/types.rs` | 10 |
 | `autopilot/answerer.rs` | 9 |
 | `autopilot/policy.rs` | 10 |
 | `autopilot/question.rs` | 10 |
 | `backend/mod.rs` | 3 |
+| `backend/factory.rs` | 14 |
+| `backend/subagent.rs` | 2 |
 | `backend/claude_cli/process.rs` | 10 |
 | `backend/claude_cli/events.rs` | 10 |
 | `backend/claude_cli/map.rs` | 7 |
-| `config/settings.rs` | 30 |
+| `backend/claude_cli/one_shot.rs` | 4 |
+| `config/settings.rs` | 37 |
 | `context/mod.rs` | 3 |
 | `context/relevance.rs` | 13 |
-| `gui/mod.rs` | 68 |
+| `gui/mod.rs` | 74 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
@@ -240,6 +276,7 @@ Phase 1-2 complete, plus a voice subsystem and a second backend kind. Core modul
 | `tools/mod.rs` | 4 |
 | `tools/read.rs` | 3 |
 | `tools/reset.rs` | 1 |
+| `tools/task.rs` | 5 |
 | `tools/write.rs` | 2 |
 | `voice/mod.rs` | 27 |
 | `voice/service.rs` | 23 |
@@ -250,7 +287,6 @@ Phase 1-2 complete, plus a voice subsystem and a second backend kind. Core modul
 | `voice/wake.rs` | 9 |
 | `voice/vad.rs` | 7 |
 | `voice/stt.rs` | 3 |
-| `src/main.rs` (`backend_resolution_tests`) | 6 |
 
 Plus `tests/fixtures/chat_response.json`, `tests/fixtures/claude_stream_json.jsonl`, and `tests/fixtures/claude_stream_json_tools.jsonl`.
 
