@@ -1,25 +1,31 @@
 use std::path::Path;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, info, warn};
 
-use crate::error::Result;
+use crate::error::{HarnessError, Result};
 
 /// Top-level settings (deserialized from settings.json).
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Settings {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionsConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettingsConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceConfig>,
+    /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_budget: Option<usize>,
+    /// Whether the GUI shows raw output instead of rendered markdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_raw_output: Option<bool>,
 }
 
 impl Default for Settings {
@@ -31,6 +37,8 @@ impl Default for Settings {
             hooks: None,
             thinking: None,
             voice: None,
+            context_budget: None,
+            show_raw_output: None,
         }
     }
 }
@@ -75,6 +83,16 @@ impl Settings {
         Ok(settings)
     }
 
+    /// Write these settings to `<project_root>/settings.json` as pretty JSON.
+    pub fn save(&self, project_root: &Path) -> Result<()> {
+        let path = project_root.join("settings.json");
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| HarnessError::Config(format!("failed to serialize settings: {e}")))?;
+        std::fs::write(&path, json)?;
+        debug!("saved settings: {}", path.display());
+        Ok(())
+    }
+
     /// Resolve the active model name.
     ///
     /// Priority: `DEEPSEEK_MODEL` env var → `model` field → `"deepseek-v4-flash"`.
@@ -104,6 +122,26 @@ impl Settings {
             self.thinking.is_some(),
             self.voice_enabled(),
         );
+    }
+
+    /// Context pruning high-water mark in tokens, clamped to 32000-200000.
+    ///
+    /// Defaults to 100000, matching `DEFAULT_CONTEXT_BUDGET` in the agent loop.
+    /// The bounds match the range of the GUI slider.
+    pub fn context_budget(&self) -> usize {
+        self.context_budget
+            .unwrap_or(100_000)
+            .clamp(32_000, 200_000)
+    }
+
+    /// Whether the GUI shows raw output instead of rendered markdown.
+    pub fn show_raw_output(&self) -> bool {
+        self.show_raw_output.unwrap_or(false)
+    }
+
+    /// Whether thinking mode is enabled, defaulting to false.
+    pub fn thinking_enabled(&self) -> bool {
+        self.thinking.as_ref().map(|t| t.enabled).unwrap_or(false)
     }
 
     /// Whether the voice subsystem is enabled at all.
@@ -169,6 +207,21 @@ impl Settings {
             .clamp(0.5, 2.0)
     }
 
+    /// The voice block, created with defaults if it is not there yet.
+    ///
+    /// A panel control changing a voice field must not silently drop the
+    /// write just because `settings.json` had no voice block.
+    pub fn voice_mut(&mut self) -> &mut VoiceConfig {
+        self.voice.get_or_insert_with(VoiceConfig::default)
+    }
+
+    /// The thinking block, created with defaults if it is not there yet.
+    /// See [`Settings::voice_mut`].
+    pub fn thinking_mut(&mut self) -> &mut ThinkingSettingsConfig {
+        self.thinking
+            .get_or_insert_with(ThinkingSettingsConfig::default)
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -204,46 +257,69 @@ impl Settings {
         if other.voice.is_some() {
             self.voice = other.voice;
         }
+        if other.context_budget.is_some() {
+            self.context_budget = other.context_budget;
+        }
+        if other.show_raw_output.is_some() {
+            self.show_raw_output = other.show_raw_output;
+        }
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PermissionsConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HooksConfig {
-    #[serde(rename = "PreToolUse", default)]
+    #[serde(
+        rename = "PreToolUse",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pre_tool_use: Option<Vec<HookDef>>,
-    #[serde(rename = "PostToolUse", default)]
+    #[serde(
+        rename = "PostToolUse",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub post_tool_use: Option<Vec<HookDef>>,
-    #[serde(rename = "SessionStart", default)]
+    #[serde(
+        rename = "SessionStart",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_start: Option<Vec<HookDef>>,
-    #[serde(rename = "SessionEnd", default)]
+    #[serde(
+        rename = "SessionEnd",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_end: Option<Vec<HookDef>>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HookDef {
     pub command: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ThinkingSettingsConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
 }
 
 /// How voice input is triggered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
     PushToTalk,
     WakeWord,
@@ -273,7 +349,21 @@ where
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+fn serialize_trigger_mode<S>(
+    mode: &TriggerMode,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let raw = match mode {
+        TriggerMode::PushToTalk => "push_to_talk",
+        TriggerMode::WakeWord => "wake_word",
+    };
+    serializer.serialize_str(raw)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct VoiceConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -282,23 +372,27 @@ pub struct VoiceConfig {
     #[serde(default)]
     pub tts_enabled: bool,
     /// Path to the whisper GGML speech-to-text model file.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stt_model_path: Option<String>,
     /// Path to the Kokoro ONNX text-to-speech model file.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_model_path: Option<String>,
     /// Path to the directory holding Kokoro `<voice_id>.bin` voice packs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_voices_path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_trigger_mode")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_trigger_mode",
+        serialize_with = "serialize_trigger_mode"
+    )]
     pub trigger_mode: TriggerMode,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_phrase: Option<String>,
     /// A Kokoro voice id, e.g. `af_heart`, `am_michael`, `bf_emma`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_voice: Option<String>,
     /// Speaking speed, clamped 0.5-2.0. Defaults to 1.0.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_speed: Option<f32>,
 }
 
@@ -419,6 +513,182 @@ mod tests {
         let json = r#"{"voice": {"trigger_mode": "wake_word"}}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.voice_trigger_mode(), TriggerMode::WakeWord);
+    }
+
+    /// Create a uniquely named directory under the system temp dir.
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dsc-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_then_load_round_trips_values() {
+        let dir = unique_temp_dir("settings-roundtrip");
+
+        let original = Settings {
+            model: Some("deepseek-v4-pro".into()),
+            api_key: Some("sk-round-trip".into()),
+            permissions: Some(PermissionsConfig {
+                allow: Some(vec!["Bash".into(), "Read".into()]),
+                deny: None,
+            }),
+            hooks: None,
+            thinking: Some(ThinkingSettingsConfig {
+                enabled: true,
+                effort: Some("high".into()),
+            }),
+            voice: Some(VoiceConfig {
+                enabled: true,
+                stt_enabled: true,
+                tts_enabled: true,
+                stt_model_path: Some("C:/models/ggml-base.bin".into()),
+                tts_model_path: Some("C:/models/model.onnx".into()),
+                tts_voices_path: Some("C:/voices".into()),
+                trigger_mode: TriggerMode::WakeWord,
+                wake_phrase: Some("hey computer".into()),
+                tts_voice: Some("am_michael".into()),
+                tts_speed: Some(1.3),
+            }),
+            context_budget: Some(150_000),
+            show_raw_output: Some(true),
+        };
+
+        original.save(&dir).unwrap();
+        assert!(dir.join("settings.json").exists());
+
+        let loaded = Settings::load(&dir).unwrap();
+
+        assert_eq!(loaded.model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(loaded.api_key.as_deref(), Some("sk-round-trip"));
+        let perms = loaded.permissions.as_ref().unwrap();
+        assert_eq!(
+            perms.allow.as_ref().unwrap(),
+            &vec!["Bash".to_string(), "Read".to_string()]
+        );
+        assert!(perms.deny.is_none());
+        let thinking = loaded.thinking.as_ref().unwrap();
+        assert!(thinking.enabled);
+        assert_eq!(thinking.effort.as_deref(), Some("high"));
+        assert!(loaded.voice_enabled());
+        assert!(loaded.voice_stt_enabled());
+        assert!(loaded.voice_tts_enabled());
+        assert_eq!(
+            loaded.voice_stt_model_path().unwrap(),
+            "C:/models/ggml-base.bin"
+        );
+        assert_eq!(
+            loaded.voice_tts_model_path().unwrap(),
+            "C:/models/model.onnx"
+        );
+        assert_eq!(loaded.voice_tts_voices_path().unwrap(), "C:/voices");
+        assert_eq!(loaded.voice_trigger_mode(), TriggerMode::WakeWord);
+        assert_eq!(loaded.voice_wake_phrase(), "hey computer");
+        assert_eq!(loaded.voice_tts_voice(), "am_michael");
+        assert_eq!(loaded.voice_tts_speed(), 1.3);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_omits_none_fields() {
+        let dir = unique_temp_dir("settings-omit");
+
+        let s = Settings {
+            model: Some("deepseek-v4-flash".into()),
+            api_key: None,
+            permissions: None,
+            hooks: None,
+            thinking: None,
+            voice: None,
+            context_budget: None,
+            show_raw_output: None,
+        };
+        s.save(&dir).unwrap();
+        let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+
+        assert!(text.contains("deepseek-v4-flash"));
+        assert!(!text.contains("api_key"));
+        assert!(!text.contains("context_budget"));
+        assert!(!text.contains("show_raw_output"));
+        assert!(!text.contains("null"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn context_budget_defaults_when_absent() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.context_budget(), 100_000);
+    }
+
+    #[test]
+    fn context_budget_passes_through_in_range_value() {
+        let s: Settings = serde_json::from_str(r#"{"context_budget": 64000}"#).unwrap();
+        assert_eq!(s.context_budget(), 64_000);
+    }
+
+    #[test]
+    fn context_budget_clamps_low_value() {
+        let s: Settings = serde_json::from_str(r#"{"context_budget": 1000}"#).unwrap();
+        assert_eq!(s.context_budget(), 32_000);
+    }
+
+    #[test]
+    fn context_budget_clamps_high_value() {
+        let s: Settings = serde_json::from_str(r#"{"context_budget": 999999}"#).unwrap();
+        assert_eq!(s.context_budget(), 200_000);
+    }
+
+    #[test]
+    fn show_raw_output_defaults_to_false() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!s.show_raw_output());
+    }
+
+    #[test]
+    fn show_raw_output_reads_set_value() {
+        let s: Settings = serde_json::from_str(r#"{"show_raw_output": true}"#).unwrap();
+        assert!(s.show_raw_output());
+    }
+
+    #[test]
+    fn thinking_enabled_defaults_to_false() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!s.thinking_enabled());
+    }
+
+    #[test]
+    fn thinking_enabled_reads_set_value() {
+        let s: Settings = serde_json::from_str(r#"{"thinking": {"enabled": true}}"#).unwrap();
+        assert!(s.thinking_enabled());
+    }
+
+    #[test]
+    fn new_panel_fields_round_trip_through_a_file() {
+        let dir = unique_temp_dir("settings-panel-fields");
+
+        let original = Settings {
+            context_budget: Some(150_000),
+            show_raw_output: Some(true),
+            thinking: Some(ThinkingSettingsConfig {
+                enabled: true,
+                effort: None,
+            }),
+            ..Default::default()
+        };
+        original.save(&dir).unwrap();
+
+        let loaded = Settings::load(&dir).unwrap();
+        assert_eq!(loaded.context_budget(), 150_000);
+        assert!(loaded.show_raw_output());
+        assert!(loaded.thinking_enabled());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

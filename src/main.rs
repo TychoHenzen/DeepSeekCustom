@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 
 use eframe::egui;
@@ -169,11 +170,19 @@ async fn main() {
     // Share interrupt flag between GUI and agent
     let interrupt_flag = agent.interrupt_flag();
     let thinking_flag = agent.thinking_flag();
-    // Seeded further down by `with_tts_enabled`, which sets the checkbox and
-    // this flag together.
+    // Seeded by `DeepSeekGui::new`, which sets the checkbox and this flag
+    // together from the same settings value.
     let voice_mode_flag = agent.voice_mode_flag();
     let context_budget_flag = agent.context_budget_flag();
     let model_flag = agent.model_flag();
+
+    // ── Seed agent flags from settings ──────────────────────
+
+    let thinking_enabled = settings.thinking_enabled();
+    let context_budget = settings.context_budget();
+    thinking_flag.store(thinking_enabled, Ordering::SeqCst);
+    context_budget_flag.store(context_budget, Ordering::SeqCst);
+    info!("seeded from settings: thinking={thinking_enabled} context_budget={context_budget}");
 
     // ── Spawn agent task ────────────────────────────────────
 
@@ -204,8 +213,9 @@ async fn main() {
         voice_mode_flag,
         context_budget_flag,
         model_flag,
-    )
-    .with_tts_enabled(settings.voice_tts_enabled());
+        settings.clone(),
+        project_root.clone(),
+    );
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

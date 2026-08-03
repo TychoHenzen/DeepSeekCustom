@@ -62,7 +62,7 @@ The budget lives on a slider in the Experimental section of the settings sidebar
 **Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout; `shell` param accepts `auto`/`cmd`/`powershell`; auto-detects powershell/pwsh commands and runs directly via `Command::new("powershell")` to avoid cmd.exe inner-quote mangling), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Codex files):
-- `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, and voice config. The repo ships one at the project root that turns voice on.
+- `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, voice config, `context_budget`, and `show_raw_output`. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
 - Skills — `skills/*.md` with YAML frontmatter (`name`, `description`, `tools`).
 - Hooks — shell commands receive JSON on stdin, return JSON on stdout. Events: PreToolUse, PostToolUse, SessionStart, SessionEnd, SessionReset.
 - Memory - `CLAUDE.md` (project instructions), `MEMORY.md` (persistent memory). Injected into system prompt.
@@ -95,8 +95,16 @@ The `settings.json` voice block, with defaults:
 | `tts_voice` | `"af_heart"` |
 | `tts_speed` | `1.0`, clamped 0.5-2.0 |
 
+**Settings persistence:** every settings-panel control writes its change back to `<project_root>/settings.json`, so the panel reads the same way it started. `Settings` derives `Serialize` as well as `Deserialize`. Every optional field carries `skip_serializing_if = "Option::is_none"`, so a save never invents a field the user did not set. `TriggerMode` gets a hand-written `serialize_trigger_mode` to match its hand-written deserializer, keeping the snake_case wire form.
+
+`Settings::save` writes pretty JSON to `settings.json` in the given directory. The GUI holds a `Settings` value and the project root, calls one small `apply_*` free function per control, then calls `persist_settings`. The `apply_*` functions live at the bottom of `src/gui/mod.rs` and are plain functions over `&mut Settings`, so a round-trip test can call them without building a GUI. A save failure is logged at `warn` and otherwise ignored: losing a preference must never take the session down.
+
+`Settings::voice_mut` and `Settings::thinking_mut` create their block with defaults when it is missing. Without them a control change would be silently dropped whenever `settings.json` had no such block.
+
+Startup runs the other direction. `DeepSeekGui::new` seeds every panel control from the settings value it is handed, including the voice mode flag. It falls back to the first Kokoro voice when `tts_voice` names an unknown id. `main` seeds `thinking_flag` and `context_budget_flag` from settings before spawning the agent. The old `with_tts_enabled` builder is gone, since `new` now seeds all of it from one source.
+
 **Key architectural choices:**
-- No full session persistence between runs (only memory files survive)
+- No conversation persistence between runs (only memory files and `settings.json` survive)
 - Session reset is hard cut (clear context, reload memory files, start fresh with prompt)
 - Context pruning is a hysteresis oscillator. History grows freely to a high-water mark, then prunes hard to a low-water mark a third of the way down. This keeps the API's prompt cache warm between prunes
 - Hemisphere model (Phase 3): two model instances, different system prompts, right side sees compressed context
@@ -110,13 +118,13 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 - API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json, V4 thinking_mode format)
 - Agent loop: turn cycle, tool execution, session reset, system prompt rebuild. Echoes reasoning_content back. Filters nameless tool calls (V4 thinking deltas). Syncs config from the GUI each turn (thinking_flag, model_flag, voice_mode_flag). Emits StreamEvent::Reasoning, ToolCallStart, ToolCallEnd, and TurnEnd. TurnEnd carries the prompt cache hit and miss counts.
 - Tools: Bash, Read, Write, Reset (Tool trait + ToolRegistry + permission check)
-- Config: Settings loading from project/global JSON, PermissionsConfig, HooksConfig
+- Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig
 - Context: `src/agent/pruning.rs` (three-tier prune over the message vector) and `src/context/relevance.rs` (relevance scoring call). `src/context/mod.rs` now holds only `ThinkingStore` and `parse_thinking_tags`, both still unused by the agent, since `ContextPruner` was deleted from it
 - Hooks: HookRunner with JSON stdin/stdout for lifecycle events
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md
 - Skills: Skill loader parsing .md with YAML frontmatter
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, and a settings sidebar (Tab key). The sidebar holds a model selector, a thinking toggle, voice controls, and an Experimental section with a context budget slider. That slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech.
+- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, and a settings sidebar (Tab key). The sidebar holds a model selector, a thinking toggle, voice controls, and an Experimental section with a context budget slider. That slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change.
 - Voice: `src/voice/` module. Local speech to text via whisper-rs. Local speech output via Kokoro through kokoro-en. Push-to-talk and wake-word triggers, switchable by `trigger_mode`. A `VoiceService` state machine drives it, wired into `main.rs` and the GUI. Speech to text and text to speech degrade independently if a model file is missing. See `docs/voice-setup.md` for model setup. The settings sidebar's voice section has checkboxes for voice enabled, speech to text, and text to speech. It also has trigger mode radio buttons, a wake phrase box, a Kokoro voice picker, and a speed slider.
 
 **GUI key bindings:**
@@ -127,7 +135,7 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 292 total, all passing. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 311 total, all passing. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
@@ -137,10 +145,10 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 | `agent/pruning.rs` | 10 |
 | `api/client.rs` | 4 |
 | `api/types.rs` | 9 |
-| `config/settings.rs` | 11 |
+| `config/settings.rs` | 22 |
 | `context/mod.rs` | 3 |
 | `context/relevance.rs` | 13 |
-| `gui/mod.rs` | 50 |
+| `gui/mod.rs` | 58 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |

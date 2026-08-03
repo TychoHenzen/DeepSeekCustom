@@ -1,11 +1,16 @@
 {
+  "model": "deepseek-v4-pro",
+  "thinking": {
+    "enabled": true
+  },
   "voice": {
     "enabled": true,
-    "stt_enabled": true,
+    "stt_enabled": false,
     "tts_enabled": true,
     "trigger_mode": "push_to_talk",
     "wake_phrase": "hey deepseek",
-    "tts_voice": "af_heart",
+    "tts_voice": "am_puck",
     "tts_speed": 1.0
-  }
+  },
+  "context_budget": 150000
 }

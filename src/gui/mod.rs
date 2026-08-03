@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,7 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::agent::agent_loop::StreamEvent;
-use crate::config::settings::TriggerMode;
+use crate::config::settings::{Settings, TriggerMode};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
 /// Kokoro voice ids offered by the settings panel's voice selector. A
@@ -84,6 +85,14 @@ pub struct DeepSeekGui {
     /// Holds only `StreamEvent::Text` payloads, never reasoning or tool
     /// output.
     voice_reply_buffer: String,
+
+    // ── Settings persistence ──
+    /// The settings this GUI writes back on every control change. Seeded
+    /// from the settings loaded at startup.
+    settings: Settings,
+    /// Directory holding `settings.json`, the file `persist_settings`
+    /// writes.
+    project_root: PathBuf,
 }
 
 impl DeepSeekGui {
@@ -95,6 +104,8 @@ impl DeepSeekGui {
         voice_mode_flag: Arc<AtomicBool>,
         context_budget_flag: Arc<AtomicUsize>,
         model_flag: Arc<Mutex<String>>,
+        settings: Settings,
+        project_root: PathBuf,
     ) -> Self {
         let model_options = vec![
             "deepseek-v4-flash".to_string(),
@@ -105,9 +116,19 @@ impl DeepSeekGui {
             .iter()
             .position(|m| *m == current_model)
             .unwrap_or(0);
-        let initial_tts_enabled = false;
-        voice_mode_flag.store(initial_tts_enabled, Ordering::SeqCst);
+        let initial_tts_enabled = settings.voice_tts_enabled();
+        voice_mode_flag.store(
+            voice_mode_flag_for_tts(initial_tts_enabled),
+            Ordering::SeqCst,
+        );
         let context_budget = context_budget_flag.load(Ordering::SeqCst);
+        let voice_id_options: Vec<String> =
+            KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect();
+        let configured_voice = settings.voice_tts_voice();
+        let voice_idx = voice_id_options
+            .iter()
+            .position(|v| *v == configured_voice)
+            .unwrap_or(0);
         Self {
             output_lines: Vec::new(),
             input_buffer: String::new(),
@@ -128,20 +149,32 @@ impl DeepSeekGui {
             context_budget_flag,
             context_budget,
             model_flag,
-            show_raw_output: false,
+            show_raw_output: settings.show_raw_output(),
             markdown_cache: CommonMarkCache::default(),
             voice_rx: None,
             voice_tx: None,
             voice_state: VoiceState::Idle,
-            voice_master_enabled: false,
-            voice_stt_enabled: false,
+            voice_master_enabled: settings.voice_enabled(),
+            voice_stt_enabled: settings.voice_stt_enabled(),
             voice_tts_enabled: initial_tts_enabled,
-            voice_trigger_mode: TriggerMode::PushToTalk,
-            voice_wake_phrase: "hey deepseek".to_string(),
-            voice_id_options: KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect(),
-            selected_voice_idx: 0,
-            voice_speed: 1.0,
+            voice_trigger_mode: settings.voice_trigger_mode(),
+            voice_wake_phrase: settings.voice_wake_phrase(),
+            voice_id_options,
+            selected_voice_idx: voice_idx,
+            voice_speed: settings.voice_tts_speed(),
             voice_reply_buffer: String::new(),
+            settings,
+            project_root,
+        }
+    }
+
+    /// Write the current settings to `<project_root>/settings.json`.
+    /// Called by every settings-panel control after it updates
+    /// `self.settings`. A save failure is logged and otherwise ignored:
+    /// losing a preference must never take the session down.
+    fn persist_settings(&self) {
+        if let Err(e) = self.settings.save(&self.project_root) {
+            warn!(error = %e, "failed to save settings.json");
         }
     }
 
@@ -156,18 +189,6 @@ impl DeepSeekGui {
     ) -> Self {
         self.voice_rx = Some(voice_rx);
         self.voice_tx = Some(voice_tx);
-        self
-    }
-
-    /// Seed the text-to-speech checkbox and `voice_mode_flag` from a
-    /// settings value read at startup. `new()` always starts
-    /// `voice_tts_enabled` at `false`. This call brings the checkbox, the
-    /// flag, and the real speech state back into agreement when settings
-    /// says text to speech should start on.
-    pub fn with_tts_enabled(mut self, enabled: bool) -> Self {
-        self.voice_tts_enabled = enabled;
-        self.voice_mode_flag
-            .store(voice_mode_flag_for_tts(enabled), Ordering::SeqCst);
         self
     }
 
@@ -411,6 +432,8 @@ impl App for DeepSeekGui {
                             model = %new_model,
                             "model changed via settings panel"
                         );
+                        apply_model(&mut self.settings, &new_model);
+                        self.persist_settings();
                     }
 
                     ui.add_space(8.0);
@@ -420,6 +443,8 @@ impl App for DeepSeekGui {
                     if ui.checkbox(&mut thinking, "Thinking enabled").changed() {
                         self.thinking_flag.store(thinking, Ordering::SeqCst);
                         info!(thinking = thinking, "thinking toggled via settings panel");
+                        apply_thinking_enabled(&mut self.settings, thinking);
+                        self.persist_settings();
                     }
                     if thinking {
                         ui.label(
@@ -432,7 +457,12 @@ impl App for DeepSeekGui {
                     ui.add_space(8.0);
 
                     // ── Output display toggle ──
-                    ui.checkbox(&mut self.show_raw_output, "Show raw output");
+                    let mut show_raw = self.show_raw_output;
+                    if ui.checkbox(&mut show_raw, "Show raw output").changed() {
+                        self.show_raw_output = show_raw;
+                        apply_show_raw_output(&mut self.settings, show_raw);
+                        self.persist_settings();
+                    }
                     if self.show_raw_output {
                         ui.label(
                             RichText::new("  Plain text with ANSI-like coloring")
@@ -458,6 +488,8 @@ impl App for DeepSeekGui {
                         self.voice_master_enabled = voice_enabled;
                         self.send_voice_command(voice_enabled_command(voice_enabled));
                         info!(voice_enabled, "voice enabled toggled via settings panel");
+                        apply_voice_enabled(&mut self.settings, voice_enabled);
+                        self.persist_settings();
                     }
 
                     let mut stt_enabled = self.voice_stt_enabled;
@@ -465,6 +497,8 @@ impl App for DeepSeekGui {
                         self.voice_stt_enabled = stt_enabled;
                         self.send_voice_command(stt_enabled_command(stt_enabled));
                         info!(stt_enabled, "speech-to-text toggled via settings panel");
+                        apply_stt_enabled(&mut self.settings, stt_enabled);
+                        self.persist_settings();
                     }
 
                     let mut tts_enabled = self.voice_tts_enabled;
@@ -474,6 +508,8 @@ impl App for DeepSeekGui {
                             .store(voice_mode_flag_for_tts(tts_enabled), Ordering::SeqCst);
                         self.send_voice_command(tts_enabled_command(tts_enabled));
                         info!(tts_enabled, "text-to-speech toggled via settings panel");
+                        apply_tts_enabled(&mut self.settings, tts_enabled);
+                        self.persist_settings();
                     }
 
                     ui.add_space(4.0);
@@ -497,6 +533,9 @@ impl App for DeepSeekGui {
                             mode = ?self.voice_trigger_mode,
                             "voice trigger mode changed via settings panel"
                         );
+                        let mode = self.voice_trigger_mode;
+                        apply_trigger_mode(&mut self.settings, mode);
+                        self.persist_settings();
                     }
 
                     ui.add_space(4.0);
@@ -509,6 +548,13 @@ impl App for DeepSeekGui {
                             phrase = %self.voice_wake_phrase,
                             "wake phrase changed via settings panel"
                         );
+                    }
+                    // Save on focus loss, not on every keystroke, so typing
+                    // a phrase writes the file once.
+                    if wake_response.lost_focus() {
+                        let phrase = self.voice_wake_phrase.clone();
+                        apply_wake_phrase(&mut self.settings, &phrase);
+                        self.persist_settings();
                     }
 
                     ui.add_space(4.0);
@@ -524,6 +570,8 @@ impl App for DeepSeekGui {
                         let voice_id = self.voice_id_options[self.selected_voice_idx].clone();
                         self.send_voice_command(voice_id_command(&voice_id));
                         info!(voice_id = %voice_id, "kokoro voice changed via settings panel");
+                        apply_tts_voice(&mut self.settings, &voice_id);
+                        self.persist_settings();
                     }
 
                     ui.add_space(4.0);
@@ -535,6 +583,13 @@ impl App for DeepSeekGui {
                             speed = self.voice_speed,
                             "voice speed changed via settings panel"
                         );
+                    }
+                    // Save when the drag ends, so one drag writes the file
+                    // once instead of once per frame.
+                    if speed_response.drag_stopped() {
+                        let speed = self.voice_speed;
+                        apply_tts_speed(&mut self.settings, speed);
+                        self.persist_settings();
                     }
 
                     ui.add_space(8.0);
@@ -557,6 +612,12 @@ impl App for DeepSeekGui {
                             context_budget = context_budget,
                             "context budget changed via settings panel"
                         );
+                    }
+                    // Same as the speed slider: one write per drag.
+                    if budget_response.drag_stopped() {
+                        let budget = self.context_budget;
+                        apply_context_budget(&mut self.settings, budget);
+                        self.persist_settings();
                     }
                     ui.label(
                         RichText::new(format!(
@@ -905,12 +966,100 @@ fn speed_command(speed: f32) -> VoiceCommand {
     VoiceCommand::SetSpeed(speed)
 }
 
+// ── Control-to-settings mapping ──
+//
+// Each function below takes the plain value a settings-panel control just
+// changed to and writes it into a `Settings`. Kept separate from the
+// control's egui code so each write is unit-testable without an egui
+// context, the same way the command builders above are. The voice and
+// thinking writers create their config block when it is missing, so a
+// change is never silently dropped.
+
+/// Store the model dropdown's selection.
+fn apply_model(settings: &mut Settings, model: &str) {
+    settings.model = Some(model.to_string());
+}
+
+/// Store the thinking checkbox's value.
+fn apply_thinking_enabled(settings: &mut Settings, enabled: bool) {
+    settings.thinking_mut().enabled = enabled;
+}
+
+/// Store the raw-output checkbox's value.
+fn apply_show_raw_output(settings: &mut Settings, show_raw: bool) {
+    settings.show_raw_output = Some(show_raw);
+}
+
+/// Store the master voice checkbox's value.
+fn apply_voice_enabled(settings: &mut Settings, enabled: bool) {
+    settings.voice_mut().enabled = enabled;
+}
+
+/// Store the speech-to-text checkbox's value.
+fn apply_stt_enabled(settings: &mut Settings, enabled: bool) {
+    settings.voice_mut().stt_enabled = enabled;
+}
+
+/// Store the text-to-speech checkbox's value.
+fn apply_tts_enabled(settings: &mut Settings, enabled: bool) {
+    settings.voice_mut().tts_enabled = enabled;
+}
+
+/// Store the trigger-mode radio pair's selection.
+fn apply_trigger_mode(settings: &mut Settings, mode: TriggerMode) {
+    settings.voice_mut().trigger_mode = mode;
+}
+
+/// Store the wake-phrase field's text.
+fn apply_wake_phrase(settings: &mut Settings, phrase: &str) {
+    settings.voice_mut().wake_phrase = Some(phrase.to_string());
+}
+
+/// Store the Kokoro voice selector's choice.
+fn apply_tts_voice(settings: &mut Settings, voice_id: &str) {
+    settings.voice_mut().tts_voice = Some(voice_id.to_string());
+}
+
+/// Store the speech speed slider's value.
+fn apply_tts_speed(settings: &mut Settings, speed: f32) {
+    settings.voice_mut().tts_speed = Some(speed);
+}
+
+/// Store the context budget slider's value.
+fn apply_context_budget(settings: &mut Settings, budget: usize) {
+    settings.context_budget = Some(budget);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::VoiceConfig;
 
     fn make_gui() -> DeepSeekGui {
-        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        make_gui_with_settings(&Settings::default())
+    }
+
+    /// Create a uniquely named directory under the system temp dir, so a
+    /// test that saves never touches the repository's real settings.json.
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dsc-gui-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Build a GUI from a specific settings value, so a test can check how
+    /// the panel controls get seeded.
+    fn make_gui_with_settings(settings: &Settings) -> DeepSeekGui {
+        make_gui_in(settings, unique_temp_dir("seed"))
+    }
+
+    /// Build a GUI over a specific project root, for tests that save.
+    fn make_gui_in(settings: &Settings, project_root: PathBuf) -> DeepSeekGui {
+        let (_tx_events, rx_events) = mpsc::unbounded_channel();
         let (tx_input, _rx_input) = mpsc::unbounded_channel();
         DeepSeekGui::new(
             rx_events,
@@ -920,7 +1069,29 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            settings.clone(),
+            project_root,
         )
+    }
+
+    /// A settings value with every panel control set away from its default.
+    fn settings_with_voice(tts_voice: &str) -> Settings {
+        Settings {
+            show_raw_output: Some(true),
+            voice: Some(VoiceConfig {
+                enabled: true,
+                stt_enabled: true,
+                tts_enabled: true,
+                stt_model_path: None,
+                tts_model_path: None,
+                tts_voices_path: None,
+                trigger_mode: TriggerMode::WakeWord,
+                wake_phrase: Some("hey computer".to_string()),
+                tts_voice: Some(tts_voice.to_string()),
+                tts_speed: Some(1.4),
+            }),
+            ..Settings::default()
+        }
     }
 
     #[test]
@@ -1153,18 +1324,32 @@ mod tests {
     }
 
     #[test]
-    fn with_tts_enabled_true_sets_checkbox_and_flag() {
-        let gui = make_gui();
-        assert!(!gui.voice_tts_enabled, "starts off before seeding");
-        let gui = gui.with_tts_enabled(true);
+    fn new_seeds_every_panel_control_from_settings() {
+        let gui = make_gui_with_settings(&settings_with_voice("am_michael"));
+        assert!(gui.show_raw_output);
+        assert!(gui.voice_master_enabled);
+        assert!(gui.voice_stt_enabled);
         assert!(gui.voice_tts_enabled);
-        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
+        assert_eq!(gui.voice_trigger_mode, TriggerMode::WakeWord);
+        assert_eq!(gui.voice_wake_phrase, "hey computer");
+        assert_eq!(gui.voice_id_options[gui.selected_voice_idx], "am_michael");
+        assert_eq!(gui.voice_speed, 1.4);
     }
 
     #[test]
-    fn with_tts_enabled_false_leaves_checkbox_and_flag_off() {
+    fn new_falls_back_to_the_first_voice_on_an_unknown_voice_id() {
+        let gui = make_gui_with_settings(&settings_with_voice("zz_nobody"));
+        assert_eq!(gui.selected_voice_idx, 0);
+        assert_eq!(gui.voice_id_options[0], "af_heart");
+    }
+
+    #[test]
+    fn new_sets_voice_mode_flag_from_the_seeded_tts_value() {
+        let gui = make_gui_with_settings(&settings_with_voice("af_heart"));
+        assert!(gui.voice_tts_enabled);
+        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
+
         let gui = make_gui();
-        let gui = gui.with_tts_enabled(false);
         assert!(!gui.voice_tts_enabled);
         assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
     }
@@ -1219,6 +1404,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Settings::default(),
+            unique_temp_dir("ctor"),
         );
         gui.handle_voice_event(VoiceEvent::Transcript("hello".into()));
         assert_eq!(rx_input.try_recv().unwrap(), "hello");
@@ -1611,6 +1798,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(64_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Settings::default(),
+            unique_temp_dir("ctor"),
         );
         assert_eq!(gui.context_budget, 64_000);
     }
@@ -1629,6 +1818,89 @@ mod tests {
         let mut gui = make_gui();
         gui.context_budget = 90_000;
         assert_eq!(gui.context_budget / 3, 30_000);
+    }
+
+    /// Apply a change to a GUI's settings, persist it, and read the file
+    /// back through the real load path. This is the seam every panel
+    /// control goes through.
+    fn round_trip<F: FnOnce(&mut Settings)>(change: F) -> Settings {
+        let dir = unique_temp_dir("persist");
+        let gui = make_gui_in(&Settings::default(), dir.clone());
+        let mut gui = gui;
+        change(&mut gui.settings);
+        gui.persist_settings();
+        assert!(dir.join("settings.json").exists(), "the file must be there");
+        let loaded = Settings::load(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        loaded
+    }
+
+    #[test]
+    fn model_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_model(s, "deepseek-v4-pro"));
+        assert_eq!(loaded.model.as_deref(), Some("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn show_raw_output_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_show_raw_output(s, true));
+        assert!(loaded.show_raw_output());
+    }
+
+    #[test]
+    fn context_budget_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_context_budget(s, 150_000));
+        assert_eq!(loaded.context_budget(), 150_000);
+    }
+
+    #[test]
+    fn thinking_change_creates_the_block_when_it_is_missing() {
+        let mut settings = Settings::default();
+        assert!(settings.thinking.is_none(), "no thinking block to start");
+        apply_thinking_enabled(&mut settings, true);
+        assert!(settings.thinking.is_some(), "the block gets created");
+
+        let loaded = round_trip(|s| apply_thinking_enabled(s, true));
+        assert!(loaded.thinking_enabled());
+    }
+
+    #[test]
+    fn voice_change_creates_the_block_when_it_is_missing() {
+        let mut settings = Settings::default();
+        assert!(settings.voice.is_none(), "no voice block to start");
+        apply_stt_enabled(&mut settings, true);
+        assert!(settings.voice.is_some(), "the block gets created");
+        assert!(settings.voice.as_ref().unwrap().stt_enabled);
+    }
+
+    #[test]
+    fn every_voice_control_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| {
+            apply_voice_enabled(s, true);
+            apply_stt_enabled(s, true);
+            apply_tts_enabled(s, true);
+            apply_trigger_mode(s, TriggerMode::WakeWord);
+            apply_wake_phrase(s, "hey computer");
+            apply_tts_voice(s, "am_michael");
+            apply_tts_speed(s, 1.4);
+        });
+        assert!(loaded.voice_enabled());
+        assert!(loaded.voice_stt_enabled());
+        assert!(loaded.voice_tts_enabled());
+        assert_eq!(loaded.voice_trigger_mode(), TriggerMode::WakeWord);
+        assert_eq!(loaded.voice_wake_phrase(), "hey computer");
+        assert_eq!(loaded.voice_tts_voice(), "am_michael");
+        assert_eq!(loaded.voice_tts_speed(), 1.4);
+    }
+
+    #[test]
+    fn persisting_to_an_unwritable_root_logs_instead_of_panicking() {
+        let gui = make_gui_in(
+            &Settings::default(),
+            PathBuf::from("/nonexistent/dsc/path/xyz"),
+        );
+        // Must not panic. The failure is logged and the session goes on.
+        gui.persist_settings();
     }
 
     #[test]
