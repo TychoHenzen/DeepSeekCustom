@@ -230,7 +230,12 @@ impl AgentLoop {
         }
 
         let messages: Vec<Message> = self.history.iter().cloned().collect();
-        let scores = crate::context::relevance::score_messages(&self.client, &messages).await;
+        let scores = crate::context::relevance::score_messages(
+            &self.client,
+            &messages,
+            &self.config.model,
+        )
+        .await;
         if scores.is_none() {
             warn!("context pruning: relevance scoring failed, falling back to oldest-first order");
         }

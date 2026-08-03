@@ -94,7 +94,7 @@ A turn group is one `Role::User` message plus every message that follows it, up 
 
 Three tiers run in order. Each stops the moment the token count reaches the low-water mark. Tier one elides tool bodies. A `Role::Tool` message's content becomes `[elided: N chars of tool output]`. Role, `tool_call_id`, and position stay untouched. An already-elided message is skipped, so a second pass does not double-wrap it. Tier two collapses groups. It keeps the leading user message and the last assistant message with content and no tool calls. It drops everything else in the group, so tool-call pairing survives. Tier three drops groups outright. Ordering inside every tier is lowest relevance score first, then oldest first on a tie.
 
-When the high-water mark trips, `src/context/relevance.rs` makes one extra non-streaming call before pruning. It sends an index of the history, not the history itself: id, role, token count, and a 100-character preview per message. It asks for a JSON array of `{"id","score"}` scores from 0.0 to 1.0. It always runs on `deepseek-v4-flash`, whatever the main conversation model is, since it only ranks short previews. Scoring with hindsight is the point: at prune time the model already knows which messages mattered. Any failure returns `None` and is logged at `warn`: a network error, malformed JSON, a missing or duplicate id, an out-of-range id, or a non-finite score. The prune then proceeds with uniform scores, which degrades to oldest-first. A scoring failure never blocks a turn.
+When the high-water mark trips, `src/context/relevance.rs` makes one extra non-streaming call before pruning. It sends an index of the history, not the history itself: id, role, token count, and a 100-character preview per message. It asks for a JSON array of `{"id","score"}` scores from 0.0 to 1.0. The model it runs on comes from `scoring_model`. A DeepSeek backend always scores on `deepseek-v4-flash`, whatever the main conversation model is, since it only ranks short previews. Any other provider scores on the conversation model itself: a DeepSeek model name would just fail there, and an Ollama call is local, so there is nothing to save. Scoring with hindsight is the point: at prune time the model already knows which messages mattered. Any failure returns `None` and is logged at `warn`: a network error, malformed JSON, a missing or duplicate id, an out-of-range id, or a non-finite score. The prune then proceeds with uniform scores, which degrades to oldest-first. A scoring failure never blocks a turn.
 
 The budget lives on a slider in the Experimental section of the settings sidebar, 32000 to 200000 in steps of 1000. A grey caption shows the derived low-water mark. The slider writes an `Arc<AtomicUsize>` shared with the agent, the same way the thinking toggle and voice controls do. The floor is 32000. Below that, the low-water mark lands inside the pinned region and pruning cannot reach its target.
 
@@ -243,7 +243,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 469 total, all lib tests, all passing. The binary target carries 0 tests now. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 471 total, all lib tests, all passing. The binary target carries 0 tests now. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
@@ -267,7 +267,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 | `backend/claude_cli/one_shot.rs` | 4 |
 | `config/settings.rs` | 37 |
 | `context/mod.rs` | 3 |
-| `context/relevance.rs` | 13 |
+| `context/relevance.rs` | 15 |
 | `gui/mod.rs` | 74 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |

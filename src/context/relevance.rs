@@ -11,7 +11,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::agent::history::estimate_message_tokens;
-use crate::api::client::ApiClient;
+use crate::api::client::{ApiClient, Provider};
 use crate::api::types::{ChatRequest, Message};
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
@@ -111,20 +111,37 @@ fn extract_array_span(text: &str) -> Option<&str> {
     Some(&text[start..=end])
 }
 
+/// The model a scoring call runs on for this provider.
+///
+/// DeepSeek gets `deepseek-v4-flash`, since this is a ranking job over
+/// short previews rather than the main conversation, and the cheaper
+/// model is enough for it. Any other provider gets the conversation
+/// model itself: a DeepSeek model name would just fail there, and an
+/// Ollama call is local anyway, so there is nothing to save.
+pub fn scoring_model(provider: Provider, conversation_model: &str) -> String {
+    match provider {
+        Provider::DeepSeek => "deepseek-v4-flash".to_string(),
+        Provider::Ollama => conversation_model.to_string(),
+    }
+}
+
 /// Ask the model to score every message in `messages` for how worth
-/// keeping it is. Always uses `deepseek-v4-flash`, since this is a
-/// ranking job over short previews rather than the main conversation
-/// model. Never panics and never propagates an error: any failure is
-/// logged at `warn` and reported as `None`, so a scoring failure leaves
-/// the calling turn running.
-pub async fn score_messages(client: &ApiClient, messages: &[Message]) -> Option<Vec<f32>> {
+/// keeping it is. Runs on whatever `scoring_model` picks for this
+/// client's provider. Never panics and never propagates an error: any
+/// failure is logged at `warn` and reported as `None`, so a scoring
+/// failure leaves the calling turn running.
+pub async fn score_messages(
+    client: &ApiClient,
+    messages: &[Message],
+    conversation_model: &str,
+) -> Option<Vec<f32>> {
     if messages.is_empty() {
         return Some(vec![]);
     }
 
     let index = build_index(messages);
     let req = ChatRequest {
-        model: "deepseek-v4-flash".to_string(),
+        model: scoring_model(client.provider(), conversation_model),
         messages: vec![
             Message::system(SYSTEM_PROMPT.to_string()),
             Message::user(index),
@@ -301,5 +318,17 @@ mod tests {
         let reply = r#"[{"id":0,"score":1.5},{"id":1,"score":-0.5}]"#;
         let scores = parse_scores(reply, 2).expect("parses");
         assert_eq!(scores, vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn scoring_model_uses_flash_for_deepseek() {
+        let model = scoring_model(Provider::DeepSeek, "deepseek-v4-pro");
+        assert_eq!(model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn scoring_model_uses_the_conversation_model_for_ollama() {
+        let model = scoring_model(Provider::Ollama, "qwen2.5-coder:7b-instruct-q4_K_M");
+        assert_eq!(model, "qwen2.5-coder:7b-instruct-q4_K_M");
     }
 }

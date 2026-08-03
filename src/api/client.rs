@@ -58,6 +58,11 @@ impl ApiClient {
         }
     }
 
+    /// Which provider this client talks to.
+    pub fn provider(&self) -> Provider {
+        self.provider
+    }
+
     /// Adapt a request to what this client's provider accepts.
     ///
     /// DeepSeek accepts the request as built. Ollama does not support
