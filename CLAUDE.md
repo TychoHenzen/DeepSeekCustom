@@ -59,10 +59,10 @@ The budget lives on a slider in the Experimental section of the settings sidebar
 
 **Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
-**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout; `shell` param accepts `auto`/`cmd`/`powershell`; auto-detects powershell/pwsh commands and runs directly via `Command::new("powershell")` to avoid cmd.exe inner-quote mangling), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
+**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash, Read, Write, Reset, and AskUserQuestion. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset does a hard session reset. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Claude Code files):
-- `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, voice config, `context_budget`, and `show_raw_output`. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
+- `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, voice config, autopilot config, `context_budget`, and `show_raw_output`. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
 - Skills — `skills/*.md` with YAML frontmatter (`name`, `description`, `tools`).
 - Hooks — shell commands receive JSON on stdin, return JSON on stdout. Events: PreToolUse, PostToolUse, SessionStart, SessionEnd, SessionReset.
 - Memory - `CLAUDE.md` (project instructions), `MEMORY.md` (persistent memory). Injected into system prompt.
@@ -95,6 +95,27 @@ The `settings.json` voice block, with defaults:
 | `tts_voice` | `"af_heart"` |
 | `tts_speed` | `1.0`, clamped 0.5-2.0 |
 
+**Autopilot:** runs one task text N times in a row without a human in the loop. `src/agent/repeat.rs::run_repeat` drives the loop: before each iteration it calls `AgentLoop::clear_history`, which rebuilds `MessageHistory` from just the base system prompt, dropping every message and any voice-mode suffix. No iteration sees anything an earlier iteration said or did in conversation. What does carry across iterations: files the agent wrote or edited on disk, and the autopilot decision log (below). Nothing else. `sync_dynamic_config` restores the voice-mode suffix on the next `run` call, so a cleared history does not disable voice mode.
+
+The `AskUserQuestion` tool is registered on every run, autopilot or not. A separate, non-streaming model call always answers its questions, never the user. There is no human-answer path at all. A plain chat run gets the exact same machine answers an autopilot run gets. This tool never pauses for a person, in either mode.
+
+The policy file lives at `<project_root>/autopilot-policy.md` by default. `PolicyStore::new` in `src/autopilot/policy.rs` takes an optional override from `settings.autopilot_policy_path()`. A relative override resolves against the project root. An absolute one is used as is. `PolicyStore::load_policy` reads the file straight off disk on every question. It never caches it, so a user can edit the policy mid-run and the next question sees the change. A missing file is not an error. It logs at `debug` and yields an empty policy. A present but unreadable file logs at `warn` and also yields an empty policy, so a policy problem never blocks a turn.
+
+The decision log lives at `<project_root>/.autopilot/decisions.log`. `PolicyStore::append_decision` opens it in append mode and adds one line per resolved question, shaped `question=<text> answer=<labels>`. Embedded newlines get flattened to spaces so the line format holds. `PolicyStore::recent_decisions` reads the newest 20 lines back (`RECENT_DECISIONS_LIMIT` in `src/autopilot/answerer.rs`). `format_policy_prompt_section` folds them into the next answerer prompt alongside the policy text. Feeding recent decisions back in keeps the answerer consistent with itself across a run. It sees what it already decided, not just the static policy.
+
+`PolicyAnswerer::answer`, in `src/autopilot/answerer.rs`, makes one non-streaming `ChatRequest` per batch of questions from one `AskUserQuestion` call. It runs on `settings.autopilot_answerer_model()`, `deepseek-v4-flash` by default, since answering a policy question does not need a heavier model. Temperature 0, `thinking_mode: "non-thinking"`. The prompt asks for a JSON array, one entry per question in the same order, shaped `{"question", "labels"}`. Every label must be copied exactly from the offered options. `parse_reply` tolerates a markdown fence or surrounding prose by locating the outermost `[...]` span. `resolve_answers` and `resolve_one` then validate the parsed reply against the real question set. A bad label, a wrong answer count, malformed or unparseable JSON, and a network or API error all get logged at `warn`. All of them fall back to the first option of the affected question, rather than blocking the turn. A single-select question that comes back with more than one label gets trimmed to the first, also with a `warn` log. `answer` never returns an `Err` for a model problem. Fallback happens inside it, so the calling tool always gets a usable answer.
+
+Escape stops the whole repeat run, not just the iteration in flight. `AgentLoop::run` consumes its own `interrupt_flag` internally and resets it once it breaks out of a stream. That flag cannot carry a signal from one iteration to the next. `run_repeat` instead checks a second flag, `AgentLoop::repeat_interrupt_flag`, before every iteration. The GUI's Escape handler sets both flags together. That second flag is the only thing that survives between iterations to say "stop the whole thing."
+
+The `settings.json` autopilot block, with defaults:
+
+| Field | Default |
+|---|---|
+| `iterations` | `5` |
+| `policy_path` | none (falls back to `<project_root>/autopilot-policy.md`) |
+| `answerer_model` | `"deepseek-v4-flash"` |
+| `task` | none (Autopilot tab starts with an empty task box) |
+
 **Settings persistence:** every settings-panel control writes its change back to `<project_root>/settings.json`, so the panel reads the same way it started. `Settings` derives `Serialize` as well as `Deserialize`. Every optional field carries `skip_serializing_if = "Option::is_none"`, so a save never invents a field the user did not set. `TriggerMode` gets a hand-written `serialize_trigger_mode` to match its hand-written deserializer, keeping the snake_case wire form.
 
 `Settings::save` writes pretty JSON to `settings.json` in the given directory. The GUI holds a `Settings` value and the project root, calls one small `apply_*` free function per control, then calls `persist_settings`. The `apply_*` functions live at the bottom of `src/gui/mod.rs` and are plain functions over `&mut Settings`, so a round-trip test can call them without building a GUI. A save failure is logged at `warn` and otherwise ignored: losing a preference must never take the session down.
@@ -109,6 +130,7 @@ Startup runs the other direction. `DeepSeekGui::new` seeds every panel control f
 - Context pruning is a hysteresis oscillator. History grows freely to a high-water mark, then prunes hard to a low-water mark a third of the way down. This keeps the API's prompt cache warm between prunes
 - Hemisphere model (Phase 3): two model instances, different system prompts, right side sees compressed context
 - Dynamic config sync: agent reads `thinking_flag` (AtomicBool) and `model_name` (Mutex<String>) from GUI each turn before building API request. It also reads `voice_mode_flag` (AtomicBool) each turn to set or clear the voice reply mode system prompt suffix.
+- Autopilot repeat needs its own interrupt flag. `AgentLoop::run` resets its normal `interrupt_flag` on every stream break. That flag cannot carry a stop signal from one iteration to the next. `repeat_interrupt_flag` is a second, separate `Arc<AtomicBool>` that stays set until the run stops.
 
 ## Implementation Status
 
@@ -124,35 +146,40 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md
 - Skills: Skill loader parsing .md with YAML frontmatter
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, and a settings sidebar (Tab key). The sidebar holds a model selector, a thinking toggle, voice controls, and an Experimental section with a context budget slider. That slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change.
+- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. The sidebar holds a model selector, a thinking toggle, voice controls, and an Experimental section with a context budget slider. That slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count.
 - Voice: `src/voice/` module. Local speech to text via whisper-rs. Local speech output via Kokoro through kokoro-en. Push-to-talk and wake-word triggers, switchable by `trigger_mode`. A `VoiceService` state machine drives it, wired into `main.rs` and the GUI. Speech to text and text to speech degrade independently if a model file is missing. See `docs/voice-setup.md` for model setup. The settings sidebar's voice section has checkboxes for voice enabled, speech to text, and text to speech. It also has trigger mode radio buttons, a wake phrase box, a Kokoro voice picker, and a speed slider.
+- Autopilot: `src/autopilot/` (policy file and decision log, plus the policy-driven answerer), `src/agent/repeat.rs` (the repeat runner), and the `AskUserQuestion` tool in `src/tools/ask.rs`. See the Autopilot section above for the full mechanism.
 
 **GUI key bindings:**
 - `Enter` - send message to agent
-- `Escape` - interrupt running agent and stop any speech in progress (does not quit)
+- `Escape` - interrupt running agent, stop any speech in progress, and stop a running autopilot repeat (does not quit)
 - `Tab` - toggle settings sidebar (model selector, thinking toggle, voice controls)
 - `Ctrl+Q` - quit application
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 311 total, all passing. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 361 total, all passing. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
-| `agent/agent_loop.rs` | 17 |
+| `agent/agent_loop.rs` | 22 |
 | `agent/history.rs` | 10 |
 | `agent/prompt.rs` | 5 |
 | `agent/pruning.rs` | 10 |
 | `api/client.rs` | 4 |
 | `api/types.rs` | 9 |
-| `config/settings.rs` | 22 |
+| `autopilot/answerer.rs` | 9 |
+| `autopilot/policy.rs` | 10 |
+| `autopilot/question.rs` | 10 |
+| `config/settings.rs` | 26 |
 | `context/mod.rs` | 3 |
 | `context/relevance.rs` | 13 |
-| `gui/mod.rs` | 58 |
+| `gui/mod.rs` | 65 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
 | `skills/mod.rs` | 5 |
+| `tools/ask.rs` | 5 |
 | `tools/bash.rs` | 11 |
 | `tools/mod.rs` | 4 |
 | `tools/read.rs` | 3 |

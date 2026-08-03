@@ -1,3 +1,4 @@
+pub mod ask;
 pub mod bash;
 pub mod read;
 pub mod reset;

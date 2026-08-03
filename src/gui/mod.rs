@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::agent::agent_loop::StreamEvent;
+use crate::agent::repeat::RepeatCommand;
 use crate::config::settings::{Settings, TriggerMode};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
@@ -25,6 +26,26 @@ const KOKORO_VOICE_IDS: &[&str] = &[
     "bf_emma",
     "bm_george",
 ];
+
+/// Which tab the main window shows. Chat is the default; Autopilot is a
+/// dedicated tab for running one task repeatedly with automatic question
+/// answering, added alongside the existing settings sidebar (Tab key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ActiveTab {
+    #[default]
+    Chat,
+    Autopilot,
+}
+
+/// Progress readout for the Autopilot tab. Fed from
+/// `StreamEvent::RepeatIterationStart` and `StreamEvent::RepeatFinished`.
+/// `Idle` before any run has started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutopilotProgress {
+    Idle,
+    Running { index: u32, total: u32 },
+    Finished { completed: u32, total: u32 },
+}
 
 /// Native GUI using egui/eframe. Replaces the broken ratatui TUI.
 pub struct DeepSeekGui {
@@ -93,6 +114,30 @@ pub struct DeepSeekGui {
     /// Directory holding `settings.json`, the file `persist_settings`
     /// writes.
     project_root: PathBuf,
+
+    // ── Autopilot (optional, wired by `with_repeat`) ──
+    /// Sends a repeat command to the agent task. `None` until `with_repeat`
+    /// is called. The Autopilot tab built in a later step sends on this.
+    repeat_tx: Option<mpsc::UnboundedSender<RepeatCommand>>,
+    /// Shared with `AgentLoop::repeat_interrupt_flag`. The Autopilot tab
+    /// sets this to stop a running repeat early.
+    repeat_interrupt_flag: Option<Arc<AtomicBool>>,
+
+    // ── Autopilot tab ──
+    /// Which tab the main window shows. Defaults to Chat.
+    active_tab: ActiveTab,
+    /// Task text box in the Autopilot tab, seeded from `settings.autopilot_task()`.
+    autopilot_task: String,
+    /// Iteration count control in the Autopilot tab, seeded from
+    /// `settings.autopilot_iterations()`.
+    autopilot_iterations: u32,
+    /// Progress readout state, updated by the `RepeatIterationStart` and
+    /// `RepeatFinished` stream event arms.
+    autopilot_progress: AutopilotProgress,
+    /// Resolved policy file path, shown read-only next to the Run button.
+    /// Computed once at construction from `settings.autopilot_policy_path()`
+    /// and `project_root`.
+    autopilot_policy_path: PathBuf,
 }
 
 impl DeepSeekGui {
@@ -129,6 +174,13 @@ impl DeepSeekGui {
             .iter()
             .position(|v| *v == configured_voice)
             .unwrap_or(0);
+        let autopilot_task = settings.autopilot_task().unwrap_or_default();
+        let autopilot_iterations = settings.autopilot_iterations();
+        let autopilot_policy_path = crate::autopilot::policy::PolicyStore::new(
+            project_root.clone(),
+            settings.autopilot_policy_path(),
+        )
+        .resolved_policy_path();
         Self {
             output_lines: Vec::new(),
             input_buffer: String::new(),
@@ -165,7 +217,28 @@ impl DeepSeekGui {
             voice_reply_buffer: String::new(),
             settings,
             project_root,
+            repeat_tx: None,
+            repeat_interrupt_flag: None,
+            active_tab: ActiveTab::default(),
+            autopilot_task,
+            autopilot_iterations,
+            autopilot_progress: AutopilotProgress::Idle,
+            autopilot_policy_path,
         }
+    }
+
+    /// Attach the repeat command sender and the agent's repeat interrupt
+    /// flag. Called only from `main`, which owns both. Skipping this call
+    /// leaves both `None`. The Autopilot tab in step S08 needs them. This
+    /// step only wires the plumbing through.
+    pub fn with_repeat(
+        mut self,
+        repeat_tx: mpsc::UnboundedSender<RepeatCommand>,
+        repeat_interrupt_flag: Arc<AtomicBool>,
+    ) -> Self {
+        self.repeat_tx = Some(repeat_tx);
+        self.repeat_interrupt_flag = Some(repeat_interrupt_flag);
+        self
     }
 
     /// Write the current settings to `<project_root>/settings.json`.
@@ -356,6 +429,14 @@ impl DeepSeekGui {
                 // turn's speech.
                 self.voice_reply_buffer.clear();
             }
+            StreamEvent::RepeatIterationStart { index, total } => {
+                info!(index, total, "repeat iteration start");
+                self.autopilot_progress = AutopilotProgress::Running { index, total };
+            }
+            StreamEvent::RepeatFinished { completed, total } => {
+                info!(completed, total, "repeat run finished");
+                self.autopilot_progress = AutopilotProgress::Finished { completed, total };
+            }
             StreamEvent::Reasoning { text, .. } => {
                 let parts: Vec<&str> = text.split('\n').collect();
                 let reason_color = Color32::from_rgb(160, 160, 160);
@@ -377,6 +458,137 @@ impl DeepSeekGui {
                         self.output_lines.push((part.to_string(), reason_color));
                     }
                 }
+            }
+        }
+    }
+
+    /// Render the Chat tab's output scroll area. The heading, line count,
+    /// and the markdown/raw output split are unchanged from what the
+    /// central panel always rendered before the Autopilot tab existed.
+    fn render_chat_output(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Output");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("Lines: {}", self.output_lines.len()))
+                        .color(Color32::GRAY)
+                        .small(),
+                );
+            });
+        });
+        ui.separator();
+        ScrollArea::vertical()
+            .stick_to_bottom(self.auto_scroll)
+            .show(ui, |ui| {
+                if self.show_raw_output {
+                    for (text, color) in &self.output_lines {
+                        ui.label(RichText::new(text).color(*color));
+                    }
+                } else {
+                    // Group consecutive WHITE (model output) lines as markdown blocks.
+                    // Non-white lines (tool calls, errors, user input, reasoning) stay raw.
+                    let mut md_buf: Vec<&str> = Vec::new();
+                    for (text, color) in &self.output_lines {
+                        if *color == Color32::WHITE {
+                            md_buf.push(text);
+                        } else {
+                            if !md_buf.is_empty() {
+                                let md = md_buf.join("\n");
+                                egui_commonmark::CommonMarkViewer::new().show(
+                                    ui,
+                                    &mut self.markdown_cache,
+                                    &md,
+                                );
+                                md_buf.clear();
+                            }
+                            ui.label(RichText::new(text.as_str()).color(*color));
+                        }
+                    }
+                    if !md_buf.is_empty() {
+                        let md = md_buf.join("\n");
+                        egui_commonmark::CommonMarkViewer::new().show(
+                            ui,
+                            &mut self.markdown_cache,
+                            &md,
+                        );
+                    }
+                }
+            });
+    }
+
+    /// Render the Autopilot tab: task text, iteration count, the resolved
+    /// policy file path, a Run button, and a progress readout.
+    fn render_autopilot_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Autopilot");
+        ui.separator();
+
+        ui.label("Task");
+        let task_response = ui.add(
+            TextEdit::multiline(&mut self.autopilot_task)
+                .desired_rows(6)
+                .hint_text("Describe the task to repeat"),
+        );
+        // Save on focus loss, not on every keystroke, matching the wake
+        // phrase field in the settings panel.
+        if task_response.lost_focus() {
+            let task = self.autopilot_task.clone();
+            apply_autopilot_task(&mut self.settings, &task);
+            self.persist_settings();
+        }
+
+        ui.add_space(8.0);
+
+        let mut iterations = self.autopilot_iterations;
+        let iter_response =
+            ui.add(egui::Slider::new(&mut iterations, 1..=100).text("Iterations"));
+        if iter_response.changed() {
+            self.autopilot_iterations = iterations;
+        }
+        // Save when the drag ends, matching the other sliders in this file.
+        if iter_response.drag_stopped() {
+            let iterations = self.autopilot_iterations;
+            apply_autopilot_iterations(&mut self.settings, iterations);
+            self.persist_settings();
+        }
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(format!(
+                "Policy file: {}",
+                self.autopilot_policy_path.display()
+            ))
+            .color(Color32::GRAY)
+            .small(),
+        );
+        ui.label(
+            RichText::new(
+                "Questions during a run are answered from that file by a separate model. \
+                 A human never answers them.",
+            )
+            .color(Color32::GRAY)
+            .small(),
+        );
+
+        ui.add_space(8.0);
+        let can_run = !self.autopilot_task.trim().is_empty() && self.repeat_tx.is_some();
+        if ui.add_enabled(can_run, egui::Button::new("Run")).clicked() {
+            if let Some(tx) = &self.repeat_tx {
+                let task = self.autopilot_task.clone();
+                let iterations = self.autopilot_iterations;
+                info!(iterations, "autopilot run requested");
+                let _ = tx.send(RepeatCommand { task, iterations });
+                self.autopilot_progress = AutopilotProgress::Idle;
+            }
+        }
+
+        ui.add_space(8.0);
+        match self.autopilot_progress {
+            AutopilotProgress::Idle => {}
+            AutopilotProgress::Running { index, total } => {
+                ui.label(format!("Running iteration {index} of {total}"));
+            }
+            AutopilotProgress::Finished { completed, total } => {
+                ui.label(format!("Finished: {completed} of {total} completed"));
             }
         }
     }
@@ -643,144 +855,116 @@ impl App for DeepSeekGui {
                 });
         }
 
-        // ── Output area (central, scrollable) ──
+        // ── Global keybindings ──
+        //
+        // Read once per frame, ahead of the tab content, so Escape, Tab,
+        // Ctrl+Q, and push-to-talk keep working no matter which tab is
+        // active. Only the chat text box's Enter-to-submit stays tied to
+        // the Chat tab, since there is no message box to submit otherwise.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let tab_pressed = ctx.input(|i| i.key_pressed(egui::Key::Tab));
+        let ctrl_q = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q));
+        let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+        let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space));
+        let space_released = ctx.input(|i| i.key_released(egui::Key::Space));
+        let ctrl_space_pressed = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Space));
+        let any_widget_focused = ctx.memory(|mem| mem.focused().is_some());
+
+        // Space held -> push-to-talk, only while not typing and the
+        // settings panel is closed.
+        if let Some(signal) = space_ptt_signal(
+            space_pressed,
+            space_released,
+            ctrl_held,
+            any_widget_focused,
+            self.settings_visible,
+        ) {
+            self.send_voice_command(match signal {
+                PttSignal::Start => VoiceCommand::StartListening,
+                PttSignal::Stop => VoiceCommand::StopListening,
+            });
+        }
+
+        // Ctrl+Space -> push-to-talk toggle, works even while typing,
+        // still closed off by the settings panel.
+        if let Some(signal) = ctrl_space_toggle_signal(
+            ctrl_space_pressed,
+            self.settings_visible,
+            self.voice_state == VoiceState::Listening,
+        ) {
+            self.send_voice_command(match signal {
+                PttSignal::Start => VoiceCommand::StartListening,
+                PttSignal::Stop => VoiceCommand::StopListening,
+            });
+        }
+
+        // Escape - interrupt agent, stop any speech in progress, and stop
+        // a running autopilot repeat. One Escape cuts off whatever the
+        // session is doing, in any tab.
+        if escape {
+            info!("user pressed Escape - interrupting agent");
+            self.interrupt_flag.store(true, Ordering::SeqCst);
+            if let Some(flag) = &self.repeat_interrupt_flag {
+                flag.store(true, Ordering::SeqCst);
+            }
+            self.send_voice_command(VoiceCommand::StopSpeaking);
+            self.output_lines
+                .push(("[Interrupting...]".into(), Color32::from_rgb(255, 165, 0)));
+        }
+
+        // Tab -> toggle settings panel
+        if tab_pressed {
+            self.settings_visible = !self.settings_visible;
+        }
+
+        // Ctrl+Q -> quit
+        if ctrl_q {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        // ── Tab bar and content (central panel) ──
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Output");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!("Lines: {}", self.output_lines.len()))
-                            .color(Color32::GRAY)
-                            .small(),
-                    );
-                });
+                ui.selectable_value(&mut self.active_tab, ActiveTab::Chat, "Chat");
+                ui.selectable_value(&mut self.active_tab, ActiveTab::Autopilot, "Autopilot");
             });
             ui.separator();
-            ScrollArea::vertical()
-                .stick_to_bottom(self.auto_scroll)
-                .show(ui, |ui| {
-                    if self.show_raw_output {
-                        for (text, color) in &self.output_lines {
-                            ui.label(RichText::new(text).color(*color));
-                        }
-                    } else {
-                        // Group consecutive WHITE (model output) lines as markdown blocks;
-                        // non-white lines (tool calls, errors, user input, reasoning) stay raw.
-                        let mut md_buf: Vec<&str> = Vec::new();
-                        for (text, color) in &self.output_lines {
-                            if *color == Color32::WHITE {
-                                md_buf.push(text);
-                            } else {
-                                if !md_buf.is_empty() {
-                                    let md = md_buf.join("\n");
-                                    egui_commonmark::CommonMarkViewer::new().show(
-                                        ui,
-                                        &mut self.markdown_cache,
-                                        &md,
-                                    );
-                                    md_buf.clear();
-                                }
-                                ui.label(RichText::new(text.as_str()).color(*color));
-                            }
-                        }
-                        if !md_buf.is_empty() {
-                            let md = md_buf.join("\n");
-                            egui_commonmark::CommonMarkViewer::new().show(
-                                ui,
-                                &mut self.markdown_cache,
-                                &md,
-                            );
-                        }
-                    }
-                });
+            match self.active_tab {
+                ActiveTab::Chat => self.render_chat_output(ui),
+                ActiveTab::Autopilot => self.render_autopilot_tab(ui),
+            }
         });
         self.auto_scroll = false;
 
-        // ── Input bar ──
-        egui::TopBottomPanel::bottom("input_panel")
-            .min_height(32.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(">");
-                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    let tab = ui.input(|i| i.key_pressed(egui::Key::Tab));
-                    let ctrl_q = ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q));
-                    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-                    let space_pressed = ui.input(|i| i.key_pressed(egui::Key::Space));
-                    let space_released = ui.input(|i| i.key_released(egui::Key::Space));
-                    let ctrl_space_pressed =
-                        ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Space));
+        // ── Input bar (Chat tab only) ──
+        if self.active_tab == ActiveTab::Chat {
+            egui::TopBottomPanel::bottom("input_panel")
+                .min_height(32.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(">");
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-                    let response = ui.add(
-                        TextEdit::singleline(&mut self.input_buffer)
-                            .hint_text("Type your message...")
-                            .desired_width(f32::INFINITY),
-                    );
-                    // Auto-focus the input only when nothing else holds
-                    // focus, instead of every frame. Forcing focus every
-                    // frame would make `response.has_focus()` always true,
-                    // and space-bar push-to-talk below would never be able
-                    // to tell "typing" from "not typing".
-                    if ctx.memory(|mem| mem.focused().is_none()) {
-                        response.request_focus();
-                    }
-                    let input_focused = response.has_focus();
+                        let response = ui.add(
+                            TextEdit::singleline(&mut self.input_buffer)
+                                .hint_text("Type your message...")
+                                .desired_width(f32::INFINITY),
+                        );
+                        // Auto-focus the input only when nothing else holds
+                        // focus, instead of every frame. Forcing focus every
+                        // frame would make `response.has_focus()` always
+                        // true, and space-bar push-to-talk above would
+                        // never be able to tell "typing" from "not typing".
+                        if ctx.memory(|mem| mem.focused().is_none()) {
+                            response.request_focus();
+                        }
 
-                    if enter {
-                        self.submit_current_input();
-                    }
-
-                    // Space held → push-to-talk, only while not typing and
-                    // the settings panel is closed.
-                    if let Some(signal) = space_ptt_signal(
-                        space_pressed,
-                        space_released,
-                        ctrl_held,
-                        input_focused,
-                        self.settings_visible,
-                    ) {
-                        self.send_voice_command(match signal {
-                            PttSignal::Start => VoiceCommand::StartListening,
-                            PttSignal::Stop => VoiceCommand::StopListening,
-                        });
-                    }
-
-                    // Ctrl+Space → push-to-talk toggle, works even while
-                    // typing, still closed off by the settings panel.
-                    if let Some(signal) = ctrl_space_toggle_signal(
-                        ctrl_space_pressed,
-                        self.settings_visible,
-                        self.voice_state == VoiceState::Listening,
-                    ) {
-                        self.send_voice_command(match signal {
-                            PttSignal::Start => VoiceCommand::StartListening,
-                            PttSignal::Stop => VoiceCommand::StopListening,
-                        });
-                    }
-
-                    // Escape - interrupt agent, and stop any speech in
-                    // progress so the assistant does not keep talking
-                    // over a turn the user just cut off.
-                    if escape {
-                        info!("user pressed Escape - interrupting agent");
-                        self.interrupt_flag.store(true, Ordering::SeqCst);
-                        self.send_voice_command(VoiceCommand::StopSpeaking);
-                        self.output_lines
-                            .push(("[Interrupting...]".into(), Color32::from_rgb(255, 165, 0)));
-                    }
-
-                    // Tab → toggle settings panel
-                    if tab {
-                        self.settings_visible = !self.settings_visible;
-                    }
-
-                    // Ctrl+Q → quit
-                    if ctrl_q {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                        if enter {
+                            self.submit_current_input();
+                        }
+                    });
                 });
-            });
+        }
 
         // ── Status bar ──
         egui::TopBottomPanel::bottom("status_bar")
@@ -1028,6 +1212,16 @@ fn apply_tts_speed(settings: &mut Settings, speed: f32) {
 /// Store the context budget slider's value.
 fn apply_context_budget(settings: &mut Settings, budget: usize) {
     settings.context_budget = Some(budget);
+}
+
+/// Store the Autopilot tab's task text box.
+fn apply_autopilot_task(settings: &mut Settings, task: &str) {
+    settings.autopilot_mut().task = Some(task.to_string());
+}
+
+/// Store the Autopilot tab's iteration count control.
+fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
+    settings.autopilot_mut().iterations = Some(iterations);
 }
 
 #[cfg(test)]
@@ -1901,6 +2095,75 @@ mod tests {
         );
         // Must not panic. The failure is logged and the session goes on.
         gui.persist_settings();
+    }
+
+    #[test]
+    fn active_tab_defaults_to_chat() {
+        let gui = make_gui();
+        assert_eq!(gui.active_tab, ActiveTab::Chat);
+    }
+
+    #[test]
+    fn autopilot_task_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_autopilot_task(s, "fix the build"));
+        assert_eq!(loaded.autopilot_task().as_deref(), Some("fix the build"));
+    }
+
+    #[test]
+    fn autopilot_iterations_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_autopilot_iterations(s, 12));
+        assert_eq!(loaded.autopilot_iterations(), 12);
+    }
+
+    #[test]
+    fn autopilot_progress_updates_from_iteration_start_then_finished() {
+        let mut gui = make_gui();
+        assert_eq!(gui.autopilot_progress, AutopilotProgress::Idle);
+
+        gui.handle_stream_event(StreamEvent::RepeatIterationStart { index: 2, total: 5 });
+        assert_eq!(
+            gui.autopilot_progress,
+            AutopilotProgress::Running { index: 2, total: 5 }
+        );
+
+        gui.handle_stream_event(StreamEvent::RepeatFinished {
+            completed: 5,
+            total: 5,
+        });
+        assert_eq!(
+            gui.autopilot_progress,
+            AutopilotProgress::Finished {
+                completed: 5,
+                total: 5
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_autopilot_policy_path_defaults_under_project_root() {
+        let root = PathBuf::from("/project");
+        let store = crate::autopilot::policy::PolicyStore::new(root.clone(), None);
+        let path = store.resolved_policy_path();
+        assert_eq!(path, root.join("autopilot-policy.md"));
+    }
+
+    #[test]
+    fn resolve_autopilot_policy_path_resolves_relative_override_against_root() {
+        let root = PathBuf::from("/project");
+        let store =
+            crate::autopilot::policy::PolicyStore::new(root.clone(), Some("custom-policy.md".into()));
+        let path = store.resolved_policy_path();
+        assert_eq!(path, root.join("custom-policy.md"));
+    }
+
+    #[test]
+    fn new_seeds_autopilot_controls_from_settings() {
+        let mut settings = Settings::default();
+        settings.autopilot_mut().task = Some("run the tests".to_string());
+        settings.autopilot_mut().iterations = Some(9);
+        let gui = make_gui_with_settings(&settings);
+        assert_eq!(gui.autopilot_task, "run the tests");
+        assert_eq!(gui.autopilot_iterations, 9);
     }
 
     #[test]

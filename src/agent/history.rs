@@ -41,6 +41,11 @@ impl MessageHistory {
         self.system_suffix = suffix;
     }
 
+    /// The base system prompt, without any per-turn suffix applied.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
     /// Iterate over all messages (system prompt NOT included).
     pub fn iter(&self) -> impl Iterator<Item = &Message> {
         self.messages.iter()

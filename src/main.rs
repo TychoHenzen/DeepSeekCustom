@@ -11,13 +11,18 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 use DeepSeekCustom::agent::agent_loop::{AgentConfig, AgentLoop, StreamEvent};
 use DeepSeekCustom::agent::prompt::SystemPromptBuilder;
+use DeepSeekCustom::agent::repeat::{run_repeat, RepeatCommand};
 use DeepSeekCustom::api::client::{DeepSeekClient, resolve_api_key};
+use DeepSeekCustom::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
+use DeepSeekCustom::autopilot::policy::PolicyStore;
 use DeepSeekCustom::config::settings::Settings;
 use DeepSeekCustom::gui::DeepSeekGui;
 use DeepSeekCustom::memory::MemoryStore;
 use DeepSeekCustom::skills::{SkillLoader, format_skills_for_prompt};
 use DeepSeekCustom::tools::ToolRegistry;
-use DeepSeekCustom::tools::{bash::BashTool, read::ReadTool, reset::ResetTool, write::WriteTool};
+use DeepSeekCustom::tools::{
+    ask::AskUserQuestionTool, bash::BashTool, read::ReadTool, reset::ResetTool, write::WriteTool,
+};
 use DeepSeekCustom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
@@ -98,7 +103,7 @@ async fn main() {
     // ── Client ──────────────────────────────────────────────
 
     let model = settings.model();
-    let client = DeepSeekClient::new(api_key, None, Some(model.clone()));
+    let client = DeepSeekClient::new(api_key.clone(), None, Some(model.clone()));
 
     // ── Memory & Skills ─────────────────────────────────────
 
@@ -117,11 +122,22 @@ async fn main() {
 
     // ── Tool registry ───────────────────────────────────────
 
+    // The answerer needs its own client, since `client` above is moved into
+    // the agent. Both are built from the same resolved API key.
+    let answerer_client = DeepSeekClient::new(api_key.clone(), None, None);
+    let policy_store = PolicyStore::new(project_root.clone(), settings.autopilot_policy_path());
+    let answerer: Arc<dyn QuestionAnswerer> = Arc::new(PolicyAnswerer::new(
+        answerer_client,
+        policy_store,
+        settings.autopilot_answerer_model(),
+    ));
+
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(BashTool::new(project_root.clone())));
     tools.register(Arc::new(ReadTool::new(project_root.clone())));
     tools.register(Arc::new(WriteTool::new(project_root.clone())));
     tools.register(Arc::new(ResetTool));
+    tools.register(Arc::new(AskUserQuestionTool::new(answerer)));
     info!("registered {} tools", tools.list().len());
 
     // ── Voice ───────────────────────────────────────────────
@@ -164,6 +180,7 @@ async fn main() {
 
     let (tx_events, rx_events) = mpsc::unbounded_channel::<StreamEvent>();
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<String>();
+    let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
 
     agent.set_event_sender(tx_events);
 
@@ -175,6 +192,7 @@ async fn main() {
     let voice_mode_flag = agent.voice_mode_flag();
     let context_budget_flag = agent.context_budget_flag();
     let model_flag = agent.model_flag();
+    let repeat_interrupt_flag = agent.repeat_interrupt_flag();
 
     // ── Seed agent flags from settings ──────────────────────
 
@@ -188,14 +206,35 @@ async fn main() {
 
     tokio::spawn(async move {
         info!("agent task started");
-        while let Some(input) = rx_input.recv().await {
-            debug_agent_input(&input);
-            match agent.run(&input).await {
-                Ok(responses) => {
-                    info!("agent turn complete: {} response segments", responses.len());
+        loop {
+            tokio::select! {
+                input = rx_input.recv() => {
+                    match input {
+                        Some(input) => {
+                            debug_agent_input(&input);
+                            match agent.run(&input).await {
+                                Ok(responses) => {
+                                    info!(
+                                        "agent turn complete: {} response segments",
+                                        responses.len()
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("agent error: {e}");
+                                }
+                            }
+                        }
+                        None => break,
+                    }
                 }
-                Err(e) => {
-                    error!("agent error: {e}");
+                repeat = rx_repeat.recv() => {
+                    match repeat {
+                        Some(RepeatCommand { task, iterations }) => {
+                            info!(iterations, "repeat command received");
+                            run_repeat(&mut agent, &task, iterations).await;
+                        }
+                        None => break,
+                    }
                 }
             }
         }
@@ -215,7 +254,8 @@ async fn main() {
         model_flag,
         settings.clone(),
         project_root.clone(),
-    );
+    )
+    .with_repeat(tx_repeat, repeat_interrupt_flag);
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

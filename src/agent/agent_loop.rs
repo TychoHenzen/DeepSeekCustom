@@ -68,6 +68,11 @@ pub enum StreamEvent {
     Interrupted { message: String },
     /// Reasoning/thinking chunk received (when thinking is enabled).
     Reasoning { turn: u32, text: String },
+    /// A repeat run started a new iteration.
+    RepeatIterationStart { index: u32, total: u32 },
+    /// A repeat run finished, whether by completing every iteration or by
+    /// being interrupted partway through.
+    RepeatFinished { completed: u32, total: u32 },
 }
 
 /// Core agent loop: user input → API call → tool execution → repeat.
@@ -89,6 +94,11 @@ pub struct AgentLoop {
     /// straight off the atomic at the point of use, never mirrored into
     /// `AgentConfig`.
     context_budget: Arc<AtomicUsize>,
+    /// Flag set by the GUI to stop a `run_repeat` loop between iterations.
+    /// `run` consumes `interrupt_flag` internally. It swaps the flag back
+    /// to false once it breaks out of a stream. So `interrupt_flag` cannot
+    /// survive past one iteration. This flag is separate and stays set.
+    repeat_interrupt_flag: Arc<AtomicBool>,
 }
 
 impl AgentLoop {
@@ -112,6 +122,7 @@ impl AgentLoop {
             model_name: Arc::new(Mutex::new(model)),
             voice_mode_flag: Arc::new(AtomicBool::new(false)),
             context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
+            repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -143,6 +154,20 @@ impl AgentLoop {
     /// Return a clone of the context budget flag so the GUI can change it.
     pub fn context_budget_flag(&self) -> Arc<AtomicUsize> {
         Arc::clone(&self.context_budget)
+    }
+
+    /// Return a clone of the repeat-interrupt flag. The GUI sets this to
+    /// stop a `run_repeat` loop between iterations.
+    pub fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.repeat_interrupt_flag)
+    }
+
+    /// Rebuild history from just the base system prompt, dropping every
+    /// message and any voice-mode suffix. Used to start a repeat-runner
+    /// iteration with a clean context. `sync_dynamic_config` restores the
+    /// suffix on the next `run` call, so voice mode is unaffected.
+    pub fn clear_history(&mut self) {
+        self.history = MessageHistory::new(self.history.system_prompt().to_string());
     }
 
     /// Sync dynamic config from the GUI before building requests: thinking
@@ -483,10 +508,16 @@ impl AgentLoop {
     }
 
     /// Send a StreamEvent to the TUI if a sender is configured.
-    fn send_event(&self, event: StreamEvent) {
+    pub(crate) fn send_event(&self, event: StreamEvent) {
         if let Some(ref tx) = self.tx_events {
             let _ = tx.send(event);
         }
+    }
+
+    /// Send `StreamEvent::RepeatFinished`. Called by `repeat::run_repeat`
+    /// once its loop ends, whichever way it ends.
+    pub(crate) fn send_repeat_finished(&self, completed: u32, total: u32) {
+        self.send_event(StreamEvent::RepeatFinished { completed, total });
     }
 
     /// Access the message history (for display).
@@ -964,5 +995,205 @@ mod tests {
             .filter(|e| matches!(e, StreamEvent::Text { .. }))
             .count();
         assert!(text_count > 0, "expected at least one Text event");
+    }
+
+    #[test]
+    fn clear_history_drops_messages_keeps_system_prompt() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        agent.history.push(Message::user("hello".into()));
+        assert_eq!(agent.history().len(), 1);
+
+        agent.clear_history();
+
+        assert_eq!(agent.history().len(), 0);
+        let api = agent.history().to_api_messages();
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+    }
+
+    #[test]
+    fn clear_history_after_voice_suffix_still_produces_working_system_message() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        agent
+            .voice_mode_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        agent.sync_dynamic_config();
+        agent.history.push(Message::user("hello".into()));
+
+        agent.clear_history();
+
+        assert_eq!(agent.history().len(), 0);
+        let api = agent.history().to_api_messages();
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+
+        // sync_dynamic_config still works after clear_history and restores
+        // the voice suffix on the next turn.
+        agent.sync_dynamic_config();
+        let api = agent.history().to_api_messages();
+        assert!(
+            api[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("## Voice reply mode")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        agent.set_event_sender(tx);
+
+        super::super::repeat::run_repeat(&mut agent, "do the thing", 0).await;
+
+        let mut events: Vec<StreamEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::RepeatFinished { completed, total } => {
+                assert_eq!(*completed, 0);
+                assert_eq!(*total, 0);
+            }
+            other => panic!("expected RepeatFinished, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        agent.set_event_sender(tx);
+        agent
+            .repeat_interrupt_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        super::super::repeat::run_repeat(&mut agent, "do the thing", 3).await;
+
+        let mut events: Vec<StreamEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        // No iteration should have started.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::RepeatIterationStart { .. }))
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::RepeatFinished { completed, total } => {
+                assert_eq!(*completed, 0);
+                assert_eq!(*total, 3);
+            }
+            other => panic!("expected RepeatFinished, got {other:?}"),
+        }
+    }
+
+    /// Integration test: spawn a mock HTTP server that serves two
+    /// connections, each a minimal text-only SSE response, and run
+    /// `run_repeat` for two iterations against it.
+    #[tokio::test]
+    async fn run_repeat_two_iterations_against_mock_server() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+
+        fn response_for(text: &str) -> String {
+            format!(
+                concat!(
+                    "data: {{\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+                    "\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":",
+                    "{{\"content\":\"{}\"}},",
+                    "\"finish_reason\":null}}]}}\n\n",
+                    "data: {{\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+                    "\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{}},",
+                    "\"finish_reason\":\"stop\"}}]}}\n\n",
+                    "data: [DONE]\n\n",
+                ),
+                text
+            )
+        }
+
+        thread::spawn(move || {
+            for i in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = response_for(&format!("answer {i}"));
+                let http_response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(http_response.as_bytes());
+                let _ = stream.flush();
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+
+        let client = DeepSeekClient::new(
+            "sk-test".into(),
+            Some(format!("http://127.0.0.1:{port}")),
+            Some("deepseek-v4-flash".into()),
+        );
+
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        agent.set_event_sender(tx);
+
+        super::super::repeat::run_repeat(&mut agent, "do the task", 2).await;
+
+        let mut events: Vec<StreamEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+
+        let starts: Vec<(u32, u32)> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::RepeatIterationStart { index, total } => Some((*index, *total)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, vec![(1, 2), (2, 2)]);
+
+        let finished = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::RepeatFinished { .. }))
+            .expect("expected a RepeatFinished event");
+        match finished {
+            StreamEvent::RepeatFinished { completed, total } => {
+                assert_eq!(*completed, 2);
+                assert_eq!(*total, 2);
+            }
+            _ => unreachable!(),
+        }
+
+        // History at the end should hold only the last iteration's
+        // messages: the user message plus the assistant reply.
+        assert_eq!(agent.history().len(), 2);
+        let api = agent.history().to_api_messages();
+        let last_assistant = api
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::api::types::Role::Assistant)
+            .expect("expected an assistant message");
+        assert_eq!(last_assistant.content.as_deref(), Some("answer 1"));
     }
 }

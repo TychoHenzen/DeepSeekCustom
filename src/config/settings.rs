@@ -20,6 +20,8 @@ pub struct Settings {
     pub thinking: Option<ThinkingSettingsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autopilot: Option<AutopilotConfig>,
     /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
@@ -37,6 +39,7 @@ impl Default for Settings {
             hooks: None,
             thinking: None,
             voice: None,
+            autopilot: None,
             context_budget: None,
             show_raw_output: None,
         }
@@ -222,6 +225,40 @@ impl Settings {
             .get_or_insert_with(ThinkingSettingsConfig::default)
     }
 
+    /// Number of times autopilot repeats the task, defaulting to 5.
+    pub fn autopilot_iterations(&self) -> u32 {
+        self.autopilot
+            .as_ref()
+            .and_then(|a| a.iterations)
+            .unwrap_or(5)
+    }
+
+    /// Path to the autopilot policy file, if configured. Callers fall back
+    /// to `<project_root>/autopilot-policy.md` when this is `None`.
+    pub fn autopilot_policy_path(&self) -> Option<String> {
+        self.autopilot.as_ref().and_then(|a| a.policy_path.clone())
+    }
+
+    /// Model used by the answerer that responds to AskUserQuestion calls
+    /// during an autopilot run, defaulting to `deepseek-v4-flash`.
+    pub fn autopilot_answerer_model(&self) -> String {
+        self.autopilot
+            .as_ref()
+            .and_then(|a| a.answerer_model.clone())
+            .unwrap_or_else(|| "deepseek-v4-flash".to_string())
+    }
+
+    /// The last-used autopilot task text, so the GUI can restore it.
+    pub fn autopilot_task(&self) -> Option<String> {
+        self.autopilot.as_ref().and_then(|a| a.task.clone())
+    }
+
+    /// The autopilot block, created with defaults if it is not there yet.
+    /// See [`Settings::voice_mut`].
+    pub fn autopilot_mut(&mut self) -> &mut AutopilotConfig {
+        self.autopilot.get_or_insert_with(AutopilotConfig::default)
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -256,6 +293,9 @@ impl Settings {
         }
         if other.voice.is_some() {
             self.voice = other.voice;
+        }
+        if other.autopilot.is_some() {
+            self.autopilot = other.autopilot;
         }
         if other.context_budget.is_some() {
             self.context_budget = other.context_budget;
@@ -315,6 +355,24 @@ pub struct ThinkingSettingsConfig {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct AutopilotConfig {
+    /// Number of times to repeat the task. Defaults to 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u32>,
+    /// Path to the autopilot policy file. Falls back to
+    /// `<project_root>/autopilot-policy.md` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_path: Option<String>,
+    /// Model used to answer AskUserQuestion calls during a run.
+    /// Defaults to `deepseek-v4-flash`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answerer_model: Option<String>,
+    /// Last-used task text, so the GUI can restore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// How voice input is triggered.
@@ -554,6 +612,12 @@ mod tests {
                 tts_voice: Some("am_michael".into()),
                 tts_speed: Some(1.3),
             }),
+            autopilot: Some(AutopilotConfig {
+                iterations: Some(10),
+                policy_path: Some("custom-policy.md".into()),
+                answerer_model: Some("deepseek-v4-pro".into()),
+                task: Some("do the thing".into()),
+            }),
             context_budget: Some(150_000),
             show_raw_output: Some(true),
         };
@@ -590,8 +654,58 @@ mod tests {
         assert_eq!(loaded.voice_wake_phrase(), "hey computer");
         assert_eq!(loaded.voice_tts_voice(), "am_michael");
         assert_eq!(loaded.voice_tts_speed(), 1.3);
+        assert_eq!(loaded.autopilot_iterations(), 10);
+        assert_eq!(loaded.autopilot_policy_path().unwrap(), "custom-policy.md");
+        assert_eq!(loaded.autopilot_answerer_model(), "deepseek-v4-pro");
+        assert_eq!(loaded.autopilot_task().unwrap(), "do the thing");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn autopilot_defaults_when_absent() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.autopilot_iterations(), 5);
+        assert!(s.autopilot_policy_path().is_none());
+        assert_eq!(s.autopilot_answerer_model(), "deepseek-v4-flash");
+        assert!(s.autopilot_task().is_none());
+    }
+
+    #[test]
+    fn autopilot_reads_set_values() {
+        let json = r#"{
+            "autopilot": {
+                "iterations": 3,
+                "policy_path": "policies/autopilot.md",
+                "answerer_model": "deepseek-v4-pro",
+                "task": "fix the build"
+            }
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.autopilot_iterations(), 3);
+        assert_eq!(
+            s.autopilot_policy_path().unwrap(),
+            "policies/autopilot.md"
+        );
+        assert_eq!(s.autopilot_answerer_model(), "deepseek-v4-pro");
+        assert_eq!(s.autopilot_task().unwrap(), "fix the build");
+    }
+
+    #[test]
+    fn autopilot_mut_creates_block_with_defaults() {
+        let mut s = Settings::default();
+        assert!(s.autopilot.is_none());
+        let block = s.autopilot_mut();
+        assert!(block.iterations.is_none());
+        block.iterations = Some(7);
+        assert_eq!(s.autopilot_iterations(), 7);
+    }
+
+    #[test]
+    fn autopilot_absent_settings_serialize_without_key() {
+        let s = Settings::default();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("autopilot"));
     }
 
     #[test]
@@ -605,6 +719,7 @@ mod tests {
             hooks: None,
             thinking: None,
             voice: None,
+            autopilot: None,
             context_budget: None,
             show_raw_output: None,
         };
