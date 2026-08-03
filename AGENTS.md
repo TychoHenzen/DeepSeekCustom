@@ -76,7 +76,9 @@ Tool call arguments arrive as `input_json_delta` fragments after the block's `co
 
 Voice reply mode works on this path too. `voice_mode_instructions()` passes through `--append-system-prompt` at spawn. Since that flag is spawn-time only, `ClaudeCliDriver` restarts the child whenever the voice-mode flag changes between turns.
 
-Interrupt kills the child outright, since the protocol carries no cancel message.
+`ClaudeCliDriver::send` writes the turn line, then waits for that turn's `result` event before returning. The stdout reader signals it over a `turn_done` channel. One `send` is one whole turn, which is what `Backend::run` and the autopilot runner both assume. While it waits it polls `interrupt_flag` every 100ms, so Escape reaches this backend too.
+
+Interrupt kills the child outright, since the protocol carries no cancel message. It also drops the child and stdin handles, so the next turn spawns a fresh child instead of writing into a dead pipe. `ensure_ready` respawns on the same grounds whenever `try_wait` shows the child already exited.
 
 **Autopilot across backends:** `run_repeat` in `src/agent/repeat.rs` is generic over a `RepeatTarget` trait, with one implementation per backend kind. The `Api` path resets by calling `AgentLoop::clear_history`. The `ClaudeCli` path resets by shutting the child down, so the next turn spawns a fresh one. Both give the same guarantee: no iteration sees an earlier iteration's conversation. `repeat_interrupt_flag` still stops the whole run on either path.
 
@@ -142,7 +144,7 @@ The policy file lives at `<project_root>/autopilot-policy.md` by default. `Polic
 
 The decision log lives at `<project_root>/.autopilot/decisions.log`. `PolicyStore::append_decision` opens it in append mode and adds one line per resolved question, shaped `question=<text> answer=<labels>`. Embedded newlines get flattened to spaces so the line format holds. `PolicyStore::recent_decisions` reads the newest 20 lines back (`RECENT_DECISIONS_LIMIT` in `src/autopilot/answerer.rs`). `format_policy_prompt_section` folds them into the next answerer prompt alongside the policy text. Feeding recent decisions back in keeps the answerer consistent with itself across a run. It sees what it already decided, not just the static policy.
 
-`PolicyAnswerer::answer`, in `src/autopilot/answerer.rs`, makes one non-streaming `ChatRequest` per batch of questions from one `AskUserQuestion` call. It runs on `settings.autopilot_answerer_model()`, `deepseek-v4-flash` by default, since answering a policy question does not need a heavier model. Temperature 0, `thinking_mode: "non-thinking"`. The prompt asks for a JSON array, one entry per question in the same order, shaped `{"question", "labels"}`. Every label must be copied exactly from the offered options. `parse_reply` tolerates a markdown fence or surrounding prose by locating the outermost `[...]` span. `resolve_answers` and `resolve_one` then validate the parsed reply against the real question set. A bad label, a wrong answer count, malformed or unparseable JSON, and a network or API error all get logged at `warn`. All of them fall back to the first option of the affected question, rather than blocking the turn. A single-select question that comes back with more than one label gets trimmed to the first, also with a `warn` log. `answer` never returns an `Err` for a model problem. Fallback happens inside it, so the calling tool always gets a usable answer.
+`PolicyAnswerer::answer`, in `src/autopilot/answerer.rs`, makes one non-streaming `ChatRequest` per batch of questions from one `AskUserQuestion` call. It runs on `settings.autopilot_answerer_model()`, `deepseek-v4-flash` by default, since answering a policy question does not need a heavier model. That default only fits a DeepSeek backend, so `answerer_model` in `src/backend/factory.rs` falls back to the backend's own model for any other provider. An explicit `autopilot.answerer_model` still wins over both. Temperature 0, `thinking_mode: "non-thinking"`. The prompt asks for a JSON array, one entry per question in the same order, shaped `{"question", "labels"}`. Every label must be copied exactly from the offered options. `parse_reply` tolerates a markdown fence or surrounding prose by locating the outermost `[...]` span. `resolve_answers` and `resolve_one` then validate the parsed reply against the real question set. A bad label, a wrong answer count, malformed or unparseable JSON, and a network or API error all get logged at `warn`. All of them fall back to the first option of the affected question, rather than blocking the turn. A single-select question that comes back with more than one label gets trimmed to the first, also with a `warn` log. `answer` never returns an `Err` for a model problem. Fallback happens inside it, so the calling tool always gets a usable answer.
 
 Escape stops the whole repeat run, not just the iteration in flight. `AgentLoop::run` consumes its own `interrupt_flag` internally and resets it once it breaks out of a stream. That flag cannot carry a signal from one iteration to the next. `run_repeat` instead checks a second flag, `AgentLoop::repeat_interrupt_flag`, before every iteration. The GUI's Escape handler sets both flags together. That second flag is the only thing that survives between iterations to say "stop the whole thing."
 
@@ -200,7 +202,7 @@ Ollama being down must never stop the GUI from opening. `query_ollama_models` tu
 
 The list resolves on a background task, `spawn_model_list_fetch`, and arrives over a channel the paint loop polls each frame. No network call happens on the paint loop itself. A result tagged with a backend name the user has since switched away from gets dropped as stale.
 
-A model change writes `model_flag` and persists onto that backend's entry in settings.json, through `apply_backend_model`. It takes effect on the next turn for DeepSeek and Ollama, since `sync_dynamic_config` re-reads `model_flag` every turn. The `claude_cli` backend instead respawns its child to pick up a new model, since `--model` is a spawn-time flag. A backend change itself still needs an app restart, same as before.
+A model change persists onto that backend's entry in settings.json, through `apply_backend_model`. It writes the shared `model_flag` too, but only while the picked backend is still the one the session is running on. The picker may point at another entry, since a backend switch only takes effect on the next start, and sending that entry's model name to the running backend would fail every following turn. When the two do agree, the change takes effect on the next turn for DeepSeek and Ollama, since `sync_dynamic_config` re-reads `model_flag` every turn. The `claude_cli` backend instead respawns its child to pick up a new model, since `--model` is a spawn-time flag. A backend change itself still needs an app restart, same as before.
 
 The new optional `models` array sits on a backend entry in settings.json. It is `Option<Vec<String>>` on both the `Api` and `ClaudeCli` variants of `BackendConfig`, absent by default.
 
@@ -241,7 +243,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 464 total, all lib tests, all passing. The binary target carries 0 tests now. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 469 total, all lib tests, all passing. The binary target carries 0 tests now. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
@@ -259,7 +261,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 | `backend/mod.rs` | 3 |
 | `backend/factory.rs` | 14 |
 | `backend/subagent.rs` | 2 |
-| `backend/claude_cli/process.rs` | 10 |
+| `backend/claude_cli/process.rs` | 15 |
 | `backend/claude_cli/events.rs` | 10 |
 | `backend/claude_cli/map.rs` | 7 |
 | `backend/claude_cli/one_shot.rs` | 4 |

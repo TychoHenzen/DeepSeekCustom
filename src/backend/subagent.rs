@@ -8,7 +8,6 @@
 //! discards it, so three models interleaving token streams never land
 //! in one transcript.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -121,7 +120,10 @@ async fn run_claude_cli_subagent(
     permission_mode: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<SubagentOutcome, String> {
-    let interrupt_flag = Arc::new(AtomicBool::new(false));
+    // The factory's own flag, not a fresh one. `run_once` polls it between
+    // lines, so Escape reaches a claude_cli subagent the same way it
+    // reaches an api one.
+    let interrupt_flag = factory.interrupt_flag();
     let result = ClaudeCliDriver::run_once(
         &model,
         permission_mode.as_deref(),

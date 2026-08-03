@@ -130,6 +130,20 @@ fn resolve_active_backend(settings: &Settings, project_root: &Path) -> Result<Re
     resolve_named_backend(settings, project_root, &name, None)
 }
 
+/// The model the policy answerer runs on for this backend.
+///
+/// An explicit `autopilot.answerer_model` always wins. Without one, the
+/// default `deepseek-v4-flash` only fits a DeepSeek backend. Any other
+/// provider would be asked for a model it does not have, so the answerer
+/// falls back to the model the backend itself runs.
+fn answerer_model(settings: &Settings, provider: Provider, backend_model: &str) -> String {
+    match settings.autopilot_answerer_model_override() {
+        Some(explicit) => explicit,
+        None if provider == Provider::DeepSeek => settings.autopilot_answerer_model(),
+        None => backend_model.to_string(),
+    }
+}
+
 /// True when a backend built at `depth` may dispatch a subagent of its
 /// own, below the configured depth limit. Depth 0 is the main session.
 /// Each dispatch adds one. At `max_depth` this is false, so the chain
@@ -182,7 +196,7 @@ fn build_api_backend(
     let answerer: Arc<dyn QuestionAnswerer> = Arc::new(PolicyAnswerer::new(
         answerer_client,
         policy_store,
-        settings.autopilot_answerer_model(),
+        answerer_model(settings, provider, &model),
     ));
 
     let mut tools = ToolRegistry::new();
@@ -285,6 +299,13 @@ impl BackendFactory {
     /// The project root this factory resolves backends against.
     pub(crate) fn project_root(&self) -> &Path {
         &self.project_root
+    }
+
+    /// The shared interrupt flag every backend this factory builds gets.
+    /// A `claude_cli` subagent runs outside `AgentLoop`, so it needs this
+    /// handle directly. Without it, Escape could not stop that subagent.
+    pub(crate) fn interrupt_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.interrupt_flag)
     }
 
     /// Build a backend by name from the `backends` map, optionally

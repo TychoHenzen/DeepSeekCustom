@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -16,10 +17,14 @@ use crate::agent::agent_loop::StreamEvent;
 use crate::agent::prompt::voice_mode_instructions;
 use crate::error::{HarnessError, Result};
 
-use super::events::parse_line;
+use super::events::{ClaudeEvent, parse_line};
 use super::map::EventMapper;
 
 pub(super) const CLAUDE_CLI_PATH_KEY: &str = "CLAUDE_CLI_PATH";
+
+/// How often `send` checks the interrupt flag while a turn is in flight.
+/// Short enough that Escape still feels immediate.
+const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Token budget placeholder. Claude Code manages its own context
 /// compaction, so this value is never read by anything. It only exists so
@@ -123,6 +128,10 @@ fn build_user_turn_line(text: &str) -> String {
 pub struct ClaudeCliDriver {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
+    /// Signalled by the stdout reader once the terminal `result` event of a
+    /// turn arrives, and closed when the reader ends. `send` waits on this,
+    /// so one turn is finished before the next one starts.
+    turn_done: Option<mpsc::UnboundedReceiver<()>>,
     model: String,
     permission_mode: Option<String>,
     extra_env: Option<HashMap<String, String>>,
@@ -155,6 +164,7 @@ impl ClaudeCliDriver {
         Self {
             child: None,
             stdin: None,
+            turn_done: None,
             model,
             permission_mode,
             extra_env,
@@ -171,7 +181,7 @@ impl ClaudeCliDriver {
     }
 
     /// Return a clone of the interrupt flag so the GUI can signal
-    /// interruption. Read by `interrupt`.
+    /// interruption. Polled by `await_turn_end` while a turn is in flight.
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
     }
@@ -201,16 +211,23 @@ impl ClaudeCliDriver {
     }
 
     /// Return a clone of the repeat-interrupt flag so the GUI can stop a
-    /// running autopilot loop. Autopilot is not wired up on this backend
-    /// yet (see `Backend::run_repeat`), so nothing reads this today.
+    /// running autopilot loop. Read before every iteration by `run_repeat`,
+    /// through this driver's `RepeatTarget` impl.
     pub fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.repeat_interrupt_flag)
     }
 
-    /// Send one user turn to the child. Spawns the child first on the
-    /// first turn. Respawns it if the voice-mode flag has flipped since
-    /// the child was last spawned.
+    /// Send one user turn to the child and wait for that turn to finish.
+    /// Spawns the child first on the first turn. Respawns it if the
+    /// voice-mode flag has flipped since the child was last spawned.
+    ///
+    /// The wait matters: the caller treats one `send` as one whole turn.
+    /// `Backend::run` returns from it, and the autopilot runner counts it
+    /// as a completed iteration. Returning at the moment the line is
+    /// flushed would report a turn finished while the model was still
+    /// answering.
     pub async fn send(&mut self, text: &str) -> Result<()> {
+        self.interrupt_flag.store(false, Ordering::SeqCst);
         self.ensure_ready().await?;
         let line = build_user_turn_line(text);
         let stdin = self
@@ -220,21 +237,58 @@ impl ClaudeCliDriver {
         stdin.write_all(line.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
         stdin.flush().await?;
+        self.await_turn_end().await;
         Ok(())
+    }
+
+    /// Wait for the turn in flight to finish, polling the interrupt flag
+    /// while it runs. An interrupt kills the child, so the next turn
+    /// spawns a fresh one. A closed channel means the reader ended, which
+    /// means the child is gone: `ensure_ready` notices that too.
+    async fn await_turn_end(&mut self) {
+        loop {
+            if self.interrupt_flag.load(Ordering::SeqCst) {
+                self.interrupt();
+                self.interrupt_flag.store(false, Ordering::SeqCst);
+                return;
+            }
+            let Some(turn_done) = self.turn_done.as_mut() else {
+                return;
+            };
+            match tokio::time::timeout(INTERRUPT_POLL_INTERVAL, turn_done.recv()).await {
+                Ok(Some(())) => return,
+                Ok(None) => {
+                    self.turn_done = None;
+                    return;
+                }
+                Err(_timed_out) => continue,
+            }
+        }
     }
 
     /// Ensure a child is running with the voice-mode setting the live flag
     /// currently holds. Respawns when a child exists but was spawned under
-    /// a different voice-mode value.
+    /// a different voice-mode value, and when the child it holds has
+    /// already exited: killed on interrupt, crashed, or ended by itself.
     async fn ensure_ready(&mut self) -> Result<()> {
         let want_voice = self.voice_mode_flag.load(Ordering::SeqCst);
-        if self.child.is_some() && want_voice != self.spawned_voice_mode {
+        if self.child.is_some() && (want_voice != self.spawned_voice_mode || self.child_exited()) {
             self.shutdown().await;
         }
         if self.child.is_none() {
             self.spawn_child(want_voice)?;
         }
         Ok(())
+    }
+
+    /// True when the child this driver holds has already exited. A driver
+    /// that kept writing to a dead child's stdin would fail every turn
+    /// from then on, with no way back short of restarting the app.
+    fn child_exited(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => !matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
     }
 
     /// Spawn the child process and start reading its stdout and stderr in
@@ -300,24 +354,29 @@ impl ClaudeCliDriver {
             .take()
             .ok_or_else(|| HarnessError::Tool("claude CLI child has no stderr".into()))?;
 
-        spawn_stdout_reader(stdout, self.tx_events.clone());
+        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+        spawn_stdout_reader(stdout, self.tx_events.clone(), turn_done_tx);
         spawn_stderr_drain(stderr);
 
         self.child = Some(child);
         self.stdin = Some(stdin);
+        self.turn_done = Some(turn_done_rx);
         self.spawned_voice_mode = voice_mode;
         Ok(())
     }
 
     /// Kill the child immediately. There is no cancel message in the
     /// protocol, so killing the process is the only way to stop a turn in
-    /// flight.
+    /// flight. Drops the handles to the killed child, so the next turn
+    /// spawns a fresh one instead of writing into a dead pipe.
     pub fn interrupt(&mut self) {
-        if let Some(child) = self.child.as_mut()
+        if let Some(mut child) = self.child.take()
             && let Err(e) = child.start_kill()
         {
             tracing::warn!("claude_cli: failed to kill child on interrupt: {e}");
         }
+        self.stdin = None;
+        self.turn_done = None;
         let _ = self.tx_events.send(StreamEvent::Interrupted {
             message: "Interrupted by user (Escape)".into(),
         });
@@ -337,6 +396,7 @@ impl ClaudeCliDriver {
         {
             tracing::warn!("claude_cli: failed waiting for child exit: {e}");
         }
+        self.turn_done = None;
     }
 
     /// Publish one `StreamEvent` on this driver's event channel. Used by
@@ -370,9 +430,14 @@ impl crate::agent::repeat::RepeatTarget for ClaudeCliDriver {
     }
 }
 
+/// Read the child's stdout forever, publishing mapped events. Signals
+/// `turn_done` after the terminal `result` event of each turn, so `send`
+/// knows when one turn ended. Dropping the sender when the loop ends also
+/// releases a `send` waiting on a child that died mid-turn.
 fn spawn_stdout_reader(
     stdout: tokio::process::ChildStdout,
     tx_events: mpsc::UnboundedSender<StreamEvent>,
+    turn_done: mpsc::UnboundedSender<()>,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
@@ -392,10 +457,14 @@ fn spawn_stdout_reader(
             let Some(event) = parse_line(&next) else {
                 continue;
             };
+            let ends_turn = matches!(event, ClaudeEvent::Result(_));
             for stream_event in mapper.map(event) {
                 if tx_events.send(stream_event).is_err() {
                     return;
                 }
+            }
+            if ends_turn && turn_done.send(()).is_err() {
+                return;
             }
         }
     });
@@ -541,6 +610,77 @@ mod tests {
     fn args_builder_omits_system_prompt_flag_when_not_given() {
         let args = build_args("claude-opus-x", Some("acceptEdits"), None);
         assert!(!args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn interrupt_drops_the_child_handles_so_the_next_turn_respawns() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut driver =
+            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+
+        driver.interrupt();
+
+        assert!(driver.child.is_none());
+        assert!(driver.stdin.is_none());
+        assert!(driver.turn_done.is_none());
+        match rx.try_recv().expect("expected an Interrupted event") {
+            StreamEvent::Interrupted { .. } => {}
+            other => panic!("expected Interrupted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn child_exited_is_false_when_no_child_is_running() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut driver =
+            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+
+        assert!(!driver.child_exited());
+    }
+
+    #[tokio::test]
+    async fn await_turn_end_returns_at_once_when_no_turn_is_in_flight() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut driver =
+            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+
+        // No child, so no `turn_done` channel. This must return rather
+        // than poll forever.
+        driver.await_turn_end().await;
+    }
+
+    #[tokio::test]
+    async fn await_turn_end_returns_when_the_reader_signals_the_turn_ended() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut driver =
+            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+        driver.turn_done = Some(turn_done_rx);
+        turn_done_tx.send(()).unwrap();
+
+        driver.await_turn_end().await;
+
+        // The signal was consumed, so the channel is empty for the next
+        // turn instead of returning from it right away.
+        assert!(driver.turn_done.as_mut().unwrap().try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn await_turn_end_kills_the_child_when_the_interrupt_flag_is_set() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut driver =
+            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+        let (_turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+        driver.turn_done = Some(turn_done_rx);
+        driver.interrupt_flag().store(true, Ordering::SeqCst);
+
+        driver.await_turn_end().await;
+
+        assert!(driver.turn_done.is_none());
+        assert!(
+            !driver.interrupt_flag().load(Ordering::SeqCst),
+            "the flag must be cleared so it cannot cut the next turn short"
+        );
     }
 
     #[test]

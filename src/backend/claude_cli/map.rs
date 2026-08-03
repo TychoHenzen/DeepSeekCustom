@@ -20,6 +20,16 @@ struct PendingToolCall {
     buffer: String,
 }
 
+/// The arguments a `content_block_start` announced, if it announced any.
+/// An empty object, a missing `input`, and any non-object value all yield
+/// an empty buffer, since only a filled object is usable as arguments.
+fn announced_arguments(input: &serde_json::Value) -> String {
+    match input.as_object() {
+        Some(map) if !map.is_empty() => input.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Converts `ClaudeEvent`s into `StreamEvent`s, tracking the turn counter,
 /// the tool_use id to tool name map, and the session id along the way.
 pub struct EventMapper {
@@ -99,17 +109,15 @@ impl EventMapper {
                 // the protocol. Buffer the call and emit `ToolCallStart` at
                 // `content_block_stop`, once `input_json_delta` fragments
                 // have accumulated into the real arguments. Fall back to the
-                // announced `input` in case no delta ever arrives.
-                let fallback = serde_json::to_string(&input).unwrap_or_default();
+                // announced `input` in case no delta ever arrives, but only
+                // when it already holds arguments. Seeding the buffer with
+                // anything else, `null` above all, would leave that text in
+                // front of the fragments and make the arguments unparseable.
                 self.pending_tool_calls.insert(
                     index,
                     PendingToolCall {
                         name,
-                        buffer: if fallback == "{}" {
-                            String::new()
-                        } else {
-                            fallback
-                        },
+                        buffer: announced_arguments(&input),
                     },
                 );
                 Vec::new()

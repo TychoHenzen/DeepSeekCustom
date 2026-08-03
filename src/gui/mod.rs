@@ -72,6 +72,13 @@ pub struct DeepSeekGui {
     /// Sorted backend names, the keys of `settings.backends()`.
     backend_options: Vec<String>,
     selected_backend_idx: usize,
+    /// The backend the running session was actually built on, fixed at
+    /// startup. The picker may point somewhere else, since a backend
+    /// switch only takes effect on the next start. A model change writes
+    /// the shared `model_flag` only while the two still agree: sending
+    /// another backend's model name to the running one would break the
+    /// next turn.
+    active_backend: Option<String>,
     /// Options for the model dropdown, resolved for the selected backend.
     /// Seeded synchronously with that backend's declared model, so the
     /// dropdown is never empty. Replaced once the background fetch in
@@ -216,6 +223,7 @@ impl DeepSeekGui {
             auto_scroll: false,
             interrupt_flag,
             settings_visible: false,
+            active_backend: backend_options.get(selected_backend_idx).cloned(),
             backend_options,
             selected_backend_idx,
             model_options,
@@ -278,15 +286,20 @@ impl DeepSeekGui {
 
     /// Handle the backend picker's selection changing.
     ///
-    /// Switches the active model to the new backend's declared model.
-    /// Seeds `model_options` with it, so the dropdown is never empty.
-    /// Kicks off a background refetch of the full list. Persists the new
-    /// default backend.
+    /// Shows the new backend's declared model. Seeds `model_options` with
+    /// it, so the dropdown is never empty. Kicks off a background refetch
+    /// of the full list. Persists the new default backend.
+    ///
+    /// The running session keeps its own backend and model until the next
+    /// app start, so this never writes `model_flag` for a backend that is
+    /// not the running one.
     fn switch_backend(&mut self, new_backend: String) {
         if let Some(cfg) = self.settings.resolve_backend(&new_backend) {
             let new_model = cfg.model().to_string();
             self.model = new_model.clone();
-            if let Ok(mut model) = self.model_flag.lock() {
+            if self.active_backend.as_deref() == Some(new_backend.as_str())
+                && let Ok(mut model) = self.model_flag.lock()
+            {
                 *model = new_model;
             }
             self.model_options = vec![cfg.model().to_string()];
@@ -299,18 +312,23 @@ impl DeepSeekGui {
 
     /// Handle the model dropdown's selection changing.
     ///
-    /// Writes the new model into `model_flag` for the next turn, and
-    /// persists it onto the currently selected backend's entry in
-    /// `settings.json`.
+    /// Persists the new model onto the currently selected backend's entry
+    /// in `settings.json`. Writes it into `model_flag` for the next turn
+    /// only while that entry is the backend the session is running on. The
+    /// running backend would otherwise be asked for a model name belonging
+    /// to a different provider, and every following turn would fail.
     fn switch_model(&mut self, new_model: String) {
-        if let Ok(mut model) = self.model_flag.lock() {
+        let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned() else {
+            return;
+        };
+        if self.active_backend.as_deref() == Some(backend_name.as_str())
+            && let Ok(mut model) = self.model_flag.lock()
+        {
             *model = new_model.clone();
         }
-        if let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned() {
-            info!(backend = %backend_name, model = %new_model, "model changed via settings panel");
-            apply_backend_model(&mut self.settings, &backend_name, &new_model);
-            self.persist_settings();
-        }
+        info!(backend = %backend_name, model = %new_model, "model changed via settings panel");
+        apply_backend_model(&mut self.settings, &backend_name, &new_model);
+        self.persist_settings();
     }
 
     /// Apply one background model-discovery result.
