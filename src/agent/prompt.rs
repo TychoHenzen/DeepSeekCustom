@@ -88,6 +88,22 @@ General guidelines:
         .to_string()
 }
 
+/// Instruction block appended to the system prompt when replies are spoken
+/// aloud through text to speech. Tells the model to answer like a person
+/// talking, not like a document.
+pub fn voice_mode_instructions() -> &'static str {
+    r#"## Voice reply mode
+
+Every reply is spoken aloud, so it must sound like speech, not like a document.
+Answer in at most two sentences. This is a hard cap, not a target.
+If the full answer does not fit, give the short answer and offer to go into detail if asked.
+No markdown, no headings, no bullet lists, no numbered lists, no tables.
+No code blocks and no code. Describe what the code does instead.
+Do not read file paths, URLs, or long identifiers aloud. Name the file plainly, for example "the agent loop file".
+Use short everyday words and a conversational cadence, the way a person answers a question out loud.
+Tool use is unchanged. Only the text spoken back to the user is constrained."#
+}
+
 fn chrono_now_or_empty() -> String {
     // Simple date without chrono dependency — just use UTC timestamp
     // Format: YYYY-MM-DD
@@ -149,5 +165,20 @@ mod tests {
         assert!(!prompt.contains("## Project Context"));
         assert!(!prompt.contains("## Available Skills"));
         assert!(!prompt.contains("## Available Tools"));
+    }
+
+    #[test]
+    fn voice_mode_instructions_is_non_empty() {
+        assert!(!voice_mode_instructions().is_empty());
+    }
+
+    #[test]
+    fn voice_mode_instructions_has_heading() {
+        assert!(voice_mode_instructions().contains("## Voice reply mode"));
+    }
+
+    #[test]
+    fn voice_mode_instructions_mentions_sentence_cap() {
+        assert!(voice_mode_instructions().contains("two sentences"));
     }
 }

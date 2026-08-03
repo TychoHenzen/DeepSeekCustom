@@ -275,10 +275,23 @@ mod tests {
     #[tokio::test]
     async fn timeout_kills_long_running_command() {
         let tool = BashTool::new(std::env::current_dir().unwrap());
-        let input = serde_json::json!({"command": "ping -n 30 127.0.0.1 > nul", "timeout_ms": 500});
+        // A cmd builtin loop, so the test does not depend on any program being
+        // on PATH. It runs for minutes, and the timeout must cut it short.
+        let input = serde_json::json!({
+            "command": "for /L %i in (1,1,200000000) do @rem",
+            "timeout_ms": 500
+        });
         let output = tool.execute(input).await.expect("execute");
-        assert!(output.is_error);
-        assert!(output.content.contains("timed out"));
+        assert!(
+            output.is_error,
+            "expected an error, got: {}",
+            output.content
+        );
+        assert!(
+            output.content.contains("timed out"),
+            "expected a timeout, got: {}",
+            output.content
+        );
     }
 
     #[tokio::test]

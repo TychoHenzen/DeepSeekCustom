@@ -133,10 +133,9 @@ mod tests {
         assert!(threads <= MAX_THREADS);
     }
 
-    /// Requires a real Whisper GGML model on disk. Gated behind `#[ignore]`
-    /// since it depends on a large downloaded file. See `docs/voice-setup.md`.
+    /// Needs the real Whisper GGML model on disk. Download it first, see
+    /// `docs/voice-setup.md`.
     #[test]
-    #[ignore]
     fn transcribe_returns_text_with_a_real_model() {
         let engine = WhisperEngine::new("models/ggml-base.en.bin").expect("real model should load");
         let samples = vec![0.0_f32; 16_000];

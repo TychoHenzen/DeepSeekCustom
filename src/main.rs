@@ -169,6 +169,10 @@ async fn main() {
     // Share interrupt flag between GUI and agent
     let interrupt_flag = agent.interrupt_flag();
     let thinking_flag = agent.thinking_flag();
+    // Seeded further down by `with_tts_enabled`, which sets the checkbox and
+    // this flag together.
+    let voice_mode_flag = agent.voice_mode_flag();
+    let context_budget_flag = agent.context_budget_flag();
     let model_flag = agent.model_flag();
 
     // ── Spawn agent task ────────────────────────────────────
@@ -197,8 +201,11 @@ async fn main() {
         tx_input,
         interrupt_flag,
         thinking_flag,
+        voice_mode_flag,
+        context_budget_flag,
         model_flag,
-    );
+    )
+    .with_tts_enabled(settings.voice_tts_enabled());
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

@@ -1,8 +1,15 @@
+use crate::agent::pruning;
+pub use crate::agent::pruning::PruneReport;
 use crate::api::types::Message;
 
 /// Thread-safe conversation history with approximate token tracking.
 pub struct MessageHistory {
     system_prompt: String,
+    /// Optional per-turn addition to the system prompt, appended after a
+    /// blank line. Meant for instructions that come and go with a runtime
+    /// setting (e.g. a voice-mode toggle), without rebuilding the whole
+    /// system prompt each time.
+    system_suffix: Option<String>,
     messages: Vec<Message>,
     token_count: usize,
 }
@@ -12,6 +19,7 @@ impl MessageHistory {
         let token_count = estimate_tokens(&system_prompt);
         Self {
             system_prompt,
+            system_suffix: None,
             messages: Vec::new(),
             token_count,
         }
@@ -22,6 +30,15 @@ impl MessageHistory {
         let tok = estimate_message_tokens(&msg);
         self.token_count += tok;
         self.messages.push(msg);
+    }
+
+    /// Set or clear the per-turn system prompt suffix. Recomputes the
+    /// tracked token count so `estimated_tokens()` stays accurate.
+    pub fn set_system_suffix(&mut self, suffix: Option<String>) {
+        let old_tokens = suffix_tokens(self.system_suffix.as_deref());
+        let new_tokens = suffix_tokens(suffix.as_deref());
+        self.token_count = self.token_count - old_tokens + new_tokens;
+        self.system_suffix = suffix;
     }
 
     /// Iterate over all messages (system prompt NOT included).
@@ -39,16 +56,23 @@ impl MessageHistory {
         self.messages.is_empty()
     }
 
-    /// Clear all messages (keep system prompt).
+    /// Clear all messages (keep system prompt and its suffix).
     pub fn clear(&mut self) {
         self.messages.clear();
-        self.token_count = estimate_tokens(&self.system_prompt);
+        self.token_count =
+            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
     }
 
-    /// Return messages in API-ready format (system prompt first).
+    /// Return messages in API-ready format (system prompt first). When a
+    /// suffix is set, it is appended after a blank line. With no suffix set,
+    /// the system message is unchanged from the base prompt.
     pub fn to_api_messages(&self) -> Vec<Message> {
         let mut out = Vec::with_capacity(self.messages.len() + 1);
-        out.push(Message::system(self.system_prompt.clone()));
+        let system_content = match &self.system_suffix {
+            Some(suffix) => format!("{}{}", self.system_prompt, suffix_addition(suffix)),
+            None => self.system_prompt.clone(),
+        };
+        out.push(Message::system(system_content));
         out.extend(self.messages.clone());
         out
     }
@@ -58,6 +82,30 @@ impl MessageHistory {
     pub fn estimated_tokens(&self) -> usize {
         self.token_count
     }
+
+    /// Prune down to `low_water_tokens` via the three tiers in `pruning.rs`.
+    /// A no-op under budget. See `pruning::prune_to_budget` for details.
+    pub fn prune_to_budget(
+        &mut self,
+        low_water_tokens: usize,
+        scores: Option<&[f32]>,
+    ) -> PruneReport {
+        let base_tokens =
+            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
+        let report =
+            pruning::prune_to_budget(&mut self.messages, base_tokens, low_water_tokens, scores);
+        self.recompute_token_count();
+        report
+    }
+
+    /// Recompute `token_count` from scratch. The incremental count
+    /// `push` and `clear` keep cannot survive pruning's removals.
+    fn recompute_token_count(&mut self) {
+        let base_tokens =
+            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
+        let messages_tokens: usize = self.messages.iter().map(estimate_message_tokens).sum();
+        self.token_count = base_tokens + messages_tokens;
+    }
 }
 
 /// Estimate tokens from a string: ~4 chars per token.
@@ -65,7 +113,22 @@ fn estimate_tokens(s: &str) -> usize {
     s.chars().count().div_ceil(4)
 }
 
-fn estimate_message_tokens(msg: &Message) -> usize {
+/// The text a suffix contributes to the system message: a blank line
+/// followed by the suffix itself. Matches the format `to_api_messages`
+/// emits, so token counts stay in sync with the real output.
+fn suffix_addition(suffix: &str) -> String {
+    format!("\n\n{}", suffix)
+}
+
+/// Token count a suffix adds to the system message, or zero when unset.
+fn suffix_tokens(suffix: Option<&str>) -> usize {
+    match suffix {
+        Some(s) => estimate_tokens(&suffix_addition(s)),
+        None => 0,
+    }
+}
+
+pub(crate) fn estimate_message_tokens(msg: &Message) -> usize {
     let mut chars = 0;
     if let Some(ref c) = msg.content {
         chars += c.chars().count();
@@ -169,5 +232,68 @@ mod tests {
             "a long message with many characters and more words".into(),
         ));
         assert!(h.estimated_tokens() > before);
+    }
+
+    #[test]
+    fn no_suffix_leaves_system_message_unchanged() {
+        let h = MessageHistory::new("You are helpful.".into());
+        let api = h.to_api_messages();
+        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn set_suffix_appears_in_system_message() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_system_suffix(Some("Reply briefly.".into()));
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_deref(),
+            Some("You are helpful.\n\nReply briefly.")
+        );
+    }
+
+    #[test]
+    fn set_suffix_none_removes_it() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_system_suffix(Some("Reply briefly.".into()));
+        h.set_system_suffix(None);
+        let api = h.to_api_messages();
+        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn suffix_survives_clear() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_system_suffix(Some("Reply briefly.".into()));
+        h.push(Message::user("hi".into()));
+        h.clear();
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_deref(),
+            Some("You are helpful.\n\nReply briefly.")
+        );
+    }
+
+    #[test]
+    fn estimated_tokens_reflects_set_suffix() {
+        let mut h = MessageHistory::new("short".into());
+        let before = h.estimated_tokens();
+        h.set_system_suffix(Some(
+            "a long suffix with many characters and more words".into(),
+        ));
+        assert!(h.estimated_tokens() > before);
+    }
+
+    #[test]
+    fn estimated_tokens_matches_fresh_recompute_after_prune() {
+        let mut h = MessageHistory::new("system prompt".into());
+        for i in 0..8 {
+            h.push(Message::user(format!("question {i}")));
+            h.push(Message::assistant(format!("answer {i}")));
+        }
+        h.prune_to_budget(1, None);
+        let tracked = h.estimated_tokens();
+        h.recompute_token_count();
+        assert_eq!(h.estimated_tokens(), tracked);
     }
 }

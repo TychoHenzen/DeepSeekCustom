@@ -321,9 +321,9 @@ pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
         }
     }
 
-    // 5. Extract from CustomClaude script on PATH
-    if let Some(key) = extract_key_from_customclaude() {
-        debug!("api_key resolved from CustomClaude script on PATH");
+    // 5. ~/.claude/backends.json (written by the CustomClaude launcher)
+    if let Some(key) = key_from_backends_json() {
+        debug!("api_key resolved from ~/.claude/backends.json");
         return Ok(key);
     }
 
@@ -332,36 +332,45 @@ pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
     ))
 }
 
-/// Search PATH for CustomClaude.ps1 and extract the API key from it.
-fn extract_key_from_customclaude() -> Option<String> {
-    let path_var = std::env::var("PATH").ok()?;
-
-    for dir in std::env::split_paths(&path_var) {
-        let script = dir.join("CustomClaude.ps1");
-        if script.exists() {
-            let contents = std::fs::read_to_string(&script).ok()?;
-            return parse_auth_token_from_ps1(&contents);
-        }
-    }
-    None
+/// Read `~/.claude/backends.json` and pull the DeepSeek key out of it.
+fn key_from_backends_json() -> Option<String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let path = std::path::Path::new(&home)
+        .join(".claude")
+        .join("backends.json");
+    let contents = std::fs::read_to_string(path).ok()?;
+    parse_backends_json(&contents)
 }
 
-/// Extract `$env:ANTHROPIC_AUTH_TOKEN = "sk-..."` from a PowerShell script.
-fn parse_auth_token_from_ps1(contents: &str) -> Option<String> {
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if let Some(idx) = trimmed.find("ANTHROPIC_AUTH_TOKEN") {
-            // Find the value after '=' sign, between double quotes
-            let after_eq = &trimmed[idx..];
-            let start_quote = after_eq.find('"')?;
-            let end_quote = after_eq[start_quote + 1..].find('"')?;
-            let key = &after_eq[start_quote + 1..start_quote + 1 + end_quote];
-            if key.starts_with("sk-") && !key.is_empty() {
-                return Some(key.to_string());
-            }
-        }
+/// Pick an `apiKey` out of the backends config.
+///
+/// The backend named by `default` wins. Otherwise the first backend that
+/// carries a key wins, so a config with a single DeepSeek entry still works.
+fn parse_backends_json(contents: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(contents).ok()?;
+    let backends = json.get("backends")?.as_object()?;
+
+    let default_key = json
+        .get("default")
+        .and_then(|v| v.as_str())
+        .and_then(|name| backends.get(name))
+        .and_then(backend_api_key);
+    if default_key.is_some() {
+        return default_key;
     }
-    None
+
+    backends.values().find_map(backend_api_key)
+}
+
+/// Read the non-empty `apiKey` field of one backend entry.
+fn backend_api_key(backend: &serde_json::Value) -> Option<String> {
+    let key = backend.get("apiKey")?.as_str()?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.to_string())
 }
 
 #[cfg(test)]
@@ -377,7 +386,7 @@ mod tests {
         if std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok() {
             return;
         }
-        if extract_key_from_customclaude().is_some() {
+        if key_from_backends_json().is_some() {
             return;
         }
 
@@ -396,5 +405,36 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn backends_json_prefers_the_default_backend() {
+        let contents = r#"{
+            "default": "deepseek-home",
+            "backends": {
+                "windows": {"label": "Anthropic"},
+                "deepseek-home": {"apiKey": "sk-deep"},
+                "other": {"apiKey": "sk-other"}
+            }
+        }"#;
+        assert_eq!(parse_backends_json(contents), Some("sk-deep".to_string()));
+    }
+
+    #[test]
+    fn backends_json_falls_back_to_any_backend_with_a_key() {
+        let contents = r#"{
+            "default": "windows",
+            "backends": {
+                "windows": {"label": "Anthropic"},
+                "deepseek-home": {"apiKey": "sk-deep"}
+            }
+        }"#;
+        assert_eq!(parse_backends_json(contents), Some("sk-deep".to_string()));
+    }
+
+    #[test]
+    fn backends_json_without_any_key_yields_none() {
+        let contents = r#"{"default": "windows", "backends": {"windows": {"apiKey": ""}}}"#;
+        assert_eq!(parse_backends_json(contents), None);
     }
 }

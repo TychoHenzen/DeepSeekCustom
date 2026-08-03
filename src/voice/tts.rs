@@ -460,12 +460,15 @@ mod tests {
         assert_eq!(DEFAULT_VOICE_ID, "af_heart");
     }
 
-    /// Requires a real Kokoro model and voices directory on disk. Gated
-    /// behind `#[ignore]` since it depends on large downloaded files. See
-    /// `docs/voice-setup.md`.
+    /// Needs the real Kokoro model and voices directory on disk. Download
+    /// them first, see `docs/voice-setup.md`.
     #[tokio::test]
-    #[ignore]
     async fn synth_returns_24khz_samples_with_a_real_model() {
+        // Same as `main()`: use the bundled Misaki phonemizer, not the
+        // espeak-ng subprocess, which drops the last phoneme of every line.
+        unsafe {
+            std::env::set_var("KOKORO_G2P_SEGMENT_ESPEAK", "0");
+        }
         let synth = KokoroSynth::new("models/model.onnx", "voices")
             .await
             .expect("real model should load");

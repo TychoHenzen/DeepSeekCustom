@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -9,8 +9,13 @@ use crate::api::types::{ChatRequest, Message, Role, ToolCall};
 use crate::error::{HarnessError, Result};
 use crate::tools::{ToolOutput, ToolRegistry};
 
-use super::history::MessageHistory;
-use super::prompt::SystemPromptBuilder;
+use super::history::{MessageHistory, PruneReport};
+use super::prompt::{SystemPromptBuilder, voice_mode_instructions};
+
+/// Default token budget for the context pruning hysteresis oscillator.
+/// History grows freely until it passes this high-water mark, then gets
+/// pruned hard down to a third of it (see `context_low_water`).
+const DEFAULT_CONTEXT_BUDGET: usize = 100_000;
 
 /// Configuration for the agent loop.
 pub struct AgentConfig {
@@ -78,6 +83,12 @@ pub struct AgentLoop {
     thinking_flag: Arc<AtomicBool>,
     /// Shared model name: GUI sets this when user changes model in settings.
     model_name: Arc<Mutex<String>>,
+    /// Shared flag: GUI sets this when text to speech is turned on or off.
+    voice_mode_flag: Arc<AtomicBool>,
+    /// Shared token budget: the high-water mark for context pruning. Read
+    /// straight off the atomic at the point of use, never mirrored into
+    /// `AgentConfig`.
+    context_budget: Arc<AtomicUsize>,
 }
 
 impl AgentLoop {
@@ -99,6 +110,8 @@ impl AgentLoop {
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             thinking_flag: Arc::new(AtomicBool::new(thinking)),
             model_name: Arc::new(Mutex::new(model)),
+            voice_mode_flag: Arc::new(AtomicBool::new(false)),
+            context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
         }
     }
 
@@ -122,14 +135,72 @@ impl AgentLoop {
         Arc::clone(&self.model_name)
     }
 
-    /// Run the agent loop for a single user message.
-    /// Returns the final assistant text or an error.
-    pub async fn run(&mut self, user_input: &str) -> Result<Vec<String>> {
-        // Sync dynamic config from GUI before building requests
+    /// Return a clone of the voice mode flag so the GUI can toggle text to speech.
+    pub fn voice_mode_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.voice_mode_flag)
+    }
+
+    /// Return a clone of the context budget flag so the GUI can change it.
+    pub fn context_budget_flag(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.context_budget)
+    }
+
+    /// Sync dynamic config from the GUI before building requests: thinking
+    /// mode, model name, and the voice-mode system prompt suffix.
+    fn sync_dynamic_config(&mut self) {
         self.config.thinking = self.thinking_flag.load(Ordering::SeqCst);
         if let Ok(model) = self.model_name.lock() {
             self.config.model.clone_from(&*model);
         }
+        if self.voice_mode_flag.load(Ordering::SeqCst) {
+            self.history
+                .set_system_suffix(Some(voice_mode_instructions().to_string()));
+        } else {
+            self.history.set_system_suffix(None);
+        }
+    }
+
+    /// Apply a hard prune down to a third of the budget, logging the report
+    /// at `info` level. Called by `maybe_prune_context` once the history
+    /// has passed the high-water mark. Pure aside from the log line, so
+    /// it stays testable without a network.
+    fn apply_prune(&mut self, scores: Option<&[f32]>) -> PruneReport {
+        let budget = self.context_budget.load(Ordering::SeqCst);
+        let report = self
+            .history
+            .prune_to_budget(context_low_water(budget), scores);
+        info!(
+            tokens_before = report.tokens_before,
+            tokens_after = report.tokens_after,
+            tool_bodies_elided = report.tool_bodies_elided,
+            groups_collapsed = report.groups_collapsed,
+            groups_dropped = report.groups_dropped,
+            "context pruned"
+        );
+        report
+    }
+
+    /// Trip check for the hysteresis oscillator: a no-op API call under
+    /// budget, a scored hard prune over it. A scoring failure degrades to
+    /// oldest-first pruning rather than aborting or delaying the turn.
+    async fn maybe_prune_context(&mut self) {
+        let budget = self.context_budget.load(Ordering::SeqCst);
+        if self.history.estimated_tokens() <= budget {
+            return;
+        }
+
+        let messages: Vec<Message> = self.history.iter().cloned().collect();
+        let scores = crate::context::relevance::score_messages(&self.client, &messages).await;
+        if scores.is_none() {
+            warn!("context pruning: relevance scoring failed, falling back to oldest-first order");
+        }
+        self.apply_prune(scores.as_deref());
+    }
+
+    /// Run the agent loop for a single user message.
+    /// Returns the final assistant text or an error.
+    pub async fn run(&mut self, user_input: &str) -> Result<Vec<String>> {
+        self.sync_dynamic_config();
 
         // Add user message
         self.history.push(Message {
@@ -144,6 +215,8 @@ impl AgentLoop {
 
         for turn in 0..self.config.max_turns {
             debug!("turn {}/{}", turn + 1, self.config.max_turns);
+
+            self.maybe_prune_context().await;
 
             // Build API request
             let tools = self.tools.to_api_definitions();
@@ -448,6 +521,13 @@ impl AgentLoop {
     }
 }
 
+/// Low-water mark for the hysteresis oscillator: a third of the budget.
+/// A prune drops history down to this level, not back up to the budget.
+/// That buys headroom for several turns before it fires again.
+fn context_low_water(budget: usize) -> usize {
+    budget / 3
+}
+
 /// Merge a streaming tool call delta into the accumulated tool calls list.
 ///
 /// DeepSeek streams tool calls across multiple chunks:
@@ -555,6 +635,184 @@ mod tests {
         agent.reset("fresh prompt".into(), "restart".into());
         // After reset: fresh system + 1 user message
         assert_eq!(agent.history().len(), 1);
+    }
+
+    #[test]
+    fn voice_mode_flag_defaults_to_false() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        assert!(
+            !agent
+                .voice_mode_flag()
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn voice_mode_flag_handle_observes_writes() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let flag = agent.voice_mode_flag();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            agent
+                .voice_mode_flag()
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        agent
+            .voice_mode_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        agent.sync_dynamic_config();
+
+        let api = agent.history().to_api_messages();
+        assert!(
+            api[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("## Voice reply mode")
+        );
+    }
+
+    #[test]
+    fn sync_dynamic_config_clears_voice_suffix_when_flag_false() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
+        agent
+            .voice_mode_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        agent.sync_dynamic_config();
+
+        agent
+            .voice_mode_flag()
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        agent.sync_dynamic_config();
+
+        let api = agent.history().to_api_messages();
+        assert!(
+            !api[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("## Voice reply mode")
+        );
+    }
+
+    #[test]
+    fn context_low_water_is_a_third_of_budget() {
+        assert_eq!(context_low_water(100_000), 33_333);
+        assert_eq!(context_low_water(300), 100);
+    }
+
+    #[test]
+    fn context_budget_flag_defaults_to_100000() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        assert_eq!(
+            agent
+                .context_budget_flag()
+                .load(std::sync::atomic::Ordering::SeqCst),
+            DEFAULT_CONTEXT_BUDGET
+        );
+    }
+
+    #[test]
+    fn context_budget_flag_handle_observes_writes() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
+        let flag = agent.context_budget_flag();
+        flag.store(42_000, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            agent
+                .context_budget_flag()
+                .load(std::sync::atomic::Ordering::SeqCst),
+            42_000
+        );
+    }
+
+    #[test]
+    fn apply_prune_is_noop_under_budget() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        agent.history.push(Message::user("hello".into()));
+        let before = agent.history().estimated_tokens();
+
+        let report = agent.apply_prune(None);
+
+        assert_eq!(report.tokens_before, before);
+        assert_eq!(report.tokens_after, before);
+        assert_eq!(agent.history().estimated_tokens(), before);
+        assert_eq!(agent.history().len(), 1);
+    }
+
+    #[test]
+    fn apply_prune_reduces_oversized_history_to_low_water() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+
+        // Push far more content than a small test budget allows. The last
+        // two groups are pinned and never touched by any tier, so keep
+        // them short. A large pinned tail would set a floor above the
+        // low water mark, and no amount of pruning could reach it.
+        for i in 0..18 {
+            agent
+                .history
+                .push(Message::user(format!("question {i} {}", "x".repeat(200))));
+            agent
+                .history
+                .push(Message::assistant(format!("answer {i} {}", "x".repeat(200))));
+        }
+        agent.history.push(Message::user("hi".into()));
+        agent.history.push(Message::assistant("ok".into()));
+        agent.history.push(Message::user("bye".into()));
+        agent.history.push(Message::assistant("ok".into()));
+
+        agent
+            .context_budget_flag()
+            .store(200, std::sync::atomic::Ordering::SeqCst);
+
+        let report = agent.apply_prune(None);
+
+        assert!(agent.history().estimated_tokens() <= context_low_water(200));
+        assert_eq!(report.tokens_after, agent.history().estimated_tokens());
+        assert!(report.tokens_after < report.tokens_before);
+        assert!(
+            report.tool_bodies_elided > 0
+                || report.groups_collapsed > 0
+                || report.groups_dropped > 0
+        );
+    }
+
+    #[test]
+    fn apply_prune_with_none_scores_does_not_panic() {
+        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
+        for i in 0..10 {
+            agent.history.push(Message::user(format!("q{i}")));
+            agent.history.push(Message::assistant(format!("a{i}")));
+        }
+        agent
+            .context_budget_flag()
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+
+        let report = agent.apply_prune(None);
+        assert!(report.tokens_after <= report.tokens_before);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 // ── Thinking Store (T12) ──
 
+pub mod relevance;
+
 use std::time::Instant;
 
 use tracing::{debug, info};
@@ -94,7 +96,7 @@ pub fn parse_thinking_tags(content: &str) -> (String, Vec<ThinkingBlock>) {
                         remaining = &after_tag[end + 8..];
                     }
                     None => {
-                        // No closing tag — treat rest as visible
+                        // No closing tag - treat rest as visible
                         visible.push_str(&remaining[start..]);
                         break;
                     }
@@ -108,127 +110,6 @@ pub fn parse_thinking_tags(content: &str) -> (String, Vec<ThinkingBlock>) {
     }
 
     (visible, blocks)
-}
-
-// ── Context Pruning (T13) ──
-
-use crate::api::types::Message;
-
-/// Scored message for context pruning.
-#[derive(Debug, Clone)]
-pub struct ScoredMessage {
-    pub message: Message,
-    pub relevance: f32,
-    pub turn: usize,
-    pub token_count: usize,
-}
-
-/// Prunes conversation context to stay within a token budget.
-pub struct ContextPruner {
-    target_tokens: usize,
-    messages: Vec<ScoredMessage>,
-}
-
-impl ContextPruner {
-    pub fn new(target_tokens: usize) -> Self {
-        Self {
-            target_tokens,
-            messages: Vec::new(),
-        }
-    }
-
-    /// Add a message with initial scoring.
-    pub fn push(&mut self, turn: usize, message: Message) {
-        let mut score = 1.0;
-
-        // Tool errors: bonus
-        if let Some(ref content) = message.content {
-            if content.contains("error") || content.contains("Error") {
-                score += 0.2;
-            }
-            // File paths: bonus
-            if content.contains('/') || content.contains(".rs") || content.contains(".md") {
-                score += 0.1;
-            }
-        }
-
-        let token_count = message
-            .content
-            .as_ref()
-            .map(|c| c.chars().count() / 4)
-            .unwrap_or(0);
-
-        self.messages.push(ScoredMessage {
-            message,
-            relevance: score,
-            turn,
-            token_count,
-        });
-    }
-
-    /// Apply age-based scoring decay and “gradual forgetting.”
-    pub fn score_all(&mut self, current_turn: usize) {
-        for msg in &mut self.messages {
-            let age = current_turn.saturating_sub(msg.turn);
-            // Base decay: 0.9 per turn old
-            msg.relevance *= 0.9_f32.powi(age as i32);
-            // Gradual forgetting after 10 turns
-            if age > 10 {
-                msg.relevance -= 0.05 * (age - 10) as f32;
-            }
-        }
-    }
-
-    /// Prune lowest-scored messages until under target tokens.
-    /// Never prunes system prompt or current turn.
-    pub fn prune(&mut self, current_turn: usize) -> Vec<usize> {
-        let total: usize = self.messages.iter().map(|m| m.token_count).sum();
-        if total <= self.target_tokens {
-            return Vec::new();
-        }
-
-        // Build list of (index, relevance) for eligible messages
-        let mut candidates: Vec<(usize, f32)> = self
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.turn != current_turn && m.turn != 0) // never prune system or current
-            .map(|(i, m)| (i, m.relevance))
-            .collect();
-
-        // Sort by relevance (lowest first)
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mut freed = 0;
-        let target = self.target_tokens;
-        let mut to_remove: Vec<usize> = Vec::new();
-
-        for (idx, _) in &candidates {
-            if total.saturating_sub(freed) <= target {
-                break;
-            }
-            freed += self.messages[*idx].token_count;
-            to_remove.push(*idx);
-        }
-
-        // Remove in reverse order to preserve indices
-        to_remove.sort_unstable_by(|a, b| b.cmp(a));
-        for idx in &to_remove {
-            self.messages.remove(*idx);
-        }
-
-        to_remove
-    }
-
-    /// Get remaining messages for API.
-    pub fn to_messages(&self) -> Vec<Message> {
-        self.messages.iter().map(|m| m.message.clone()).collect()
-    }
-
-    /// Current token count.
-    pub fn current_tokens(&self) -> usize {
-        self.messages.iter().map(|m| m.token_count).sum()
-    }
 }
 
 #[cfg(test)]
@@ -267,40 +148,5 @@ mod tests {
         }
         // All should be pruned
         assert_eq!(store.active_blocks().len(), 0);
-    }
-
-    // ── Pruning tests ──
-
-    use crate::api::types::Role;
-
-    #[test]
-    fn messages_scored_by_age() {
-        let mut pruner = ContextPruner::new(1000);
-        pruner.push(1, Message::user("hello".into()));
-        pruner.push(2, Message::user("world".into()));
-        pruner.score_all(5);
-        // Older messages have lower relevance
-        assert!(pruner.messages[0].relevance < pruner.messages[1].relevance);
-    }
-
-    #[test]
-    fn pruning_removes_lowest_scored_first() {
-        let mut pruner = ContextPruner::new(50); // very small target
-        for i in 0..10 {
-            pruner.push(i, Message::user(format!("msg {i} with some padding text")));
-        }
-        pruner.score_all(10);
-        let removed = pruner.prune(10);
-        assert!(!removed.is_empty());
-        assert!(pruner.current_tokens() <= 50);
-    }
-
-    #[test]
-    fn below_target_not_pruned() {
-        let mut pruner = ContextPruner::new(10000);
-        pruner.push(1, Message::user("short".into()));
-        pruner.score_all(1);
-        let removed = pruner.prune(1);
-        assert!(removed.is_empty());
     }
 }

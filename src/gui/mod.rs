@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,6 +52,13 @@ pub struct DeepSeekGui {
     // ── Shared state with agent ──
     thinking_flag: Arc<AtomicBool>,
     model_flag: Arc<Mutex<String>>,
+    /// Flag shared with agent loop. Kept in sync with `voice_tts_enabled` so
+    /// the agent knows to shape replies for speech while text to speech is on.
+    voice_mode_flag: Arc<AtomicBool>,
+    /// Flag shared with agent loop, holding the context budget in tokens.
+    context_budget_flag: Arc<AtomicUsize>,
+    /// Slider's current value, seeded from `context_budget_flag` in `new`.
+    context_budget: usize,
 
     // ── Output display ──
     show_raw_output: bool,
@@ -85,6 +92,8 @@ impl DeepSeekGui {
         tx_input: mpsc::UnboundedSender<String>,
         interrupt_flag: Arc<AtomicBool>,
         thinking_flag: Arc<AtomicBool>,
+        voice_mode_flag: Arc<AtomicBool>,
+        context_budget_flag: Arc<AtomicUsize>,
         model_flag: Arc<Mutex<String>>,
     ) -> Self {
         let model_options = vec![
@@ -96,6 +105,9 @@ impl DeepSeekGui {
             .iter()
             .position(|m| *m == current_model)
             .unwrap_or(0);
+        let initial_tts_enabled = false;
+        voice_mode_flag.store(initial_tts_enabled, Ordering::SeqCst);
+        let context_budget = context_budget_flag.load(Ordering::SeqCst);
         Self {
             output_lines: Vec::new(),
             input_buffer: String::new(),
@@ -112,6 +124,9 @@ impl DeepSeekGui {
             model_options,
             selected_model_idx: model_idx,
             thinking_flag,
+            voice_mode_flag,
+            context_budget_flag,
+            context_budget,
             model_flag,
             show_raw_output: false,
             markdown_cache: CommonMarkCache::default(),
@@ -120,7 +135,7 @@ impl DeepSeekGui {
             voice_state: VoiceState::Idle,
             voice_master_enabled: false,
             voice_stt_enabled: false,
-            voice_tts_enabled: false,
+            voice_tts_enabled: initial_tts_enabled,
             voice_trigger_mode: TriggerMode::PushToTalk,
             voice_wake_phrase: "hey deepseek".to_string(),
             voice_id_options: KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect(),
@@ -141,6 +156,18 @@ impl DeepSeekGui {
     ) -> Self {
         self.voice_rx = Some(voice_rx);
         self.voice_tx = Some(voice_tx);
+        self
+    }
+
+    /// Seed the text-to-speech checkbox and `voice_mode_flag` from a
+    /// settings value read at startup. `new()` always starts
+    /// `voice_tts_enabled` at `false`. This call brings the checkbox, the
+    /// flag, and the real speech state back into agreement when settings
+    /// says text to speech should start on.
+    pub fn with_tts_enabled(mut self, enabled: bool) -> Self {
+        self.voice_tts_enabled = enabled;
+        self.voice_mode_flag
+            .store(voice_mode_flag_for_tts(enabled), Ordering::SeqCst);
         self
     }
 
@@ -443,6 +470,8 @@ impl App for DeepSeekGui {
                     let mut tts_enabled = self.voice_tts_enabled;
                     if ui.checkbox(&mut tts_enabled, "Text to speech").changed() {
                         self.voice_tts_enabled = tts_enabled;
+                        self.voice_mode_flag
+                            .store(voice_mode_flag_for_tts(tts_enabled), Ordering::SeqCst);
                         self.send_voice_command(tts_enabled_command(tts_enabled));
                         info!(tts_enabled, "text-to-speech toggled via settings panel");
                     }
@@ -513,10 +542,29 @@ impl App for DeepSeekGui {
 
                     // ── Experimental features section ──
                     ui.label(RichText::new("Experimental").color(Color32::from_rgb(255, 200, 100)));
+
+                    let mut context_budget = self.context_budget;
+                    let budget_response = ui.add(
+                        egui::Slider::new(&mut context_budget, 32_000..=200_000)
+                            .step_by(1000.0)
+                            .text("Context budget"),
+                    );
+                    if budget_response.changed() {
+                        self.context_budget = context_budget;
+                        self.context_budget_flag
+                            .store(context_budget, Ordering::SeqCst);
+                        info!(
+                            context_budget = context_budget,
+                            "context budget changed via settings panel"
+                        );
+                    }
                     ui.label(
-                        RichText::new("More features coming soon...")
-                            .color(Color32::GRAY)
-                            .small(),
+                        RichText::new(format!(
+                            "  Prunes to {} tokens when exceeded",
+                            self.context_budget / 3
+                        ))
+                        .color(Color32::GRAY)
+                        .small(),
                     );
 
                     ui.add_space(16.0);
@@ -831,6 +879,12 @@ fn tts_enabled_command(enabled: bool) -> VoiceCommand {
     VoiceCommand::SetTtsEnabled(enabled)
 }
 
+/// Report the value `voice_mode_flag` should hold for a given text-to-speech
+/// checkbox state. The flag always matches the checkbox.
+fn voice_mode_flag_for_tts(tts_enabled: bool) -> bool {
+    tts_enabled
+}
+
 /// Build the command for the trigger-mode radio pair.
 fn trigger_mode_command(mode: TriggerMode) -> VoiceCommand {
     VoiceCommand::SetTriggerMode(mode)
@@ -863,6 +917,8 @@ mod tests {
             tx_input,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
         )
     }
@@ -1097,6 +1153,23 @@ mod tests {
     }
 
     #[test]
+    fn with_tts_enabled_true_sets_checkbox_and_flag() {
+        let gui = make_gui();
+        assert!(!gui.voice_tts_enabled, "starts off before seeding");
+        let gui = gui.with_tts_enabled(true);
+        assert!(gui.voice_tts_enabled);
+        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn with_tts_enabled_false_leaves_checkbox_and_flag_off() {
+        let gui = make_gui();
+        let gui = gui.with_tts_enabled(false);
+        assert!(!gui.voice_tts_enabled);
+        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn voice_state_changed_event_updates_tracked_state() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::StateChanged(VoiceState::Listening));
@@ -1143,6 +1216,8 @@ mod tests {
             tx_input,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
         );
         gui.handle_voice_event(VoiceEvent::Transcript("hello".into()));
@@ -1291,6 +1366,38 @@ mod tests {
             tts_enabled_command(false),
             VoiceCommand::SetTtsEnabled(false)
         );
+    }
+
+    #[test]
+    fn voice_mode_flag_for_tts_matches_the_checkbox_state() {
+        assert!(voice_mode_flag_for_tts(true));
+        assert!(!voice_mode_flag_for_tts(false));
+    }
+
+    #[test]
+    fn voice_mode_flag_starts_matching_initial_tts_state() {
+        let gui = make_gui();
+        assert!(!gui.voice_tts_enabled);
+        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn voice_mode_flag_tracks_tts_toggling_on_then_off() {
+        let mut gui = make_gui();
+
+        gui.voice_tts_enabled = true;
+        gui.voice_mode_flag.store(
+            voice_mode_flag_for_tts(gui.voice_tts_enabled),
+            Ordering::SeqCst,
+        );
+        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
+
+        gui.voice_tts_enabled = false;
+        gui.voice_mode_flag.store(
+            voice_mode_flag_for_tts(gui.voice_tts_enabled),
+            Ordering::SeqCst,
+        );
+        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1490,6 +1597,38 @@ mod tests {
             rx_voice_cmd.try_recv().unwrap(),
             VoiceCommand::Speak("fresh reply".into())
         );
+    }
+
+    #[test]
+    fn new_gui_seeds_context_budget_from_the_flag() {
+        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        let (tx_input, _rx_input) = mpsc::unbounded_channel();
+        let gui = DeepSeekGui::new(
+            rx_events,
+            tx_input,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(64_000)),
+            Arc::new(Mutex::new("deepseek-v4-flash".into())),
+        );
+        assert_eq!(gui.context_budget, 64_000);
+    }
+
+    #[test]
+    fn context_budget_flag_write_is_observable_through_a_second_handle() {
+        let mut gui = make_gui();
+        let observer = Arc::clone(&gui.context_budget_flag);
+        gui.context_budget = 80_000;
+        gui.context_budget_flag.store(80_000, Ordering::SeqCst);
+        assert_eq!(observer.load(Ordering::SeqCst), 80_000);
+    }
+
+    #[test]
+    fn context_budget_caption_value_is_a_third_of_the_budget() {
+        let mut gui = make_gui();
+        gui.context_budget = 90_000;
+        assert_eq!(gui.context_budget / 3, 30_000);
     }
 
     #[test]

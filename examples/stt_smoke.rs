@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::UnboundedReceiver;
 use DeepSeekCustom::config::settings::TriggerMode;
 use DeepSeekCustom::voice::capture::AudioCapture;
 use DeepSeekCustom::voice::resolve_whisper_model_path;
@@ -31,6 +30,7 @@ use DeepSeekCustom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
 use DeepSeekCustom::voice::stt::WhisperEngine;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 /// How long stage 1 records for before transcribing.
 const RECORD_WINDOW: Duration = Duration::from_secs(5);
