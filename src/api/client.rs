@@ -10,9 +10,20 @@ use tracing::{debug, info, warn};
 use crate::api::types::*;
 use crate::error::{HarnessError, Result};
 
-/// Client for the DeepSeek API (OpenAI-compatible chat completions).
-pub struct DeepSeekClient {
+/// Which backend an `ApiClient` talks to. Both providers accept the same
+/// OpenAI-compatible request shape at `{base_url}/chat/completions`, so one
+/// client type serves both. `prepare_request` adapts the request per
+/// provider before it goes out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Provider {
+    DeepSeek,
+    Ollama,
+}
+
+/// Client for an OpenAI-compatible chat completions API (DeepSeek or Ollama).
+pub struct ApiClient {
     client: reqwest::Client,
+    provider: Provider,
     base_url: String,
     api_key: String,
     default_model: String,
@@ -20,17 +31,25 @@ pub struct DeepSeekClient {
     base_delay_ms: u64,
 }
 
-impl DeepSeekClient {
-    /// Create a new DeepSeekClient.
+impl ApiClient {
+    /// Create a new ApiClient.
     ///
-    /// `api_key` is required. `base_url` defaults to `https://api.deepseek.com`
-    /// and `default_model` defaults to `"deepseek-v4-flash"`.
-    pub fn new(api_key: String, base_url: Option<String>, default_model: Option<String>) -> Self {
-        let base_url = base_url.unwrap_or_else(|| "https://api.deepseek.com".to_string());
+    /// `api_key` is required. `base_url` defaults per provider when `None`:
+    /// `https://api.deepseek.com` for `Provider::DeepSeek`, and
+    /// `http://localhost:11434/v1` for `Provider::Ollama`. `default_model`
+    /// defaults to `"deepseek-v4-flash"`.
+    pub fn new(
+        provider: Provider,
+        api_key: String,
+        base_url: Option<String>,
+        default_model: Option<String>,
+    ) -> Self {
+        let base_url = base_url.unwrap_or_else(|| default_base_url(provider).to_string());
         let default_model = default_model.unwrap_or_else(|| "deepseek-v4-flash".to_string());
 
         Self {
             client: reqwest::Client::new(),
+            provider,
             base_url,
             api_key,
             default_model,
@@ -39,8 +58,31 @@ impl DeepSeekClient {
         }
     }
 
+    /// Adapt a request to what this client's provider accepts.
+    ///
+    /// DeepSeek accepts the request as built. Ollama does not support
+    /// `tool_choice`, and ignores `thinking_mode` in favor of its own
+    /// `reasoning_effort` field, so this maps one onto the other:
+    /// `"thinking"` and `"thinking_max"` become `"high"`, `"non-thinking"`
+    /// becomes `"none"`. A missing or unrecognized `thinking_mode` leaves
+    /// whatever `reasoning_effort` the caller already set untouched.
+    fn prepare_request(&self, req: &ChatRequest) -> ChatRequest {
+        let mut prepared = req.clone();
+        if self.provider == Provider::Ollama {
+            prepared.tool_choice = None;
+            prepared.reasoning_effort = match req.thinking_mode.as_deref() {
+                Some("thinking") | Some("thinking_max") => Some("high".to_string()),
+                Some("non-thinking") => Some("none".to_string()),
+                _ => prepared.reasoning_effort,
+            };
+            prepared.thinking_mode = None;
+        }
+        prepared
+    }
+
     /// Send a non-streaming chat completion request (with retry).
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let req = &self.prepare_request(req);
         let url = format!("{}/chat/completions", self.base_url);
         debug!(
             "chat request: model={}, messages={}",
@@ -100,6 +142,7 @@ impl DeepSeekClient {
     ///
     /// Returns an `mpsc::UnboundedReceiver` of parsed `StreamChunk` values.
     pub fn chat_stream(&self, req: &ChatRequest) -> mpsc::UnboundedReceiver<Result<StreamChunk>> {
+        let req = &self.prepare_request(req);
         let (tx, rx) = mpsc::unbounded_channel();
         let url = format!("{}/chat/completions", self.base_url);
         let auth = self.auth_header();
@@ -271,10 +314,28 @@ impl DeepSeekClient {
     }
 }
 
-/// Resolve the DeepSeek API key from environment and config files.
+/// Default `base_url` for a provider when the caller does not supply one.
+fn default_base_url(provider: Provider) -> &'static str {
+    match provider {
+        Provider::DeepSeek => "https://api.deepseek.com",
+        Provider::Ollama => "http://localhost:11434/v1",
+    }
+}
+
+/// Resolve the API key for `provider` from environment and config files.
 ///
-/// Priority: `DEEPSEEK_API_KEY` env var → `settings.json` `api_key` field → error.
-pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
+/// `Provider::Ollama` returns a placeholder immediately. Ollama requires an
+/// `Authorization` header to be present but ignores its value entirely. No
+/// environment variable or config file is read for it.
+///
+/// `Provider::DeepSeek` priority: `DEEPSEEK_API_KEY` env var → `settings.json`
+/// `api_key` field → error.
+pub fn resolve_api_key(provider: Provider, project_root: &std::path::Path) -> Result<String> {
+    if provider == Provider::Ollama {
+        debug!("api_key: using placeholder value for Ollama");
+        return Ok("ollama".to_string());
+    }
+
     // 1. DEEPSEEK_API_KEY env var
     if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
         if !key.is_empty() {
@@ -393,7 +454,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("deepseek_test_missing_key");
         let _ = std::fs::create_dir_all(&tmp);
 
-        let result = resolve_api_key(&tmp);
+        let result = resolve_api_key(Provider::DeepSeek, &tmp);
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
@@ -403,6 +464,19 @@ mod tests {
             }
             _ => panic!("expected Config error, got {err:?}"),
         }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ollama_key_resolves_to_placeholder_without_touching_env_or_disk() {
+        let tmp = std::env::temp_dir().join("deepseek_test_ollama_key_empty_root");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+
+        let result = resolve_api_key(Provider::Ollama, &tmp);
+
+        assert_eq!(result.unwrap(), "ollama");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -436,5 +510,84 @@ mod tests {
     fn backends_json_without_any_key_yields_none() {
         let contents = r#"{"default": "windows", "backends": {"windows": {"apiKey": ""}}}"#;
         assert_eq!(parse_backends_json(contents), None);
+    }
+
+    fn sample_request(thinking_mode: Option<&str>) -> ChatRequest {
+        ChatRequest {
+            model: "test-model".into(),
+            messages: vec![],
+            tools: None,
+            tool_choice: Some(ToolChoice::Auto),
+            stream: false,
+            temperature: Some(0.7),
+            max_tokens: Some(1024),
+            thinking: None,
+            thinking_mode: thinking_mode.map(|s| s.to_string()),
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn deepseek_leaves_request_untouched() {
+        let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+        let req = sample_request(Some("thinking"));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.thinking_mode.as_deref(), Some("thinking"));
+        assert!(prepared.tool_choice.is_some());
+        assert_eq!(prepared.reasoning_effort, None);
+    }
+
+    #[test]
+    fn ollama_clears_thinking_mode_and_tool_choice() {
+        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+        let req = sample_request(Some("thinking"));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.thinking_mode, None);
+        assert!(prepared.tool_choice.is_none());
+    }
+
+    #[test]
+    fn ollama_maps_thinking_to_high_reasoning_effort() {
+        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+        let req = sample_request(Some("thinking"));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn ollama_maps_thinking_max_to_high_reasoning_effort() {
+        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+        let req = sample_request(Some("thinking_max"));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn ollama_maps_non_thinking_to_none_reasoning_effort() {
+        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+        let req = sample_request(Some("non-thinking"));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.reasoning_effort.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn ollama_with_no_thinking_mode_leaves_reasoning_effort_alone() {
+        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+        let mut req = sample_request(None);
+        req.reasoning_effort = Some("low".to_string());
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.reasoning_effort.as_deref(), Some("low"));
     }
 }

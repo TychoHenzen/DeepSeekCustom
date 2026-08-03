@@ -4,7 +4,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project
 
-DeepSeekCustom - Rust-based experimental AI coding harness. Runs DeepSeek models (v4 flash/pro) in an agent loop with tool calling, terminal UI, skills, and hooks. Piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md) so the same project config works with either harness.
+DeepSeekCustom is an experimental Rust harness for AI coding agents. It runs one of three backends behind a shared GUI: DeepSeek or Ollama through its own in-process agent loop, or Anthropic through a `claude -p` child process. It piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md), so the same project config works with either harness.
 
 **Target:** Rust edition 2024, DeepSeek API v4 (OpenAI-compatible format), egui/eframe native GUI.
 
@@ -26,28 +26,67 @@ Tests in `src/agent/agent_loop.rs`, `src/api/client.rs`, `src/tools/mod.rs`. Tes
 ## Architecture
 
 ```
-DeepSeek API (OpenAI-format chat completions)
-        │
-        ▼
-┌──────────────────┐    ┌──────────────┐
-│   Agent Loop     │◄───│  Tools       │ Bash, Read, Write, Reset
-│   (turn cycle)   │    │  (trait)      │
-└────────┬─────────┘    └──────────────┘
-         │
-    ┌────┴─────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼
- Settings   Skills     Hooks      Memory
-(JSON)     (.md w/    (shell     (CLAUDE.md,
-           fm)        cmds)      MEMORY.md)
+                     ┌─────────────────────────┐
+                     │        Backend          │
+                     │  (chosen at startup)     │
+                     └────────────┬────────────┘
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+        ┌────────────────────┐      ┌────────────────────────┐
+        │  Api(AgentLoop)     │      │  ClaudeCli(driver)     │
+        │  DeepSeek / Ollama  │      │  spawns `claude -p`    │
+        │  (OpenAI-format     │      │  stream-json over      │
+        │  chat completions)  │      │  stdin/stdout          │
+        └──────────┬──────────┘      └────────────┬───────────┘
+                   │                               │
+        ┌──────────┴──────────┐         Claude Code owns its own
+        ▼          ▼          ▼         tools, skills, hooks, and
+     Tools      Hooks      Memory       CLAUDE.md loading. None of
+   (Bash, Read,          (CLAUDE.md,    this harness's ToolRegistry,
+    Write,               MEMORY.md)     HookRunner, MemoryStore, or
+    Reset)                              pruning code runs on this path.
 ```
 
-**Agent loop:** user input → build messages (system prompt + history + tools) → call DeepSeek API → parse response (text or tool calls) → execute tools via `ToolRegistry` → append tool results to history → repeat. Max turns guard (default 100). Streaming via `reqwest` + `tokio::sync::mpsc`. Events sent to GUI via `StreamEvent` enum over unbounded channel — decouples agent from UI layer. User interrupt via `Arc<AtomicBool>` flag: GUI sets it on Escape, agent checks during stream receive and before tool execution, sends `StreamEvent::Interrupted`.
+Both variants read the same `Settings` and stream `StreamEvent` values to the GUI over the same channel. The GUI does not need to know which one is active.
+
+**Backend kinds:** `src/backend/mod.rs` defines `enum Backend { Api(Box<AgentLoop>), ClaudeCli(ClaudeCliDriver) }`. `main.rs` builds one variant at startup from the resolved config entry and never switches at runtime.
+
+The `Api` variant is the harness's own in-process HTTP client. It serves both DeepSeek and Ollama. Everything this harness does applies to it: its own `ToolRegistry`, `HookRunner`, `MemoryStore`, skills, context pruning, and relevance scoring, all described below.
+
+The `ClaudeCli` variant is a long-lived `claude -p` child process, for Anthropic. Claude Code owns the whole turn loop on this path. It uses its own tools, its own skills, its own hooks, its own CLAUDE.md loading, and its own compaction and permissions. This harness's `ToolRegistry`, `HookRunner`, `MemoryStore`, pruning, and relevance scoring do not run on this path at all. State that plainly. A future reader will assume this harness's tool and memory machinery always applies. On this path it does not.
+
+**The Ollama provider:** `src/api/client.rs` defines `enum Provider { DeepSeek, Ollama }` on `ApiClient`. `prepare_request` adapts each outgoing request per provider before it goes out. For Ollama it clears `thinking_mode` and `tool_choice` and sets `reasoning_effort` instead: `thinking` and `thinking_max` map to `"high"`, `non-thinking` maps to `"none"`. A request with no `thinking_mode` leaves the caller's `reasoning_effort` untouched.
+
+These facts about Ollama's OpenAI-compatible endpoint are confirmed against a live local Ollama 0.32.5 and its docs. The endpoint is `http://localhost:11434/v1/chat/completions`, so the client's base URL is `http://localhost:11434/v1`. It accepts this harness's existing request shape and ignores unknown fields instead of rejecting them. `tools` is supported. `tool_choice` is not. Its thinking control is a top-level `reasoning_effort` field taking `"high"`, `"medium"`, `"low"`, `"max"`, or `"none"`. Its SSE chunks parse with the existing parser, so no response-side change was needed. It needs an `Authorization` header but ignores its value, so `resolve_api_key` returns the placeholder `"ollama"` for `Provider::Ollama` without reading the environment or disk at all. The `DEEPSEEK_API_KEY` -> `ANTHROPIC_AUTH_TOKEN` -> `settings.json` -> `~/.claude/settings.json` -> `~/.claude/backends.json` chain in "API Key Resolution" below applies only to `Provider::DeepSeek`.
+
+**The claude -p transport:** `src/backend/claude_cli/process.rs` spawns the child as:
+
+```
+claude -p --output-format stream-json --input-format stream-json
+  --include-partial-messages --verbose --model <model> --permission-mode <mode>
+```
+
+`permission_mode` defaults to `bypassPermissions`. This GUI has no permission prompt. This harness's own Bash tool already runs without asking. Any other mode would silently deny every tool call on this path.
+
+A user turn is one line on the child's stdin, shaped `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}`. This was verified against the real CLI.
+
+Output is parsed by `src/backend/claude_cli/events.rs` and mapped to the existing `StreamEvent` by `src/backend/claude_cli/map.rs`, in `EventMapper`, so the GUI needed no change at all. The mapping: a `text_delta` becomes `Text`. A `thinking_delta` becomes `Reasoning`. A `tool_use` content block becomes `ToolCallStart`. A `tool_result` becomes `ToolCallEnd`. A `result` event becomes `TurnEnd`, with `cache_read_input_tokens` as the cache hit count and `cache_creation_input_tokens` as the miss count.
+
+Tool call arguments arrive as `input_json_delta` fragments after the block's `content_block_start`, not inside it. `EventMapper` buffers those fragments per content-block index and only emits `ToolCallStart` at `content_block_stop`, once the full arguments have accumulated. This is easy to miss: the `input` field on `content_block_start` itself is still an empty object at that point in the protocol. The first implementation read `input` directly there and emitted a `ToolCallStart` with empty arguments every time.
+
+Voice reply mode works on this path too. `voice_mode_instructions()` passes through `--append-system-prompt` at spawn. Since that flag is spawn-time only, `ClaudeCliDriver` restarts the child whenever the voice-mode flag changes between turns.
+
+Interrupt kills the child outright, since the protocol carries no cancel message.
+
+**Autopilot across backends:** `run_repeat` in `src/agent/repeat.rs` is generic over a `RepeatTarget` trait, with one implementation per backend kind. The `Api` path resets by calling `AgentLoop::clear_history`. The `ClaudeCli` path resets by shutting the child down, so the next turn spawns a fresh one. Both give the same guarantee: no iteration sees an earlier iteration's conversation. `repeat_interrupt_flag` still stops the whole run on either path.
+
+**Agent loop:** applies to the `Api` variant only. User input builds into messages (system prompt, history, tools), goes to the DeepSeek or Ollama API, and comes back as text or tool calls. Tools run through `ToolRegistry`, and results append to history before the next round starts. A max-turns guard defaults to 100. Streaming runs over `reqwest` plus `tokio::sync::mpsc`. Events reach the GUI through the `StreamEvent` enum over an unbounded channel. That decouples the agent from the UI layer. A user interrupt works through an `Arc<AtomicBool>` flag. The GUI sets it on Escape. The agent checks it during stream receive and before tool execution, then sends `StreamEvent::Interrupted`.
 
 **Voice reply mode:** while text to speech is on, the agent appends a "## Voice reply mode" block to the system prompt each turn. The block tells the model to answer in at most two sentences with a spoken cadence. No markdown, no lists, no code, plain wording for file paths and identifiers. Tool use is unaffected. This is not a separate setting. It follows the text-to-speech checkbox in the settings sidebar, and it starts from the `tts_enabled` value in the `settings.json` voice block. Mechanism: a shared `voice_mode_flag` (`Arc<AtomicBool>`) on `AgentLoop`, read each turn in `sync_dynamic_config` alongside the thinking flag and model name, driving `MessageHistory::set_system_suffix`. The instruction text lives in `voice_mode_instructions()` in `src/agent/prompt.rs`. The GUI holds the same flag and writes it on every text-to-speech toggle. This is separate from and additional to `filter_for_speech` in `src/voice/mod.rs`, which still strips markdown and caps spoken length on the reply the agent sends back. The prompt shortens the reply at the source. The filter cleans whatever comes back regardless.
 
-**Prompt cache stats:** `Usage` carries `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, and `prompt_cache_write_tokens`. All three default to zero, so a response without them still parses. DeepSeek sends usage in the last streaming chunk, before `[DONE]`, so `StreamChunk` carries an optional `usage` too. The agent loop keeps that final usage and passes the hit and miss counts on in `StreamEvent::TurnEnd`. The GUI adds them up across turns and shows the running totals in the status bar. A session reset zeroes them.
+**Prompt cache stats:** applies to the `Api` variant only. `Usage` carries `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, and `prompt_cache_write_tokens`. All three default to zero, so a response without them still parses. DeepSeek sends usage in the last streaming chunk, before `[DONE]`, so `StreamChunk` carries an optional `usage` too. The agent loop keeps that final usage and passes the hit and miss counts on in `StreamEvent::TurnEnd`. The GUI adds them up across turns and shows the running totals in the status bar. A session reset zeroes them.
 
-**Context pruning:** history grows freely until it passes a high-water mark, the context budget, 100000 tokens by default. Crossing it triggers one hard prune down to a low-water mark, one third of the budget. Pruning rarely and deeply beats pruning every turn. Each prune invalidates the API's prompt cache from the cut point onward. A stable prefix between prunes keeps hitting cache instead. `AgentLoop::maybe_prune_context`, in `src/agent/agent_loop.rs`, checks the budget at the top of every turn before the request is built.
+**Context pruning:** applies to the `Api` variant only. Claude Code manages its own compaction on the `ClaudeCli` path. History grows freely until it passes a high-water mark, the context budget, 100000 tokens by default. Crossing it triggers one hard prune down to a low-water mark, one third of the budget. Pruning rarely and deeply beats pruning every turn. Each prune invalidates the API's prompt cache from the cut point onward. A stable prefix between prunes keeps hitting cache instead. `AgentLoop::maybe_prune_context`, in `src/agent/agent_loop.rs`, checks the budget at the top of every turn before the request is built.
 
 A turn group is one `Role::User` message plus every message that follows it, up to the next `Role::User` message. Groups come fresh from the message vector on every prune, in `src/agent/pruning.rs`. They are never cached, so there is no parallel metadata to drift. The last 2 groups are pinned. No tier touches them.
 
@@ -62,7 +101,7 @@ The budget lives on a slider in the Experimental section of the settings sidebar
 **Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash, Read, Write, Reset, and AskUserQuestion. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset does a hard session reset. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Codex files):
-- `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, voice config, autopilot config, `context_budget`, and `show_raw_output`. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
+- `settings.json` - project root or `~/.claude/`. Backend definitions, permissions, hooks, voice config, autopilot config, `context_budget`, and `show_raw_output`. See "Config" below for the `backends` block. The repo ships one at the project root that turns voice on. The GUI writes this file back, see "Settings persistence" below.
 - Skills — `skills/*.md` with YAML frontmatter (`name`, `description`, `tools`).
 - Hooks — shell commands receive JSON on stdin, return JSON on stdout. Events: PreToolUse, PostToolUse, SessionStart, SessionEnd, SessionReset.
 - Memory - `CLAUDE.md` (project instructions), `MEMORY.md` (persistent memory). Injected into system prompt.
@@ -95,7 +134,7 @@ The `settings.json` voice block, with defaults:
 | `tts_voice` | `"af_heart"` |
 | `tts_speed` | `1.0`, clamped 0.5-2.0 |
 
-**Autopilot:** runs one task text N times in a row without a human in the loop. `src/agent/repeat.rs::run_repeat` drives the loop: before each iteration it calls `AgentLoop::clear_history`, which rebuilds `MessageHistory` from just the base system prompt, dropping every message and any voice-mode suffix. No iteration sees anything an earlier iteration said or did in conversation. What does carry across iterations: files the agent wrote or edited on disk, and the autopilot decision log (below). Nothing else. `sync_dynamic_config` restores the voice-mode suffix on the next `run` call, so a cleared history does not disable voice mode.
+**Autopilot:** runs one task text N times in a row without a human in the loop. `run_repeat` in `src/agent/repeat.rs` is generic over the `RepeatTarget` trait, so it drives both backend kinds through one shared loop. See "Autopilot across backends" above for the `ClaudeCli` side. On the `Api` side, before each iteration it calls `AgentLoop::clear_history`, which rebuilds `MessageHistory` from just the base system prompt, dropping every message and any voice-mode suffix. No iteration sees anything an earlier iteration said or did in conversation. What does carry across iterations: files the agent wrote or edited on disk, and the autopilot decision log (below). Nothing else. `sync_dynamic_config` restores the voice-mode suffix on the next `run` call, so a cleared history does not disable voice mode.
 
 The `AskUserQuestion` tool is registered on every run, autopilot or not. A separate, non-streaming model call always answers its questions, never the user. There is no human-answer path at all. A plain chat run gets the exact same machine answers an autopilot run gets. This tool never pauses for a person, in either mode.
 
@@ -124,6 +163,17 @@ The `settings.json` autopilot block, with defaults:
 
 Startup runs the other direction. `DeepSeekGui::new` seeds every panel control from the settings value it is handed, including the voice mode flag. It falls back to the first Kokoro voice when `tts_voice` names an unknown id. `main` seeds `thinking_flag` and `context_budget_flag` from settings before spawning the agent. The old `with_tts_enabled` builder is gone, since `new` now seeds all of it from one source.
 
+**Config:** the `backends` block in `settings.json` replaced the old top-level `model` field, which is deleted. Each entry is a `BackendConfig` in `src/config/settings.rs`, tagged on `kind`, either `"api"` or `"claude_cli"`.
+
+| `kind` | Fields |
+|---|---|
+| `api` | `provider` (`"deepseek"` or `"ollama"`), `model`, optional `base_url`, optional `api_key` |
+| `claude_cli` | `model`, optional `permission_mode`, optional `env` map |
+
+`default_backend` names the active entry. `main.rs::resolve_active_backend` looks it up, defaulting to `"deepseek"` when `default_backend` is absent. An unknown name is a hard startup error naming both the requested entry and the entries that exist. It never falls back silently. Switching backends takes effect on the next app start, since the client and driver are both built once at startup.
+
+The repo `settings.json` ships three entries: `deepseek` (model `deepseek-v4-pro`), `ollama` (model `qwen2.5-coder:7b-instruct-q4_K_M`), and `claude` (model `opus`), with `default_backend` set to `deepseek`.
+
 **Key architectural choices:**
 - No conversation persistence between runs (only memory files and `settings.json` survive)
 - Session reset is hard cut (clear context, reload memory files, start fresh with prompt)
@@ -134,31 +184,32 @@ Startup runs the other direction. `DeepSeekGui::new` seeds every panel control f
 
 ## Implementation Status
 
-Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implementations, tests, and native GUI. Voice adds local speech to text and text to speech, confirmed working against a real microphone and real speakers.
+Phase 1-2 complete, plus a voice subsystem and a second backend kind. Core modules filled in with implementations, tests, and native GUI. Voice adds local speech to text and text to speech, confirmed working against a real microphone and real speakers. The `ClaudeCli` backend was confirmed end to end against the real `claude` binary: a turn went through `ClaudeCliDriver` and `Text` plus `TurnEnd` events came back on the channel.
 
 **Done:**
-- API client: DeepSeekClient (streaming SSE + non-streaming, retry, auth via env/settings.json, V4 thinking_mode format)
+- Backend: `src/backend/mod.rs` (the `Backend` enum and its shared flags), `src/backend/claude_cli/process.rs` (`ClaudeCliDriver`, the child process owner), `src/backend/claude_cli/events.rs` (stream-json event parsing), `src/backend/claude_cli/map.rs` (`EventMapper`, mapping to `StreamEvent`). See the Backend section above for the full mechanism.
+- API client: `ApiClient` talks to both DeepSeek and Ollama. It streams replies, retries on failure, and reads its key from an env var or `settings.json`. It uses the V4 thinking_mode format. `prepare_request` changes the outgoing request to fit whichever provider is active.
 - Agent loop: turn cycle, tool execution, session reset, system prompt rebuild. Echoes reasoning_content back. Filters nameless tool calls (V4 thinking deltas). Syncs config from the GUI each turn (thinking_flag, model_flag, voice_mode_flag). Emits StreamEvent::Reasoning, ToolCallStart, ToolCallEnd, and TurnEnd. TurnEnd carries the prompt cache hit and miss counts.
 - Tools: Bash, Read, Write, Reset (Tool trait + ToolRegistry + permission check)
-- Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig
-- Context: `src/agent/pruning.rs` (three-tier prune over the message vector) and `src/context/relevance.rs` (relevance scoring call). `src/context/mod.rs` now holds only `ThinkingStore` and `parse_thinking_tags`, both still unused by the agent, since `ContextPruner` was deleted from it
-- Hooks: HookRunner with JSON stdin/stdout for lifecycle events
-- Memory: MemoryManager loading CLAUDE.md/MEMORY.md
-- Skills: Skill loader parsing .md with YAML frontmatter
+- Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig, the `backends` map and `default_backend` (see "Config" above)
+- Context: `src/agent/pruning.rs` (three-tier prune over the message vector) and `src/context/relevance.rs` (relevance scoring call), both `Api`-only. `src/context/mod.rs` now holds only `ThinkingStore` and `parse_thinking_tags`, both still unused by the agent, since `ContextPruner` was deleted from it
+- Hooks: HookRunner with JSON stdin/stdout for lifecycle events, `Api`-only
+- Memory: MemoryManager loading CLAUDE.md/MEMORY.md, `Api`-only
+- Skills: Skill loader parsing .md with YAML frontmatter, `Api`-only
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. The sidebar holds a model selector, a thinking toggle, voice controls, and an Experimental section with a context budget slider. That slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count.
+- GUI: egui/eframe native GUI. Has output scroll, input bar, status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. The sidebar holds a backend picker, a thinking toggle, voice controls, and an Experimental section with a context budget slider. The backend picker lists the names from the `backends` map. Beneath it, a read-only line shows the selected backend's model. A grey caption says a switch takes effect on the next start. That budget slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. Markdown renders via egui_commonmark: white text is markdown, non-white stays raw or styled. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count. The status bar shows `Backend: name (model)`.
 - Voice: `src/voice/` module. Local speech to text via whisper-rs. Local speech output via Kokoro through kokoro-en. Push-to-talk and wake-word triggers, switchable by `trigger_mode`. A `VoiceService` state machine drives it, wired into `main.rs` and the GUI. Speech to text and text to speech degrade independently if a model file is missing. See `docs/voice-setup.md` for model setup. The settings sidebar's voice section has checkboxes for voice enabled, speech to text, and text to speech. It also has trigger mode radio buttons, a wake phrase box, a Kokoro voice picker, and a speed slider.
-- Autopilot: `src/autopilot/` (policy file and decision log, plus the policy-driven answerer), `src/agent/repeat.rs` (the repeat runner), and the `AskUserQuestion` tool in `src/tools/ask.rs`. See the Autopilot section above for the full mechanism.
+- Autopilot: `src/autopilot/` (policy file and decision log, plus the policy-driven answerer), `src/agent/repeat.rs` (the `RepeatTarget` trait and the shared `run_repeat` runner, driving both backend kinds), and the `AskUserQuestion` tool in `src/tools/ask.rs`. See the Autopilot section above for the full mechanism.
 
 **GUI key bindings:**
 - `Enter` - send message to agent
 - `Escape` - interrupt running agent, stop any speech in progress, and stop a running autopilot repeat (does not quit)
-- `Tab` - toggle settings sidebar (model selector, thinking toggle, voice controls)
+- `Tab` - toggle settings sidebar (backend picker, thinking toggle, voice controls)
 - `Ctrl+Q` - quit application
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 361 total, all passing. No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
+**Tests:** 417 total, all passing. That is 411 lib tests plus 6 tests in the binary target (`backend_resolution_tests` in `src/main.rs`, covering `resolve_active_backend`). No failures, no ignored tests. The voice tests need the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`.
 
 | Module | Tests |
 |---|---|
@@ -166,15 +217,20 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 | `agent/history.rs` | 10 |
 | `agent/prompt.rs` | 5 |
 | `agent/pruning.rs` | 10 |
-| `api/client.rs` | 4 |
-| `api/types.rs` | 9 |
+| `agent/repeat.rs` | 5 |
+| `api/client.rs` | 11 |
+| `api/types.rs` | 10 |
 | `autopilot/answerer.rs` | 9 |
 | `autopilot/policy.rs` | 10 |
 | `autopilot/question.rs` | 10 |
-| `config/settings.rs` | 26 |
+| `backend/mod.rs` | 3 |
+| `backend/claude_cli/process.rs` | 10 |
+| `backend/claude_cli/events.rs` | 10 |
+| `backend/claude_cli/map.rs` | 7 |
+| `config/settings.rs` | 30 |
 | `context/mod.rs` | 3 |
 | `context/relevance.rs` | 13 |
-| `gui/mod.rs` | 65 |
+| `gui/mod.rs` | 68 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
@@ -194,16 +250,19 @@ Phase 1-2 complete, plus a voice subsystem. Core modules filled in with implemen
 | `voice/wake.rs` | 9 |
 | `voice/vad.rs` | 7 |
 | `voice/stt.rs` | 3 |
+| `src/main.rs` (`backend_resolution_tests`) | 6 |
 
-Plus `tests/fixtures/chat_response.json`.
+Plus `tests/fixtures/chat_response.json`, `tests/fixtures/claude_stream_json.jsonl`, and `tests/fixtures/claude_stream_json_tools.jsonl`.
 
 **Next:** Phase 3 (hemisphere model), hook execution integration, or skill injection into agent context.
 
 ## API Key Resolution
 
+This chain applies to `Provider::DeepSeek` only. `Provider::Ollama` skips it and returns a placeholder key, see "The Ollama provider" above.
+
 Priority chain: `DEEPSEEK_API_KEY` env → `ANTHROPIC_AUTH_TOKEN` env → `settings.json` (project) → `settings.json` (~/.claude) → `~/.claude/backends.json`. Sourced via `resolve_api_key()` in `api/client.rs`.
 
-`backends.json` is the CustomClaude launcher's config. It holds a `default` backend name and a `backends` map. Each entry may carry an `apiKey`. The default backend's key wins. If that entry has no key, the first backend that has one wins.
+`~/.claude/backends.json` is the CustomClaude launcher's own config file, unrelated to the `backends` block this harness reads from `settings.json` (see "Config" above), despite the shared name. It holds a `default` backend name and a `backends` map. Each entry may carry an `apiKey`. The default backend's key wins. If that entry has no key, the first backend that has one wins.
 
 ## Logging
 

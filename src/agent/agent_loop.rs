@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::api::client::DeepSeekClient;
+use crate::api::client::ApiClient;
 use crate::api::types::{ChatRequest, Message, Role, ToolCall};
 use crate::error::{HarnessError, Result};
 use crate::tools::{ToolOutput, ToolRegistry};
@@ -77,7 +77,7 @@ pub enum StreamEvent {
 
 /// Core agent loop: user input → API call → tool execution → repeat.
 pub struct AgentLoop {
-    client: DeepSeekClient,
+    client: ApiClient,
     tools: ToolRegistry,
     history: MessageHistory,
     config: AgentConfig,
@@ -104,7 +104,7 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new AgentLoop.
     pub fn new(
-        client: DeepSeekClient,
+        client: ApiClient,
         tools: ToolRegistry,
         system_prompt: String,
         config: AgentConfig,
@@ -264,6 +264,7 @@ impl AgentLoop {
                 max_tokens: Some(4096),
                 thinking: None,
                 thinking_mode: Some(thinking_mode.to_string()),
+                reasoning_effort: None,
             };
 
             // Call API (streaming)
@@ -438,7 +439,7 @@ impl AgentLoop {
                     });
                 }
             } else {
-                // Text-only response — done
+                // Text-only response - done
                 info!(
                     turn = turn + 1,
                     text_len = stream_text.len(),
@@ -593,7 +594,7 @@ fn merge_tool_call(accumulated: &mut Vec<ToolCall>, delta: &ToolCall) {
             }
         }
     } else {
-        // New tool call — ensure function and arguments exist
+        // New tool call - ensure function and arguments exist
         let mut tc = delta.clone();
         let func = tc.function.get_or_insert_with(Default::default);
         if func.arguments.is_none() {
@@ -646,7 +647,7 @@ mod tests {
 
     #[test]
     fn agent_loop_creates_with_history() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test prompt".into(), AgentConfig::default());
         assert_eq!(agent.history().len(), 0);
@@ -654,7 +655,7 @@ mod tests {
 
     #[test]
     fn session_reset_clears_history() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
         let mut agent = AgentLoop::new(client, tools, "initial".into(), AgentConfig::default());
@@ -670,7 +671,7 @@ mod tests {
 
     #[test]
     fn voice_mode_flag_defaults_to_false() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
         assert!(
@@ -682,7 +683,7 @@ mod tests {
 
     #[test]
     fn voice_mode_flag_handle_observes_writes() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
         let flag = agent.voice_mode_flag();
@@ -696,7 +697,7 @@ mod tests {
 
     #[test]
     fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
         agent
@@ -717,7 +718,7 @@ mod tests {
 
     #[test]
     fn sync_dynamic_config_clears_voice_suffix_when_flag_false() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
         agent
@@ -748,7 +749,7 @@ mod tests {
 
     #[test]
     fn context_budget_flag_defaults_to_100000() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
         assert_eq!(
@@ -761,7 +762,7 @@ mod tests {
 
     #[test]
     fn context_budget_flag_handle_observes_writes() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
         let flag = agent.context_budget_flag();
@@ -776,7 +777,7 @@ mod tests {
 
     #[test]
     fn apply_prune_is_noop_under_budget() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
         agent.history.push(Message::user("hello".into()));
@@ -792,7 +793,7 @@ mod tests {
 
     #[test]
     fn apply_prune_reduces_oversized_history_to_low_water() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
 
@@ -831,7 +832,7 @@ mod tests {
 
     #[test]
     fn apply_prune_with_none_scores_does_not_panic() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
         for i in 0..10 {
@@ -848,7 +849,7 @@ mod tests {
 
     #[test]
     fn rebuild_system_prompt_clears_messages() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
         let mut agent = AgentLoop::new(client, tools, "initial".into(), AgentConfig::default());
@@ -860,7 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_returns_output() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(EchoTool));
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
@@ -872,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unknown_tool_returns_error() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let agent = AgentLoop::new(client, tools, "test".into(), AgentConfig::default());
 
@@ -929,7 +930,8 @@ mod tests {
         });
 
         // Create client pointing at mock server
-        let client = DeepSeekClient::new(
+        let client = ApiClient::new(
+            crate::api::client::Provider::DeepSeek,
             "sk-test".into(),
             Some(format!("http://127.0.0.1:{port}")),
             Some("deepseek-v4-flash".into()),
@@ -999,7 +1001,7 @@ mod tests {
 
     #[test]
     fn clear_history_drops_messages_keeps_system_prompt() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
         agent.history.push(Message::user("hello".into()));
@@ -1015,7 +1017,7 @@ mod tests {
 
     #[test]
     fn clear_history_after_voice_suffix_still_produces_working_system_message() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys prompt".into(), AgentConfig::default());
         agent
@@ -1046,7 +1048,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1070,7 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
-        let client = DeepSeekClient::new("sk-test".into(), None, None);
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
         let mut agent = AgentLoop::new(client, tools, "sys".into(), AgentConfig::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1146,7 +1148,8 @@ mod tests {
             }
         });
 
-        let client = DeepSeekClient::new(
+        let client = ApiClient::new(
+            crate::api::client::Provider::DeepSeek,
             "sk-test".into(),
             Some(format!("http://127.0.0.1:{port}")),
             Some("deepseek-v4-flash".into()),

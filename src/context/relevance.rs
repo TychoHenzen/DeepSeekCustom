@@ -11,7 +11,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::agent::history::estimate_message_tokens;
-use crate::api::client::DeepSeekClient;
+use crate::api::client::ApiClient;
 use crate::api::types::{ChatRequest, Message};
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
@@ -117,7 +117,7 @@ fn extract_array_span(text: &str) -> Option<&str> {
 /// model. Never panics and never propagates an error: any failure is
 /// logged at `warn` and reported as `None`, so a scoring failure leaves
 /// the calling turn running.
-pub async fn score_messages(client: &DeepSeekClient, messages: &[Message]) -> Option<Vec<f32>> {
+pub async fn score_messages(client: &ApiClient, messages: &[Message]) -> Option<Vec<f32>> {
     if messages.is_empty() {
         return Some(vec![]);
     }
@@ -136,6 +136,7 @@ pub async fn score_messages(client: &DeepSeekClient, messages: &[Message]) -> Op
         max_tokens: Some((messages.len() as u32) * 20 + 64),
         thinking: None,
         thinking_mode: Some("non-thinking".to_string()),
+        reasoning_effort: None,
     };
 
     let response = match client.chat(&req).await {

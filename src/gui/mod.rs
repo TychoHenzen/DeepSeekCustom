@@ -68,8 +68,9 @@ pub struct DeepSeekGui {
 
     // ── Settings panel ──
     settings_visible: bool,
-    model_options: Vec<String>,
-    selected_model_idx: usize,
+    /// Sorted backend names, the keys of `settings.backends()`.
+    backend_options: Vec<String>,
+    selected_backend_idx: usize,
 
     // ── Shared state with agent ──
     thinking_flag: Arc<AtomicBool>,
@@ -152,15 +153,16 @@ impl DeepSeekGui {
         settings: Settings,
         project_root: PathBuf,
     ) -> Self {
-        let model_options = vec![
-            "deepseek-v4-flash".to_string(),
-            "deepseek-v4-pro".to_string(),
-        ];
-        let current_model = model_flag.lock().unwrap().clone();
-        let model_idx = model_options
-            .iter()
-            .position(|m| *m == current_model)
+        let mut backend_options: Vec<String> = settings
+            .backends()
+            .map(|b| b.keys().cloned().collect())
+            .unwrap_or_default();
+        backend_options.sort();
+        let selected_backend_idx = settings
+            .default_backend()
+            .and_then(|name| backend_options.iter().position(|b| b == name))
             .unwrap_or(0);
+        let current_model = model_flag.lock().unwrap().clone();
         let initial_tts_enabled = settings.voice_tts_enabled();
         voice_mode_flag.store(
             voice_mode_flag_for_tts(initial_tts_enabled),
@@ -194,8 +196,8 @@ impl DeepSeekGui {
             auto_scroll: false,
             interrupt_flag,
             settings_visible: false,
-            model_options,
-            selected_model_idx: model_idx,
+            backend_options,
+            selected_backend_idx,
             thinking_flag,
             voice_mode_flag,
             context_budget_flag,
@@ -625,28 +627,48 @@ impl App for DeepSeekGui {
                     ui.heading("Settings");
                     ui.separator();
 
-                    // ── Model selector ──
-                    let prev_idx = self.selected_model_idx;
-                    egui::ComboBox::from_label("Model")
-                        .selected_text(&self.model_options[self.selected_model_idx])
+                    // ── Backend selector ──
+                    let prev_idx = self.selected_backend_idx;
+                    let selected_text = self
+                        .backend_options
+                        .get(self.selected_backend_idx)
+                        .map(String::as_str)
+                        .unwrap_or("(none configured)");
+                    egui::ComboBox::from_label("Backend")
+                        .selected_text(selected_text)
                         .show_ui(ui, |ui| {
-                            for (i, opt) in self.model_options.iter().enumerate() {
-                                ui.selectable_value(&mut self.selected_model_idx, i, opt);
+                            for (i, opt) in self.backend_options.iter().enumerate() {
+                                ui.selectable_value(&mut self.selected_backend_idx, i, opt);
                             }
                         });
-                    if self.selected_model_idx != prev_idx {
-                        let new_model = self.model_options[self.selected_model_idx].clone();
-                        self.model = new_model.clone();
-                        if let Ok(mut model) = self.model_flag.lock() {
-                            *model = new_model.clone();
+                    if self.selected_backend_idx != prev_idx {
+                        let new_backend = self.backend_options[self.selected_backend_idx].clone();
+                        if let Some(cfg) = self.settings.resolve_backend(&new_backend) {
+                            let new_model = cfg.model().to_string();
+                            self.model = new_model.clone();
+                            if let Ok(mut model) = self.model_flag.lock() {
+                                *model = new_model;
+                            }
                         }
                         info!(
-                            model = %new_model,
-                            "model changed via settings panel"
+                            backend = %new_backend,
+                            "backend changed via settings panel"
                         );
-                        apply_model(&mut self.settings, &new_model);
+                        apply_default_backend(&mut self.settings, &new_backend);
                         self.persist_settings();
                     }
+                    ui.label(
+                        RichText::new(format!("Model: {}", self.model))
+                            .color(Color32::GRAY)
+                            .small(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Switching backends takes effect on the next app start.",
+                        )
+                        .color(Color32::GRAY)
+                        .small(),
+                    );
 
                     ui.add_space(8.0);
 
@@ -971,8 +993,13 @@ impl App for DeepSeekGui {
             .min_height(24.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    let backend_name = self
+                        .backend_options
+                        .get(self.selected_backend_idx)
+                        .map(String::as_str)
+                        .unwrap_or("unknown");
                     ui.label(
-                        RichText::new(format!("Model: {}", self.model))
+                        RichText::new(format!("Backend: {backend_name} ({})", self.model))
                             .color(Color32::from_rgb(0, 255, 255)),
                     );
                     ui.separator();
@@ -1159,9 +1186,9 @@ fn speed_command(speed: f32) -> VoiceCommand {
 // thinking writers create their config block when it is missing, so a
 // change is never silently dropped.
 
-/// Store the model dropdown's selection.
-fn apply_model(settings: &mut Settings, model: &str) {
-    settings.model = Some(model.to_string());
+/// Store the backend picker's selection.
+fn apply_default_backend(settings: &mut Settings, name: &str) {
+    settings.default_backend = Some(name.to_string());
 }
 
 /// Store the thinking checkbox's value.
@@ -1227,7 +1254,8 @@ fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::settings::VoiceConfig;
+    use crate::config::settings::{ApiProvider, BackendConfig, VoiceConfig};
+    use std::collections::HashMap;
 
     fn make_gui() -> DeepSeekGui {
         make_gui_with_settings(&Settings::default())
@@ -1286,6 +1314,55 @@ mod tests {
             }),
             ..Settings::default()
         }
+    }
+
+    /// A settings value with two backends, "alpha" and "beta", and the
+    /// given `default_backend`.
+    fn settings_with_backends(default_backend: Option<&str>) -> Settings {
+        let mut backends = HashMap::new();
+        backends.insert(
+            "alpha".to_string(),
+            BackendConfig::Api {
+                provider: ApiProvider::DeepSeek,
+                model: "alpha-model".to_string(),
+                base_url: None,
+                api_key: None,
+            },
+        );
+        backends.insert(
+            "beta".to_string(),
+            BackendConfig::ClaudeCli {
+                model: "beta-model".to_string(),
+                permission_mode: None,
+                env: None,
+            },
+        );
+        Settings {
+            backends: Some(backends),
+            default_backend: default_backend.map(|s| s.to_string()),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn new_seeds_the_backend_picker_from_default_backend() {
+        let gui = make_gui_with_settings(&settings_with_backends(Some("beta")));
+        assert_eq!(gui.backend_options, vec!["alpha", "beta"]);
+        assert_eq!(gui.backend_options[gui.selected_backend_idx], "beta");
+    }
+
+    #[test]
+    fn new_falls_back_to_the_first_sorted_backend_when_default_is_absent() {
+        let gui = make_gui_with_settings(&settings_with_backends(None));
+        assert_eq!(gui.selected_backend_idx, 0);
+        assert_eq!(gui.backend_options[0], "alpha");
+    }
+
+    #[test]
+    fn new_falls_back_to_the_first_sorted_backend_when_default_is_unknown() {
+        let gui = make_gui_with_settings(&settings_with_backends(Some("nonexistent")));
+        assert_eq!(gui.selected_backend_idx, 0);
+        assert_eq!(gui.backend_options[0], "alpha");
     }
 
     #[test]
@@ -2030,9 +2107,9 @@ mod tests {
     }
 
     #[test]
-    fn model_change_survives_a_save_and_a_load() {
-        let loaded = round_trip(|s| apply_model(s, "deepseek-v4-pro"));
-        assert_eq!(loaded.model.as_deref(), Some("deepseek-v4-pro"));
+    fn default_backend_change_survives_a_save_and_a_load() {
+        let loaded = round_trip(|s| apply_default_backend(s, "claude"));
+        assert_eq!(loaded.default_backend(), Some("claude"));
     }
 
     #[test]

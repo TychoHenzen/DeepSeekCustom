@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod api;
 pub mod autopilot;
+pub mod backend;
 pub mod config;
 pub mod context;
 pub mod error;

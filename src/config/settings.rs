@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -8,8 +9,6 @@ use crate::error::{HarnessError, Result};
 /// Top-level settings (deserialized from settings.json).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Settings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,12 +27,18 @@ pub struct Settings {
     /// Whether the GUI shows raw output instead of rendered markdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_raw_output: Option<bool>,
+    /// Named backend configurations, keyed by an arbitrary id chosen in
+    /// `settings.json` (e.g. "deepseek", "ollama", "claude").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backends: Option<HashMap<String, BackendConfig>>,
+    /// Which entry in `backends` is active by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_backend: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            model: Some("deepseek-v4-flash".into()),
             api_key: None,
             permissions: None,
             hooks: None,
@@ -42,6 +47,8 @@ impl Default for Settings {
             autopilot: None,
             context_budget: None,
             show_raw_output: None,
+            backends: None,
+            default_backend: None,
         }
     }
 }
@@ -54,7 +61,7 @@ impl Settings {
     /// 2. `~/.claude/settings.json`
     /// 3. `~/.deepseek/settings.json`
     ///
-    /// Missing files are not an error — defaults apply.
+    /// Missing files are not an error, defaults apply.
     pub fn load(project_root: &Path) -> Result<Self> {
         let mut settings = Self::default();
 
@@ -96,25 +103,12 @@ impl Settings {
         Ok(())
     }
 
-    /// Resolve the active model name.
-    ///
-    /// Priority: `DEEPSEEK_MODEL` env var → `model` field → `"deepseek-v4-flash"`.
-    pub fn model(&self) -> String {
-        if let Ok(env_model) = std::env::var("DEEPSEEK_MODEL") {
-            if !env_model.is_empty() {
-                return env_model;
-            }
-        }
-        self.model
-            .clone()
-            .unwrap_or_else(|| "deepseek-v4-flash".to_string())
-    }
-
     /// Log the loaded config, redacting the API key.
     pub fn log_redacted(&self) {
+        let backend = self.default_backend().unwrap_or("deepseek");
         info!(
-            "config loaded: model={}, api_key={}, permissions={}, hooks={}, thinking={}, voice={}",
-            self.model(),
+            "config loaded: backend={}, api_key={}, permissions={}, hooks={}, thinking={}, voice={}",
+            backend,
             if self.api_key.is_some() {
                 "***REDACTED***"
             } else {
@@ -259,6 +253,21 @@ impl Settings {
         self.autopilot.get_or_insert_with(AutopilotConfig::default)
     }
 
+    /// The configured backends map, if any.
+    pub fn backends(&self) -> Option<&HashMap<String, BackendConfig>> {
+        self.backends.as_ref()
+    }
+
+    /// The name of the default backend, if set.
+    pub fn default_backend(&self) -> Option<&str> {
+        self.default_backend.as_deref()
+    }
+
+    /// Look up one backend by name.
+    pub fn resolve_backend(&self, name: &str) -> Option<&BackendConfig> {
+        self.backends.as_ref().and_then(|b| b.get(name))
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -276,9 +285,6 @@ impl Settings {
 
     /// Merge another Settings into self (other overwrites self for Some fields).
     fn merge(&mut self, other: Settings) {
-        if other.model.is_some() {
-            self.model = other.model;
-        }
         if other.api_key.is_some() {
             self.api_key = other.api_key;
         }
@@ -302,6 +308,12 @@ impl Settings {
         }
         if other.show_raw_output.is_some() {
             self.show_raw_output = other.show_raw_output;
+        }
+        if other.backends.is_some() {
+            self.backends = other.backends;
+        }
+        if other.default_backend.is_some() {
+            self.default_backend = other.default_backend;
         }
     }
 }
@@ -454,40 +466,58 @@ pub struct VoiceConfig {
     pub tts_speed: Option<f32>,
 }
 
+/// A named provider for an `api`-kind backend.
+///
+/// This is a config-side enum only. `src/api/client.rs` has its own runtime
+/// `Provider` enum. Keep them separate, `src/config/` must not depend on
+/// `src/api/`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiProvider {
+    DeepSeek,
+    Ollama,
+}
+
+/// One backend entry from the `backends` map in `settings.json`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BackendConfig {
+    Api {
+        provider: ApiProvider,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+    },
+    ClaudeCli {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+    },
+}
+
+impl BackendConfig {
+    /// The model configured for this backend, whichever variant it is.
+    pub fn model(&self) -> &str {
+        match self {
+            BackendConfig::Api { model, .. } => model,
+            BackendConfig::ClaudeCli { model, .. } => model,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_settings_have_model() {
-        let s = Settings::default();
-        assert_eq!(s.model(), "deepseek-v4-flash");
-    }
-
-    #[test]
-    fn model_resolution_uses_field() {
-        let s = Settings {
-            model: Some("deepseek-v4-pro".into()),
-            ..Default::default()
-        };
-        assert_eq!(s.model(), "deepseek-v4-pro");
-    }
-
-    #[test]
-    fn model_resolution_falls_back_to_default() {
-        let s = Settings {
-            model: None,
-            ..Default::default()
-        };
-        assert_eq!(s.model(), "deepseek-v4-flash");
-    }
 
     #[test]
     fn load_nonexistent_file_returns_defaults() {
         let result = Settings::load(Path::new("/nonexistent/path/xyz"));
         assert!(result.is_ok());
         let s = result.unwrap();
-        assert_eq!(s.model(), "deepseek-v4-flash");
         assert!(s.api_key.is_none());
     }
 
@@ -495,12 +525,10 @@ mod tests {
     fn merge_overwrites_some_fields() {
         let mut base = Settings::default();
         let other = Settings {
-            model: Some("v4-pro".into()),
             api_key: Some("sk-abc".into()),
             ..Default::default()
         };
         base.merge(other);
-        assert_eq!(base.model(), "v4-pro");
         assert_eq!(base.api_key.unwrap(), "sk-abc");
     }
 
@@ -589,7 +617,6 @@ mod tests {
         let dir = unique_temp_dir("settings-roundtrip");
 
         let original = Settings {
-            model: Some("deepseek-v4-pro".into()),
             api_key: Some("sk-round-trip".into()),
             permissions: Some(PermissionsConfig {
                 allow: Some(vec!["Bash".into(), "Read".into()]),
@@ -620,6 +647,8 @@ mod tests {
             }),
             context_budget: Some(150_000),
             show_raw_output: Some(true),
+            backends: None,
+            default_backend: None,
         };
 
         original.save(&dir).unwrap();
@@ -627,7 +656,6 @@ mod tests {
 
         let loaded = Settings::load(&dir).unwrap();
 
-        assert_eq!(loaded.model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(loaded.api_key.as_deref(), Some("sk-round-trip"));
         let perms = loaded.permissions.as_ref().unwrap();
         assert_eq!(
@@ -713,7 +741,6 @@ mod tests {
         let dir = unique_temp_dir("settings-omit");
 
         let s = Settings {
-            model: Some("deepseek-v4-flash".into()),
             api_key: None,
             permissions: None,
             hooks: None,
@@ -722,11 +749,12 @@ mod tests {
             autopilot: None,
             context_budget: None,
             show_raw_output: None,
+            backends: None,
+            default_backend: None,
         };
         s.save(&dir).unwrap();
         let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
 
-        assert!(text.contains("deepseek-v4-flash"));
         assert!(!text.contains("api_key"));
         assert!(!text.contains("context_budget"));
         assert!(!text.contains("show_raw_output"));
@@ -811,5 +839,191 @@ mod tests {
         let json = r#"{"voice": {"trigger_mode": "bogus_mode"}}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.voice_trigger_mode(), TriggerMode::PushToTalk);
+    }
+
+    #[test]
+    fn api_backend_minimal_fields_deserialize() {
+        let json = r#"{"kind": "api", "provider": "deepseek", "model": "deepseek-v4-pro"}"#;
+        let b: BackendConfig = serde_json::from_str(json).unwrap();
+        match b {
+            BackendConfig::Api {
+                provider,
+                model,
+                base_url,
+                api_key,
+            } => {
+                assert_eq!(provider, ApiProvider::DeepSeek);
+                assert_eq!(model, "deepseek-v4-pro");
+                assert!(base_url.is_none());
+                assert!(api_key.is_none());
+            }
+            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        }
+    }
+
+    #[test]
+    fn api_backend_full_fields_round_trip() {
+        let original = BackendConfig::Api {
+            provider: ApiProvider::Ollama,
+            model: "qwen2.5-coder:7b-instruct-q4_K_M".into(),
+            base_url: Some("http://localhost:11434/v1".into()),
+            api_key: Some("sk-local".into()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
+        match loaded {
+            BackendConfig::Api {
+                provider,
+                model,
+                base_url,
+                api_key,
+            } => {
+                assert_eq!(provider, ApiProvider::Ollama);
+                assert_eq!(model, "qwen2.5-coder:7b-instruct-q4_K_M");
+                assert_eq!(base_url.as_deref(), Some("http://localhost:11434/v1"));
+                assert_eq!(api_key.as_deref(), Some("sk-local"));
+            }
+            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        }
+    }
+
+    #[test]
+    fn claude_cli_backend_round_trips() {
+        let mut env = HashMap::new();
+        env.insert("FOO".to_string(), "bar".to_string());
+        env.insert("BAZ".to_string(), "qux".to_string());
+        let original = BackendConfig::ClaudeCli {
+            model: "opus".into(),
+            permission_mode: Some("bypassPermissions".into()),
+            env: Some(env),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
+        match loaded {
+            BackendConfig::ClaudeCli {
+                model,
+                permission_mode,
+                env,
+            } => {
+                assert_eq!(model, "opus");
+                assert_eq!(permission_mode.as_deref(), Some("bypassPermissions"));
+                let env = env.unwrap();
+                assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
+                assert_eq!(env.get("BAZ").map(String::as_str), Some("qux"));
+            }
+            BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
+        }
+    }
+
+    #[test]
+    fn api_backend_omits_absent_optional_fields() {
+        let backend = BackendConfig::Api {
+            provider: ApiProvider::DeepSeek,
+            model: "deepseek-v4-pro".into(),
+            base_url: None,
+            api_key: None,
+        };
+        let json = serde_json::to_string(&backend).unwrap();
+        assert!(!json.contains("base_url"));
+        assert!(!json.contains("api_key"));
+    }
+
+    #[test]
+    fn resolve_backend_finds_by_name_and_misses_unknown() {
+        let mut backends = HashMap::new();
+        backends.insert(
+            "deepseek".to_string(),
+            BackendConfig::Api {
+                provider: ApiProvider::DeepSeek,
+                model: "deepseek-v4-pro".into(),
+                base_url: None,
+                api_key: None,
+            },
+        );
+        let s = Settings {
+            backends: Some(backends),
+            default_backend: Some("deepseek".into()),
+            ..Default::default()
+        };
+
+        match s.resolve_backend("deepseek") {
+            Some(BackendConfig::Api { provider, .. }) => {
+                assert_eq!(*provider, ApiProvider::DeepSeek);
+            }
+            _ => panic!("expected to resolve deepseek backend"),
+        }
+        assert!(s.resolve_backend("nonexistent").is_none());
+        assert_eq!(s.default_backend(), Some("deepseek"));
+    }
+
+    #[test]
+    fn repo_settings_json_parses_with_three_backends() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let contents = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        let s: Settings = serde_json::from_str(&contents).unwrap();
+
+        assert_eq!(s.default_backend(), Some("deepseek"));
+        let backends = s.backends().unwrap();
+        assert_eq!(backends.len(), 3);
+
+        match backends.get("deepseek").unwrap() {
+            BackendConfig::Api {
+                provider, model, ..
+            } => {
+                assert_eq!(*provider, ApiProvider::DeepSeek);
+                assert_eq!(model, "deepseek-v4-pro");
+            }
+            _ => panic!("expected deepseek to be an Api backend"),
+        }
+
+        match backends.get("ollama").unwrap() {
+            BackendConfig::Api {
+                provider, model, ..
+            } => {
+                assert_eq!(*provider, ApiProvider::Ollama);
+                assert_eq!(model, "qwen2.5-coder:7b-instruct-q4_K_M");
+            }
+            _ => panic!("expected ollama to be an Api backend"),
+        }
+
+        match backends.get("claude").unwrap() {
+            BackendConfig::ClaudeCli { model, .. } => {
+                assert_eq!(model, "opus");
+            }
+            _ => panic!("expected claude to be a ClaudeCli backend"),
+        }
+    }
+
+    #[test]
+    fn provider_and_kind_wire_tags_round_trip() {
+        let deepseek_json = serde_json::to_string(&ApiProvider::DeepSeek).unwrap();
+        assert_eq!(deepseek_json, "\"deepseek\"");
+        let ollama_json = serde_json::to_string(&ApiProvider::Ollama).unwrap();
+        assert_eq!(ollama_json, "\"ollama\"");
+        assert_eq!(
+            serde_json::from_str::<ApiProvider>("\"deepseek\"").unwrap(),
+            ApiProvider::DeepSeek
+        );
+        assert_eq!(
+            serde_json::from_str::<ApiProvider>("\"ollama\"").unwrap(),
+            ApiProvider::Ollama
+        );
+
+        let api_backend = BackendConfig::Api {
+            provider: ApiProvider::DeepSeek,
+            model: "deepseek-v4-pro".into(),
+            base_url: None,
+            api_key: None,
+        };
+        let api_json = serde_json::to_string(&api_backend).unwrap();
+        assert!(api_json.contains("\"kind\":\"api\""));
+
+        let claude_backend = BackendConfig::ClaudeCli {
+            model: "opus".into(),
+            permission_mode: None,
+            env: None,
+        };
+        let claude_json = serde_json::to_string(&claude_backend).unwrap();
+        assert!(claude_json.contains("\"kind\":\"claude_cli\""));
     }
 }

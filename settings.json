@@ -1,5 +1,4 @@
 {
-  "model": "deepseek-v4-pro",
   "thinking": {
     "enabled": true
   },
@@ -12,5 +11,22 @@
     "tts_voice": "am_puck",
     "tts_speed": 1.0
   },
-  "context_budget": 150000
+  "context_budget": 150000,
+  "default_backend": "deepseek",
+  "backends": {
+    "deepseek": {
+      "kind": "api",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro"
+    },
+    "ollama": {
+      "kind": "api",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
+    },
+    "claude": {
+      "kind": "claude_cli",
+      "model": "opus"
+    }
+  }
 }

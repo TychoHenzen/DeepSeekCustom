@@ -21,6 +21,10 @@ pub struct ChatRequest {
     /// DeepSeek V4 format: `"thinking"`, `"non-thinking"`, or `"thinking_max"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
+    /// Ollama's `/v1/chat/completions` thinking control: `"high" | "medium" |
+    /// "low" | "max" | "none"`. Unused by DeepSeek.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +199,7 @@ mod tests {
             max_tokens: Some(1024),
             thinking: None,
             thinking_mode: None,
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -228,6 +233,7 @@ mod tests {
             max_tokens: Some(4096),
             thinking: None,
             thinking_mode: Some("thinking".into()),
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -255,6 +261,7 @@ mod tests {
             max_tokens: Some(4096),
             thinking: None,
             thinking_mode: Some("non-thinking".into()),
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -262,6 +269,33 @@ mod tests {
 
         assert_eq!(parsed["thinking_mode"], "non-thinking");
         assert!(parsed.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_absent_when_none() {
+        let req = ChatRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hello".into()),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: None,
+            tool_choice: None,
+            stream: false,
+            temperature: Some(0.7),
+            max_tokens: Some(1024),
+            thinking: None,
+            thinking_mode: None,
+            reasoning_effort: None,
+        };
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert!(parsed.get("reasoning_effort").is_none());
     }
 
     #[test]

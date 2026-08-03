@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use crate::api::client::DeepSeekClient;
+use crate::api::client::ApiClient;
 use crate::api::types::{ChatRequest, Message};
 use crate::autopilot::policy::{format_policy_prompt_section, PolicyStore};
 use crate::autopilot::question::{Answer, AskInput};
@@ -33,13 +33,13 @@ pub trait QuestionAnswerer: Send + Sync {
 /// Answers questions with one non-streaming call to the DeepSeek API, guided
 /// by a policy file and a log of recent decisions.
 pub struct PolicyAnswerer {
-    client: DeepSeekClient,
+    client: ApiClient,
     policy_store: PolicyStore,
     model: String,
 }
 
 impl PolicyAnswerer {
-    pub fn new(client: DeepSeekClient, policy_store: PolicyStore, model: String) -> Self {
+    pub fn new(client: ApiClient, policy_store: PolicyStore, model: String) -> Self {
         Self {
             client,
             policy_store,
@@ -67,6 +67,7 @@ impl QuestionAnswerer for PolicyAnswerer {
             max_tokens: Some((input.questions.len() as u32) * 200 + 128),
             thinking: None,
             thinking_mode: Some("non-thinking".to_string()),
+            reasoning_effort: None,
         };
 
         let parsed = match self.client.chat(&req).await {
