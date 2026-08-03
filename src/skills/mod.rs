@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -137,7 +137,11 @@ impl SkillLoader {
                 continue;
             }
 
-            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
             match std::fs::read_to_string(&path) {
                 Ok(content) => match Skill::from_markdown(&content, &filename) {

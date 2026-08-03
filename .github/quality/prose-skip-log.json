@@ -1,0 +1,11 @@
+[
+  {
+    "file": "src/voice/tts.rs",
+    "reasons": [
+      "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\voice\\tts.rs:220: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\voice\\tts.rs:225: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\voice\\tts.rs:227: ERROR [semicolon] no semicolons. Write two sentences.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\voice\\tts.rs:238: ERROR [long-sentence] sentence is 27 words, cap is 25. Split it.\nC:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\src\\voice\\tts.rs:238: ERROR [semicolon] no semicolons. Write two sentences."
+    ],
+    "exempt": false,
+    "at": "2026-08-02T08:42:49.790Z",
+    "acknowledged": true
+  }
+]

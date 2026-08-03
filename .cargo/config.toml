@@ -1,3 +1,57 @@
 # Disable incremental compilation — ballooned to 10+ GB temp after a few runs
 [build]
 incremental = false
+
+# whisper-rs-sys builds whisper.cpp through cmake and generates bindings with
+# bindgen. Both need help on this machine:
+#
+# CMAKE - devkitPro ships an MSYS2 cmake at C:\devkitPro\msys2\usr\bin that has
+# no Visual Studio generator, and it sits ahead of the real one on PATH. Without
+# this pin the build dies with "Could not create named generator Visual Studio
+# 17 2022". The cmake crate reads this variable before falling back to PATH.
+#
+# LIBCLANG_PATH - bindgen needs libclang.dll from the LLVM install.
+[env]
+CMAKE = "C:\\Program Files\\CMake\\bin\\cmake.exe"
+# kokoro-en asks ort for the CUDA provider by default. Registration used to
+# fail because onnxruntime_providers_cuda.dll wants cublas64_13.dll,
+# cublasLt64_13.dll, cufft64_12.dll, and cudnn64_9.dll, none of which this
+# machine had (the CUDA 13 toolkit install does not provide them; ort-sys
+# downloads its own provider bundle at build time, and the current one
+# imports CUDA 13 names). Tested 2026-08-02: installing the
+# matching pip wheels (nvidia-cudnn-cu12, nvidia-cublas-cu12, nvidia-cufft-cu12,
+# nvidia-cuda-runtime-cu12) and adding their bin/ dirs to PATH makes
+# registration succeed cleanly. But measured synthesis time was the same as
+# CPU (~3.7s/line either way, GPU run's first call was slower from warmup) -
+# likely because model_quantized.onnx is int8 and the CUDA EP falls back to
+# CPU for most quantized ops, paying transfer overhead for no gain. Left on
+# cpu because it is not faster. Any value other than "auto" or "cuda" makes
+# kokoro-en use CPU instead.
+#
+# 2026-08-02 follow-up: the "no speedup" result above was an artifact of the
+# int8 model, not of CUDA. Measured per line, same seven-call harness:
+#   model_quantized.onnx (int8), CPU  ~3.7s
+#   model.onnx           (fp32), CPU  ~1.0s
+#   model.onnx           (fp32), CUDA ~0.25s
+# int8 is both worse sounding and slower here, so fp32 on the GPU wins twice
+# over. Provider set back to auto. kokoro-en logs "CUDA unavailable, falling
+# back to CPU provider" and keeps going if the DLLs are not found, so a
+# machine without them still works, just slower.
+KOKORO_ORT_PROVIDER = "auto"
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+
+# whisper-rs-sys's build.rs hardcodes `.profile("Release")` on the cmake
+# crate's Config, but never calls `.generator(...)`. That leaves cmake-rs's
+# own generator-inference path in charge, which for an MSVC target with no
+# generator set on `Config` takes the `generator.is_none() && msvc` branch
+# in `Config::build()`: it derives CMAKE_CXX_FLAGS_RELEASE / CMAKE_C_FLAGS_RELEASE
+# from a `cc::Build` configured with `opt_level(0)`, stripping every `-O`/`/O`
+# flag in the process, so whisper.cpp compiles at MSVC's implicit /Od despite
+# CMAKE_BUILD_TYPE=Release. whisper-rs-sys's own build.rs passes any env var
+# whose name starts with CMAKE_ straight into `config.define()` (see its
+# main(), the loop over env::vars()), which marks the flag "already defined"
+# and skips cmake-rs's override. Setting these here restores real
+# optimization: verified by inspecting target/debug/build/whisper-rs-sys-*/output,
+# 0 occurrences of /O2 before this fix.
+CMAKE_CXX_FLAGS_RELEASE = "/O2 /Ob2 /DNDEBUG"
+CMAKE_C_FLAGS_RELEASE = "/O2 /Ob2 /DNDEBUG"

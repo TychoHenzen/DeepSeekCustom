@@ -1,10 +1,10 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## Project
 
-DeepSeekCustom — Rust-based experimental AI coding harness. Runs DeepSeek models (v4 flash/pro) in an agent loop with tool calling, terminal UI, skills, and hooks. Piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md) so the same project config works with either harness.
+DeepSeekCustom - Rust-based experimental AI coding harness. Runs DeepSeek models (v4 flash/pro) in an agent loop with tool calling, terminal UI, skills, and hooks. Piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md) so the same project config works with either harness.
 
 **Target:** Rust edition 2024, DeepSeek API v4 (OpenAI-compatible format), egui/eframe native GUI.
 
@@ -49,12 +49,12 @@ DeepSeek API (OpenAI-format chat completions)
 
 **Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Minimum set: Bash (shell execution with timeout; `shell` param accepts `auto`/`cmd`/`powershell`; auto-detects powershell/pwsh commands and runs directly via `Command::new("powershell")` to avoid cmd.exe inner-quote mangling), Read (file read with line numbers), Write (file write), Reset (hard session reset). Permission check via settings `allow`/`deny` lists.
 
-**Piggybacking formats** (drop-in compatible with Claude Code files):
+**Piggybacking formats** (drop-in compatible with Codex files):
 - `settings.json` - project root or `~/.claude/`. Model, permissions, hooks, and voice config. The repo ships one at the project root that turns voice on.
 - Skills — `skills/*.md` with YAML frontmatter (`name`, `description`, `tools`).
 - Hooks — shell commands receive JSON on stdin, return JSON on stdout. Events: PreToolUse, PostToolUse, SessionStart, SessionEnd, SessionReset.
 - Memory - `CLAUDE.md` (project instructions), `MEMORY.md` (persistent memory). Injected into system prompt.
-- The repo root also holds an `AGENTS.md`, the same guide written for Codex. Edit both together.
+- The repo root also holds a `CLAUDE.md`, the same guide written for Claude Code. Edit both together.
 
 **API format decision:** Start with OpenAI-compatible format (`https://api.deepseek.com/chat/completions`) — simpler SDK support in Rust. Anthropic format added later only if content block streaming needed for thinking interleave.
 

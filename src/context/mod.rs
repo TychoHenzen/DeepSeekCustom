@@ -47,10 +47,14 @@ impl ThinkingStore {
         for block in &mut self.blocks {
             block.relevance_score *= 0.85;
         }
-        self.blocks.retain(|b| b.relevance_score >= self.decay_threshold);
+        self.blocks
+            .retain(|b| b.relevance_score >= self.decay_threshold);
         let pruned = before - self.blocks.len();
         if pruned > 0 {
-            info!("thinking: pruned {pruned} blocks, {} remain", self.blocks.len());
+            info!(
+                "thinking: pruned {pruned} blocks, {} remain",
+                self.blocks.len()
+            );
         }
     }
 
@@ -148,7 +152,11 @@ impl ContextPruner {
             }
         }
 
-        let token_count = message.content.as_ref().map(|c| c.chars().count() / 4).unwrap_or(0);
+        let token_count = message
+            .content
+            .as_ref()
+            .map(|c| c.chars().count() / 4)
+            .unwrap_or(0);
 
         self.messages.push(ScoredMessage {
             message,

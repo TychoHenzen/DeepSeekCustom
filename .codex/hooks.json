@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom\\time.ps1\"",
+            "timeout": 2000
+          }
+        ]
+      }
+    ]
+  }
+}

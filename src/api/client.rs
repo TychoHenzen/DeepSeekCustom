@@ -25,11 +25,7 @@ impl DeepSeekClient {
     ///
     /// `api_key` is required. `base_url` defaults to `https://api.deepseek.com`
     /// and `default_model` defaults to `"deepseek-v4-flash"`.
-    pub fn new(
-        api_key: String,
-        base_url: Option<String>,
-        default_model: Option<String>,
-    ) -> Self {
+    pub fn new(api_key: String, base_url: Option<String>, default_model: Option<String>) -> Self {
         let base_url = base_url.unwrap_or_else(|| "https://api.deepseek.com".to_string());
         let default_model = default_model.unwrap_or_else(|| "deepseek-v4-flash".to_string());
 
@@ -46,7 +42,11 @@ impl DeepSeekClient {
     /// Send a non-streaming chat completion request (with retry).
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        debug!("chat request: model={}, messages={}", req.model, req.messages.len());
+        debug!(
+            "chat request: model={}, messages={}",
+            req.model,
+            req.messages.len()
+        );
 
         for attempt in 0..self.max_retries {
             let response = self
@@ -99,10 +99,7 @@ impl DeepSeekClient {
     /// Send a streaming chat completion request (with retry on initial connect).
     ///
     /// Returns an `mpsc::UnboundedReceiver` of parsed `StreamChunk` values.
-    pub fn chat_stream(
-        &self,
-        req: &ChatRequest,
-    ) -> mpsc::UnboundedReceiver<Result<StreamChunk>> {
+    pub fn chat_stream(&self, req: &ChatRequest) -> mpsc::UnboundedReceiver<Result<StreamChunk>> {
         let (tx, rx) = mpsc::unbounded_channel();
         let url = format!("{}/chat/completions", self.base_url);
         let auth = self.auth_header();
@@ -113,7 +110,9 @@ impl DeepSeekClient {
         let request_body = match serde_json::to_string(req) {
             Ok(body) => body,
             Err(e) => {
-                let _ = tx.send(Err(HarnessError::Parse(format!("Failed to serialize request: {e}"))));
+                let _ = tx.send(Err(HarnessError::Parse(format!(
+                    "Failed to serialize request: {e}"
+                ))));
                 return rx;
             }
         };
@@ -123,8 +122,14 @@ impl DeepSeekClient {
             debug!("chat stream request body: {}", request_body);
 
             let response = Self::connect_stream_with_retry(
-                &client, &url, &auth, &request_body, max_retries, base_delay_ms,
-            ).await;
+                &client,
+                &url,
+                &auth,
+                &request_body,
+                max_retries,
+                base_delay_ms,
+            )
+            .await;
 
             let response = match response {
                 Ok(r) => r,
@@ -137,7 +142,9 @@ impl DeepSeekClient {
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
-                let _ = tx.send(Err(HarnessError::Api(format!("API error {status}: {body}"))));
+                let _ = tx.send(Err(HarnessError::Api(format!(
+                    "API error {status}: {body}"
+                ))));
                 return;
             }
 
@@ -299,7 +306,9 @@ pub fn resolve_api_key(project_root: &std::path::Path) -> Result<String> {
 
     // 4. ~/.claude/settings.json
     if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        let global_settings = std::path::Path::new(&home).join(".claude").join("settings.json");
+        let global_settings = std::path::Path::new(&home)
+            .join(".claude")
+            .join("settings.json");
         if let Ok(contents) = std::fs::read_to_string(&global_settings) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
                 if let Some(key) = json.get("api_key").and_then(|v| v.as_str()) {

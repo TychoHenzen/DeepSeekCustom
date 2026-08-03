@@ -1,0 +1,11 @@
+{
+  "voice": {
+    "enabled": true,
+    "stt_enabled": true,
+    "tts_enabled": true,
+    "trigger_mode": "push_to_talk",
+    "wake_phrase": "hey deepseek",
+    "tts_voice": "af_heart",
+    "tts_speed": 1.0
+  }
+}

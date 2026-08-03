@@ -165,7 +165,9 @@ mod tests {
     fn estimated_tokens_increases_with_content() {
         let mut h = MessageHistory::new("short".into());
         let before = h.estimated_tokens();
-        h.push(Message::user("a long message with many characters and more words".into()));
+        h.push(Message::user(
+            "a long message with many characters and more words".into(),
+        ));
         assert!(h.estimated_tokens() > before);
     }
 }

@@ -121,6 +121,15 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Tokens retrieved from prompt cache (not charged as input).
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: u32,
+    /// Tokens not found in prompt cache (charged as input).
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u32,
+    /// Tokens written to prompt cache for future hits.
+    #[serde(default)]
+    pub prompt_cache_write_tokens: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,6 +139,9 @@ pub struct StreamChunk {
     pub created: Option<u64>,
     pub model: Option<String>,
     pub choices: Option<Vec<StreamChoice>>,
+    /// Usage stats sent in the final streaming chunk (before [DONE]).
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,8 +198,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
         assert_eq!(parsed["model"], "deepseek-v4-flash");
         assert_eq!(parsed["messages"][0]["role"], "user");
@@ -220,8 +231,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
         assert_eq!(parsed["thinking_mode"], "thinking");
         assert!(parsed.get("thinking").is_none());
@@ -248,8 +258,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
         assert_eq!(parsed["thinking_mode"], "non-thinking");
         assert!(parsed.get("thinking").is_none());
@@ -281,9 +290,13 @@ mod tests {
             response.choices[0].message.content.as_deref(),
             Some("Hello! I'm DeepSeek, an AI assistant. How can I help you today?")
         );
-        assert_eq!(response.usage.as_ref().unwrap().prompt_tokens, 10);
-        assert_eq!(response.usage.as_ref().unwrap().completion_tokens, 15);
-        assert_eq!(response.usage.as_ref().unwrap().total_tokens, 25);
+        let usage = response.usage.as_ref().unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 15);
+        assert_eq!(usage.total_tokens, 25);
+        assert_eq!(usage.prompt_cache_hit_tokens, 8);
+        assert_eq!(usage.prompt_cache_miss_tokens, 2);
+        assert_eq!(usage.prompt_cache_write_tokens, 10);
     }
 
     #[test]
@@ -303,5 +316,33 @@ mod tests {
         let choices = chunk.choices.as_ref().unwrap();
         assert_eq!(choices[0].finish_reason.as_deref(), Some("stop"));
         assert!(choices[0].delta.content.is_none());
+    }
+
+    #[test]
+    fn stream_chunk_parses_final_chunk_with_usage() {
+        // Final chunk with usage (DeepSeek sends cache stats in last delta before [DONE])
+        let data = r#"{"id":"chatcmpl-xyz","object":"chat.completion.chunk","created":1716902400,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":45,"total_tokens":165,"prompt_cache_hit_tokens":100,"prompt_cache_miss_tokens":20,"prompt_cache_write_tokens":120}}"#;
+        let chunk: StreamChunk = serde_json::from_str(data).expect("parse");
+
+        let usage = chunk.usage.as_ref().unwrap();
+        assert_eq!(usage.prompt_tokens, 120);
+        assert_eq!(usage.completion_tokens, 45);
+        assert_eq!(usage.total_tokens, 165);
+        assert_eq!(usage.prompt_cache_hit_tokens, 100);
+        assert_eq!(usage.prompt_cache_miss_tokens, 20);
+        assert_eq!(usage.prompt_cache_write_tokens, 120);
+    }
+
+    #[test]
+    fn usage_without_cache_fields_defaults_to_zero() {
+        // Backward compat: older API responses or non-cached requests don't include cache fields
+        let data = r#"{"prompt_tokens":10,"completion_tokens":15,"total_tokens":25}"#;
+        let usage: Usage = serde_json::from_str(data).expect("parse");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 15);
+        assert_eq!(usage.total_tokens, 25);
+        assert_eq!(usage.prompt_cache_hit_tokens, 0);
+        assert_eq!(usage.prompt_cache_miss_tokens, 0);
+        assert_eq!(usage.prompt_cache_write_tokens, 0);
     }
 }

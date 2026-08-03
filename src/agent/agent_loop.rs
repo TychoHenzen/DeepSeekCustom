@@ -35,11 +35,26 @@ pub enum StreamEvent {
     /// Text chunk received from the model.
     Text { turn: u32, text: String },
     /// A tool call has started.
-    ToolCallStart { turn: u32, tool: String, args: String },
+    ToolCallStart {
+        turn: u32,
+        tool: String,
+        args: String,
+    },
     /// A tool call completed.
-    ToolCallEnd { turn: u32, tool: String, output: String, is_error: bool },
+    ToolCallEnd {
+        turn: u32,
+        tool: String,
+        output: String,
+        is_error: bool,
+    },
     /// The agent has finished its turn.
-    TurnEnd { turn: u32, finish_reason: String, total_tokens: usize },
+    TurnEnd {
+        turn: u32,
+        finish_reason: String,
+        total_tokens: usize,
+        prompt_cache_hit_tokens: u32,
+        prompt_cache_miss_tokens: u32,
+    },
     /// Session was reset.
     SessionReset,
     /// An error occurred.
@@ -134,7 +149,11 @@ impl AgentLoop {
             let tools = self.tools.to_api_definitions();
             let messages = self.history.to_api_messages();
 
-            let thinking_mode = if self.config.thinking { "thinking" } else { "non-thinking" };
+            let thinking_mode = if self.config.thinking {
+                "thinking"
+            } else {
+                "non-thinking"
+            };
             info!(thinking_mode = thinking_mode, "building API request");
 
             let request = ChatRequest {
@@ -156,6 +175,7 @@ impl AgentLoop {
             let mut stream_reasoning = String::new();
             let mut stream_tool_calls: Vec<ToolCall> = Vec::new();
             let mut finish_reason = String::new();
+            let mut stream_usage: Option<crate::api::types::Usage> = None;
 
             while let Some(chunk_result) = rx.recv().await {
                 // Check for user interrupt before processing chunk
@@ -195,6 +215,10 @@ impl AgentLoop {
                                 }
                             }
                         }
+                        // Capture usage from final chunk (DeepSeek sends it with the last delta)
+                        if chunk.usage.is_some() {
+                            stream_usage = chunk.usage;
+                        }
                     }
                     Err(e) => {
                         error!("stream error: {e}");
@@ -230,18 +254,21 @@ impl AgentLoop {
                 turn: turn + 1,
                 finish_reason: finish_reason.clone(),
                 total_tokens: self.history.estimated_tokens(),
+                prompt_cache_hit_tokens: stream_usage
+                    .as_ref()
+                    .map(|u| u.prompt_cache_hit_tokens)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: stream_usage
+                    .as_ref()
+                    .map(|u| u.prompt_cache_miss_tokens)
+                    .unwrap_or(0),
             });
 
             // Filter out tool calls lacking a function name (can appear as
             // empty deltas in V4 thinking mode during reasoning phase).
             let valid_tool_calls: Vec<ToolCall> = stream_tool_calls
                 .iter()
-                .filter(|tc| {
-                    tc.function
-                        .as_ref()
-                        .and_then(|f| f.name.as_ref())
-                        .is_some()
-                })
+                .filter(|tc| tc.function.as_ref().and_then(|f| f.name.as_ref()).is_some())
                 .cloned()
                 .collect();
             let filtered_out = stream_tool_calls.len() - valid_tool_calls.len();
@@ -258,10 +285,18 @@ impl AgentLoop {
                 // Append assistant message with tool calls
                 self.history.push(Message {
                     role: Role::Assistant,
-                    content: if stream_text.is_empty() { None } else { Some(stream_text.clone()) },
+                    content: if stream_text.is_empty() {
+                        None
+                    } else {
+                        Some(stream_text.clone())
+                    },
                     tool_calls: Some(stream_tool_calls.clone()),
                     tool_call_id: None,
-                    reasoning_content: if stream_reasoning.is_empty() { None } else { Some(stream_reasoning.clone()) },
+                    reasoning_content: if stream_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(stream_reasoning.clone())
+                    },
                 });
 
                 // Execute each tool call
@@ -320,7 +355,11 @@ impl AgentLoop {
                     content: Some(stream_text.clone()),
                     tool_calls: None,
                     tool_call_id: None,
-                    reasoning_content: if stream_reasoning.is_empty() { None } else { Some(stream_reasoning.clone()) },
+                    reasoning_content: if stream_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(stream_reasoning.clone())
+                    },
                 });
                 break;
             }
@@ -469,11 +508,20 @@ mod tests {
     struct EchoTool;
     #[async_trait::async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "echoes input" }
-        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echoes input"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput> {
-            Ok(ToolOutput { content: "echoed".into(), is_error: false })
+            Ok(ToolOutput {
+                content: "echoed".into(),
+                is_error: false,
+            })
         }
     }
 
@@ -610,7 +658,11 @@ mod tests {
 
         // Run the agent
         let result = agent.run("hello").await;
-        assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "agent run should succeed: {:?}",
+            result.err()
+        );
         let responses = result.unwrap();
         assert!(!responses.is_empty(), "should have response text");
 
@@ -621,17 +673,38 @@ mod tests {
         }
 
         // Verify Reasoning events were emitted
-        let reasoning_events: Vec<_> = events.iter().filter(|e| matches!(e, StreamEvent::Reasoning { .. })).collect();
-        assert!(!reasoning_events.is_empty(), "expected at least one Reasoning event, got events: {:?}", events.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", "));
+        let reasoning_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::Reasoning { .. }))
+            .collect();
+        assert!(
+            !reasoning_events.is_empty(),
+            "expected at least one Reasoning event, got events: {:?}",
+            events
+                .iter()
+                .map(|e| format!("{:?}", e))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
         // Verify reasoning content is correct
-        let reasoning: String = reasoning_events.iter().filter_map(|e| {
-            if let StreamEvent::Reasoning { text, .. } = e { Some(text.clone()) } else { None }
-        }).collect();
+        let reasoning: String = reasoning_events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEvent::Reasoning { text, .. } = e {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(reasoning, "I should think about this");
 
         // Verify Text events were also emitted
-        let text_count = events.iter().filter(|e| matches!(e, StreamEvent::Text { .. })).count();
+        let text_count = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::Text { .. }))
+            .count();
         assert!(text_count > 0, "expected at least one Text event");
     }
 }

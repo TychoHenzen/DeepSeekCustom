@@ -2,3 +2,13 @@
 .idea/
 .claude/
 time.ps1
+
+# Voice models, downloaded separately. See docs/voice-setup.md.
+# 540 MB of whisper and Kokoro weights, plus the Kokoro voice packs.
+/models/
+/voices/
+
+# Step-by-step session state, local to one run of the workflow.
+.step-session/
+
+deepseek_custom.log

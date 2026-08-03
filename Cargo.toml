@@ -18,3 +18,51 @@ async-trait = "0.1"
 futures = "0.3"
 bytes = "1"
 egui_commonmark = "0.20"
+cpal = "0.15"
+# GPU build attempted 2026-08-03 and reverted, both backends blocked at the
+# machine level rather than in this crate:
+# - features = ["cuda"] builds via a Visual Studio CMake generator, which
+#   needs the CUDA Toolkit's "CUDA 13.0.props/.targets" MSBuild integration
+#   files copied into VS's own
+#   "MSBuild/Microsoft/VC/v170/BuildCustomizations" directory. The Toolkit
+#   ships them under its own "extras/visual_studio_integration" folder but
+#   they were never installed into VS, so CMake fails at the enable_language
+#   (CUDA) step with "No CUDA toolset found". Fixing this means writing into
+#   the system-wide VS install, outside this repo.
+# - features = ["vulkan"] needs the Vulkan SDK (VULKAN_SDK env var and its
+#   headers/libs), not just the GPU driver's runtime loader. Only the
+#   runtime (vulkaninfo.exe) is present here; the SDK is not installed.
+# Either is a real fix once the SDK/integration is installed, and
+# WhisperContext Parameters already asks for the GPU unconditionally
+# (see src/voice/stt.rs), so re-adding one of these features later is the
+# whole change needed.
+whisper-rs = "0.16"
+kokoro-en = "0.1.4"
+# kokoro-en 0.1.4 asks for ort "2.0.0-rc.11", which lets the resolver pick
+# rc.13. Its source uses ort::execution_providers::CUDAExecutionProvider, gone
+# in rc.13, and rc.11 moved ort::value::TensorElementType. rc.12 is the only
+# release it compiles against, per its own vendored lockfile. Exact pin so a
+# plain `cargo update` cannot break the build.
+ort = "=2.0.0-rc.12"
+# Windows loader API (SetDefaultDllDirectories, AddDllDirectory,
+# LoadLibraryExW) so CUDA runtime DLL discovery in src/voice/cuda_dlls.rs
+# does not depend on PATH. Version pinned to match what was already resolved
+# transitively (see Cargo.lock) so this does not pull a second copy.
+windows = { version = "=0.58.0", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
+# whisper-rs-sys's build.rs picks its native CMake config from
+# `cfg!(debug_assertions)` as seen by the build SCRIPT itself: true means it
+# defines CMAKE_BUILD_TYPE=RelWithDebInfo and adds an unconditional
+# -DWHISPER_DEBUG to CXXFLAGS. On a Visual Studio (multi-config) generator,
+# CMAKE_BUILD_TYPE is ignored for compilation; the cmake crate's own
+# `Config::profile("Release")` call (hardcoded by whisper-rs-sys) picks
+# `--config Release` regardless. So the RelWithDebInfo flags never apply, but
+# the unconditional -DWHISPER_DEBUG still does, landing in an optimized
+# Release build with WHISPER_DEBUG defined - a combination upstream
+# whisper.cpp does not build or test, and which corrupts model loading on
+# this machine (hangs, or aborts with CRT exit code 3, depending on run).
+# Forcing debug-assertions off for build scripts makes whisper-rs-sys take
+# its `else` branch (CMAKE_BUILD_TYPE=Release, no WHISPER_DEBUG), matching
+# the release profile's native build exactly. See src/voice/stt.rs tests.
+[profile.dev.build-override]
+debug-assertions = false

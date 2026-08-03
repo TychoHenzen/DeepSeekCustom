@@ -54,7 +54,11 @@ impl Tool for WriteTool {
             .map_err(|e| HarnessError::Tool(format!("Invalid write input: {e}")))?;
 
         let path = self.resolve_path(&parsed.file_path)?;
-        debug!("write: path={}, bytes={}", path.display(), parsed.content.len());
+        debug!(
+            "write: path={}, bytes={}",
+            path.display(),
+            parsed.content.len()
+        );
 
         // Create parent directories
         if let Some(parent) = path.parent() {
@@ -65,7 +69,11 @@ impl Tool for WriteTool {
         std::fs::write(&path, &parsed.content)
             .map_err(|e| HarnessError::Tool(format!("Failed to write {}: {e}", path.display())))?;
 
-        info!("write: wrote {} bytes to {}", parsed.content.len(), path.display());
+        info!(
+            "write: wrote {} bytes to {}",
+            parsed.content.len(),
+            path.display()
+        );
         Ok(ToolOutput {
             content: format!("Wrote {} bytes to {}", parsed.content.len(), path.display()),
             is_error: false,
@@ -84,20 +92,26 @@ impl WriteTool {
             self.project_root.join(path)
         };
 
-        let canonical_root = self.project_root.canonicalize().unwrap_or_else(|_| self.project_root.clone());
+        let canonical_root = self
+            .project_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.project_root.clone());
 
         // For new files (don't exist yet), canonicalize the parent
         let canonical = if resolved.exists() {
             resolved.canonicalize()
         } else {
-            resolved.parent()
+            resolved
+                .parent()
                 .map(|p| p.canonicalize())
                 .unwrap_or_else(|| {
-                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no parent",
+                    ))
                 })
-        }.map_err(|e| {
-            HarnessError::Tool(format!("Invalid path '{}': {e}", file_path))
-        })?;
+        }
+        .map_err(|e| HarnessError::Tool(format!("Invalid path '{}': {e}", file_path)))?;
 
         if !canonical.starts_with(&canonical_root) {
             return Err(HarnessError::Tool(format!(
@@ -139,7 +153,8 @@ mod tests {
         let root = std::env::current_dir().unwrap();
         let tool = WriteTool::new(root);
 
-        let input = serde_json::json!({"file_path": "../../Windows/System32/hack.exe", "content": "bad"});
+        let input =
+            serde_json::json!({"file_path": "../../Windows/System32/hack.exe", "content": "bad"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
     }

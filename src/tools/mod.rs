@@ -1,7 +1,7 @@
 pub mod bash;
 pub mod read;
-pub mod write;
 pub mod reset;
+pub mod write;
 
 use std::collections::HashMap;
 use std::sync::Arc;

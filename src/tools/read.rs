@@ -61,7 +61,12 @@ impl Tool for ReadTool {
             .map_err(|e| HarnessError::Tool(format!("Invalid read input: {e}")))?;
 
         let path = self.resolve_path(&parsed.file_path)?;
-        debug!("read: path={}, offset={:?}, limit={:?}", path.display(), parsed.offset, parsed.limit);
+        debug!(
+            "read: path={}, offset={:?}, limit={:?}",
+            path.display(),
+            parsed.offset,
+            parsed.limit
+        );
 
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| HarnessError::Tool(format!("Failed to read {}: {e}", path.display())))?;
@@ -84,7 +89,11 @@ impl Tool for ReadTool {
 
         Ok(ToolOutput {
             content: if output.is_empty() {
-                format!("(empty — {} total lines, requested offset={})", total_lines, start + 1)
+                format!(
+                    "(empty — {} total lines, requested offset={})",
+                    total_lines,
+                    start + 1
+                )
             } else {
                 format!("{output}\n[lines {}-{} of {total_lines}]", start + 1, end)
             },
@@ -105,11 +114,14 @@ impl ReadTool {
         };
 
         // Canonicalize both resolved path and project root for comparison
-        let canonical = resolved.canonicalize().map_err(|e| {
-            HarnessError::Tool(format!("Invalid path '{}': {e}", file_path))
-        })?;
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|e| HarnessError::Tool(format!("Invalid path '{}': {e}", file_path)))?;
 
-        let canonical_root = self.project_root.canonicalize().unwrap_or_else(|_| self.project_root.clone());
+        let canonical_root = self
+            .project_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.project_root.clone());
 
         // Check for path traversal
         if !canonical.starts_with(&canonical_root) {

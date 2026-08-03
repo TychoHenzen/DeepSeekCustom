@@ -327,9 +327,8 @@ mod tests {
 
     #[test]
     fn split_shell_words_handles_quotes() {
-        let result = split_shell_words(
-            "powershell -NoProfile -Command \"Write-Output 'hello world'\"",
-        );
+        let result =
+            split_shell_words("powershell -NoProfile -Command \"Write-Output 'hello world'\"");
         assert_eq!(result.len(), 4);
         assert_eq!(result[0], "powershell");
         assert_eq!(result[1], "-NoProfile");
