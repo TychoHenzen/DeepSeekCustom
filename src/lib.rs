@@ -9,6 +9,7 @@ pub mod gui;
 pub mod hemisphere;
 pub mod hooks;
 pub mod memory;
+pub mod session;
 pub mod skills;
 pub mod tools;
 pub mod voice;

@@ -81,7 +81,15 @@ fn fallback_claude_path() -> Option<PathBuf> {
 /// protocol expects. `append_system_prompt`, when set, adds
 /// `--append-system-prompt <text>` at the end: this is how voice reply mode
 /// reaches the child, since the child has no per-turn config channel.
-fn build_args(model: &str, permission_mode: Option<&str>, append_system_prompt: Option<&str>) -> Vec<String> {
+/// `resume_id`, when set, adds `--resume <id>` at the end, so the child
+/// resumes a saved conversation instead of starting a fresh one. See
+/// `docs/notes/claude-resume.md` for the verified flag shape.
+fn build_args(
+    model: &str,
+    permission_mode: Option<&str>,
+    append_system_prompt: Option<&str>,
+    resume_id: Option<&str>,
+) -> Vec<String> {
     let mode = permission_mode.unwrap_or("bypassPermissions");
     let mut args = vec![
         "-p".to_string(),
@@ -100,7 +108,20 @@ fn build_args(model: &str, permission_mode: Option<&str>, append_system_prompt: 
         args.push("--append-system-prompt".to_string());
         args.push(prompt.to_string());
     }
+    if let Some(id) = resume_id {
+        args.push("--resume".to_string());
+        args.push(id.to_string());
+    }
     args
+}
+
+/// True when the resume id the driver currently holds differs from the id
+/// the running child was spawned under. `--resume` is a spawn-time
+/// argument. So a changed id leaves the running child stale, and it must
+/// be replaced before the next turn. `ensure_ready` already applies that
+/// same rule to a changed voice-mode flag.
+fn resume_id_changed(current: &Option<String>, spawned: &Option<String>) -> bool {
+    current != spawned
 }
 
 /// Build one stdin line for a plain-text user turn, in the verified
@@ -132,6 +153,11 @@ pub struct ClaudeCliDriver {
     /// turn arrives, and closed when the reader ends. `send` waits on this,
     /// so one turn is finished before the next one starts.
     turn_done: Option<mpsc::UnboundedReceiver<()>>,
+    /// Signalled by the stdout reader once it captures the `session_id`
+    /// from the child's `init` event. `send` drains this after every turn,
+    /// same as `turn_done`, since the reader runs on its own task and has
+    /// no other way to hand the id back.
+    session_id_rx: Option<mpsc::UnboundedReceiver<String>>,
     model: String,
     permission_mode: Option<String>,
     extra_env: Option<HashMap<String, String>>,
@@ -142,12 +168,22 @@ pub struct ClaudeCliDriver {
     /// turn, and respawns the child on a mismatch, since
     /// `--append-system-prompt` is a spawn-time argument only.
     spawned_voice_mode: bool,
+    /// The resume id the current child was spawned with, if any.
+    /// `ensure_ready` compares it against `claude_session_id`, the same
+    /// way it compares `spawned_voice_mode` against the live voice flag.
+    /// `--resume` is a spawn-time argument, so a changed id needs a
+    /// respawn before the next turn.
+    spawned_resume_id: Option<String>,
     interrupt_flag: Arc<AtomicBool>,
     thinking_flag: Arc<AtomicBool>,
     voice_mode_flag: Arc<AtomicBool>,
     context_budget_flag: Arc<AtomicUsize>,
     model_flag: Arc<Mutex<String>>,
     repeat_interrupt_flag: Arc<AtomicBool>,
+    /// The claude session id to resume on the next spawn, set by
+    /// `Backend::load_session`. `spawn_child` passes it to `build_args`
+    /// as `--resume <id>`.
+    claude_session_id: Option<String>,
 }
 
 impl ClaudeCliDriver {
@@ -165,19 +201,35 @@ impl ClaudeCliDriver {
             child: None,
             stdin: None,
             turn_done: None,
+            session_id_rx: None,
             model,
             permission_mode,
             extra_env,
             project_root,
             tx_events,
             spawned_voice_mode: false,
+            spawned_resume_id: None,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             thinking_flag: Arc::new(AtomicBool::new(false)),
             voice_mode_flag: Arc::new(AtomicBool::new(false)),
             context_budget_flag: Arc::new(AtomicUsize::new(UNUSED_CONTEXT_BUDGET)),
             model_flag,
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
+            claude_session_id: None,
         }
+    }
+
+    /// Store the claude session id to resume on the next spawn. `send`
+    /// also calls this itself, once the running child's `init` event
+    /// reports an id. So the driver captures an id even when no caller
+    /// ever set one.
+    pub fn set_claude_session_id(&mut self, id: Option<String>) {
+        self.claude_session_id = id;
+    }
+
+    /// The claude session id currently held, if any.
+    pub fn claude_session_id(&self) -> Option<&str> {
+        self.claude_session_id.as_deref()
     }
 
     /// Return a clone of the interrupt flag so the GUI can signal
@@ -238,7 +290,21 @@ impl ClaudeCliDriver {
         stdin.write_all(b"\n").await?;
         stdin.flush().await?;
         self.await_turn_end().await;
+        self.drain_session_id();
         Ok(())
+    }
+
+    /// Pick up any session id the stdout reader captured from the child's
+    /// `init` event since the last drain. This never blocks. The reader
+    /// sends at most once per spawned child, right after the first
+    /// event. So one `try_recv` after each turn is enough to notice it.
+    fn drain_session_id(&mut self) {
+        let Some(rx) = self.session_id_rx.as_mut() else {
+            return;
+        };
+        if let Ok(id) = rx.try_recv() {
+            self.claude_session_id = Some(id);
+        }
     }
 
     /// Wait for the turn in flight to finish, polling the interrupt flag
@@ -266,13 +332,15 @@ impl ClaudeCliDriver {
         }
     }
 
-    /// Ensure a child is running with the voice-mode setting the live flag
-    /// currently holds. Respawns when a child exists but was spawned under
-    /// a different voice-mode value, and when the child it holds has
-    /// already exited: killed on interrupt, crashed, or ended by itself.
+    /// Ensure a child is running with the voice-mode setting and resume id
+    /// currently held. Respawns when a child exists but was spawned under a
+    /// different voice-mode value or a different resume id, and when the
+    /// child it holds has already exited: killed on interrupt, crashed, or
+    /// ended by itself.
     async fn ensure_ready(&mut self) -> Result<()> {
         let want_voice = self.voice_mode_flag.load(Ordering::SeqCst);
-        if self.child.is_some() && (want_voice != self.spawned_voice_mode || self.child_exited()) {
+        let resume_changed = resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
+        if self.child.is_some() && (want_voice != self.spawned_voice_mode || resume_changed || self.child_exited()) {
             self.shutdown().await;
         }
         if self.child.is_none() {
@@ -308,7 +376,12 @@ impl ClaudeCliDriver {
         } else {
             None
         };
-        let args = build_args(&self.model, self.permission_mode.as_deref(), append_prompt);
+        let args = build_args(
+            &self.model,
+            self.permission_mode.as_deref(),
+            append_prompt,
+            self.claude_session_id.as_deref(),
+        );
 
         let mut command = Command::new(&binary);
         command
@@ -355,13 +428,16 @@ impl ClaudeCliDriver {
             .ok_or_else(|| HarnessError::Tool("claude CLI child has no stderr".into()))?;
 
         let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
-        spawn_stdout_reader(stdout, self.tx_events.clone(), turn_done_tx);
+        let (session_id_tx, session_id_rx) = mpsc::unbounded_channel();
+        spawn_stdout_reader(stdout, self.tx_events.clone(), turn_done_tx, session_id_tx);
         spawn_stderr_drain(stderr);
 
         self.child = Some(child);
         self.stdin = Some(stdin);
         self.turn_done = Some(turn_done_rx);
+        self.session_id_rx = Some(session_id_rx);
         self.spawned_voice_mode = voice_mode;
+        self.spawned_resume_id = self.claude_session_id.clone();
         Ok(())
     }
 
@@ -377,6 +453,7 @@ impl ClaudeCliDriver {
         }
         self.stdin = None;
         self.turn_done = None;
+        self.session_id_rx = None;
         let _ = self.tx_events.send(StreamEvent::Interrupted {
             message: "Interrupted by user (Escape)".into(),
         });
@@ -397,6 +474,7 @@ impl ClaudeCliDriver {
             tracing::warn!("claude_cli: failed waiting for child exit: {e}");
         }
         self.turn_done = None;
+        self.session_id_rx = None;
     }
 
     /// Publish one `StreamEvent` on this driver's event channel. Used by
@@ -432,16 +510,21 @@ impl crate::agent::repeat::RepeatTarget for ClaudeCliDriver {
 
 /// Read the child's stdout forever, publishing mapped events. Signals
 /// `turn_done` after the terminal `result` event of each turn, so `send`
-/// knows when one turn ended. Dropping the sender when the loop ends also
-/// releases a `send` waiting on a child that died mid-turn.
+/// knows when one turn ended. Sends the child's session id on
+/// `session_id` once `EventMapper` reads it from the `init` event. The
+/// driver then picks it up and reuses it as `--resume`. Dropping the
+/// senders when the loop ends also releases a `send` waiting on a child
+/// that died mid-turn.
 fn spawn_stdout_reader(
     stdout: tokio::process::ChildStdout,
     tx_events: mpsc::UnboundedSender<StreamEvent>,
     turn_done: mpsc::UnboundedSender<()>,
+    session_id: mpsc::UnboundedSender<String>,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         let mut mapper = EventMapper::new();
+        let mut session_id_sent = false;
         loop {
             let next = match lines.next_line().await {
                 Ok(Some(line)) => line,
@@ -460,6 +543,14 @@ fn spawn_stdout_reader(
             let ends_turn = matches!(event, ClaudeEvent::Result(_));
             for stream_event in mapper.map(event) {
                 if tx_events.send(stream_event).is_err() {
+                    return;
+                }
+            }
+            if !session_id_sent
+                && let Some(id) = mapper.session_id()
+            {
+                session_id_sent = true;
+                if session_id.send(id.to_string()).is_err() {
                     return;
                 }
             }
@@ -574,7 +665,7 @@ mod tests {
 
     #[test]
     fn args_builder_produces_exact_flag_list_in_order() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), None);
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
         assert_eq!(
             args,
             vec![
@@ -595,21 +686,53 @@ mod tests {
 
     #[test]
     fn args_builder_defaults_permission_mode_to_bypass_permissions() {
-        let args = build_args("claude-opus-x", None, None);
+        let args = build_args("claude-opus-x", None, None, None);
         assert_eq!(args[10], "bypassPermissions");
     }
 
     #[test]
     fn args_builder_appends_system_prompt_when_voice_mode_is_on() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), Some("voice text"));
+        let args = build_args("claude-opus-x", Some("acceptEdits"), Some("voice text"), None);
         assert_eq!(args[11], "--append-system-prompt");
         assert_eq!(args[12], "voice text");
     }
 
     #[test]
     fn args_builder_omits_system_prompt_flag_when_not_given() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), None);
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
         assert!(!args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn args_builder_omits_resume_flag_when_no_id_is_held() {
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
+        assert!(!args.contains(&"--resume".to_string()));
+    }
+
+    #[test]
+    fn args_builder_appends_resume_flag_with_the_exact_id_when_one_is_held() {
+        let args = build_args(
+            "claude-opus-x",
+            Some("acceptEdits"),
+            None,
+            Some("c18eb67f-6873-45a4-aa7a-8755cecb4361"),
+        );
+        assert_eq!(args[11], "--resume");
+        assert_eq!(args[12], "c18eb67f-6873-45a4-aa7a-8755cecb4361");
+    }
+
+    #[test]
+    fn args_builder_includes_both_system_prompt_and_resume_when_both_are_given() {
+        let args = build_args(
+            "claude-opus-x",
+            Some("acceptEdits"),
+            Some("voice text"),
+            Some("some-id"),
+        );
+        assert_eq!(args[11], "--append-system-prompt");
+        assert_eq!(args[12], "voice text");
+        assert_eq!(args[13], "--resume");
+        assert_eq!(args[14], "some-id");
     }
 
     #[test]
@@ -636,6 +759,32 @@ mod tests {
             ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
 
         assert!(!driver.child_exited());
+    }
+
+    #[test]
+    fn resume_id_changed_is_false_when_both_are_none() {
+        assert!(!resume_id_changed(&None, &None));
+    }
+
+    #[test]
+    fn resume_id_changed_is_false_when_ids_match() {
+        assert!(!resume_id_changed(
+            &Some("abc".to_string()),
+            &Some("abc".to_string())
+        ));
+    }
+
+    #[test]
+    fn resume_id_changed_is_true_when_a_new_id_replaces_none() {
+        assert!(resume_id_changed(&Some("abc".to_string()), &None));
+    }
+
+    #[test]
+    fn resume_id_changed_is_true_when_ids_differ() {
+        assert!(resume_id_changed(
+            &Some("abc".to_string()),
+            &Some("xyz".to_string())
+        ));
     }
 
     #[tokio::test]

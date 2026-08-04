@@ -1,4 +1,6 @@
-mod transcript;
+pub(crate) mod session_state;
+pub(crate) mod sessions_tab;
+pub(crate) mod transcript;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -12,10 +14,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, Transcript};
-use crate::agent::agent_loop::StreamEvent;
+use crate::agent::agent_loop::{AgentCommand, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::api::models::list_models;
+use crate::api::types::Message;
 use crate::config::settings::{BackendConfig, Settings, TriggerMode};
+use crate::session::{SessionId, SessionMeta, SessionStore};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
 /// Kokoro voice ids offered by the settings panel's voice selector. A
@@ -34,11 +38,14 @@ const KOKORO_VOICE_IDS: &[&str] = &[
 /// Which tab the main window shows. Chat is the default; Autopilot is a
 /// dedicated tab for running one task repeatedly with automatic question
 /// answering, added alongside the existing settings sidebar (Tab key).
+/// Sessions lists saved conversations and lets the user start, reopen, or
+/// delete one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ActiveTab {
     #[default]
     Chat,
     Autopilot,
+    Sessions,
 }
 
 /// Progress readout for the Autopilot tab. Fed from
@@ -67,7 +74,7 @@ pub struct DeepSeekGui {
     /// Cumulative prompt cache miss tokens (charged as input).
     total_cache_miss_tokens: u32,
     rx_events: mpsc::UnboundedReceiver<StreamEvent>,
-    tx_input: mpsc::UnboundedSender<String>,
+    tx_input: mpsc::UnboundedSender<AgentCommand>,
     auto_scroll: bool,
 
     // ── Interrupt ──
@@ -166,12 +173,31 @@ pub struct DeepSeekGui {
     /// Computed once at construction from `settings.autopilot_policy_path()`
     /// and `project_root`.
     autopilot_policy_path: PathBuf,
+
+    // ── Session state (S08): saved conversations, no UI yet ──
+    /// Disk layer for saved conversations, rooted under `project_root`.
+    session_store: SessionStore,
+    /// The session id the current conversation will save under.
+    current_session_id: SessionId,
+    /// Summary metadata for the current conversation. Kept in sync with
+    /// `current_session_id` by every method that changes either.
+    current_session_meta: SessionMeta,
+    /// Every saved session's metadata, loaded once at startup and
+    /// refreshed after every save. Not rendered yet; a later step adds the
+    /// Sessions tab that reads this.
+    saved_sessions: Vec<SessionMeta>,
+    /// The API history as of the latest `ConversationSnapshot` event.
+    /// Always empty on a `claude_cli` session: see `StreamEvent::ConversationSnapshot`.
+    current_messages: Vec<Message>,
+    /// The `claude` CLI's own session id, for `--resume`, as of the latest
+    /// `ConversationSnapshot` event. Always `None` on an `Api` session.
+    current_claude_session_id: Option<String>,
 }
 
 impl DeepSeekGui {
     pub fn new(
         rx_events: mpsc::UnboundedReceiver<StreamEvent>,
-        tx_input: mpsc::UnboundedSender<String>,
+        tx_input: mpsc::UnboundedSender<AgentCommand>,
         interrupt_flag: Arc<AtomicBool>,
         thinking_flag: Arc<AtomicBool>,
         voice_mode_flag: Arc<AtomicBool>,
@@ -217,6 +243,20 @@ impl DeepSeekGui {
             settings.autopilot_policy_path(),
         )
         .resolved_policy_path();
+        let session_store = SessionStore::for_project(&project_root);
+        let saved_sessions = session_store.list();
+        let current_session_id = SessionId::new();
+        let session_backend = backend_options.get(selected_backend_idx).cloned();
+        let now = crate::session::now_timestamp();
+        let current_session_meta = SessionMeta {
+            id: current_session_id,
+            title: "New conversation".to_string(),
+            created_at: now,
+            updated_at: now,
+            backend: session_backend.unwrap_or_default(),
+            model: current_model.clone(),
+            message_count: 0,
+        };
         Self {
             transcript: Transcript::new(),
             input_buffer: String::new(),
@@ -264,6 +304,12 @@ impl DeepSeekGui {
             autopilot_iterations,
             autopilot_progress: AutopilotProgress::Idle,
             autopilot_policy_path,
+            session_store,
+            current_session_id,
+            current_session_meta,
+            saved_sessions,
+            current_messages: Vec::new(),
+            current_claude_session_id: None,
         }
     }
 
@@ -419,7 +465,7 @@ impl DeepSeekGui {
             text: input.clone(),
         });
         self.session_status = "Running...".into();
-        let _ = self.tx_input.send(input);
+        let _ = self.tx_input.send(AgentCommand::UserTurn(input));
         self.auto_scroll = true;
     }
 
@@ -472,6 +518,10 @@ impl DeepSeekGui {
                 is_error,
                 ..
             } => log_tool_call_end(tool, output, *is_error),
+            StreamEvent::ConversationSnapshot {
+                messages,
+                claude_session_id,
+            } => self.record_conversation_snapshot(messages, claude_session_id),
             StreamEvent::TurnEnd {
                 total_tokens,
                 prompt_cache_hit_tokens,
@@ -482,6 +532,7 @@ impl DeepSeekGui {
                 self.total_cache_hit_tokens += prompt_cache_hit_tokens;
                 self.total_cache_miss_tokens += prompt_cache_miss_tokens;
                 self.speak_accumulated_reply();
+                self.autosave_current_session();
             }
             StreamEvent::SessionReset => self.reset_session_state(),
             StreamEvent::Error { message } => error!(%message, "stream error event"),
@@ -512,11 +563,13 @@ impl DeepSeekGui {
         }
     }
 
-    /// Clear everything a session reset drops and leave one notice behind.
-    /// The transcript's own `SessionReset` arm is a no-op, so the clear
-    /// belongs here, where the rest of the reset already lives.
+    /// Handle a self-triggered session reset (the agent's `Reset` tool).
+    /// Saves the outgoing conversation into a session record instead of
+    /// discarding it, then starts a fresh one and leaves one notice
+    /// behind. The transcript's own `SessionReset` arm is a no-op, so the
+    /// clear belongs here, where the rest of the reset already lives.
     fn reset_session_state(&mut self) {
-        self.transcript.clear();
+        self.save_outgoing_and_start_new();
         self.transcript.push(BlockKind::Notice {
             text: "Session reset".into(),
             severity: Severity::Info,
@@ -1066,11 +1119,13 @@ impl App for DeepSeekGui {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, ActiveTab::Chat, "Chat");
                 ui.selectable_value(&mut self.active_tab, ActiveTab::Autopilot, "Autopilot");
+                ui.selectable_value(&mut self.active_tab, ActiveTab::Sessions, "Sessions");
             });
             ui.separator();
             match self.active_tab {
                 ActiveTab::Chat => self.render_chat_output(ui),
                 ActiveTab::Autopilot => self.render_autopilot_tab(ui),
+                ActiveTab::Sessions => self.render_sessions_tab(ui),
             }
         });
         self.auto_scroll = false;
@@ -1627,6 +1682,7 @@ fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::Role;
     use crate::config::settings::{ApiProvider, BackendConfig, VoiceConfig};
     use std::collections::HashMap;
 
@@ -2426,7 +2482,10 @@ mod tests {
             unique_temp_dir("ctor"),
         );
         gui.handle_voice_event(VoiceEvent::Transcript("hello".into()));
-        assert_eq!(rx_input.try_recv().unwrap(), "hello");
+        match rx_input.try_recv().unwrap() {
+            AgentCommand::UserTurn(text) => assert_eq!(text, "hello"),
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2999,5 +3058,188 @@ mod tests {
         });
         gui.handle_stream_event(StreamEvent::SessionReset);
         assert!(gui.voice_reply_buffer.is_empty());
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: Some(text.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    /// Drive one full turn through a GUI: a user block in the transcript,
+    /// a `ConversationSnapshot` carrying `messages`, then `TurnEnd`, which
+    /// triggers the autosave.
+    fn run_one_turn(gui: &mut DeepSeekGui, user_text: &str) {
+        gui.transcript.push(BlockKind::User {
+            text: user_text.into(),
+        });
+        gui.handle_stream_event(StreamEvent::ConversationSnapshot {
+            messages: vec![user_message(user_text)],
+            claude_session_id: None,
+        });
+        gui.handle_stream_event(StreamEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "stop".into(),
+            total_tokens: 10,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 0,
+        });
+    }
+
+    #[test]
+    fn turn_end_writes_a_session_file_the_store_can_load_back() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "fix the parser bug");
+
+        let loaded = gui
+            .session_store
+            .load(&gui.current_session_id)
+            .expect("expected the autosaved session to load back");
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.meta.title, "fix the parser bug");
+    }
+
+    #[test]
+    fn new_session_saves_outgoing_then_leaves_an_empty_transcript_and_a_different_id() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "add a new endpoint");
+        let old_id = gui.current_session_id;
+
+        gui.start_new_session();
+
+        assert!(gui.session_store.load(&old_id).is_ok());
+        assert!(gui.transcript.blocks().is_empty());
+        assert_ne!(gui.current_session_id, old_id);
+        assert!(gui.current_messages.is_empty());
+    }
+
+    #[test]
+    fn new_session_from_empty_conversation_writes_nothing_to_disk() {
+        let mut gui = make_gui();
+        let old_id = gui.current_session_id;
+
+        gui.start_new_session();
+
+        assert!(gui.session_store.load(&old_id).is_err());
+        assert!(gui.saved_sessions.is_empty());
+    }
+
+    #[test]
+    fn load_session_saves_outgoing_then_installs_the_loaded_transcript_and_id() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "first conversation");
+        let first_id = gui.current_session_id;
+
+        gui.start_new_session();
+        run_one_turn(&mut gui, "second conversation");
+        let second_id = gui.current_session_id;
+
+        gui.load_session(first_id);
+
+        assert_eq!(gui.current_session_id, first_id);
+        assert_eq!(gui.transcript.blocks().len(), 1);
+        let saved_second = gui
+            .session_store
+            .load(&second_id)
+            .expect("expected the outgoing second conversation to be saved");
+        assert_eq!(saved_second.meta.title, "second conversation");
+    }
+
+    #[test]
+    fn session_reset_saves_the_outgoing_conversation_rather_than_discarding_it() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "reset me please");
+        let old_id = gui.current_session_id;
+
+        gui.handle_stream_event(StreamEvent::SessionReset);
+
+        let loaded = gui
+            .session_store
+            .load(&old_id)
+            .expect("expected the pre-reset conversation to have been saved");
+        assert_eq!(loaded.meta.title, "reset me please");
+        assert_ne!(gui.current_session_id, old_id);
+    }
+
+    #[test]
+    fn a_save_failure_does_not_panic_and_does_not_take_down_the_session() {
+        // Point the session store at a path that cannot be a directory: a
+        // regular file sits where the sessions directory would need to go,
+        // so `save`'s `create_dir_all` fails every time.
+        let root = unique_temp_dir("save-failure");
+        std::fs::write(root.join(".deepseek"), "not a directory").unwrap();
+        let mut gui = make_gui_in(&Settings::default(), root);
+
+        run_one_turn(&mut gui, "this save will fail");
+
+        assert_eq!(gui.session_status, "Ready");
+    }
+
+    #[test]
+    fn title_is_derived_on_first_turn_and_not_rederived_once_set() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "the original title");
+        assert_eq!(gui.current_session_meta.title, "the original title");
+
+        gui.handle_stream_event(StreamEvent::ConversationSnapshot {
+            messages: vec![
+                user_message("the original title"),
+                user_message("a later message that should not overwrite the title"),
+            ],
+            claude_session_id: None,
+        });
+        gui.handle_stream_event(StreamEvent::TurnEnd {
+            turn: 2,
+            finish_reason: "stop".into(),
+            total_tokens: 20,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 0,
+        });
+
+        assert_eq!(gui.current_session_meta.title, "the original title");
+    }
+
+    #[test]
+    fn switching_to_sessions_tab_does_not_disturb_the_transcript() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "keep this transcript intact");
+        let block_count_before = gui.transcript.blocks().len();
+
+        gui.active_tab = ActiveTab::Sessions;
+
+        assert_eq!(gui.active_tab, ActiveTab::Sessions);
+        assert_eq!(gui.transcript.blocks().len(), block_count_before);
+    }
+
+    #[test]
+    fn new_chat_action_leaves_an_empty_transcript_and_returns_to_chat_tab() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "an old conversation");
+        gui.active_tab = ActiveTab::Sessions;
+
+        // This mirrors exactly what the Sessions tab's "New Chat" button
+        // does: start a fresh session, then switch the view back to Chat.
+        gui.start_new_session();
+        gui.active_tab = ActiveTab::Chat;
+
+        assert!(gui.transcript.blocks().is_empty());
+        assert_eq!(gui.active_tab, ActiveTab::Chat);
+    }
+
+    #[test]
+    fn deleting_a_session_removes_it_from_the_list() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "a session to delete");
+        let id = gui.current_session_id;
+        assert!(gui.saved_sessions.iter().any(|meta| meta.id == id));
+
+        gui.session_store.delete(&id).unwrap();
+        gui.saved_sessions = gui.session_store.list();
+
+        assert!(!gui.saved_sessions.iter().any(|meta| meta.id == id));
     }
 }

@@ -36,6 +36,7 @@ cpal = "0.15"
 # WhisperContext Parameters already asks for the GPU unconditionally
 # (see src/voice/stt.rs), so re-adding one of these features later is the
 # whole change needed.
+uuid = { version = "1", features = ["v4", "serde"] }
 whisper-rs = "0.16"
 kokoro-en = "0.1.4"
 # kokoro-en 0.1.4 asks for ort "2.0.0-rc.11", which lets the resolver pick

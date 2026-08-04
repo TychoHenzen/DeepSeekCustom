@@ -108,7 +108,7 @@ This replaces the flat `output_lines: Vec<(String, Color32)>` the GUI used to ho
 
 **Tool call streaming:** DeepSeek streams tool calls across multiple SSE chunks (first chunk: id+name, subsequent: argument fragments). `merge_tool_call()` matches by index and accumulates partial fields. `reasoning_content` must be echoed back to API in next request or API returns 400.
 
-**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Six tools now: Bash, Read, Write, Reset, AskUserQuestion, and Task. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset does a hard session reset. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Task dispatches a subagent onto a named backend. See "Task tool (subagent dispatch)" below. It is the one tool that is conditional. Past the configured depth limit, a backend's registry gets no Task tool at all, so a subagent cannot dispatch one of its own. Permission check via settings `allow`/`deny` lists.
+**Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Six tools now: Bash, Read, Write, Reset, AskUserQuestion, and Task. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Reset used to wipe the conversation with no record. It now saves the current conversation to a session file first, then starts a fresh one. See "Session persistence" below for the save path. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Task dispatches a subagent onto a named backend. See "Task tool (subagent dispatch)" below. It is the one tool that is conditional. Past the configured depth limit, a backend's registry gets no Task tool at all, so a subagent cannot dispatch one of its own. Permission check via settings `allow`/`deny` lists.
 
 **Piggybacking formats** (drop-in compatible with Codex files):
 - `settings.json` - project root or `~/.claude/`. Backend definitions, permissions, hooks, voice config, autopilot config, `context_budget`, and `show_raw_output`. See "Config" below for the `backends` block. The file is a save file. The GUI writes it back on every settings-panel control change, see "Settings persistence" below, so its current contents are whatever the last session left. No document should state what is in it. Read the file itself to find the current backend or settings.
@@ -173,6 +173,20 @@ The `settings.json` autopilot block, with defaults:
 
 Startup runs the other direction. `DeepSeekGui::new` seeds every panel control from the settings value it is handed, including the voice mode flag. It falls back to the first Kokoro voice when `tts_voice` names an unknown id. `main` seeds `thinking_flag` and `context_budget_flag` from settings before spawning the agent. The old `with_tts_enabled` builder is gone, since `new` now seeds all of it from one source.
 
+**Session persistence:** a conversation is a `SessionRecord`, in `src/session/mod.rs`: a `SessionMeta` (id, title, timestamps, backend, model, message count), the API `Vec<Message>` history, the display `Transcript`, and an optional `claude_session_id`. Both the API history and the display transcript live in one file per session, by design, so either backend kind can restore its own side without the other. Timestamps are Unix seconds as a plain `u64`, chosen so the crate did not need a date library.
+
+`derive_title` sets a session's title from its first `Role::User` message. A `claude_cli` conversation always has an empty `messages` vector, because Claude Code owns that history inside its own child process. Without a fallback, every `claude_cli` session would be titled "New conversation" forever. So `derive_title` falls back to the first `BlockKind::User` block in the transcript when `messages` has no user entry. It returns "New conversation" only when both sources are empty.
+
+`SessionStore`, in `src/session/store.rs`, is the disk layer, rooted at `<project_root>/.deepseek/sessions/<session-id>.json`. `.gitignore` excludes that directory. A save writes a temporary file in the same directory and renames it over the target, so a crash mid-write cannot leave a truncated session file behind. `list()` skips a file it cannot read or parse, logging a `warn` rather than failing the whole listing, so one bad file never hides every other saved conversation. A missing sessions directory yields an empty list, not an error.
+
+The agent side takes commands over `AgentCommand` (`src/agent/agent_loop.rs`), which replaced the old bare `String` input channel. That old channel could only mean "run this turn," with no way to tell the agent to switch or load a session. `AgentCommand` carries `UserTurn(String)`, `NewSession`, and `LoadSession { messages, claude_session_id }`. `LoadSession` carries only those two loose fields, not a whole `SessionRecord`: the display transcript stays in the GUI, the only thing that renders it, so the agent never receives display data it has no use for.
+
+`StreamEvent::ConversationSnapshot { messages, claude_session_id }` travels back the other way, sent right before every `TurnEnd`, so the GUI can persist the API history without owning `MessageHistory` itself. `Transcript::apply_stream_event`, in `src/gui/transcript.rs`, handles this variant as an explicit no-op: the GUI consumes the snapshot before the transcript ever sees it. That method's match has no wildcard arm on purpose, so a future `StreamEvent` variant breaks the build here instead of silently vanishing from the transcript.
+
+`claude --resume` was verified against the real `claude` binary, version 2.1.220; see `docs/notes/claude-resume.md` for the full trace. The flag is `--resume <id>`. The id arrives as a top-level `session_id` field on the `{"type":"system","subtype":"init"}` event and does not change across a resume, so the harness reads it once per conversation and reuses it. It travels from the stdout reader task back to `ClaudeCliDriver` over its own channel, the same pattern `turn_done` already uses. It is a spawn-time argument, so `ensure_ready` respawns the child whenever the held id differs from the id the running child was spawned under, exactly as it already does for a voice-mode change.
+
+The GUI saves the current session after every `TurnEnd`, on a session switch, on a new session, and on a session reset. A save failure logs a `warn` and is otherwise ignored, matching how a settings-persistence save failure is already handled. Startup always opens a fresh empty conversation; it does not auto-resume the most recent one. An outgoing conversation with no blocks is not written, so pressing New Chat twice in a row does not litter the sessions directory with empty records. `src/gui/session_state.rs` holds the session state and its save/switch/load/reset methods. `src/gui/sessions_tab.rs` holds the Sessions tab's rendering and the pure relative-time helper it uses for each row.
+
 **Config:** the `backends` block in `settings.json` replaced the old top-level `model` field, which is deleted. Each entry is a `BackendConfig` in `src/config/settings.rs`, tagged on `kind`, either `"api"` or `"claude_cli"`.
 
 | `kind` | Fields |
@@ -215,8 +229,8 @@ A model change persists onto that backend's entry in settings.json, through `app
 The new optional `models` array sits on a backend entry in settings.json. It is `Option<Vec<String>>` on both the `Api` and `ClaudeCli` variants of `BackendConfig`, absent by default.
 
 **Key architectural choices:**
-- No conversation persistence between runs (only memory files and `settings.json` survive)
-- Session reset is hard cut (clear context, reload memory files, start fresh with prompt)
+- Every conversation persists to disk as one JSON file under `.deepseek/sessions/`. See "Session persistence" above. Memory files and `settings.json` are not the only things that survive between runs anymore.
+- Session reset saves the outgoing conversation to a session file, then starts a fresh one. It is no longer a destructive cut: the closed conversation is recoverable from the Sessions tab, not discarded.
 - Context pruning is a hysteresis oscillator. History grows freely to a high-water mark, then prunes hard to a low-water mark a third of the way down. This keeps the API's prompt cache warm between prunes
 - Hemisphere model (Phase 3): two model instances, different system prompts, right side sees compressed context
 - Dynamic config sync: agent reads `thinking_flag` (AtomicBool) and `model_name` (Mutex<String>) from GUI each turn before building API request. It also reads `voice_mode_flag` (AtomicBool) each turn to set or clear the voice reply mode system prompt suffix.
@@ -233,13 +247,14 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - Tools: Bash, Read, Write, Reset, AskUserQuestion, Task (Tool trait + ToolRegistry + permission check). See "Task tool (subagent dispatch)" above for Task.
 - Subagent dispatch: `src/backend/factory.rs` (`BackendFactory`, `may_dispatch`), `src/backend/subagent.rs` (`run_subagent`), `src/backend/claude_cli/one_shot.rs` (`ClaudeCliDriver::run_once`), `src/tools/task.rs` (the `Task` tool). See "Task tool (subagent dispatch)", "Subagent depth limit", and "Subagent machinery" above.
 - Model picker: `src/api/models.rs` (`list_models`, live Ollama discovery, static DeepSeek and claude_cli lists, fallback to the declared model). See "Model picker" above.
+- Session management: `src/session/mod.rs` (`SessionId`, `SessionMeta`, `SessionRecord`, `derive_title`), `src/session/store.rs` (`SessionStore`, the disk layer), `src/gui/session_state.rs` (save/switch/load/reset state), `src/gui/sessions_tab.rs` (the Sessions tab). `AgentCommand` in `src/agent/agent_loop.rs` replaced the old bare `String` input channel. `--resume` was verified against the real `claude` binary. See "Session persistence" above for the full mechanism. The Sessions tab UI still needs a human's visual confirmation.
 - Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig, the `backends` map and `default_backend` (see "Config" above)
 - Context: `src/agent/pruning.rs` (three-tier prune over the message vector) and `src/context/relevance.rs` (relevance scoring call), both `Api`-only. `src/context/mod.rs` now holds only the `relevance` module declaration. `ContextPruner`, `ThinkingStore`, and `parse_thinking_tags` were all dead code and have been deleted from it
 - Hooks: HookRunner with JSON stdin/stdout for lifecycle events, `Api`-only
 - Memory: MemoryManager loading CLAUDE.md/MEMORY.md, `Api`-only
 - Skills: Skill loader parsing .md with YAML frontmatter, `Api`-only
 - Hemisphere: Stub for Phase 3 dual-model
-- GUI: egui/eframe native GUI. Has an output scroll drawn from `Transcript`, an input bar, a status bar, a settings sidebar (Tab key), and a Chat/Autopilot tab bar above the central panel. See "Transcript model" and "Rendering" above for how a `StreamEvent` becomes a drawn block. The sidebar holds a backend picker, a model picker, a thinking toggle, voice controls, and an Experimental section with a context budget slider. The backend picker lists the names from the `backends` map. Beneath it sits a model dropdown, filled by `list_models` resolved in the background. A grey caption says a backend switch takes effect on the next start. A second grey caption says a model change applies next turn for DeepSeek and Ollama, and that claude respawns its child. That budget slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. An assistant `Text` span renders via egui_commonmark; every other block and span is styled directly, not routed through markdown. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count. The status bar shows `Backend: name (model)`.
+- GUI: egui/eframe native GUI. Has an output scroll drawn from `Transcript`, an input bar, a status bar, a settings sidebar (Tab key), and a Chat/Autopilot/Sessions tab bar above the central panel. See "Transcript model" and "Rendering" above for how a `StreamEvent` becomes a drawn block. The sidebar holds a backend picker, a model picker, a thinking toggle, voice controls, and an Experimental section with a context budget slider. The backend picker lists the names from the `backends` map. Beneath it sits a model dropdown, filled by `list_models` resolved in the background. A grey caption says a backend switch takes effect on the next start. A second grey caption says a model change applies next turn for DeepSeek and Ollama, and that claude respawns its child. That budget slider runs 32000 to 200000 tokens in steps of 1000, with a grey caption showing the derived low-water mark. An assistant `Text` span renders via egui_commonmark; every other block and span is styled directly, not routed through markdown. Includes a raw/output display toggle and a StreamEvent channel for GUI updates. Escape interrupts the agent, stops any speech in progress, and stops a running autopilot repeat, in whichever tab is open. Ctrl+Q quits. The text-to-speech checkbox also writes the agent's voice_mode_flag, so voice reply mode turns on and off with text to speech. Every control seeds from `settings.json` at startup and writes back to it on change. The Autopilot tab holds a task text box and an iteration count slider. Below those sits a grey caption with the resolved policy file path. Below that sits a Run button and a progress readout. The readout reads Idle, Running iteration N of M, or Finished with a completed count. The Sessions tab holds a New Chat button and a row per saved conversation, newest first: title, a relative time label, a message count, and a delete control. The currently open session is marked. Clicking a row's title loads that session and switches to the Chat tab. This tab's rendering has not had a human's visual confirmation yet; what it builds is described here, not confirmed on screen. The status bar shows `Backend: name (model)`.
 - Voice: `src/voice/` module. Local speech to text via whisper-rs. Local speech output via Kokoro through kokoro-en. Push-to-talk and wake-word triggers, switchable by `trigger_mode`. A `VoiceService` state machine drives it, wired into `main.rs` and the GUI. Speech to text and text to speech degrade independently if a model file is missing. See `docs/voice-setup.md` for model setup. The settings sidebar's voice section has checkboxes for voice enabled, speech to text, and text to speech. It also has trigger mode radio buttons, a wake phrase box, a Kokoro voice picker, and a speed slider.
 - Autopilot: `src/autopilot/` (policy file and decision log, plus the policy-driven answerer), `src/agent/repeat.rs` (the `RepeatTarget` trait and the shared `run_repeat` runner, driving both backend kinds), and the `AskUserQuestion` tool in `src/tools/ask.rs`. See the Autopilot section above for the full mechanism.
 
@@ -251,14 +266,14 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 504 lib tests plus 5 integration tests, all passing. The binary target carries 0 tests. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. `voice/stt.rs` and `voice/tts.rs` each carry one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default, and run with `cargo test --features voice-models`, which brings the lib total to 506.
+**Tests:** 563 lib tests plus 5 integration tests, all passing. The binary target carries 0 tests. `backend_resolution_tests` moved out of `src/main.rs`. It now lives in `src/backend/factory.rs`, as `factory_tests.rs`, covering `resolve_active_backend`, `may_dispatch`, and the depth-gated `Task` tool wiring. No failures, no ignored tests. `voice/stt.rs` and `voice/tts.rs` each carry one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default, and run with `cargo test --features voice-models`, which brings the lib total to 565.
 
 `tests/api_turn.rs` is the crate's first integration test target. It points a real `ApiClient` at a local `wiremock` server through `BackendConfig`'s existing optional `base_url`, so no production code changed to add it. `wiremock` is a dev dependency. Five tests: a full turn read back from a canned SSE stream, a tool call round trip checked against the recorded second request body, a retry that follows a 500, a malformed chunk that gets skipped without failing the turn, and a stream that never sends the `[DONE]` sentinel but still terminates.
 
 | Module | Tests |
 |---|---|
-| `agent/agent_loop.rs` | 23 |
-| `agent/history.rs` | 10 |
+| `agent/agent_loop.rs` | 24 |
+| `agent/history.rs` | 15 |
 | `agent/prompt.rs` | 5 |
 | `agent/pruning.rs` | 10 |
 | `agent/repeat.rs` | 5 |
@@ -268,20 +283,24 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 | `autopilot/answerer.rs` | 9 |
 | `autopilot/policy.rs` | 10 |
 | `autopilot/question.rs` | 10 |
-| `backend/mod.rs` | 3 |
+| `backend/mod.rs` | 8 |
 | `backend/factory.rs` | 14 |
 | `backend/subagent.rs` | 2 |
-| `backend/claude_cli/process.rs` | 15 |
-| `backend/claude_cli/events.rs` | 10 |
+| `backend/claude_cli/process.rs` | 22 |
+| `backend/claude_cli/events.rs` | 12 |
 | `backend/claude_cli/map.rs` | 7 |
 | `backend/claude_cli/one_shot.rs` | 4 |
 | `config/settings.rs` | 37 |
 | `context/relevance.rs` | 15 |
-| `gui/mod.rs` | 93 |
-| `gui/transcript.rs` | 19 |
+| `gui/mod.rs` | 103 |
+| `gui/transcript.rs` | 24 |
+| `gui/session_state.rs` | 0 (its behavior is covered by `gui/mod.rs` tests) |
+| `gui/sessions_tab.rs` | 5 |
 | `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
+| `session/mod.rs` | 12 |
+| `session/store.rs` | 7 |
 | `skills/mod.rs` | 5 |
 | `tools/ask.rs` | 5 |
 | `tools/bash.rs` | 11 |

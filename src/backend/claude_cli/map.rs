@@ -192,6 +192,14 @@ impl EventMapper {
             events.push(StreamEvent::Error { message });
         }
         let usage = data.usage.unwrap_or_default();
+        // No `MessageHistory` exists on this path, so `messages` is always
+        // empty here. The display transcript plus `claude_session_id` is
+        // the whole conversation for a `claude_cli` session, so an empty
+        // vector is correct, not a gap.
+        events.push(StreamEvent::ConversationSnapshot {
+            messages: Vec::new(),
+            claude_session_id: self.session_id.clone(),
+        });
         events.push(StreamEvent::TurnEnd {
             turn,
             finish_reason: data.stop_reason.unwrap_or_else(|| "end_turn".to_string()),

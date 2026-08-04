@@ -34,6 +34,28 @@ impl Default for AgentConfig {
     }
 }
 
+/// Commands sent from the GUI to the agent task over the input channel.
+/// This is the asymmetric partner of `StreamEvent`, which carries events
+/// the other way. A bare `String` could only ever mean "run this turn",
+/// which left session switching with no way to reach the backend.
+#[derive(Debug)]
+pub enum AgentCommand {
+    /// Run one user turn with this text, the same as the old `String`
+    /// channel used to mean unconditionally.
+    UserTurn(String),
+    /// Start a fresh, empty conversation.
+    NewSession,
+    /// Load a saved conversation. `messages` restores the `Api` backend's
+    /// history. `claude_session_id` is stored for a later `--resume` on
+    /// the `ClaudeCli` backend. This carries only what the agent needs,
+    /// not a whole `SessionRecord`: the display transcript stays in the
+    /// GUI, the only thing that renders it.
+    LoadSession {
+        messages: Vec<Message>,
+        claude_session_id: Option<String>,
+    },
+}
+
 /// Events sent from the agent loop to the TUI (or caller) during streaming.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -62,6 +84,17 @@ pub enum StreamEvent {
     },
     /// Session was reset.
     SessionReset,
+    /// A snapshot of the conversation, sent alongside `TurnEnd` so the GUI
+    /// can persist a session without owning `MessageHistory` itself.
+    /// `messages` is the API history on the `Api` path. On the `ClaudeCli`
+    /// path there is no `MessageHistory` at all, so `messages` is always
+    /// empty there: the display transcript plus `claude_session_id` is the
+    /// whole conversation on that path, and an empty vector is correct,
+    /// not a gap.
+    ConversationSnapshot {
+        messages: Vec<Message>,
+        claude_session_id: Option<String>,
+    },
     /// An error occurred.
     Error { message: String },
     /// Agent was interrupted by user (Escape key).
@@ -183,6 +216,14 @@ impl AgentLoop {
     /// suffix on the next `run` call, so voice mode is unaffected.
     pub fn clear_history(&mut self) {
         self.history = MessageHistory::new(self.history.system_prompt().to_string());
+    }
+
+    /// Replace the message history with a saved conversation's messages,
+    /// for loading a session from disk. See `MessageHistory::restore` for
+    /// the exact guarantees: replaces rather than appends, leaves the
+    /// system prompt and suffix untouched, recomputes the token count.
+    pub fn restore_history(&mut self, messages: Vec<Message>) {
+        self.history.restore(messages);
     }
 
     /// Sync dynamic config from the GUI before building requests: thinking
@@ -369,6 +410,10 @@ impl AgentLoop {
                 finish_reason,
             );
 
+            self.send_event(StreamEvent::ConversationSnapshot {
+                messages: self.history.iter().cloned().collect(),
+                claude_session_id: None,
+            });
             self.send_event(StreamEvent::TurnEnd {
                 turn: turn + 1,
                 finish_reason: finish_reason.clone(),
@@ -1154,6 +1199,29 @@ mod tests {
         assert_eq!(agent.history().len(), 0);
         let api = agent.history().to_api_messages();
         assert_eq!(api.len(), 1);
+        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+    }
+
+    #[test]
+    fn restore_history_replaces_messages_and_keeps_system_prompt() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        agent.history.push(Message::user("stale".into()));
+
+        agent.restore_history(vec![
+            Message::user("saved one".into()),
+            Message::assistant("saved reply".into()),
+        ]);
+
+        assert_eq!(agent.history().len(), 2);
+        let api = agent.history().to_api_messages();
         assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
     }
 

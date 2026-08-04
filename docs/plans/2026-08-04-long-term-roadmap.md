@@ -408,9 +408,12 @@ after building.
 
 - Phase 3 of the original plan, the hemisphere model. It is unrelated to
   everything above and the stub in `src/hemisphere/` can wait.
-- Keeping a conversation on disk between runs. Nothing above needs it, and it
-  would mean serializing the line buffer while that buffer still exists.
-  Revisit after phase 1, when there is a real model to persist.
+- Keeping a conversation on disk between runs. This note said to revisit after
+  phase 1, when there was a real model to persist. Phase 1 landed, and that
+  revisit happened: this is now built. `src/session/mod.rs` holds the data
+  model, `src/session/store.rs` the disk layer, and a third Sessions tab lists
+  saved conversations. See `CLAUDE.md`'s "Session persistence" section for the
+  full mechanism.
 - Permission prompts. This harness runs Bash without asking on purpose, and
   the `claude_cli` path is spawned with `bypassPermissions` for the same
   reason. Adding prompts is a product decision, not a gap.

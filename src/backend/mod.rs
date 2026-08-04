@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::agent_loop::{AgentLoop, StreamEvent};
 use crate::agent::repeat::run_repeat;
+use crate::api::types::Message;
 use crate::error::Result;
 
 use claude_cli::process::ClaudeCliDriver;
@@ -114,6 +115,33 @@ impl Backend {
             Backend::ClaudeCli(driver) => driver.repeat_interrupt_flag(),
         }
     }
+
+    /// Start a fresh, empty conversation. The `Api` variant clears its
+    /// message history in place. The `ClaudeCli` variant shuts its child
+    /// down, the same shutdown `run_repeat`'s reset path already uses
+    /// between autopilot iterations, so the next turn spawns a fresh
+    /// child with no prior conversation.
+    pub async fn start_new_session(&mut self) {
+        match self {
+            Backend::Api(agent) => agent.clear_history(),
+            Backend::ClaudeCli(driver) => driver.shutdown().await,
+        }
+    }
+
+    /// Load a saved conversation. `messages` restores the `Api` variant's
+    /// history in place of whatever it held. `claude_session_id` is stored
+    /// on the `ClaudeCli` variant for a later `--resume` (added in S07);
+    /// this step only holds the value and respawns the child so the next
+    /// turn starts clean, the same shutdown `start_new_session` uses.
+    pub async fn load_session(&mut self, messages: Vec<Message>, claude_session_id: Option<String>) {
+        match self {
+            Backend::Api(agent) => agent.restore_history(messages),
+            Backend::ClaudeCli(driver) => {
+                driver.set_claude_session_id(claude_session_id);
+                driver.shutdown().await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +181,99 @@ mod tests {
 
         backend.repeat_interrupt_flag().store(true, Ordering::SeqCst);
         assert!(backend.repeat_interrupt_flag().load(Ordering::SeqCst));
+    }
+
+    fn new_test_api_backend() -> Backend {
+        let client = crate::api::client::ApiClient::new(
+            crate::api::client::Provider::DeepSeek,
+            "sk-test".into(),
+            None,
+            None,
+        );
+        let tools = crate::tools::ToolRegistry::new();
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            crate::agent::agent_loop::AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        Backend::Api(Box::new(agent))
+    }
+
+    fn api_history_len(backend: &Backend) -> usize {
+        match backend {
+            Backend::Api(agent) => agent.history().len(),
+            Backend::ClaudeCli(_) => panic!("expected Api backend"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_backend_new_session_leaves_empty_history_with_system_prompt() {
+        let mut backend = new_test_api_backend();
+        backend
+            .load_session(vec![Message::user("hello".into())], None)
+            .await;
+        assert_eq!(api_history_len(&backend), 1);
+
+        backend.start_new_session().await;
+
+        assert_eq!(api_history_len(&backend), 0);
+    }
+
+    #[tokio::test]
+    async fn api_backend_load_session_leaves_exactly_restored_messages() {
+        let mut backend = new_test_api_backend();
+        let messages = vec![
+            Message::user("first".into()),
+            Message::assistant("second".into()),
+        ];
+
+        backend.load_session(messages, None).await;
+
+        assert_eq!(api_history_len(&backend), 2);
+    }
+
+    #[tokio::test]
+    async fn api_backend_new_session_after_load_does_not_stick() {
+        let mut backend = new_test_api_backend();
+        backend
+            .load_session(vec![Message::user("hello".into())], None)
+            .await;
+
+        backend.start_new_session().await;
+        backend.start_new_session().await;
+
+        assert_eq!(api_history_len(&backend), 0);
+    }
+
+    #[tokio::test]
+    async fn claude_cli_driver_accepts_and_returns_stored_session_id() {
+        let mut backend = new_test_claude_cli_backend();
+        match &mut backend {
+            Backend::ClaudeCli(driver) => {
+                assert_eq!(driver.claude_session_id(), None);
+                driver.set_claude_session_id(Some("abc-123".into()));
+                assert_eq!(driver.claude_session_id(), Some("abc-123"));
+            }
+            Backend::Api(_) => panic!("expected ClaudeCli backend"),
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_cli_backend_load_session_stores_id_without_spawning() {
+        let mut backend = new_test_claude_cli_backend();
+
+        backend
+            .load_session(Vec::new(), Some("resume-me".into()))
+            .await;
+
+        match &backend {
+            Backend::ClaudeCli(driver) => {
+                assert_eq!(driver.claude_session_id(), Some("resume-me"));
+            }
+            Backend::Api(_) => panic!("expected ClaudeCli backend"),
+        }
     }
 
     // These two tests exercise `Backend::run_repeat` on the `ClaudeCli`

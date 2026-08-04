@@ -339,6 +339,33 @@ mod tests {
     }
 
     #[test]
+    fn init_event_yields_session_id_amid_unrelated_fields() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"C:\\repo","session_id":"c18eb67f-6873-45a4-aa7a-8755cecb4361","tools":[],"mcp_servers":[{"name":"x","status":"pending"}],"model":"claude-haiku-4-5","permissionMode":"bypassPermissions","apiKeySource":"none"}"#;
+        let event = parse_line(line).expect("init line should parse");
+        match event {
+            ClaudeEvent::System(SystemEvent::Init(init)) => {
+                assert_eq!(
+                    init.session_id.as_deref(),
+                    Some("c18eb67f-6873-45a4-aa7a-8755cecb4361")
+                );
+            }
+            other => panic!("expected System(Init), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_event_with_no_session_id_field_yields_none_without_panicking() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"C:\\repo","tools":[]}"#;
+        let event = parse_line(line).expect("init line should parse");
+        match event {
+            ClaudeEvent::System(SystemEvent::Init(init)) => {
+                assert_eq!(init.session_id, None);
+            }
+            other => panic!("expected System(Init), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn unknown_top_level_type_becomes_catch_all() {
         let event = parse_line(r#"{"type":"some_future_event_type","foo":"bar"}"#)
             .expect("unknown type should still parse");

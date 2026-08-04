@@ -9,11 +9,12 @@
 //! the rendering layer.
 
 use crate::agent::agent_loop::StreamEvent;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Identifies a `Block` across appends. A newtype over a counter, not a
 /// raw index, so a block already appended keeps a stable identity even
 /// after later blocks are pushed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockId(u64);
 
 /// How serious a `Notice` block is. Mirrors the distinct notice colours
@@ -21,7 +22,7 @@ pub struct BlockId(u64);
 /// interrupt. Cyan marked a session reset and grey the turn-end divider.
 /// No new categories, just names for what the code already
 /// distinguished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
     Error,
     Warning,
@@ -32,7 +33,7 @@ pub enum Severity {
 /// One piece of assistant output. `Text` is the model's reply content,
 /// `Reasoning` is a thinking-mode chunk. Kept separate so a stream of
 /// deltas coalesces within a kind but never merges across kinds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Span {
     Text(String),
     Reasoning(String),
@@ -41,7 +42,7 @@ pub enum Span {
 /// The content of one transcript block. Room is intentionally left for a
 /// future `Subagent` and `Image` variant: nothing here exhaustively
 /// matches `BlockKind` in a way a new variant would silently break.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockKind {
     User {
         text: String,
@@ -64,7 +65,7 @@ pub enum BlockKind {
 /// One entry in the transcript: a stable id, its content, and whether the
 /// GUI has collapsed it. `collapsed` lives on the model, not the view, so
 /// a redraw does not need to remember which blocks the user folded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     pub id: BlockId,
     pub collapsed: bool,
@@ -73,14 +74,50 @@ pub struct Block {
 
 /// The whole Chat tab's history, as a sequence of blocks instead of
 /// coloured lines.
-#[derive(Debug, Default)]
+///
+/// `Serialize` writes `blocks` and `next_id` only; `open_assistant` is
+/// transient stream state and is never written to disk. `Deserialize` is
+/// hand-written rather than derived: it recomputes `next_id` as at least
+/// one past the highest id present in `blocks`, so a hand-edited or
+/// truncated file can never hand out a colliding id on the next append.
+/// `open_assistant` always comes back `None` on load, since the stream
+/// that was filling it is long gone.
+#[derive(Debug, Default, Serialize)]
 pub struct Transcript {
     blocks: Vec<Block>,
     next_id: u64,
     /// The id of the `Assistant` block a text or reasoning delta should
     /// land in, if one is still open. Tracked as state instead of found
     /// by scanning, since a stream sends thousands of deltas per turn.
+    #[serde(skip)]
     open_assistant: Option<BlockId>,
+}
+
+impl<'de> Deserialize<'de> for Transcript {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawTranscript {
+            blocks: Vec<Block>,
+            #[serde(default)]
+            next_id: u64,
+        }
+
+        let raw = RawTranscript::deserialize(deserializer)?;
+        let min_safe_next_id = raw
+            .blocks
+            .iter()
+            .map(|block| block.id.0 + 1)
+            .max()
+            .unwrap_or(0);
+        Ok(Transcript {
+            blocks: raw.blocks,
+            next_id: raw.next_id.max(min_safe_next_id),
+            open_assistant: None,
+        })
+    }
 }
 
 impl Transcript {
@@ -207,6 +244,10 @@ impl Transcript {
             // progress readout, not the Chat transcript.
             StreamEvent::RepeatIterationStart { .. } => {}
             StreamEvent::RepeatFinished { .. } => {}
+            // Consumed by the GUI's session-state layer before this event
+            // reaches the transcript (see `apply_event_side_effects` in
+            // `src/gui/mod.rs`). It carries no block to draw.
+            StreamEvent::ConversationSnapshot { .. } => {}
         }
     }
 
@@ -629,5 +670,116 @@ mod tests {
             }
         );
         assert_ne!(blocks[0].id, blocks[1].id);
+    }
+
+    #[test]
+    fn round_trips_one_block_of_every_kind_through_json() {
+        let mut transcript = Transcript::new();
+        transcript.push(BlockKind::User {
+            text: "hi".into(),
+        });
+        transcript.push(BlockKind::Assistant {
+            spans: vec![
+                Span::Text("said".into()),
+                Span::Reasoning("thought".into()),
+            ],
+        });
+        transcript.push(BlockKind::ToolCall {
+            tool: "Bash".into(),
+            args: "ls".into(),
+            output: Some("file1".into()),
+            is_error: false,
+        });
+        transcript.push(BlockKind::ToolCall {
+            tool: "Bash".into(),
+            args: "ls".into(),
+            output: None,
+            is_error: false,
+        });
+        transcript.push(BlockKind::Notice {
+            text: "warn".into(),
+            severity: Severity::Warning,
+        });
+        transcript.push(BlockKind::Notice {
+            text: "err".into(),
+            severity: Severity::Error,
+        });
+
+        let json = serde_json::to_string(&transcript).unwrap();
+        let restored: Transcript = serde_json::from_str(&json).unwrap();
+
+        let original_kinds: Vec<&BlockKind> =
+            transcript.blocks().iter().map(|b| &b.kind).collect();
+        let restored_kinds: Vec<&BlockKind> =
+            restored.blocks().iter().map(|b| &b.kind).collect();
+        assert_eq!(original_kinds, restored_kinds);
+        let original_ids: Vec<BlockId> = transcript.blocks().iter().map(|b| b.id).collect();
+        let restored_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
+        assert_eq!(original_ids, restored_ids);
+    }
+
+    #[test]
+    fn appending_after_deserialize_never_collides_with_a_loaded_id() {
+        let mut transcript = Transcript::new();
+        transcript.push(BlockKind::User { text: "a".into() });
+        transcript.push(BlockKind::User { text: "b".into() });
+        let json = serde_json::to_string(&transcript).unwrap();
+        let mut restored: Transcript = serde_json::from_str(&json).unwrap();
+
+        let loaded_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
+        let new_id = restored.push(BlockKind::User {
+            text: "c".into(),
+        });
+        assert!(!loaded_ids.contains(&new_id));
+    }
+
+    #[test]
+    fn a_bogus_next_id_in_the_json_still_yields_a_fresh_unused_id() {
+        let json = r#"{"blocks":[{"id":5,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":0}"#;
+        let mut restored: Transcript = serde_json::from_str(json).unwrap();
+        let new_id = restored.push(BlockKind::User {
+            text: "next".into(),
+        });
+        assert_ne!(new_id, BlockId(5));
+    }
+
+    #[test]
+    fn a_deserialize_with_no_next_id_field_still_yields_a_fresh_unused_id() {
+        let json = r#"{"blocks":[{"id":7,"collapsed":false,"kind":{"User":{"text":"hi"}}}]}"#;
+        let mut restored: Transcript = serde_json::from_str(json).unwrap();
+        let new_id = restored.push(BlockKind::User {
+            text: "next".into(),
+        });
+        assert_ne!(new_id, BlockId(7));
+    }
+
+    #[test]
+    fn a_deserialized_transcript_has_no_open_assistant_block() {
+        let mut transcript = Transcript::new();
+        transcript.apply_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "first".into(),
+        });
+        let json = serde_json::to_string(&transcript).unwrap();
+        let mut restored: Transcript = serde_json::from_str(&json).unwrap();
+
+        restored.apply_stream_event(StreamEvent::Text {
+            turn: 2,
+            text: "second".into(),
+        });
+        let blocks = restored.blocks();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("first".into())],
+            }
+        );
+        assert_eq!(
+            blocks[1].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("second".into())],
+            }
+        );
     }
 }

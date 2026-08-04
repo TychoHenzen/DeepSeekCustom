@@ -16,3 +16,6 @@ time.ps1
 .autopilot/
 
 deepseek_custom.log
+
+# Saved conversations. User data, not source.
+.deepseek/

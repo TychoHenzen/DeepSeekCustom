@@ -103,6 +103,19 @@ impl MessageHistory {
         report
     }
 
+    /// Replace the whole message vector with a saved one, for restoring a
+    /// session from disk. Three guarantees:
+    /// - Replaces, never appends: any existing messages are dropped first.
+    /// - Leaves the system prompt and system suffix untouched. A saved
+    ///   conversation reopens under whatever prompt the current agent runs,
+    ///   not the one it was saved under.
+    /// - Recomputes the token count from scratch via `recompute_token_count`,
+    ///   the same way pruning does, rather than adjusting it incrementally.
+    pub fn restore(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.recompute_token_count();
+    }
+
     /// Recompute `token_count` from scratch. The incremental count
     /// `push` and `clear` keep cannot survive pruning's removals.
     fn recompute_token_count(&mut self) {
@@ -287,6 +300,78 @@ mod tests {
             "a long suffix with many characters and more words".into(),
         ));
         assert!(h.estimated_tokens() > before);
+    }
+
+    #[test]
+    fn restore_replaces_rather_than_appends() {
+        let mut h = MessageHistory::new("sys".into());
+        h.push(Message::user("old1".into()));
+        h.push(Message::user("old2".into()));
+        let restored = vec![Message::user("new1".into()), Message::assistant("new2".into())];
+        h.restore(restored.clone());
+        assert_eq!(h.len(), restored.len());
+        let got: Vec<&Message> = h.iter().collect();
+        for (g, r) in got.iter().zip(restored.iter()) {
+            assert_eq!(g.content, r.content);
+            assert_eq!(g.role, r.role);
+        }
+    }
+
+    #[test]
+    fn restore_token_count_matches_pushed_one_at_a_time() {
+        let messages = vec![
+            Message::user("hello there".into()),
+            Message::assistant("a fairly long reply with several words".into()),
+        ];
+
+        let mut restored_h = MessageHistory::new("system prompt".into());
+        restored_h.restore(messages.clone());
+
+        let mut pushed_h = MessageHistory::new("system prompt".into());
+        for m in messages {
+            pushed_h.push(m);
+        }
+
+        assert_eq!(restored_h.estimated_tokens(), pushed_h.estimated_tokens());
+    }
+
+    #[test]
+    fn restore_leaves_system_prompt_unchanged() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.restore(vec![Message::user("hi".into())]);
+        let api = h.to_api_messages();
+        assert_eq!(api[0].role, crate::api::types::Role::System);
+        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn restore_leaves_system_suffix_in_place() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_system_suffix(Some("Reply briefly.".into()));
+        let before_suffix_tokens = h.estimated_tokens();
+        h.restore(vec![Message::user("hi".into())]);
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_deref(),
+            Some("You are helpful.\n\nReply briefly.")
+        );
+        // suffix contribution still reflected in the token count
+        let mut baseline = MessageHistory::new("You are helpful.".into());
+        baseline.set_system_suffix(Some("Reply briefly.".into()));
+        assert!(before_suffix_tokens > 0);
+        assert!(h.estimated_tokens() >= baseline.estimated_tokens());
+    }
+
+    #[test]
+    fn restore_empty_vector_leaves_history_empty_with_system_prompt() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.push(Message::user("hi".into()));
+        h.restore(Vec::new());
+        assert!(h.is_empty());
+        assert_eq!(h.len(), 0);
+        let api = h.to_api_messages();
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
     }
 
     #[test]

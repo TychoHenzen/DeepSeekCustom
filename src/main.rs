@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use DeepSeekCustom::agent::agent_loop::StreamEvent;
+use DeepSeekCustom::agent::agent_loop::{AgentCommand, StreamEvent};
 use DeepSeekCustom::agent::repeat::RepeatCommand;
 use DeepSeekCustom::backend::factory::BackendFactory;
 use DeepSeekCustom::config::settings::Settings;
@@ -95,7 +95,7 @@ async fn main() {
     // ── Channels ────────────────────────────────────────────
 
     let (tx_events, rx_events) = mpsc::unbounded_channel::<StreamEvent>();
-    let (tx_input, mut rx_input) = mpsc::unbounded_channel::<String>();
+    let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
 
     // ── Backend construction ─────────────────────────────────
@@ -140,9 +140,9 @@ async fn main() {
             tokio::select! {
                 input = rx_input.recv() => {
                     match input {
-                        Some(input) => {
-                            debug_agent_input(&input);
-                            match backend.run(&input).await {
+                        Some(AgentCommand::UserTurn(text)) => {
+                            debug_agent_input(&text);
+                            match backend.run(&text).await {
                                 Ok(responses) => {
                                     info!(
                                         "agent turn complete: {} response segments",
@@ -153,6 +153,17 @@ async fn main() {
                                     error!("agent error: {e}");
                                 }
                             }
+                        }
+                        Some(AgentCommand::NewSession) => {
+                            info!("new session command received");
+                            backend.start_new_session().await;
+                        }
+                        Some(AgentCommand::LoadSession { messages, claude_session_id }) => {
+                            info!(
+                                message_count = messages.len(),
+                                "load session command received"
+                            );
+                            backend.load_session(messages, claude_session_id).await;
                         }
                         None => break,
                     }
