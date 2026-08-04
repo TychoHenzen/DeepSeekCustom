@@ -134,8 +134,9 @@ mod tests {
     }
 
     /// Needs the real Whisper GGML model on disk. Download it first, see
-    /// `docs/voice-setup.md`.
+    /// `docs/voice-setup.md`. Run with `cargo test --features voice-models`.
     #[test]
+    #[cfg(feature = "voice-models")]
     fn transcribe_returns_text_with_a_real_model() {
         let engine = WhisperEngine::new("models/ggml-base.en.bin").expect("real model should load");
         let samples = vec![0.0_f32; 16_000];

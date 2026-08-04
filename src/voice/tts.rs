@@ -461,8 +461,10 @@ mod tests {
     }
 
     /// Needs the real Kokoro model and voices directory on disk. Download
-    /// them first, see `docs/voice-setup.md`.
+    /// them first, see `docs/voice-setup.md`. Run with
+    /// `cargo test --features voice-models`.
     #[tokio::test]
+    #[cfg(feature = "voice-models")]
     async fn synth_returns_24khz_samples_with_a_real_model() {
         // Same as `main()`: use the bundled Misaki phonemizer, not the
         // espeak-ng subprocess, which drops the last phoneme of every line.

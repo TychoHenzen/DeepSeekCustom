@@ -12,13 +12,7 @@
     "tts_speed": 1.0
   },
   "context_budget": 150000,
-  "default_backend": "deepseek",
   "backends": {
-    "deepseek": {
-      "kind": "api",
-      "provider": "deepseek",
-      "model": "deepseek-v4-pro"
-    },
     "ollama": {
       "kind": "api",
       "provider": "ollama",
@@ -27,6 +21,12 @@
     "claude": {
       "kind": "claude_cli",
       "model": "opus"
+    },
+    "deepseek": {
+      "kind": "api",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro"
     }
-  }
+  },
+  "default_backend": "deepseek"
 }

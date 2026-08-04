@@ -1,3 +1,5 @@
+mod transcript;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +11,7 @@ use egui_commonmark::CommonMarkCache;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use self::transcript::{Block, BlockId, BlockKind, Severity, Span, Transcript};
 use crate::agent::agent_loop::StreamEvent;
 use crate::agent::repeat::RepeatCommand;
 use crate::api::models::list_models;
@@ -50,7 +53,11 @@ enum AutopilotProgress {
 
 /// Native GUI using egui/eframe. Replaces the broken ratatui TUI.
 pub struct DeepSeekGui {
-    output_lines: Vec<(String, Color32)>,
+    /// The Chat tab's history, as structured blocks. Replaces the flat
+    /// list of coloured lines this field used to hold: a block carries
+    /// what a line's colour used to imply, and a tool call's output can
+    /// be filled in after its block was appended.
+    transcript: Transcript,
     input_buffer: String,
     model: String,
     token_count: String,
@@ -211,7 +218,7 @@ impl DeepSeekGui {
         )
         .resolved_policy_path();
         Self {
-            output_lines: Vec::new(),
+            transcript: Transcript::new(),
             input_buffer: String::new(),
             model: current_model,
             token_count: "0".into(),
@@ -372,8 +379,10 @@ impl DeepSeekGui {
             }
             VoiceEvent::Error(message) => {
                 error!(%message, "voice error event");
-                self.output_lines
-                    .push((format!("ERROR: {message}"), Color32::from_rgb(255, 80, 80)));
+                self.transcript.push(BlockKind::Notice {
+                    text: format!("ERROR: {message}"),
+                    severity: Severity::Error,
+                });
             }
             VoiceEvent::Transcript(text) => {
                 // Route through the input buffer and the same submit path
@@ -390,19 +399,25 @@ impl DeepSeekGui {
         }
     }
 
-    /// Submit whatever is in `input_buffer` to the agent: append the blue
-    /// "> text" line to output, mark the session running, forward the text
+    /// Submit whatever is in `input_buffer` to the agent: append a `User`
+    /// block to the transcript, mark the session running, forward the text
     /// down `tx_input`, clear the buffer. This is the single submission
     /// path both the Enter key and a voice transcript go through, so the
     /// agent cannot tell the two apart. No-ops on empty or whitespace-only
     /// input.
+    ///
+    /// The block holds the text the user typed, with no "> " prefix. The
+    /// prefix was decoration the flat-line shape needed to tell user input
+    /// apart from model output. `BlockKind::User` says that outright, and
+    /// the renderer adds the marker back.
     fn submit_current_input(&mut self) {
         if self.input_buffer.trim().is_empty() {
             return;
         }
         let input = std::mem::take(&mut self.input_buffer);
-        self.output_lines
-            .push((format!("> {input}"), Color32::from_rgb(100, 149, 237)));
+        self.transcript.push(BlockKind::User {
+            text: input.clone(),
+        });
         self.session_status = "Running...".into();
         let _ = self.tx_input.send(input);
         self.auto_scroll = true;
@@ -433,95 +448,45 @@ impl DeepSeekGui {
         self.send_voice_command(VoiceCommand::Speak(spoken));
     }
 
+    /// Route one stream event. Everything that changes the conversation
+    /// itself goes to `Transcript::apply_stream_event`. This method keeps
+    /// only what lives outside the transcript: the status bar counters,
+    /// the speech buffer, the Autopilot progress readout, and logging.
     fn handle_stream_event(&mut self, event: StreamEvent) {
+        self.apply_event_side_effects(&event);
+        self.transcript.apply_stream_event(event);
+    }
+
+    /// Update everything a stream event touches other than the transcript.
+    /// Split out from `handle_stream_event` so that method stays a plain
+    /// two-step: side effects, then transcript.
+    fn apply_event_side_effects(&mut self, event: &StreamEvent) {
         match event {
-            StreamEvent::Text { text, .. } => {
-                self.voice_reply_buffer.push_str(&text);
-                let parts: Vec<&str> = text.split('\n').collect();
-                for (i, part) in parts.iter().enumerate() {
-                    if i == 0 {
-                        // Only append to last line if it's existing model output (white text).
-                        // Don't append to user input lines, tool calls, errors, etc.
-                        let can_append = self
-                            .output_lines
-                            .last()
-                            .map(|(_, color)| *color == Color32::WHITE)
-                            .unwrap_or(false);
-                        if can_append {
-                            if let Some((last, _)) = self.output_lines.last_mut() {
-                                last.push_str(part);
-                            }
-                        } else {
-                            self.output_lines.push((part.to_string(), Color32::WHITE));
-                        }
-                    } else {
-                        self.output_lines.push((part.to_string(), Color32::WHITE));
-                    }
-                }
-            }
+            StreamEvent::Text { text, .. } => self.voice_reply_buffer.push_str(text),
             StreamEvent::ToolCallStart { tool, args, .. } => {
                 info!(tool=%tool, args=%args, "tool call start");
-                self.output_lines.push((
-                    format!("\u{2699} {tool} {args}"),
-                    Color32::from_rgb(255, 255, 0),
-                ));
             }
             StreamEvent::ToolCallEnd {
                 tool,
                 output,
                 is_error,
                 ..
-            } => {
-                let color = if is_error {
-                    Color32::from_rgb(255, 80, 80)
-                } else {
-                    Color32::from_rgb(0, 200, 0)
-                };
-                let preview: String = output.lines().take(10).collect::<Vec<_>>().join("\n");
-                if is_error {
-                    warn!(tool=%tool, error=%output, "tool call failed");
-                } else {
-                    debug!(tool=%tool, "tool call ok");
-                }
-                self.output_lines
-                    .push((format!("  \u{2192} {tool}: {preview}"), color));
-            }
+            } => log_tool_call_end(tool, output, *is_error),
             StreamEvent::TurnEnd {
-                finish_reason,
                 total_tokens,
                 prompt_cache_hit_tokens,
                 prompt_cache_miss_tokens,
                 ..
             } => {
-                self.output_lines.push((
-                    format!("--- turn end ({finish_reason}) ---"),
-                    Color32::from_rgb(128, 128, 128),
-                ));
                 self.token_count = total_tokens.to_string();
                 self.total_cache_hit_tokens += prompt_cache_hit_tokens;
                 self.total_cache_miss_tokens += prompt_cache_miss_tokens;
                 self.speak_accumulated_reply();
             }
-            StreamEvent::SessionReset => {
-                self.output_lines.clear();
-                self.output_lines
-                    .push(("Session reset".into(), Color32::from_rgb(0, 255, 255)));
-                self.session_status = "Reset".into();
-                self.total_cache_hit_tokens = 0;
-                self.total_cache_miss_tokens = 0;
-                self.voice_reply_buffer.clear();
-            }
-            StreamEvent::Error { message } => {
-                error!(%message, "stream error event");
-                self.output_lines
-                    .push((format!("ERROR: {message}"), Color32::from_rgb(255, 80, 80)));
-            }
+            StreamEvent::SessionReset => self.reset_session_state(),
+            StreamEvent::Error { message } => error!(%message, "stream error event"),
             StreamEvent::Interrupted { message } => {
                 info!(%message, "agent interrupted");
-                self.output_lines.push((
-                    format!("\u{23F9} {message}"),
-                    Color32::from_rgb(255, 165, 0),
-                ));
                 self.session_status = "Interrupted".into();
                 // An interrupted turn never reaches TurnEnd, so nothing
                 // would otherwise clear the partial reply gathered so
@@ -531,89 +496,133 @@ impl DeepSeekGui {
             }
             StreamEvent::RepeatIterationStart { index, total } => {
                 info!(index, total, "repeat iteration start");
-                self.autopilot_progress = AutopilotProgress::Running { index, total };
+                self.autopilot_progress = AutopilotProgress::Running {
+                    index: *index,
+                    total: *total,
+                };
             }
             StreamEvent::RepeatFinished { completed, total } => {
                 info!(completed, total, "repeat run finished");
-                self.autopilot_progress = AutopilotProgress::Finished { completed, total };
+                self.autopilot_progress = AutopilotProgress::Finished {
+                    completed: *completed,
+                    total: *total,
+                };
             }
-            StreamEvent::Reasoning { text, .. } => {
-                let parts: Vec<&str> = text.split('\n').collect();
-                let reason_color = Color32::from_rgb(160, 160, 160);
-                for (i, part) in parts.iter().enumerate() {
-                    if i == 0 {
-                        let can_append = self
-                            .output_lines
-                            .last()
-                            .map(|(_, color)| *color == reason_color)
-                            .unwrap_or(false);
-                        if can_append {
-                            if let Some((last, _)) = self.output_lines.last_mut() {
-                                last.push_str(part);
-                            }
-                        } else {
-                            self.output_lines.push((part.to_string(), reason_color));
-                        }
-                    } else {
-                        self.output_lines.push((part.to_string(), reason_color));
-                    }
-                }
-            }
+            StreamEvent::Reasoning { .. } => {}
         }
     }
 
-    /// Render the Chat tab's output scroll area. The heading, line count,
-    /// and the markdown/raw output split are unchanged from what the
-    /// central panel always rendered before the Autopilot tab existed.
+    /// Clear everything a session reset drops and leave one notice behind.
+    /// The transcript's own `SessionReset` arm is a no-op, so the clear
+    /// belongs here, where the rest of the reset already lives.
+    fn reset_session_state(&mut self) {
+        self.transcript.clear();
+        self.transcript.push(BlockKind::Notice {
+            text: "Session reset".into(),
+            severity: Severity::Info,
+        });
+        self.session_status = "Reset".into();
+        self.total_cache_hit_tokens = 0;
+        self.total_cache_miss_tokens = 0;
+        self.voice_reply_buffer.clear();
+    }
+
+    /// Render the Chat tab's output scroll area. Each block is drawn with
+    /// the widget its kind calls for: a bubble for a message, a folding
+    /// summary for a tool call, a single styled line for a notice.
     fn render_chat_output(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Output");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    RichText::new(format!("Lines: {}", self.output_lines.len()))
+                    RichText::new(format!("Blocks: {}", self.transcript.blocks().len()))
                         .color(Color32::GRAY)
                         .small(),
                 );
             });
         });
         ui.separator();
+        // Move the transcript out of `self` for the duration of the draw.
+        // A block renderer needs the blocks by shared reference and the
+        // markdown cache by mutable reference at the same moment, which
+        // it cannot have while both live on `self`.
+        let transcript = std::mem::take(&mut self.transcript);
+        let mut toggled: Vec<BlockId> = Vec::new();
         ScrollArea::vertical()
             .stick_to_bottom(self.auto_scroll)
             .show(ui, |ui| {
                 if self.show_raw_output {
-                    for (text, color) in &self.output_lines {
-                        ui.label(RichText::new(text).color(*color));
-                    }
-                } else {
-                    // Group consecutive WHITE (model output) lines as markdown blocks.
-                    // Non-white lines (tool calls, errors, user input, reasoning) stay raw.
-                    let mut md_buf: Vec<&str> = Vec::new();
-                    for (text, color) in &self.output_lines {
-                        if *color == Color32::WHITE {
-                            md_buf.push(text);
-                        } else {
-                            if !md_buf.is_empty() {
-                                let md = md_buf.join("\n");
-                                egui_commonmark::CommonMarkViewer::new().show(
-                                    ui,
-                                    &mut self.markdown_cache,
-                                    &md,
-                                );
-                                md_buf.clear();
-                            }
-                            ui.label(RichText::new(text.as_str()).color(*color));
-                        }
-                    }
-                    if !md_buf.is_empty() {
-                        let md = md_buf.join("\n");
-                        egui_commonmark::CommonMarkViewer::new().show(
-                            ui,
-                            &mut self.markdown_cache,
-                            &md,
-                        );
-                    }
+                    render_raw_blocks(ui, transcript.blocks());
+                    return;
+                }
+                for (index, block) in transcript.blocks().iter().enumerate() {
+                    ui.add_space(gap_before(index, &block.kind));
+                    self.render_block(ui, block, &mut toggled);
                 }
             });
+        self.transcript = transcript;
+        // Applied after the draw, since the closure above only holds the
+        // blocks by shared reference.
+        for id in toggled {
+            let collapsed = self
+                .transcript
+                .find(id)
+                .is_some_and(|block| block.collapsed);
+            self.transcript.set_collapsed(id, !collapsed);
+        }
+    }
+
+    /// Draw one block with the widget its kind calls for. Every clicked
+    /// disclosure toggle is recorded in `toggled` instead of applied here.
+    fn render_block(&mut self, ui: &mut egui::Ui, block: &Block, toggled: &mut Vec<BlockId>) {
+        match &block.kind {
+            BlockKind::User { text } => render_user_bubble(ui, role_label(&block.kind), text),
+            BlockKind::Assistant { spans } => {
+                self.render_assistant_bubble(ui, block, spans);
+            }
+            BlockKind::ToolCall { .. } => render_tool_call(ui, block, toggled),
+            BlockKind::Notice { text, severity } => {
+                ui.label(RichText::new(text).color(severity_color(*severity)));
+            }
+        }
+    }
+
+    /// The assistant's reply as a bubble: a role label, then every span in
+    /// arrival order.
+    fn render_assistant_bubble(&mut self, ui: &mut egui::Ui, block: &Block, spans: &[Span]) {
+        let label = role_label(&block.kind);
+        let id = block.id;
+        bubble_frame(ASSISTANT_BUBBLE_FILL).show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(label).color(ASSISTANT_ROLE_COLOR).small());
+                for (index, span) in spans.iter().enumerate() {
+                    self.render_span(ui, id, index, span);
+                }
+            });
+        });
+    }
+
+    /// One assistant span. Reply text goes through the markdown renderer.
+    /// A reasoning span is dimmed and folded away by default, so a long
+    /// chain of thought does not push the answer off screen.
+    fn render_span(&mut self, ui: &mut egui::Ui, id: BlockId, index: usize, span: &Span) {
+        match span {
+            Span::Text(text) => {
+                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.markdown_cache, text);
+            }
+            Span::Reasoning(text) => {
+                egui::CollapsingHeader::new(
+                    RichText::new(REASONING_LABEL)
+                        .color(REASONING_COLOR)
+                        .small(),
+                )
+                .id_salt((id, index))
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(text).color(REASONING_COLOR));
+                });
+            }
+        }
     }
 
     /// Render the Autopilot tab: task text, iteration count, the resolved
@@ -1036,8 +1045,10 @@ impl App for DeepSeekGui {
                 flag.store(true, Ordering::SeqCst);
             }
             self.send_voice_command(VoiceCommand::StopSpeaking);
-            self.output_lines
-                .push(("[Interrupting...]".into(), Color32::from_rgb(255, 165, 0)));
+            self.transcript.push(BlockKind::Notice {
+                text: "[Interrupting...]".into(),
+                severity: Severity::Warning,
+            });
         }
 
         // Tab -> toggle settings panel
@@ -1155,6 +1166,220 @@ impl App for DeepSeekGui {
                     });
                 });
             });
+    }
+}
+
+/// Log one finished tool call. Split out of the stream-event handler so
+/// that method stays a flat match with one statement per arm.
+fn log_tool_call_end(tool: &str, output: &str, is_error: bool) {
+    if is_error {
+        warn!(tool = %tool, error = %output, "tool call failed");
+    } else {
+        debug!(tool = %tool, "tool call ok");
+    }
+}
+
+/// Colour and layout constants for the chat log. Colour is a rendering
+/// choice made from a block's kind and severity. It carries no meaning of
+/// its own, so every one of these decisions stays in this file.
+const USER_BUBBLE_FILL: Color32 = Color32::from_rgb(38, 52, 74);
+const ASSISTANT_BUBBLE_FILL: Color32 = Color32::from_rgb(38, 42, 48);
+const USER_ROLE_COLOR: Color32 = Color32::from_rgb(140, 180, 240);
+const ASSISTANT_ROLE_COLOR: Color32 = Color32::from_rgb(150, 200, 160);
+const REASONING_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
+const TOOL_COLOR: Color32 = Color32::from_rgb(255, 255, 0);
+const TOOL_ERROR_COLOR: Color32 = Color32::from_rgb(255, 80, 80);
+const TOOL_OUTPUT_COLOR: Color32 = Color32::from_rgb(0, 200, 0);
+const REASONING_LABEL: &str = "Reasoning";
+/// Space above a block that opens a new turn. This is what replaced the
+/// old grey "--- turn end ---" divider: a turn boundary now reads as a
+/// gap between bubbles instead of a line of its own.
+const TURN_GAP: f32 = 14.0;
+const BLOCK_GAP: f32 = 4.0;
+/// How much of a tool call's arguments a collapsed summary shows.
+const COLLAPSED_ARGS_LEN: usize = 60;
+/// How far a user bubble is indented, so the two sides of the
+/// conversation do not share a left edge.
+const USER_BUBBLE_INDENT: f32 = 48.0;
+
+/// Colour for a notice of the given severity. These are the same colours
+/// the flat-line shape used: red for an error, orange for an interrupt,
+/// cyan for a session reset, grey for anything quieter.
+fn severity_color(severity: Severity) -> Color32 {
+    match severity {
+        Severity::Error => Color32::from_rgb(255, 80, 80),
+        Severity::Warning => Color32::from_rgb(255, 165, 0),
+        Severity::Info => Color32::from_rgb(0, 255, 255),
+        Severity::Debug => Color32::from_rgb(128, 128, 128),
+    }
+}
+
+/// The label naming who or what produced a block.
+fn role_label(kind: &BlockKind) -> &'static str {
+    match kind {
+        BlockKind::User { .. } => "You",
+        BlockKind::Assistant { .. } => "Assistant",
+        BlockKind::ToolCall { .. } => "Tool",
+        BlockKind::Notice { .. } => "Notice",
+    }
+}
+
+/// Vertical space to leave above a block. A user message opens a turn, so
+/// the wider gap in front of one is what makes a turn boundary visible.
+fn gap_before(index: usize, kind: &BlockKind) -> f32 {
+    match kind {
+        BlockKind::User { .. } if index > 0 => TURN_GAP,
+        _ => BLOCK_GAP,
+    }
+}
+
+/// The frame a message bubble draws itself in.
+fn bubble_frame(fill: Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+}
+
+/// The user's message as an indented bubble with a role label.
+fn render_user_bubble(ui: &mut egui::Ui, label: &str, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(USER_BUBBLE_INDENT);
+        bubble_frame(USER_BUBBLE_FILL).show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(label).color(USER_ROLE_COLOR).small());
+                ui.label(RichText::new(text));
+            });
+        });
+    });
+}
+
+/// A tool call as one clickable summary line that opens to show the full
+/// arguments and the output. The click is reported through `toggled`, not
+/// applied here, since the block is only held by shared reference.
+fn render_tool_call(ui: &mut egui::Ui, block: &Block, toggled: &mut Vec<BlockId>) {
+    let BlockKind::ToolCall {
+        tool,
+        args,
+        output,
+        is_error,
+    } = &block.kind
+    else {
+        return;
+    };
+    let summary = tool_summary(block.collapsed, tool, args, *is_error);
+    let color = tool_color(*is_error);
+    let line = egui::Label::new(RichText::new(summary).color(color))
+        .sense(egui::Sense::click())
+        .wrap_mode(egui::TextWrapMode::Truncate);
+    if ui.add(line).clicked() {
+        toggled.push(block.id);
+    }
+    if block.collapsed {
+        return;
+    }
+    ui.indent(block.id, |ui| {
+        ui.label(RichText::new(args).color(color).monospace());
+        if let Some(output) = output {
+            ui.label(
+                RichText::new(output)
+                    .color(tool_output_color(*is_error))
+                    .monospace(),
+            );
+        }
+    });
+}
+
+/// The one-line summary of a tool call. It names the tool and shows
+/// enough of the arguments to recognise the call. An errored call says so
+/// in the text, so a reader does not have to open it to see the failure.
+fn tool_summary(collapsed: bool, tool: &str, args: &str, is_error: bool) -> String {
+    let marker = if collapsed { '\u{25b6}' } else { '\u{25bc}' };
+    let error = if is_error { " [error]" } else { "" };
+    let args = truncate_args(args, COLLAPSED_ARGS_LEN);
+    format!("{marker} {tool}{error}  {args}")
+}
+
+/// Flatten arguments onto one line and cut them to `max` characters, so a
+/// collapsed tool call stays one line however long its arguments are.
+fn truncate_args(args: &str, max: usize) -> String {
+    let flat = args.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max).collect();
+    format!("{cut}...")
+}
+
+/// Colour of a tool call's own lines. An error is red in both the
+/// collapsed and the expanded state.
+fn tool_color(is_error: bool) -> Color32 {
+    if is_error {
+        TOOL_ERROR_COLOR
+    } else {
+        TOOL_COLOR
+    }
+}
+
+/// Colour of a tool call's output body.
+fn tool_output_color(is_error: bool) -> Color32 {
+    if is_error {
+        TOOL_ERROR_COLOR
+    } else {
+        TOOL_OUTPUT_COLOR
+    }
+}
+
+/// Draw every block as one plain coloured line, for the raw-output
+/// toggle. This is the only flattening left: the rendered path draws each
+/// block on its own terms instead.
+fn render_raw_blocks(ui: &mut egui::Ui, blocks: &[Block]) {
+    for block in blocks {
+        ui.label(RichText::new(raw_block_text(block)).color(block_color(&block.kind)));
+    }
+}
+
+/// One block as raw text for the raw-output toggle. Every field the
+/// rendered path shows for a block also has to be reachable here: a role
+/// label for a `User` or `Assistant` block, a marked-apart reasoning span,
+/// and a tool call's arguments and output.
+fn raw_block_text(block: &Block) -> String {
+    match &block.kind {
+        BlockKind::User { text } => format!("{}: {text}", role_label(&block.kind)),
+        BlockKind::Assistant { spans } => {
+            let body = spans
+                .iter()
+                .map(raw_span_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{}:\n{body}", role_label(&block.kind))
+        }
+        BlockKind::ToolCall {
+            tool, args, output, ..
+        } => {
+            let body = output.as_deref().unwrap_or("(running)");
+            format!("\u{2699} {tool} {args}\n  \u{2192} {body}")
+        }
+        BlockKind::Notice { text, .. } => text.clone(),
+    }
+}
+
+/// One assistant span as raw text, with reasoning marked so it does not
+/// read as part of the reply.
+fn raw_span_text(span: &Span) -> String {
+    match span {
+        Span::Text(text) => text.clone(),
+        Span::Reasoning(text) => format!("[reasoning] {text}"),
+    }
+}
+
+/// Colour for a whole block on the raw path, chosen from its kind alone.
+fn block_color(kind: &BlockKind) -> Color32 {
+    match kind {
+        BlockKind::User { .. } => USER_ROLE_COLOR,
+        BlockKind::Assistant { .. } => Color32::WHITE,
+        BlockKind::ToolCall { is_error, .. } => tool_color(*is_error),
+        BlockKind::Notice { severity, .. } => severity_color(*severity),
     }
 }
 
@@ -1576,6 +1801,18 @@ mod tests {
         assert!(gui.model_options.contains(&gui.model));
     }
 
+    /// The spans of the only block in the transcript, which must be an
+    /// `Assistant` block. Panics otherwise, so a test that expects
+    /// assistant output fails loudly on any other block kind.
+    fn only_assistant_spans(gui: &DeepSeekGui) -> Vec<Span> {
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1, "expected exactly one block");
+        let BlockKind::Assistant { spans } = &blocks[0].kind else {
+            panic!("expected an Assistant block, got {:?}", blocks[0].kind);
+        };
+        spans.clone()
+    }
+
     #[test]
     fn reasoning_event_adds_payload_line() {
         let mut gui = make_gui();
@@ -1583,9 +1820,10 @@ mod tests {
             turn: 1,
             text: "Let me think about this...".into(),
         });
-        assert_eq!(gui.output_lines.len(), 1);
-        assert_eq!(gui.output_lines[0].0, "Let me think about this...");
-        assert_eq!(gui.output_lines[0].1, Color32::from_rgb(160, 160, 160));
+        assert_eq!(
+            only_assistant_spans(&gui),
+            vec![Span::Reasoning("Let me think about this...".into())]
+        );
     }
 
     #[test]
@@ -1599,8 +1837,204 @@ mod tests {
             turn: 1,
             text: "Second".into(),
         });
-        assert_eq!(gui.output_lines.len(), 1);
-        assert_eq!(gui.output_lines[0].0, "FirstSecond");
+        assert_eq!(
+            only_assistant_spans(&gui),
+            vec![Span::Reasoning("FirstSecond".into())]
+        );
+    }
+
+    fn tool_block(args: &str, output: Option<&str>, is_error: bool) -> Block {
+        let mut transcript = Transcript::new();
+        let id = transcript.push(BlockKind::ToolCall {
+            tool: "Bash".into(),
+            args: args.into(),
+            output: output.map(str::to_string),
+            is_error,
+        });
+        transcript.find(id).unwrap().clone()
+    }
+
+    #[test]
+    fn role_label_names_each_kind() {
+        assert_eq!(role_label(&BlockKind::User { text: "hi".into() }), "You");
+        assert_eq!(
+            role_label(&BlockKind::Assistant { spans: Vec::new() }),
+            "Assistant"
+        );
+        assert_eq!(role_label(&tool_block("ls", None, false).kind), "Tool");
+        assert_eq!(
+            role_label(&BlockKind::Notice {
+                text: "reset".into(),
+                severity: Severity::Info,
+            }),
+            "Notice"
+        );
+    }
+
+    #[test]
+    fn severity_color_is_distinct_per_severity() {
+        let colors = [
+            severity_color(Severity::Error),
+            severity_color(Severity::Warning),
+            severity_color(Severity::Info),
+            severity_color(Severity::Debug),
+        ];
+        for (index, color) in colors.iter().enumerate() {
+            for other in &colors[index + 1..] {
+                assert_ne!(color, other, "each severity needs its own colour");
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_args_leaves_short_arguments_alone() {
+        assert_eq!(truncate_args("ls -la", 60), "ls -la");
+    }
+
+    #[test]
+    fn truncate_args_flattens_newlines_onto_one_line() {
+        assert_eq!(truncate_args("echo one\necho two", 60), "echo one echo two");
+    }
+
+    #[test]
+    fn truncate_args_cuts_long_arguments_and_marks_the_cut() {
+        let truncated = truncate_args(&"x".repeat(100), 10);
+        assert_eq!(truncated, format!("{}...", "x".repeat(10)));
+    }
+
+    #[test]
+    fn truncate_args_counts_characters_not_bytes() {
+        // A cut by byte index would panic here, since each character is
+        // three bytes wide.
+        let truncated = truncate_args(&"\u{4f60}".repeat(10), 4);
+        assert_eq!(truncated, format!("{}...", "\u{4f60}".repeat(4)));
+    }
+
+    #[test]
+    fn a_collapsed_tool_summary_names_the_tool_and_shows_arguments() {
+        let summary = tool_summary(true, "Bash", "ls -la", false);
+        assert!(summary.contains("Bash"), "summary must name the tool");
+        assert!(summary.contains("ls -la"), "summary must show arguments");
+    }
+
+    #[test]
+    fn an_errored_tool_summary_says_so_in_both_states() {
+        for collapsed in [true, false] {
+            let summary = tool_summary(collapsed, "Bash", "boom", true);
+            assert!(
+                summary.contains("[error]"),
+                "an error must be visible without expanding the call"
+            );
+        }
+        assert!(!tool_summary(true, "Bash", "ok", false).contains("[error]"));
+    }
+
+    #[test]
+    fn an_errored_tool_call_is_red_in_both_states() {
+        assert_eq!(tool_color(true), TOOL_ERROR_COLOR);
+        assert_eq!(tool_output_color(true), TOOL_ERROR_COLOR);
+        assert_ne!(tool_color(false), TOOL_ERROR_COLOR);
+        assert_ne!(tool_output_color(false), TOOL_ERROR_COLOR);
+    }
+
+    #[test]
+    fn a_user_block_after_the_first_opens_a_turn_with_a_wider_gap() {
+        let user = BlockKind::User {
+            text: "hello".into(),
+        };
+        assert_eq!(gap_before(1, &user), TURN_GAP);
+        assert_eq!(gap_before(3, &user), TURN_GAP);
+    }
+
+    #[test]
+    fn the_first_block_and_non_user_blocks_get_the_plain_gap() {
+        let user = BlockKind::User {
+            text: "hello".into(),
+        };
+        assert_eq!(gap_before(0, &user), BLOCK_GAP);
+        assert_eq!(
+            gap_before(2, &BlockKind::Assistant { spans: Vec::new() }),
+            BLOCK_GAP
+        );
+        assert!(TURN_GAP > BLOCK_GAP, "a turn boundary must read as wider");
+    }
+
+    #[test]
+    fn raw_text_marks_reasoning_apart_from_reply_text() {
+        let mut transcript = Transcript::new();
+        let id = transcript.push(BlockKind::Assistant {
+            spans: vec![Span::Reasoning("thought".into()), Span::Text("said".into())],
+        });
+        let block = transcript.find(id).unwrap();
+        assert_eq!(raw_block_text(block), "Assistant:\n[reasoning] thought\nsaid");
+    }
+
+    #[test]
+    fn raw_text_for_a_running_tool_call_says_it_is_running() {
+        let block = tool_block("ls", None, false);
+        assert!(raw_block_text(&block).contains("(running)"));
+        let done = tool_block("ls", Some("file1"), false);
+        assert!(raw_block_text(&done).contains("file1"));
+    }
+
+    #[test]
+    fn raw_text_for_a_tool_call_carries_its_arguments_and_output() {
+        let block = tool_block("ls -la", Some("file1\nfile2"), false);
+        let text = raw_block_text(&block);
+        assert!(text.contains("ls -la"), "arguments must be reachable: {text}");
+        assert!(
+            text.contains("file1\nfile2"),
+            "output must be reachable: {text}"
+        );
+    }
+
+    #[test]
+    fn raw_text_for_a_user_block_carries_the_you_role_label_and_exact_text() {
+        let mut transcript = Transcript::new();
+        let id = transcript.push(BlockKind::User {
+            text: "hello there".into(),
+        });
+        let block = transcript.find(id).unwrap();
+        assert_eq!(raw_block_text(block), "You: hello there");
+    }
+
+    #[test]
+    fn raw_text_for_a_notice_block_carries_its_text() {
+        let mut transcript = Transcript::new();
+        let id = transcript.push(BlockKind::Notice {
+            text: "Session reset".into(),
+            severity: Severity::Info,
+        });
+        let block = transcript.find(id).unwrap();
+        assert_eq!(raw_block_text(block), "Session reset");
+    }
+
+    #[test]
+    fn raw_span_text_marks_reasoning_and_leaves_reply_text_plain() {
+        assert_eq!(raw_span_text(&Span::Text("hello".into())), "hello");
+        assert_eq!(
+            raw_span_text(&Span::Reasoning("thinking".into())),
+            "[reasoning] thinking"
+        );
+    }
+
+    #[test]
+    fn block_color_follows_kind_and_severity() {
+        assert_eq!(
+            block_color(&BlockKind::Assistant { spans: Vec::new() }),
+            Color32::WHITE
+        );
+        assert_eq!(
+            block_color(&tool_block("ls", None, true).kind),
+            TOOL_ERROR_COLOR
+        );
+        assert_eq!(
+            block_color(&BlockKind::Notice {
+                text: "boom".into(),
+                severity: Severity::Error,
+            }),
+            severity_color(Severity::Error)
+        );
     }
 
     #[test]
@@ -1610,58 +2044,93 @@ mod tests {
             turn: 1,
             text: "Hello world".into(),
         });
-        assert_eq!(gui.output_lines.len(), 1);
-        assert_eq!(gui.output_lines[0].0, "Hello world");
-        assert_eq!(gui.output_lines[0].1, Color32::WHITE);
+        // The colour this used to assert on now lives in the block kind:
+        // a `Text` span inside an `Assistant` block is what the renderer
+        // draws white and passes to the markdown viewer.
+        assert_eq!(
+            only_assistant_spans(&gui),
+            vec![Span::Text("Hello world".into())]
+        );
     }
 
     #[test]
-    fn user_input_line_is_blue_not_white() {
+    fn user_input_is_a_user_block_not_an_assistant_one() {
         let mut gui = make_gui();
-        // Simulate what happens when user presses Enter:
-        gui.output_lines.push((
-            "> pick a number between 1 and 100".into(),
-            Color32::from_rgb(100, 149, 237),
-        ));
-        let (text, color) = &gui.output_lines[0];
-        assert_ne!(
-            *color,
-            Color32::WHITE,
-            "user input must not be white (would render as markdown)"
+        gui.input_buffer = "pick a number between 1 and 100".into();
+        gui.submit_current_input();
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1, "exactly one block must be appended");
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::User {
+                text: "pick a number between 1 and 100".into(),
+            },
+            "user input must be a User block, never assistant output"
         );
-        assert_eq!(*color, Color32::from_rgb(100, 149, 237));
-        assert!(
-            text.starts_with("> "),
-            "user input starts with > which would be blockquote in markdown"
+
+        // A second submission must not merge into the first: unlike an
+        // Assistant block's spans, a User block never coalesces with an
+        // earlier one.
+        gui.input_buffer = "actually pick a letter instead".into();
+        gui.submit_current_input();
+        let blocks = gui.transcript.blocks();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "a second submission must append a new block, not merge"
         );
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::User {
+                text: "pick a number between 1 and 100".into(),
+            },
+            "the first block's text must stay untouched by the second submission"
+        );
+        assert_eq!(
+            blocks[1].kind,
+            BlockKind::User {
+                text: "actually pick a letter instead".into(),
+            }
+        );
+        assert_ne!(blocks[0].id, blocks[1].id);
     }
 
     #[test]
-    fn model_output_is_white_for_markdown_rendering() {
+    fn model_output_is_an_assistant_text_span_for_markdown_rendering() {
         let mut gui = make_gui();
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
-            text: "**bold** and *italic*".into(),
+            text: "**bold** ".into(),
         });
-        let (_, color) = &gui.output_lines[0];
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "and *italic*".into(),
+        });
+        // Two deltas of the same kind must coalesce into exactly one Text
+        // span with the concatenated content, not one span per delta, and
+        // must land in exactly one Assistant block (checked inside
+        // only_assistant_spans).
         assert_eq!(
-            *color,
-            Color32::WHITE,
-            "model output must be white to trigger markdown rendering"
+            only_assistant_spans(&gui),
+            vec![Span::Text("**bold** and *italic*".into())],
+            "model output must coalesce into a single Text span, the kind the renderer treats as markdown"
         );
     }
 
-    /// Simulates a full thinking-enabled interaction: user input → reasoning → text → turn end.
-    /// Proves: user input is blue (won't be markdown), reasoning is grey, model output is white.
+    /// Simulates a full thinking-enabled interaction: user input ->
+    /// reasoning -> a tool call -> more text -> turn end. Proves the block
+    /// kinds now carry what the line colours used to: the user's message
+    /// is a `User` block, reasoning and reply text stay separate spans of
+    /// one `Assistant` block each, and a tool call in between splits the
+    /// reply into two `Assistant` blocks around one filled `ToolCall`
+    /// block, exactly as the scripted events imply.
     #[test]
-    fn full_thinking_interaction_produces_correct_colors() {
+    fn full_thinking_interaction_produces_correct_block_kinds() {
         let mut gui = make_gui();
 
-        // 1. Simulate user pressing Enter with "> " prefixed input (as the GUI does at line 364-365)
-        gui.output_lines.push((
-            "> pick a number between 1 and 100 but don't tell me".into(),
-            Color32::from_rgb(100, 149, 237), // blue — matches gui code
-        ));
+        // 1. User presses Enter.
+        gui.input_buffer = "pick a number between 1 and 100 but don't tell me".into();
+        gui.submit_current_input();
 
         // 2. Reasoning chunk arrives from agent (thinking enabled)
         gui.handle_stream_event(StreamEvent::Reasoning {
@@ -1669,19 +2138,32 @@ mod tests {
             text: "The user wants me to pick a secret number.".into(),
         });
 
-        // 3. More reasoning (appends to same line)
+        // 3. More reasoning (coalesces into the same span)
         gui.handle_stream_event(StreamEvent::Reasoning {
             turn: 1,
             text: " I'll pick 42.".into(),
         });
 
-        // 4. Model text response (markdown)
+        // 4. The agent calls a tool before replying.
+        gui.handle_stream_event(StreamEvent::ToolCallStart {
+            turn: 1,
+            tool: "Bash".into(),
+            args: "echo 42".into(),
+        });
+        gui.handle_stream_event(StreamEvent::ToolCallEnd {
+            turn: 1,
+            tool: "Bash".into(),
+            output: "42".into(),
+            is_error: false,
+        });
+
+        // 5. Model text response (markdown), after the tool result.
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
             text: "I've picked a number between 1 and 100.".into(),
         });
 
-        // 5. Turn end
+        // 6. Turn end
         gui.handle_stream_event(StreamEvent::TurnEnd {
             turn: 1,
             finish_reason: "stop".into(),
@@ -1690,60 +2172,103 @@ mod tests {
             prompt_cache_miss_tokens: 0,
         });
 
+        let blocks = gui.transcript.blocks();
         assert_eq!(
-            gui.output_lines.len(),
+            blocks.len(),
             4,
-            "expected 4 lines: user input, reasoning, text, turn end"
+            "expected 4 blocks: the user message, the reasoning reply, \
+             the tool call, and the post-tool reply"
         );
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::User {
+                text: "pick a number between 1 and 100 but don't tell me".into(),
+            },
+            "user input must be a User block, never assistant output"
+        );
+        assert_eq!(
+            blocks[1].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Reasoning(
+                    "The user wants me to pick a secret number. I'll pick 42.".into()
+                )],
+            },
+            "reasoning before the tool call must be its own Assistant block"
+        );
+        assert_eq!(
+            blocks[2].kind,
+            BlockKind::ToolCall {
+                tool: "Bash".into(),
+                args: "echo 42".into(),
+                output: Some("42".into()),
+                is_error: false,
+            },
+            "the tool call block must carry the filled-in output the scripted end event sent"
+        );
+        assert_eq!(
+            blocks[3].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("I've picked a number between 1 and 100.".into())],
+            },
+            "reply text after a tool result must start a new Assistant block, not join the one before the call"
+        );
+    }
 
-        // Line 0: user input — must NOT be white (would become markdown)
-        let (text0, color0) = &gui.output_lines[0];
+    /// Pins the ordering rule on its own, isolated from reasoning: text
+    /// that arrives after a tool call's result must start a brand new
+    /// Assistant block rather than being appended to the block that was
+    /// open before the call. A refactor that made the tool call transparent
+    /// to span coalescing would merge "before" and "after" into one span
+    /// of one block; this test fails the moment that happens.
+    #[test]
+    fn text_after_a_tool_call_starts_a_new_assistant_block() {
+        let mut gui = make_gui();
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "before".into(),
+        });
+        gui.handle_stream_event(StreamEvent::ToolCallStart {
+            turn: 1,
+            tool: "Bash".into(),
+            args: "ls".into(),
+        });
+        gui.handle_stream_event(StreamEvent::ToolCallEnd {
+            turn: 1,
+            tool: "Bash".into(),
+            output: "file1".into(),
+            is_error: false,
+        });
+        gui.handle_stream_event(StreamEvent::Text {
+            turn: 1,
+            text: "after".into(),
+        });
+
+        let blocks = gui.transcript.blocks();
+        assert_eq!(
+            blocks.len(),
+            3,
+            "expected the before-text block, the tool call, and a new after-text block"
+        );
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("before".into())],
+            }
+        );
+        assert!(
+            matches!(blocks[1].kind, BlockKind::ToolCall { .. }),
+            "the middle block must be the tool call"
+        );
+        assert_eq!(
+            blocks[2].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("after".into())],
+            },
+            "the after-text must be its own span in its own block, not merged with \"before\""
+        );
         assert_ne!(
-            *color0,
-            Color32::WHITE,
-            "user input must not be white (markdown)"
-        );
-        assert_eq!(
-            *color0,
-            Color32::from_rgb(100, 149, 237),
-            "user input must be blue"
-        );
-        assert!(
-            text0.starts_with("> "),
-            "user input has > prefix that would be blockquote in markdown"
-        );
-
-        // Line 1: reasoning — grey, visible in output
-        let (text1, color1) = &gui.output_lines[1];
-        assert_eq!(
-            *color1,
-            Color32::from_rgb(160, 160, 160),
-            "reasoning must be grey"
-        );
-        assert_eq!(
-            text1,
-            "The user wants me to pick a secret number. I'll pick 42."
-        );
-
-        // Line 2: model output — white, will be rendered as markdown
-        let (text2, color2) = &gui.output_lines[2];
-        assert_eq!(
-            *color2,
-            Color32::WHITE,
-            "model output must be white for markdown rendering"
-        );
-        assert_eq!(text2, "I've picked a number between 1 and 100.");
-
-        // Line 3: turn end — grey status
-        let (text3, color3) = &gui.output_lines[3];
-        assert_eq!(
-            *color3,
-            Color32::from_rgb(128, 128, 128),
-            "turn end must be grey"
-        );
-        assert!(
-            text3.contains("turn end"),
-            "turn end line must contain 'turn end'"
+            blocks[0].id, blocks[2].id,
+            "the two Assistant blocks around the tool call must be distinct blocks"
         );
     }
 
@@ -1847,16 +2372,22 @@ mod tests {
     fn voice_error_event_adds_output_line_in_error_style() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::Error("mic unavailable".into()));
-        assert_eq!(gui.output_lines.len(), 1);
-        assert_eq!(gui.output_lines[0].0, "ERROR: mic unavailable");
-        assert_eq!(gui.output_lines[0].1, Color32::from_rgb(255, 80, 80));
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::Notice {
+                text: "ERROR: mic unavailable".into(),
+                severity: Severity::Error,
+            }
+        );
     }
 
     #[test]
     fn wake_detected_event_adds_no_output_line() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::WakeDetected);
-        assert!(gui.output_lines.is_empty());
+        assert!(gui.transcript.blocks().is_empty());
         assert_eq!(gui.voice_state, VoiceState::Idle);
     }
 
@@ -1864,9 +2395,14 @@ mod tests {
     fn transcript_event_submits_through_the_enter_path() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::Transcript("turn on the lights".into()));
-        assert_eq!(gui.output_lines.len(), 1);
-        assert_eq!(gui.output_lines[0].0, "> turn on the lights");
-        assert_eq!(gui.output_lines[0].1, Color32::from_rgb(100, 149, 237));
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::User {
+                text: "turn on the lights".into(),
+            }
+        );
         assert!(
             gui.input_buffer.is_empty(),
             "buffer clears on submit, same as Enter"
@@ -1897,7 +2433,7 @@ mod tests {
     fn empty_transcript_is_not_submitted() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::Transcript("".into()));
-        assert!(gui.output_lines.is_empty());
+        assert!(gui.transcript.blocks().is_empty());
         assert_eq!(gui.session_status, "Ready");
     }
 
@@ -1905,7 +2441,7 @@ mod tests {
     fn whitespace_only_transcript_is_not_submitted() {
         let mut gui = make_gui();
         gui.handle_voice_event(VoiceEvent::Transcript("   ".into()));
-        assert!(gui.output_lines.is_empty());
+        assert!(gui.transcript.blocks().is_empty());
         assert_eq!(gui.session_status, "Ready");
     }
 

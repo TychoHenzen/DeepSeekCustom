@@ -139,6 +139,19 @@ pip install nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cufft-cu12 nvidia-cuda-r
 `src/voice/cuda_dlls.rs` finds the NVIDIA runtime DLLs inside those
 wheels on its own. You do not need to add anything to `PATH`.
 
+## Running the model-dependent tests
+
+Two tests need the real model files above on disk:
+`voice::stt::tests::transcribe_returns_text_with_a_real_model` and
+`voice::tts::tests::synth_returns_24khz_samples_with_a_real_model`. They
+sit behind the `voice-models` cargo feature, off by default, so a
+fresh checkout with no models downloaded still passes `cargo test`.
+Once the files are in place, run:
+
+```
+cargo test --features voice-models
+```
+
 ## Build requirements
 
 Building whisper-rs needs three tools installed:
