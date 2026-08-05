@@ -3,6 +3,7 @@ pub(crate) mod session_state;
 pub(crate) mod sessions_tab;
 pub(crate) mod settings_panel;
 pub(crate) mod transcript;
+pub(crate) mod voice_ui;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -16,28 +17,16 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use self::attachment::{AttachmentSlot, decode_image_bytes};
-use self::settings_panel::{spawn_model_list_fetch, voice_mode_flag_for_tts};
+use self::settings_panel::spawn_model_list_fetch;
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
+use self::voice_ui::{PttKeys, VoiceUi, voice_state_color, voice_state_label};
 use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::api::types::{ImageAttachment, Message};
-use crate::config::settings::{Settings, TriggerMode};
+use crate::config::settings::Settings;
 use crate::effort::Effort;
 use crate::session::{SessionId, SessionMeta, SessionStore};
-use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
-
-/// Kokoro voice ids offered by the settings panel's voice selector. A
-/// fixed list, not a read of `voices/` at startup. This keeps the panel's
-/// options stable and testable no matter what is unpacked on disk.
-const KOKORO_VOICE_IDS: &[&str] = &[
-    "af_heart",
-    "af_bella",
-    "af_nicole",
-    "am_michael",
-    "am_puck",
-    "bf_emma",
-    "bm_george",
-];
+use crate::voice::service::{VoiceCommand, VoiceEvent};
 
 /// Which tab the main window shows. Chat is the default; Autopilot is a
 /// dedicated tab for running one task repeatedly with automatic question
@@ -139,26 +128,9 @@ pub struct DeepSeekGui {
     show_raw_output: bool,
     markdown_cache: CommonMarkCache,
 
-    // ── Voice (optional). None when voice is disabled or a model is missing. ──
-    voice_rx: Option<mpsc::UnboundedReceiver<VoiceEvent>>,
-    voice_tx: Option<mpsc::UnboundedSender<VoiceCommand>>,
-    voice_state: VoiceState,
-
-    // ── Voice settings panel controls ──
-    voice_master_enabled: bool,
-    voice_stt_enabled: bool,
-    voice_tts_enabled: bool,
-    voice_trigger_mode: TriggerMode,
-    voice_wake_phrase: String,
-    voice_id_options: Vec<String>,
-    selected_voice_idx: usize,
-    voice_speed: f32,
-
-    /// The model's reply text accumulated since the last `TurnEnd`, so
-    /// exactly one `Speak` goes out per turn instead of one per chunk.
-    /// Holds only `StreamEvent::Text` payloads, never reasoning or tool
-    /// output.
-    voice_reply_buffer: String,
+    // Voice: the two channels, the sidebar's controls, and the reply
+    // waiting to be spoken. See `gui::voice_ui`.
+    voice: VoiceUi,
 
     // ── Settings persistence ──
     /// The settings this GUI writes back on every control change. Seeded
@@ -247,11 +219,7 @@ impl DeepSeekGui {
                 spawn_model_list_fetch(model_list_tx.clone(), name.clone(), cfg.clone());
             }
         }
-        let initial_tts_enabled = settings.voice_tts_enabled();
-        voice_mode_flag.store(
-            voice_mode_flag_for_tts(initial_tts_enabled),
-            Ordering::SeqCst,
-        );
+        let voice = VoiceUi::new(&settings, &voice_mode_flag);
         let context_budget = context_budget_flag.load(Ordering::SeqCst);
         let effort = Effort::load(&effort_flag);
         // Seed the text field from the shared handle, which `main.rs`
@@ -262,13 +230,6 @@ impl DeepSeekGui {
         // of truth: the buffer always starts equal to what the tools will
         // actually act against.
         let working_dir_buffer = working_dir_flag.lock().unwrap().display().to_string();
-        let voice_id_options: Vec<String> =
-            KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect();
-        let configured_voice = settings.voice_tts_voice();
-        let voice_idx = voice_id_options
-            .iter()
-            .position(|v| *v == configured_voice)
-            .unwrap_or(0);
         let autopilot_task = settings.autopilot_task().unwrap_or_default();
         let autopilot_iterations = settings.autopilot_iterations();
         let autopilot_policy_path = crate::autopilot::policy::PolicyStore::new(
@@ -319,18 +280,7 @@ impl DeepSeekGui {
             working_dir_buffer,
             show_raw_output: settings.show_raw_output(),
             markdown_cache: CommonMarkCache::default(),
-            voice_rx: None,
-            voice_tx: None,
-            voice_state: VoiceState::Idle,
-            voice_master_enabled: settings.voice_enabled(),
-            voice_stt_enabled: settings.voice_stt_enabled(),
-            voice_tts_enabled: initial_tts_enabled,
-            voice_trigger_mode: settings.voice_trigger_mode(),
-            voice_wake_phrase: settings.voice_wake_phrase(),
-            voice_id_options,
-            selected_voice_idx: voice_idx,
-            voice_speed: settings.voice_tts_speed(),
-            voice_reply_buffer: String::new(),
+            voice,
             settings,
             project_root,
             repeat_tx: None,
@@ -383,36 +333,8 @@ impl DeepSeekGui {
         voice_rx: mpsc::UnboundedReceiver<VoiceEvent>,
         voice_tx: mpsc::UnboundedSender<VoiceCommand>,
     ) -> Self {
-        self.voice_rx = Some(voice_rx);
-        self.voice_tx = Some(voice_tx);
+        self.voice.attach(voice_rx, voice_tx);
         self
-    }
-
-    fn handle_voice_event(&mut self, event: VoiceEvent) {
-        match event {
-            VoiceEvent::StateChanged(state) => {
-                self.voice_state = state;
-            }
-            VoiceEvent::Error(message) => {
-                error!(%message, "voice error event");
-                self.transcript.push(BlockKind::Notice {
-                    text: format!("ERROR: {message}"),
-                    severity: Severity::Error,
-                });
-            }
-            VoiceEvent::Transcript(text) => {
-                // Route through the input buffer and the same submit path
-                // Enter uses, so the agent sees this exactly as if it had
-                // been typed. `submit_current_input` already drops empty
-                // and whitespace-only text.
-                self.input_buffer = text;
-                self.submit_current_input();
-            }
-            VoiceEvent::WakeDetected => {
-                // Reacting to wake detection beyond state tracking is not
-                // this step's job.
-            }
-        }
     }
 
     /// Submit whatever is in `input_buffer` to the agent: append a `User`
@@ -451,29 +373,14 @@ impl DeepSeekGui {
         self.auto_scroll = true;
     }
 
-    /// Send a voice command if the voice subsystem is attached. Silently
-    /// does nothing when voice is disabled (`voice_tx` is `None`).
-    fn send_voice_command(&self, cmd: VoiceCommand) {
-        if let Some(tx) = &self.voice_tx {
-            let _ = tx.send(cmd);
+    /// Apply one voice event exactly as the frame loop does. Test-only:
+    /// every real event arrives through `drain_events` in `update`.
+    #[cfg(test)]
+    fn handle_voice_event_for_test(&mut self, event: VoiceEvent) {
+        if let Some(text) = self.voice.handle_event(event, &mut self.transcript) {
+            self.input_buffer = text;
+            self.submit_current_input();
         }
-    }
-
-    /// Speak the reply text accumulated since the last turn ended, if
-    /// text to speech is on. Runs the markdown-to-speech filter first, so
-    /// code fences, backticks, and URLs never reach the speaker. Always
-    /// clears the buffer, spoken or not, so a later turn never inherits
-    /// this one's text.
-    fn speak_accumulated_reply(&mut self) {
-        let reply = std::mem::take(&mut self.voice_reply_buffer);
-        if !self.voice_tts_enabled {
-            return;
-        }
-        let spoken = crate::voice::filter_for_speech(&reply);
-        if spoken.is_empty() {
-            return;
-        }
-        self.send_voice_command(VoiceCommand::Speak(spoken));
     }
 
     /// Route one main-session stream event, exactly as if it arrived with
@@ -505,7 +412,7 @@ impl DeepSeekGui {
     /// two-step: side effects, then transcript.
     fn apply_event_side_effects(&mut self, event: &StreamEvent) {
         match event {
-            StreamEvent::Text { text, .. } => self.voice_reply_buffer.push_str(text),
+            StreamEvent::Text { text, .. } => self.voice.push_reply_text(text),
             StreamEvent::ToolCallStart { tool, args, .. } => {
                 info!(tool=%tool, args=%args, "tool call start");
             }
@@ -528,7 +435,7 @@ impl DeepSeekGui {
                 self.token_count = total_tokens.to_string();
                 self.total_cache_hit_tokens += prompt_cache_hit_tokens;
                 self.total_cache_miss_tokens += prompt_cache_miss_tokens;
-                self.speak_accumulated_reply();
+                self.voice.speak_accumulated_reply();
                 self.autosave_current_session();
             }
             StreamEvent::SessionReset => self.reset_session_state(),
@@ -540,7 +447,7 @@ impl DeepSeekGui {
                 // would otherwise clear the partial reply gathered so
                 // far. Drop it rather than folding it into the next
                 // turn's speech.
-                self.voice_reply_buffer.clear();
+                self.voice.clear_reply();
             }
             StreamEvent::RepeatIterationStart { index, total } => {
                 info!(index, total, "repeat iteration start");
@@ -574,7 +481,7 @@ impl DeepSeekGui {
         self.session_status = "Reset".into();
         self.total_cache_hit_tokens = 0;
         self.total_cache_miss_tokens = 0;
-        self.voice_reply_buffer.clear();
+        self.voice.clear_reply();
     }
 
     /// Render the Chat tab's output scroll area. Each block is drawn with
@@ -890,13 +797,13 @@ impl App for DeepSeekGui {
         // Poll voice events each frame too, alongside agent events. Drain
         // into a buffer first so the mutable borrow of `voice_rx` ends
         // before `handle_voice_event` needs `&mut self`.
-        if let Some(voice_rx) = self.voice_rx.as_mut() {
-            let mut voice_events = Vec::new();
-            while let Ok(event) = voice_rx.try_recv() {
-                voice_events.push(event);
-            }
-            for event in voice_events {
-                self.handle_voice_event(event);
+        for event in self.voice.drain_events() {
+            // A finished transcript goes through the input buffer and
+            // the same submit path Enter uses, so the agent cannot tell
+            // a spoken turn from a typed one.
+            if let Some(text) = self.voice.handle_event(event, &mut self.transcript) {
+                self.input_buffer = text;
+                self.submit_current_input();
             }
         }
         // Poll background model-list fetches each frame.
@@ -932,33 +839,18 @@ impl App for DeepSeekGui {
         self.attachment
             .handle_dropped_files(ctx, &mut self.transcript);
 
-        // Space held -> push-to-talk, only while not typing and the
-        // settings panel is closed.
-        if let Some(signal) = space_ptt_signal(
-            space_pressed,
-            space_released,
-            ctrl_held,
-            any_widget_focused,
+        // Both push-to-talk bindings. The sidebar owns the keyboard
+        // while it is open, so it closes off both.
+        self.voice.handle_ptt(
+            PttKeys {
+                space_pressed,
+                space_released,
+                ctrl_held,
+                ctrl_space_pressed,
+                input_focused: any_widget_focused,
+            },
             self.settings_visible,
-        ) {
-            self.send_voice_command(match signal {
-                PttSignal::Start => VoiceCommand::StartListening,
-                PttSignal::Stop => VoiceCommand::StopListening,
-            });
-        }
-
-        // Ctrl+Space -> push-to-talk toggle, works even while typing,
-        // still closed off by the settings panel.
-        if let Some(signal) = ctrl_space_toggle_signal(
-            ctrl_space_pressed,
-            self.settings_visible,
-            self.voice_state == VoiceState::Listening,
-        ) {
-            self.send_voice_command(match signal {
-                PttSignal::Start => VoiceCommand::StartListening,
-                PttSignal::Stop => VoiceCommand::StopListening,
-            });
-        }
+        );
 
         // Escape - interrupt agent, stop any speech in progress, and stop
         // a running autopilot repeat. One Escape cuts off whatever the
@@ -969,7 +861,7 @@ impl App for DeepSeekGui {
             if let Some(flag) = &self.repeat_interrupt_flag {
                 flag.store(true, Ordering::SeqCst);
             }
-            self.send_voice_command(VoiceCommand::StopSpeaking);
+            self.voice.send(VoiceCommand::StopSpeaking);
             self.transcript.push(BlockKind::Notice {
                 text: "[Interrupting...]".into(),
                 severity: Severity::Warning,
@@ -1085,8 +977,8 @@ impl App for DeepSeekGui {
                     );
                     ui.separator();
                     ui.label(
-                        RichText::new(voice_state_label(self.voice_state))
-                            .color(voice_state_color(self.voice_state))
+                        RichText::new(voice_state_label(self.voice.state()))
+                            .color(voice_state_color(self.voice.state()))
                             .small(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1481,82 +1373,6 @@ fn subagent_header_summary(
     )
 }
 
-/// Which push-to-talk action a key event should produce, if any. Kept
-/// separate from `VoiceCommand` so the decision logic below can be unit
-/// tested without constructing voice commands or an egui context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PttSignal {
-    Start,
-    Stop,
-}
-
-/// Decide the push-to-talk action for the space-bar-held binding. Space
-/// types a space character when the text input has focus, so this binding
-/// only ever fires when the input does NOT have focus. Also suppressed
-/// while Ctrl is held (that is the separate Ctrl+Space toggle binding) or
-/// the settings panel is open. `Start` fires on press, `Stop` fires on
-/// release, matching "held" rather than "toggled".
-fn space_ptt_signal(
-    space_pressed: bool,
-    space_released: bool,
-    ctrl_held: bool,
-    input_focused: bool,
-    settings_visible: bool,
-) -> Option<PttSignal> {
-    if ctrl_held || input_focused || settings_visible {
-        return None;
-    }
-    if space_pressed {
-        Some(PttSignal::Start)
-    } else if space_released {
-        Some(PttSignal::Stop)
-    } else {
-        None
-    }
-}
-
-/// Decide the push-to-talk action for the Ctrl+Space toggle binding.
-/// Unlike the space-bar-held binding, this works even when the text input
-/// has focus. Ctrl+Space is not a printable character, so it never
-/// collides with typing. Still suppressed while the settings panel is
-/// open. Toggles off `currently_listening` rather than press/release.
-/// This keeps the state coherent: a listening session this binding
-/// started is always one more press of the same key away from stopping.
-fn ctrl_space_toggle_signal(
-    ctrl_space_pressed: bool,
-    settings_visible: bool,
-    currently_listening: bool,
-) -> Option<PttSignal> {
-    if !ctrl_space_pressed || settings_visible {
-        return None;
-    }
-    Some(if currently_listening {
-        PttSignal::Stop
-    } else {
-        PttSignal::Start
-    })
-}
-
-/// Short status-bar label for a voice state.
-fn voice_state_label(state: VoiceState) -> &'static str {
-    match state {
-        VoiceState::Idle => "Idle",
-        VoiceState::Listening => "Listening",
-        VoiceState::Transcribing => "Transcribing",
-        VoiceState::Speaking => "Speaking",
-    }
-}
-
-/// Status-bar color for a voice state. See [`voice_state_label`].
-fn voice_state_color(state: VoiceState) -> Color32 {
-    match state {
-        VoiceState::Idle => Color32::from_rgb(128, 128, 128),
-        VoiceState::Listening => Color32::from_rgb(0, 200, 0),
-        VoiceState::Transcribing => Color32::from_rgb(255, 255, 0),
-        VoiceState::Speaking => Color32::from_rgb(100, 149, 237),
-    }
-}
-
 /// Store the Autopilot tab's task text box.
 fn apply_autopilot_task(settings: &mut Settings, task: &str) {
     settings.autopilot_mut().task = Some(task.to_string());
@@ -1571,15 +1387,16 @@ fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
 mod tests {
     use super::settings_panel::{
         apply_backend_model, apply_context_budget, apply_default_backend, apply_effort,
-        apply_show_raw_output, apply_stt_enabled, apply_trigger_mode, apply_tts_enabled,
-        apply_tts_speed, apply_tts_voice, apply_voice_enabled, apply_wake_phrase,
-        apply_working_dir, speed_command, stt_enabled_command, trigger_mode_command,
-        tts_enabled_command, voice_enabled_command, voice_id_command, wake_phrase_command,
+        apply_show_raw_output, apply_working_dir,
+    };
+    use super::voice_ui::{
+        apply_stt_enabled, apply_trigger_mode, apply_tts_enabled, apply_tts_speed, apply_tts_voice,
+        apply_voice_enabled, apply_wake_phrase, voice_mode_flag_for_tts,
     };
     use super::*;
     use crate::agent::agent_loop::{RouteHop, SubagentId, SubagentMeta};
     use crate::api::types::{Content, Role};
-    use crate::config::settings::{ApiProvider, BackendConfig, VoiceConfig};
+    use crate::config::settings::{ApiProvider, BackendConfig, TriggerMode, VoiceConfig};
     use std::collections::HashMap;
 
     fn make_gui() -> DeepSeekGui {
@@ -2578,88 +2395,26 @@ mod tests {
     }
 
     #[test]
-    fn new_gui_has_no_voice_channels_and_starts_idle() {
-        let gui = make_gui();
-        assert!(gui.voice_rx.is_none());
-        assert!(gui.voice_tx.is_none());
-        assert_eq!(gui.voice_state, VoiceState::Idle);
-    }
-
-    #[test]
     fn with_voice_attaches_both_channels() {
         let gui = make_gui();
         let (_tx_voice_events, rx_voice) = mpsc::unbounded_channel::<VoiceEvent>();
         let (tx_voice_cmd, _rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();
         let gui = gui.with_voice(rx_voice, tx_voice_cmd);
-        assert!(gui.voice_rx.is_some());
-        assert!(gui.voice_tx.is_some());
+        assert!(gui.voice.is_attached());
     }
 
     #[test]
     fn new_seeds_every_panel_control_from_settings() {
         let gui = make_gui_with_settings(&settings_with_voice("am_michael"));
         assert!(gui.show_raw_output);
-        assert!(gui.voice_master_enabled);
-        assert!(gui.voice_stt_enabled);
-        assert!(gui.voice_tts_enabled);
-        assert_eq!(gui.voice_trigger_mode, TriggerMode::WakeWord);
-        assert_eq!(gui.voice_wake_phrase, "hey computer");
-        assert_eq!(gui.voice_id_options[gui.selected_voice_idx], "am_michael");
-        assert_eq!(gui.voice_speed, 1.4);
-    }
-
-    #[test]
-    fn new_falls_back_to_the_first_voice_on_an_unknown_voice_id() {
-        let gui = make_gui_with_settings(&settings_with_voice("zz_nobody"));
-        assert_eq!(gui.selected_voice_idx, 0);
-        assert_eq!(gui.voice_id_options[0], "af_heart");
-    }
-
-    #[test]
-    fn new_sets_voice_mode_flag_from_the_seeded_tts_value() {
-        let gui = make_gui_with_settings(&settings_with_voice("af_heart"));
-        assert!(gui.voice_tts_enabled);
-        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
-
-        let gui = make_gui();
-        assert!(!gui.voice_tts_enabled);
-        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn voice_state_changed_event_updates_tracked_state() {
-        let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::StateChanged(VoiceState::Listening));
-        assert_eq!(gui.voice_state, VoiceState::Listening);
-    }
-
-    #[test]
-    fn voice_error_event_adds_output_line_in_error_style() {
-        let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::Error("mic unavailable".into()));
-        let blocks = gui.transcript.blocks();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(
-            blocks[0].kind,
-            BlockKind::Notice {
-                text: "ERROR: mic unavailable".into(),
-                severity: Severity::Error,
-            }
-        );
-    }
-
-    #[test]
-    fn wake_detected_event_adds_no_output_line() {
-        let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::WakeDetected);
-        assert!(gui.transcript.blocks().is_empty());
-        assert_eq!(gui.voice_state, VoiceState::Idle);
+        // The voice controls seed inside `VoiceUi::new`, covered by
+        // `voice_ui::tests::new_seeds_every_control_from_settings`.
     }
 
     #[test]
     fn transcript_event_submits_through_the_enter_path() {
         let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::Transcript("turn on the lights".into()));
+        gui.handle_voice_event_for_test(VoiceEvent::Transcript("turn on the lights".into()));
         let blocks = gui.transcript.blocks();
         assert_eq!(blocks.len(), 1);
         assert_eq!(
@@ -2691,7 +2446,7 @@ mod tests {
             Settings::default(),
             unique_temp_dir("ctor"),
         );
-        gui.handle_voice_event(VoiceEvent::Transcript("hello".into()));
+        gui.handle_voice_event_for_test(VoiceEvent::Transcript("hello".into()));
         match rx_input.try_recv().unwrap() {
             AgentCommand::UserTurn { text, .. } => assert_eq!(text, "hello"),
             other => panic!("expected UserTurn, got {other:?}"),
@@ -2701,7 +2456,7 @@ mod tests {
     #[test]
     fn empty_transcript_is_not_submitted() {
         let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::Transcript("".into()));
+        gui.handle_voice_event_for_test(VoiceEvent::Transcript("".into()));
         assert!(gui.transcript.blocks().is_empty());
         assert_eq!(gui.session_status, "Ready");
     }
@@ -2709,149 +2464,15 @@ mod tests {
     #[test]
     fn whitespace_only_transcript_is_not_submitted() {
         let mut gui = make_gui();
-        gui.handle_voice_event(VoiceEvent::Transcript("   ".into()));
+        gui.handle_voice_event_for_test(VoiceEvent::Transcript("   ".into()));
         assert!(gui.transcript.blocks().is_empty());
         assert_eq!(gui.session_status, "Ready");
     }
 
     #[test]
-    fn space_ptt_starts_listening_on_press_when_input_not_focused() {
-        let signal = space_ptt_signal(true, false, false, false, false);
-        assert_eq!(signal, Some(PttSignal::Start));
-    }
-
-    #[test]
-    fn space_ptt_stops_listening_on_release() {
-        let signal = space_ptt_signal(false, true, false, false, false);
-        assert_eq!(signal, Some(PttSignal::Stop));
-    }
-
-    #[test]
-    fn space_does_not_trigger_listening_while_input_is_focused() {
-        let signal = space_ptt_signal(true, false, false, true, false);
-        assert_eq!(
-            signal, None,
-            "space must type a space, not start listening, while the user is typing"
-        );
-    }
-
-    #[test]
-    fn space_ptt_suppressed_while_settings_panel_is_open() {
-        let signal = space_ptt_signal(true, false, false, false, true);
-        assert_eq!(signal, None);
-    }
-
-    #[test]
-    fn space_ptt_suppressed_while_ctrl_is_held() {
-        let signal = space_ptt_signal(true, false, true, false, false);
-        assert_eq!(
-            signal, None,
-            "ctrl+space is the separate toggle binding, not the held binding"
-        );
-    }
-
-    #[test]
-    fn ctrl_space_toggle_starts_listening_when_idle() {
-        let signal = ctrl_space_toggle_signal(true, false, false);
-        assert_eq!(signal, Some(PttSignal::Start));
-    }
-
-    #[test]
-    fn ctrl_space_toggle_stops_listening_when_already_listening() {
-        let signal = ctrl_space_toggle_signal(true, false, true);
-        assert_eq!(signal, Some(PttSignal::Stop));
-    }
-
-    #[test]
-    fn ctrl_space_toggle_takes_no_input_focused_parameter_and_always_fires() {
-        // This binding must work even while the text input has focus, so
-        // its signature has no focus parameter to gate on in the first
-        // place. This test only confirms it fires given ctrl+space pressed.
-        let signal = ctrl_space_toggle_signal(true, false, false);
-        assert_eq!(signal, Some(PttSignal::Start));
-    }
-
-    #[test]
-    fn ctrl_space_toggle_suppressed_while_settings_panel_is_open() {
-        let signal = ctrl_space_toggle_signal(true, true, false);
-        assert_eq!(signal, None);
-    }
-
-    #[test]
-    fn ctrl_space_toggle_does_nothing_when_key_not_pressed() {
-        let signal = ctrl_space_toggle_signal(false, false, false);
-        assert_eq!(signal, None);
-    }
-
-    #[test]
-    fn voice_state_label_text_for_each_state() {
-        assert_eq!(voice_state_label(VoiceState::Idle), "Idle");
-        assert_eq!(voice_state_label(VoiceState::Listening), "Listening");
-        assert_eq!(voice_state_label(VoiceState::Transcribing), "Transcribing");
-        assert_eq!(voice_state_label(VoiceState::Speaking), "Speaking");
-    }
-
-    #[test]
-    fn voice_state_color_for_each_state() {
-        assert_eq!(
-            voice_state_color(VoiceState::Idle),
-            Color32::from_rgb(128, 128, 128),
-            "idle must be grey"
-        );
-        assert_eq!(
-            voice_state_color(VoiceState::Listening),
-            Color32::from_rgb(0, 200, 0),
-            "listening must be green"
-        );
-        assert_eq!(
-            voice_state_color(VoiceState::Transcribing),
-            Color32::from_rgb(255, 255, 0),
-            "transcribing must be yellow"
-        );
-        assert_eq!(
-            voice_state_color(VoiceState::Speaking),
-            Color32::from_rgb(100, 149, 237),
-            "speaking must be blue"
-        );
-    }
-
-    #[test]
-    fn voice_enabled_command_wraps_the_checkbox_value() {
-        assert_eq!(voice_enabled_command(true), VoiceCommand::SetEnabled(true));
-        assert_eq!(
-            voice_enabled_command(false),
-            VoiceCommand::SetEnabled(false)
-        );
-    }
-
-    #[test]
-    fn stt_enabled_command_wraps_the_checkbox_value() {
-        assert_eq!(stt_enabled_command(true), VoiceCommand::SetSttEnabled(true));
-        assert_eq!(
-            stt_enabled_command(false),
-            VoiceCommand::SetSttEnabled(false)
-        );
-    }
-
-    #[test]
-    fn tts_enabled_command_wraps_the_checkbox_value() {
-        assert_eq!(tts_enabled_command(true), VoiceCommand::SetTtsEnabled(true));
-        assert_eq!(
-            tts_enabled_command(false),
-            VoiceCommand::SetTtsEnabled(false)
-        );
-    }
-
-    #[test]
-    fn voice_mode_flag_for_tts_matches_the_checkbox_state() {
-        assert!(voice_mode_flag_for_tts(true));
-        assert!(!voice_mode_flag_for_tts(false));
-    }
-
-    #[test]
     fn voice_mode_flag_starts_matching_initial_tts_state() {
         let gui = make_gui();
-        assert!(!gui.voice_tts_enabled);
+        assert!(!gui.voice.tts_enabled_for_test());
         assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
     }
 
@@ -2859,66 +2480,19 @@ mod tests {
     fn voice_mode_flag_tracks_tts_toggling_on_then_off() {
         let mut gui = make_gui();
 
-        gui.voice_tts_enabled = true;
+        gui.voice.set_tts_enabled_for_test(true);
         gui.voice_mode_flag.store(
-            voice_mode_flag_for_tts(gui.voice_tts_enabled),
+            voice_mode_flag_for_tts(gui.voice.tts_enabled_for_test()),
             Ordering::SeqCst,
         );
         assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
 
-        gui.voice_tts_enabled = false;
+        gui.voice.set_tts_enabled_for_test(false);
         gui.voice_mode_flag.store(
-            voice_mode_flag_for_tts(gui.voice_tts_enabled),
+            voice_mode_flag_for_tts(gui.voice.tts_enabled_for_test()),
             Ordering::SeqCst,
         );
         assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn trigger_mode_command_wraps_the_selected_mode() {
-        assert_eq!(
-            trigger_mode_command(TriggerMode::PushToTalk),
-            VoiceCommand::SetTriggerMode(TriggerMode::PushToTalk)
-        );
-        assert_eq!(
-            trigger_mode_command(TriggerMode::WakeWord),
-            VoiceCommand::SetTriggerMode(TriggerMode::WakeWord)
-        );
-    }
-
-    #[test]
-    fn wake_phrase_command_wraps_the_field_text() {
-        assert_eq!(
-            wake_phrase_command("hey computer"),
-            VoiceCommand::SetWakePhrase("hey computer".to_string())
-        );
-    }
-
-    #[test]
-    fn voice_id_command_wraps_the_selected_voice() {
-        assert_eq!(
-            voice_id_command("am_michael"),
-            VoiceCommand::SetVoice("am_michael".to_string())
-        );
-    }
-
-    #[test]
-    fn speed_command_wraps_the_slider_value() {
-        assert_eq!(speed_command(1.5), VoiceCommand::SetSpeed(1.5));
-    }
-
-    #[test]
-    fn new_gui_has_sensible_voice_control_defaults() {
-        let gui = make_gui();
-        assert!(!gui.voice_master_enabled);
-        assert!(!gui.voice_stt_enabled);
-        assert!(!gui.voice_tts_enabled);
-        assert_eq!(gui.voice_trigger_mode, TriggerMode::PushToTalk);
-        assert_eq!(gui.voice_wake_phrase, "hey deepseek");
-        assert_eq!(gui.selected_voice_idx, 0);
-        assert_eq!(gui.voice_speed, 1.0);
-        assert_eq!(gui.voice_id_options.len(), KOKORO_VOICE_IDS.len());
-        assert_eq!(gui.voice_id_options[0], "af_heart");
     }
 
     /// A GUI with the voice command channel attached, plus the receiving
@@ -2934,7 +2508,7 @@ mod tests {
     #[test]
     fn turn_end_speaks_the_accumulated_reply_when_tts_is_enabled() {
         let (mut gui, mut rx_voice_cmd) = make_gui_with_voice();
-        gui.voice_tts_enabled = true;
+        gui.voice.set_tts_enabled_for_test(true);
 
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
@@ -2952,13 +2526,13 @@ mod tests {
             rx_voice_cmd.try_recv().unwrap(),
             VoiceCommand::Speak("Run to check it.".into())
         );
-        assert!(gui.voice_reply_buffer.is_empty());
+        assert!(gui.voice.reply_buffer_for_test().is_empty());
     }
 
     #[test]
     fn turn_end_sends_nothing_when_tts_is_disabled() {
         let (mut gui, mut rx_voice_cmd) = make_gui_with_voice();
-        assert!(!gui.voice_tts_enabled, "tts is off by default");
+        assert!(!gui.voice.tts_enabled_for_test(), "tts is off by default");
 
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
@@ -2978,7 +2552,7 @@ mod tests {
     #[test]
     fn turn_end_sends_exactly_one_speak_for_multiple_text_chunks() {
         let (mut gui, mut rx_voice_cmd) = make_gui_with_voice();
-        gui.voice_tts_enabled = true;
+        gui.voice.set_tts_enabled_for_test(true);
 
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
@@ -3009,7 +2583,7 @@ mod tests {
     #[test]
     fn reasoning_and_tool_output_are_never_spoken() {
         let (mut gui, mut rx_voice_cmd) = make_gui_with_voice();
-        gui.voice_tts_enabled = true;
+        gui.voice.set_tts_enabled_for_test(true);
 
         gui.handle_stream_event(StreamEvent::Reasoning {
             turn: 1,
@@ -3043,7 +2617,7 @@ mod tests {
     #[test]
     fn interrupted_clears_the_pending_reply_so_it_is_never_spoken_later() {
         let (mut gui, mut rx_voice_cmd) = make_gui_with_voice();
-        gui.voice_tts_enabled = true;
+        gui.voice.set_tts_enabled_for_test(true);
 
         gui.handle_stream_event(StreamEvent::Text {
             turn: 1,
@@ -3052,7 +2626,7 @@ mod tests {
         gui.handle_stream_event(StreamEvent::Interrupted {
             message: "Interrupted by user (Escape)".into(),
         });
-        assert!(gui.voice_reply_buffer.is_empty());
+        assert!(gui.voice.reply_buffer_for_test().is_empty());
 
         // The next turn must not inherit the interrupted turn's text.
         gui.handle_stream_event(StreamEvent::Text {
@@ -3385,7 +2959,7 @@ mod tests {
             text: "partial reply".into(),
         });
         gui.handle_stream_event(StreamEvent::SessionReset);
-        assert!(gui.voice_reply_buffer.is_empty());
+        assert!(gui.voice.reply_buffer_for_test().is_empty());
     }
 
     fn user_message(text: &str) -> Message {

@@ -16,9 +16,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::api::models::list_models;
-use crate::config::settings::{BackendConfig, Settings, TriggerMode};
+use crate::config::settings::{BackendConfig, Settings};
 use crate::effort::Effort;
-use crate::voice::service::VoiceCommand;
 
 use super::DeepSeekGui;
 
@@ -166,115 +165,9 @@ impl DeepSeekGui {
                 ui.add_space(8.0);
                 ui.separator();
 
-                // ── Voice section ──
-                ui.label(RichText::new("Voice").color(Color32::from_rgb(180, 220, 255)));
-
-                let mut voice_enabled = self.voice_master_enabled;
-                if ui.checkbox(&mut voice_enabled, "Voice enabled").changed() {
-                    self.voice_master_enabled = voice_enabled;
-                    self.send_voice_command(voice_enabled_command(voice_enabled));
-                    info!(voice_enabled, "voice enabled toggled via settings panel");
-                    apply_voice_enabled(&mut self.settings, voice_enabled);
-                    self.persist_settings();
-                }
-
-                let mut stt_enabled = self.voice_stt_enabled;
-                if ui.checkbox(&mut stt_enabled, "Speech to text").changed() {
-                    self.voice_stt_enabled = stt_enabled;
-                    self.send_voice_command(stt_enabled_command(stt_enabled));
-                    info!(stt_enabled, "speech-to-text toggled via settings panel");
-                    apply_stt_enabled(&mut self.settings, stt_enabled);
-                    self.persist_settings();
-                }
-
-                let mut tts_enabled = self.voice_tts_enabled;
-                if ui.checkbox(&mut tts_enabled, "Text to speech").changed() {
-                    self.voice_tts_enabled = tts_enabled;
-                    self.voice_mode_flag
-                        .store(voice_mode_flag_for_tts(tts_enabled), Ordering::SeqCst);
-                    self.send_voice_command(tts_enabled_command(tts_enabled));
-                    info!(tts_enabled, "text-to-speech toggled via settings panel");
-                    apply_tts_enabled(&mut self.settings, tts_enabled);
-                    self.persist_settings();
-                }
-
-                ui.add_space(4.0);
-                ui.label(RichText::new("Trigger mode").color(Color32::GRAY).small());
-                let prev_trigger_mode = self.voice_trigger_mode;
-                ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.voice_trigger_mode,
-                        TriggerMode::PushToTalk,
-                        "Push to talk",
-                    );
-                    ui.radio_value(
-                        &mut self.voice_trigger_mode,
-                        TriggerMode::WakeWord,
-                        "Wake word",
-                    );
-                });
-                if self.voice_trigger_mode != prev_trigger_mode {
-                    self.send_voice_command(trigger_mode_command(self.voice_trigger_mode));
-                    info!(
-                        mode = ?self.voice_trigger_mode,
-                        "voice trigger mode changed via settings panel"
-                    );
-                    let mode = self.voice_trigger_mode;
-                    apply_trigger_mode(&mut self.settings, mode);
-                    self.persist_settings();
-                }
-
-                ui.add_space(4.0);
-                let wake_response = ui.add(
-                    TextEdit::singleline(&mut self.voice_wake_phrase).hint_text("wake phrase"),
-                );
-                if wake_response.changed() {
-                    self.send_voice_command(wake_phrase_command(&self.voice_wake_phrase));
-                    info!(
-                        phrase = %self.voice_wake_phrase,
-                        "wake phrase changed via settings panel"
-                    );
-                }
-                // Save on focus loss, not on every keystroke, so typing
-                // a phrase writes the file once.
-                if wake_response.lost_focus() {
-                    let phrase = self.voice_wake_phrase.clone();
-                    apply_wake_phrase(&mut self.settings, &phrase);
-                    self.persist_settings();
-                }
-
-                ui.add_space(4.0);
-                let prev_voice_idx = self.selected_voice_idx;
-                egui::ComboBox::from_label("Kokoro voice")
-                    .selected_text(&self.voice_id_options[self.selected_voice_idx])
-                    .show_ui(ui, |ui| {
-                        for (i, opt) in self.voice_id_options.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected_voice_idx, i, opt);
-                        }
-                    });
-                if self.selected_voice_idx != prev_voice_idx {
-                    let voice_id = self.voice_id_options[self.selected_voice_idx].clone();
-                    self.send_voice_command(voice_id_command(&voice_id));
-                    info!(voice_id = %voice_id, "kokoro voice changed via settings panel");
-                    apply_tts_voice(&mut self.settings, &voice_id);
-                    self.persist_settings();
-                }
-
-                ui.add_space(4.0);
-                let speed_response =
-                    ui.add(egui::Slider::new(&mut self.voice_speed, 0.5..=2.0).text("Speed"));
-                if speed_response.changed() {
-                    self.send_voice_command(speed_command(self.voice_speed));
-                    info!(
-                        speed = self.voice_speed,
-                        "voice speed changed via settings panel"
-                    );
-                }
-                // Save when the drag ends, so one drag writes the file
-                // once instead of once per frame.
-                if speed_response.drag_stopped() {
-                    let speed = self.voice_speed;
-                    apply_tts_speed(&mut self.settings, speed);
+                // The whole Voice section lives on `VoiceUi`, which owns
+                // every field these controls read and write.
+                if self.voice.render_section(ui, &mut self.settings, &self.voice_mode_flag) {
                     self.persist_settings();
                 }
 
@@ -435,47 +328,6 @@ impl DeepSeekGui {
 // without an egui context, the same way `space_ptt_signal` and
 // `ctrl_space_toggle_signal` in `gui/mod.rs` are.
 
-/// Build the command for the master voice-enable checkbox.
-pub(super) fn voice_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetEnabled(enabled)
-}
-
-/// Build the command for the speech-to-text checkbox.
-pub(super) fn stt_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetSttEnabled(enabled)
-}
-
-/// Build the command for the text-to-speech checkbox.
-pub(super) fn tts_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetTtsEnabled(enabled)
-}
-
-/// Report the value `voice_mode_flag` should hold for a given text-to-speech
-/// checkbox state. The flag always matches the checkbox.
-pub(super) fn voice_mode_flag_for_tts(tts_enabled: bool) -> bool {
-    tts_enabled
-}
-
-/// Build the command for the trigger-mode radio pair.
-pub(super) fn trigger_mode_command(mode: TriggerMode) -> VoiceCommand {
-    VoiceCommand::SetTriggerMode(mode)
-}
-
-/// Build the command for the wake-phrase text field.
-pub(super) fn wake_phrase_command(phrase: &str) -> VoiceCommand {
-    VoiceCommand::SetWakePhrase(phrase.to_string())
-}
-
-/// Build the command for the Kokoro voice id selector.
-pub(super) fn voice_id_command(voice_id: &str) -> VoiceCommand {
-    VoiceCommand::SetVoice(voice_id.to_string())
-}
-
-/// Build the command for the speech speed slider.
-pub(super) fn speed_command(speed: f32) -> VoiceCommand {
-    VoiceCommand::SetSpeed(speed)
-}
-
 // ── Background model discovery ──
 //
 // `list_models` is async. The paint loop must never block on it. The call
@@ -540,41 +392,6 @@ pub(super) fn apply_effort(settings: &mut Settings, effort: Effort) {
 /// Store the raw-output checkbox's value.
 pub(super) fn apply_show_raw_output(settings: &mut Settings, show_raw: bool) {
     settings.show_raw_output = Some(show_raw);
-}
-
-/// Store the master voice checkbox's value.
-pub(super) fn apply_voice_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().enabled = enabled;
-}
-
-/// Store the speech-to-text checkbox's value.
-pub(super) fn apply_stt_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().stt_enabled = enabled;
-}
-
-/// Store the text-to-speech checkbox's value.
-pub(super) fn apply_tts_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().tts_enabled = enabled;
-}
-
-/// Store the trigger-mode radio pair's selection.
-pub(super) fn apply_trigger_mode(settings: &mut Settings, mode: TriggerMode) {
-    settings.voice_mut().trigger_mode = mode;
-}
-
-/// Store the wake-phrase field's text.
-pub(super) fn apply_wake_phrase(settings: &mut Settings, phrase: &str) {
-    settings.voice_mut().wake_phrase = Some(phrase.to_string());
-}
-
-/// Store the Kokoro voice selector's choice.
-pub(super) fn apply_tts_voice(settings: &mut Settings, voice_id: &str) {
-    settings.voice_mut().tts_voice = Some(voice_id.to_string());
-}
-
-/// Store the speech speed slider's value.
-pub(super) fn apply_tts_speed(settings: &mut Settings, speed: f32) {
-    settings.voice_mut().tts_speed = Some(speed);
 }
 
 /// Store the context budget slider's value.
