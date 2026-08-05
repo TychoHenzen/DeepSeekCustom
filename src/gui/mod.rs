@@ -1,4 +1,5 @@
 pub(crate) mod attachment;
+pub(crate) mod autopilot_tab;
 pub(crate) mod session_state;
 pub(crate) mod sessions_tab;
 pub(crate) mod settings_panel;
@@ -17,6 +18,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use self::attachment::{AttachmentSlot, decode_image_bytes};
+use self::autopilot_tab::AutopilotTab;
 use self::session_state::{SessionOrigin, SessionState};
 use self::settings_panel::spawn_model_list_fetch;
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
@@ -40,16 +42,6 @@ enum ActiveTab {
     Chat,
     Autopilot,
     Sessions,
-}
-
-/// Progress readout for the Autopilot tab. Fed from
-/// `StreamEvent::RepeatIterationStart` and `StreamEvent::RepeatFinished`.
-/// `Idle` before any run has started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutopilotProgress {
-    Idle,
-    Running { index: u32, total: u32 },
-    Finished { completed: u32, total: u32 },
 }
 
 /// Native GUI using egui/eframe. Replaces the broken ratatui TUI.
@@ -143,27 +135,13 @@ pub struct DeepSeekGui {
 
     // ── Autopilot (optional, wired by `with_repeat`) ──
     /// Sends a repeat command to the agent task. `None` until `with_repeat`
-    /// is called. The Autopilot tab built in a later step sends on this.
-    repeat_tx: Option<mpsc::UnboundedSender<RepeatCommand>>,
-    /// Shared with `AgentLoop::repeat_interrupt_flag`. The Autopilot tab
-    /// sets this to stop a running repeat early.
-    repeat_interrupt_flag: Option<Arc<AtomicBool>>,
+    // Autopilot: the task, the iteration count, the policy path, the
+    // progress readout, and the two channels a run needs. See
+    // `gui::autopilot_tab`.
+    autopilot: AutopilotTab,
 
-    // ── Autopilot tab ──
     /// Which tab the main window shows. Defaults to Chat.
     active_tab: ActiveTab,
-    /// Task text box in the Autopilot tab, seeded from `settings.autopilot_task()`.
-    autopilot_task: String,
-    /// Iteration count control in the Autopilot tab, seeded from
-    /// `settings.autopilot_iterations()`.
-    autopilot_iterations: u32,
-    /// Progress readout state, updated by the `RepeatIterationStart` and
-    /// `RepeatFinished` stream event arms.
-    autopilot_progress: AutopilotProgress,
-    /// Resolved policy file path, shown read-only next to the Run button.
-    /// Computed once at construction from `settings.autopilot_policy_path()`
-    /// and `project_root`.
-    autopilot_policy_path: PathBuf,
 
     // ── Session state (S08): saved conversations, no UI yet ──
     // Saved conversations: the current id and metadata, the saved list,
@@ -217,13 +195,7 @@ impl DeepSeekGui {
         // of truth: the buffer always starts equal to what the tools will
         // actually act against.
         let working_dir_buffer = working_dir_flag.lock().unwrap().display().to_string();
-        let autopilot_task = settings.autopilot_task().unwrap_or_default();
-        let autopilot_iterations = settings.autopilot_iterations();
-        let autopilot_policy_path = crate::autopilot::policy::PolicyStore::new(
-            project_root.clone(),
-            settings.autopilot_policy_path(),
-        )
-        .resolved_policy_path();
+        let autopilot = AutopilotTab::new(&settings, &project_root);
         let session_backend = backend_options
             .get(selected_backend_idx)
             .cloned()
@@ -267,13 +239,8 @@ impl DeepSeekGui {
             voice,
             settings,
             project_root,
-            repeat_tx: None,
-            repeat_interrupt_flag: None,
+            autopilot,
             active_tab: ActiveTab::default(),
-            autopilot_task,
-            autopilot_iterations,
-            autopilot_progress: AutopilotProgress::Idle,
-            autopilot_policy_path,
             sessions,
             attachment: AttachmentSlot::new(),
         }
@@ -288,8 +255,7 @@ impl DeepSeekGui {
         repeat_tx: mpsc::UnboundedSender<RepeatCommand>,
         repeat_interrupt_flag: Arc<AtomicBool>,
     ) -> Self {
-        self.repeat_tx = Some(repeat_tx);
-        self.repeat_interrupt_flag = Some(repeat_interrupt_flag);
+        self.autopilot.attach(repeat_tx, repeat_interrupt_flag);
         self
     }
 
@@ -460,17 +426,11 @@ impl DeepSeekGui {
             }
             StreamEvent::RepeatIterationStart { index, total } => {
                 info!(index, total, "repeat iteration start");
-                self.autopilot_progress = AutopilotProgress::Running {
-                    index: *index,
-                    total: *total,
-                };
+                self.autopilot.set_running(*index, *total);
             }
             StreamEvent::RepeatFinished { completed, total } => {
                 info!(completed, total, "repeat run finished");
-                self.autopilot_progress = AutopilotProgress::Finished {
-                    completed: *completed,
-                    total: *total,
-                };
+                self.autopilot.set_finished(*completed, *total);
             }
             StreamEvent::Reasoning { .. } => {}
         }
@@ -716,82 +676,6 @@ impl DeepSeekGui {
             }
         }
     }
-
-    /// Render the Autopilot tab: task text, iteration count, the resolved
-    /// policy file path, a Run button, and a progress readout.
-    fn render_autopilot_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Autopilot");
-        ui.separator();
-
-        ui.label("Task");
-        let task_response = ui.add(
-            TextEdit::multiline(&mut self.autopilot_task)
-                .desired_rows(6)
-                .hint_text("Describe the task to repeat"),
-        );
-        // Save on focus loss, not on every keystroke, matching the wake
-        // phrase field in the settings panel.
-        if task_response.lost_focus() {
-            let task = self.autopilot_task.clone();
-            apply_autopilot_task(&mut self.settings, &task);
-            self.persist_settings();
-        }
-
-        ui.add_space(8.0);
-
-        let mut iterations = self.autopilot_iterations;
-        let iter_response = ui.add(egui::Slider::new(&mut iterations, 1..=100).text("Iterations"));
-        if iter_response.changed() {
-            self.autopilot_iterations = iterations;
-        }
-        // Save when the drag ends, matching the other sliders in this file.
-        if iter_response.drag_stopped() {
-            let iterations = self.autopilot_iterations;
-            apply_autopilot_iterations(&mut self.settings, iterations);
-            self.persist_settings();
-        }
-
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!(
-                "Policy file: {}",
-                self.autopilot_policy_path.display()
-            ))
-            .color(Color32::GRAY)
-            .small(),
-        );
-        ui.label(
-            RichText::new(
-                "Questions during a run are answered from that file by a separate model. \
-                 A human never answers them.",
-            )
-            .color(Color32::GRAY)
-            .small(),
-        );
-
-        ui.add_space(8.0);
-        let can_run = !self.autopilot_task.trim().is_empty() && self.repeat_tx.is_some();
-        if ui.add_enabled(can_run, egui::Button::new("Run")).clicked() {
-            if let Some(tx) = &self.repeat_tx {
-                let task = self.autopilot_task.clone();
-                let iterations = self.autopilot_iterations;
-                info!(iterations, "autopilot run requested");
-                let _ = tx.send(RepeatCommand { task, iterations });
-                self.autopilot_progress = AutopilotProgress::Idle;
-            }
-        }
-
-        ui.add_space(8.0);
-        match self.autopilot_progress {
-            AutopilotProgress::Idle => {}
-            AutopilotProgress::Running { index, total } => {
-                ui.label(format!("Running iteration {index} of {total}"));
-            }
-            AutopilotProgress::Finished { completed, total } => {
-                ui.label(format!("Finished: {completed} of {total} completed"));
-            }
-        }
-    }
 }
 
 impl App for DeepSeekGui {
@@ -869,9 +753,7 @@ impl App for DeepSeekGui {
         if escape {
             info!("user pressed Escape - interrupting agent");
             self.interrupt_flag.store(true, Ordering::SeqCst);
-            if let Some(flag) = &self.repeat_interrupt_flag {
-                flag.store(true, Ordering::SeqCst);
-            }
+            self.autopilot.request_stop();
             self.voice.send(VoiceCommand::StopSpeaking);
             self.transcript.push(BlockKind::Notice {
                 text: "[Interrupting...]".into(),
@@ -899,7 +781,11 @@ impl App for DeepSeekGui {
             ui.separator();
             match self.active_tab {
                 ActiveTab::Chat => self.render_chat_output(ui),
-                ActiveTab::Autopilot => self.render_autopilot_tab(ui),
+                ActiveTab::Autopilot => {
+                    if self.autopilot.render(ui, &mut self.settings) {
+                        self.persist_settings();
+                    }
+                }
                 ActiveTab::Sessions => self.render_sessions_tab(ui),
             }
         });
@@ -1384,18 +1270,11 @@ fn subagent_header_summary(
     )
 }
 
-/// Store the Autopilot tab's task text box.
-fn apply_autopilot_task(settings: &mut Settings, task: &str) {
-    settings.autopilot_mut().task = Some(task.to_string());
-}
-
-/// Store the Autopilot tab's iteration count control.
-fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
-    settings.autopilot_mut().iterations = Some(iterations);
-}
-
 #[cfg(test)]
 mod tests {
+    use super::autopilot_tab::{
+        AutopilotProgress, apply_autopilot_iterations, apply_autopilot_task,
+    };
     use super::settings_panel::{
         apply_backend_model, apply_context_budget, apply_default_backend, apply_effort,
         apply_show_raw_output, apply_working_dir,
@@ -2912,11 +2791,11 @@ mod tests {
     #[test]
     fn autopilot_progress_updates_from_iteration_start_then_finished() {
         let mut gui = make_gui();
-        assert_eq!(gui.autopilot_progress, AutopilotProgress::Idle);
+        assert_eq!(gui.autopilot.progress(), AutopilotProgress::Idle);
 
         gui.handle_stream_event(StreamEvent::RepeatIterationStart { index: 2, total: 5 });
         assert_eq!(
-            gui.autopilot_progress,
+            gui.autopilot.progress(),
             AutopilotProgress::Running { index: 2, total: 5 }
         );
 
@@ -2925,7 +2804,7 @@ mod tests {
             total: 5,
         });
         assert_eq!(
-            gui.autopilot_progress,
+            gui.autopilot.progress(),
             AutopilotProgress::Finished {
                 completed: 5,
                 total: 5
@@ -2950,16 +2829,6 @@ mod tests {
         );
         let path = store.resolved_policy_path();
         assert_eq!(path, root.join("custom-policy.md"));
-    }
-
-    #[test]
-    fn new_seeds_autopilot_controls_from_settings() {
-        let mut settings = Settings::default();
-        settings.autopilot_mut().task = Some("run the tests".to_string());
-        settings.autopilot_mut().iterations = Some(9);
-        let gui = make_gui_with_settings(&settings);
-        assert_eq!(gui.autopilot_task, "run the tests");
-        assert_eq!(gui.autopilot_iterations, 9);
     }
 
     #[test]
