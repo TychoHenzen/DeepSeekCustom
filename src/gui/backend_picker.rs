@@ -98,12 +98,6 @@ impl BackendPicker {
         &self.options
     }
 
-    /// Which entry the picker points at, as an index into `options`.
-    #[cfg(test)]
-    pub(crate) fn selected_idx(&self) -> usize {
-        self.selected_idx
-    }
-
     /// Point the picker at `idx` without applying it. Test-only: the
     /// dropdown moves this itself and then applies the change.
     #[cfg(test)]
@@ -326,10 +320,11 @@ mod tests {
                 models: None,
             },
         );
-        let mut settings = Settings::default();
-        settings.backends = Some(backends);
-        settings.default_backend = Some("deepseek".to_string());
-        settings
+        Settings {
+            backends: Some(backends),
+            default_backend: Some("deepseek".to_string()),
+            ..Settings::default()
+        }
     }
 
     fn picker_on(settings: &Settings, model: &str) -> BackendPicker {

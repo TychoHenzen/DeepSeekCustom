@@ -60,7 +60,7 @@ impl DeepSeekGui {
                         }
                     });
                 if self.effort != prev_effort {
-                    self.effort.store(&self.effort_flag);
+                    self.effort.store(&self.handles.effort);
                     info!(effort = ?self.effort, "effort level changed via settings panel");
                     apply_effort(&mut self.settings, self.effort);
                     self.persist_settings();
@@ -124,7 +124,8 @@ impl DeepSeekGui {
 
                 // The whole Voice section lives on `VoiceUi`, which owns
                 // every field these controls read and write.
-                if self.voice.render_section(ui, &mut self.settings, &self.voice_mode_flag) {
+                if self.voice
+                    .render_section(ui, &mut self.settings, &self.handles.voice_mode) {
                     self.persist_settings();
                 }
 
@@ -142,7 +143,7 @@ impl DeepSeekGui {
                 );
                 if budget_response.changed() {
                     self.context_budget = context_budget;
-                    self.context_budget_flag
+                    self.handles.context_budget
                         .store(context_budget, Ordering::SeqCst);
                     info!(
                         context_budget = context_budget,
@@ -198,7 +199,7 @@ impl DeepSeekGui {
             );
             return;
         }
-        *self.working_dir_flag.lock().unwrap() = candidate;
+        *self.handles.working_dir.lock().unwrap() = candidate;
         info!(
             path = %self.working_dir_buffer,
             "working directory changed via settings panel"

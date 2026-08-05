@@ -1,3 +1,4 @@
+pub mod agent_handles;
 pub(crate) mod attachment;
 pub(crate) mod autopilot_tab;
 pub(crate) mod backend_picker;
@@ -8,8 +9,8 @@ pub(crate) mod transcript;
 pub(crate) mod voice_ui;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use eframe::App;
@@ -18,6 +19,7 @@ use egui_commonmark::CommonMarkCache;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use self::agent_handles::AgentHandles;
 use self::attachment::{AttachmentSlot, decode_image_bytes};
 use self::autopilot_tab::AutopilotTab;
 use self::backend_picker::BackendPicker;
@@ -63,11 +65,11 @@ pub struct DeepSeekGui {
     tx_input: mpsc::UnboundedSender<AgentCommand>,
     auto_scroll: bool,
 
-    // ── Interrupt ──
-    /// Flag shared with agent loop; set on Escape to abort streaming.
-    interrupt_flag: Arc<AtomicBool>,
-
     // ── Settings panel ──
+    /// The handles the agent re-reads on its own schedule. See
+    /// `gui::agent_handles`.
+    handles: AgentHandles,
+
     settings_visible: bool,
     /// Sorted backend names, the keys of `settings.backends()`.
     /// The backend and model dropdowns, the running backend's name and
@@ -75,24 +77,12 @@ pub struct DeepSeekGui {
     /// `gui::backend_picker`.
     backends: BackendPicker,
 
-    // ── Shared state with agent ──
-    effort_flag: Arc<AtomicU8>,
     /// Sidebar combo box's current selection, seeded from `effort_flag` in
     /// `new`. Mirrors `context_budget`: the flag is what the agent reads
     /// each turn, this field is what the control renders and edits.
     effort: Effort,
-    /// Flag shared with agent loop. Kept in sync with `voice_tts_enabled` so
-    /// the agent knows to shape replies for speech while text to speech is on.
-    voice_mode_flag: Arc<AtomicBool>,
-    /// Flag shared with agent loop, holding the context budget in tokens.
-    context_budget_flag: Arc<AtomicUsize>,
     /// Slider's current value, seeded from `context_budget_flag` in `new`.
     context_budget: usize,
-    /// Shared with the agent and with `Bash`, `Read`, `Write`, and `Cd`.
-    /// Where those tools act, distinct from `project_root`, which never
-    /// moves. A write here takes effect on the next tool call and the next
-    /// turn's system prompt.
-    working_dir_flag: Arc<Mutex<PathBuf>>,
     /// Sidebar text field's buffer, seeded from `working_dir_flag` in
     /// `new`. Only a valid, existing directory is written back to
     /// `working_dir_flag`; an invalid entry stays in the buffer for the
@@ -140,19 +130,14 @@ impl DeepSeekGui {
     pub fn new(
         rx_events: mpsc::UnboundedReceiver<RoutedEvent>,
         tx_input: mpsc::UnboundedSender<AgentCommand>,
-        interrupt_flag: Arc<AtomicBool>,
-        effort_flag: Arc<AtomicU8>,
-        voice_mode_flag: Arc<AtomicBool>,
-        context_budget_flag: Arc<AtomicUsize>,
-        model_flag: Arc<Mutex<String>>,
-        working_dir_flag: Arc<Mutex<PathBuf>>,
+        handles: AgentHandles,
         settings: Settings,
         project_root: PathBuf,
     ) -> Self {
-        let backends = BackendPicker::new(&settings, model_flag);
-        let voice = VoiceUi::new(&settings, &voice_mode_flag);
-        let context_budget = context_budget_flag.load(Ordering::SeqCst);
-        let effort = Effort::load(&effort_flag);
+        let backends = BackendPicker::new(&settings, Arc::clone(&handles.model));
+        let voice = VoiceUi::new(&settings, &handles.voice_mode);
+        let context_budget = handles.context_budget.load(Ordering::SeqCst);
+        let effort = Effort::load(&handles.effort);
         // Seed the text field from the shared handle, which `main.rs`
         // already resolved against a saved `working_dir` setting (falling
         // back to `project_root` when that setting was absent or no longer
@@ -160,7 +145,7 @@ impl DeepSeekGui {
         // `settings.working_dir()` a second time, keeps this single source
         // of truth: the buffer always starts equal to what the tools will
         // actually act against.
-        let working_dir_buffer = working_dir_flag.lock().unwrap().display().to_string();
+        let working_dir_buffer = handles.working_dir.lock().unwrap().display().to_string();
         let autopilot = AutopilotTab::new(&settings, &project_root);
         let sessions = SessionState::new(
             SessionStore::for_project(&project_root),
@@ -179,15 +164,11 @@ impl DeepSeekGui {
             rx_events,
             tx_input,
             auto_scroll: false,
-            interrupt_flag,
+            handles,
             settings_visible: false,
             backends,
-            effort_flag,
             effort,
-            voice_mode_flag,
-            context_budget_flag,
             context_budget,
-            working_dir_flag,
             working_dir_buffer,
             show_raw_output: settings.show_raw_output(),
             markdown_cache: CommonMarkCache::default(),
@@ -707,7 +688,7 @@ impl App for DeepSeekGui {
         // session is doing, in any tab.
         if escape {
             info!("user pressed Escape - interrupting agent");
-            self.interrupt_flag.store(true, Ordering::SeqCst);
+            self.handles.interrupt.store(true, Ordering::SeqCst);
             self.autopilot.request_stop();
             self.voice.send(VoiceCommand::StopSpeaking);
             self.transcript.push(BlockKind::Notice {
@@ -794,7 +775,7 @@ impl App for DeepSeekGui {
                     ui.label(
                         RichText::new(format!(
                             "Dir: {}",
-                            self.working_dir_flag.lock().unwrap().display()
+                            self.handles.working_dir.lock().unwrap().display()
                         ))
                         .color(Color32::from_rgb(160, 160, 160)),
                     );
@@ -820,7 +801,7 @@ impl App for DeepSeekGui {
                         RichText::new(&self.session_status).color(Color32::from_rgb(0, 200, 0)),
                     );
                     ui.separator();
-                    let effort_label = format!("Effort: {:?}", Effort::load(&self.effort_flag));
+                    let effort_label = format!("Effort: {:?}", Effort::load(&self.handles.effort));
                     ui.label(
                         RichText::new(effort_label)
                             .color(Color32::from_rgb(200, 200, 100))
@@ -1242,6 +1223,8 @@ mod tests {
     use crate::api::types::{Content, Message, Role};
     use crate::config::settings::{ApiProvider, BackendConfig, TriggerMode, VoiceConfig};
     use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, AtomicUsize};
 
     fn make_gui() -> DeepSeekGui {
         make_gui_with_settings(&Settings::default())
@@ -1278,12 +1261,14 @@ mod tests {
         DeepSeekGui::new(
             rx_events,
             tx_input,
-            Arc::new(AtomicBool::new(false)),
-            effort_flag,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicUsize::new(100_000)),
-            Arc::new(Mutex::new("deepseek-v4-flash".into())),
-            Arc::new(Mutex::new(project_root.clone())),
+            AgentHandles {
+                interrupt: Arc::new(AtomicBool::new(false)),
+                effort: effort_flag,
+                voice_mode: Arc::new(AtomicBool::new(false)),
+                context_budget: Arc::new(AtomicUsize::new(100_000)),
+                model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+                working_dir: Arc::new(Mutex::new(project_root.clone())),
+            },
             settings.clone(),
             project_root,
         )
@@ -2213,12 +2198,14 @@ mod tests {
         let mut gui = DeepSeekGui::new(
             rx_events,
             tx_input,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU8::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicUsize::new(100_000)),
-            Arc::new(Mutex::new("deepseek-v4-flash".into())),
-            Arc::new(Mutex::new(PathBuf::from("."))),
+            AgentHandles {
+                interrupt: Arc::new(AtomicBool::new(false)),
+                effort: Arc::new(AtomicU8::new(0)),
+                voice_mode: Arc::new(AtomicBool::new(false)),
+                context_budget: Arc::new(AtomicUsize::new(100_000)),
+                model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+                working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
+            },
             Settings::default(),
             unique_temp_dir("ctor"),
         );
@@ -2249,7 +2236,7 @@ mod tests {
     fn voice_mode_flag_starts_matching_initial_tts_state() {
         let gui = make_gui();
         assert!(!gui.voice.tts_enabled_for_test());
-        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
+        assert!(!gui.handles.voice_mode.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -2257,18 +2244,18 @@ mod tests {
         let mut gui = make_gui();
 
         gui.voice.set_tts_enabled_for_test(true);
-        gui.voice_mode_flag.store(
+        gui.handles.voice_mode.store(
             voice_mode_flag_for_tts(gui.voice.tts_enabled_for_test()),
             Ordering::SeqCst,
         );
-        assert!(gui.voice_mode_flag.load(Ordering::SeqCst));
+        assert!(gui.handles.voice_mode.load(Ordering::SeqCst));
 
         gui.voice.set_tts_enabled_for_test(false);
-        gui.voice_mode_flag.store(
+        gui.handles.voice_mode.store(
             voice_mode_flag_for_tts(gui.voice.tts_enabled_for_test()),
             Ordering::SeqCst,
         );
-        assert!(!gui.voice_mode_flag.load(Ordering::SeqCst));
+        assert!(!gui.handles.voice_mode.load(Ordering::SeqCst));
     }
 
     /// A GUI with the voice command channel attached, plus the receiving
@@ -2430,12 +2417,14 @@ mod tests {
         let gui = DeepSeekGui::new(
             rx_events,
             tx_input,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU8::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicUsize::new(64_000)),
-            Arc::new(Mutex::new("deepseek-v4-flash".into())),
-            Arc::new(Mutex::new(PathBuf::from("."))),
+            AgentHandles {
+                interrupt: Arc::new(AtomicBool::new(false)),
+                effort: Arc::new(AtomicU8::new(0)),
+                voice_mode: Arc::new(AtomicBool::new(false)),
+                context_budget: Arc::new(AtomicUsize::new(64_000)),
+                model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+                working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
+            },
             Settings::default(),
             unique_temp_dir("ctor"),
         );
@@ -2445,9 +2434,9 @@ mod tests {
     #[test]
     fn context_budget_flag_write_is_observable_through_a_second_handle() {
         let mut gui = make_gui();
-        let observer = Arc::clone(&gui.context_budget_flag);
+        let observer = Arc::clone(&gui.handles.context_budget);
         gui.context_budget = 80_000;
-        gui.context_budget_flag.store(80_000, Ordering::SeqCst);
+        gui.handles.context_budget.store(80_000, Ordering::SeqCst);
         assert_eq!(observer.load(Ordering::SeqCst), 80_000);
     }
 
@@ -2467,12 +2456,14 @@ mod tests {
         let gui = DeepSeekGui::new(
             rx_events,
             tx_input,
-            Arc::new(AtomicBool::new(false)),
-            effort_flag,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicUsize::new(64_000)),
-            Arc::new(Mutex::new("deepseek-v4-flash".into())),
-            Arc::new(Mutex::new(PathBuf::from("."))),
+            AgentHandles {
+                interrupt: Arc::new(AtomicBool::new(false)),
+                effort: effort_flag,
+                voice_mode: Arc::new(AtomicBool::new(false)),
+                context_budget: Arc::new(AtomicUsize::new(64_000)),
+                model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+                working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
+            },
             Settings::default(),
             unique_temp_dir("effort-ctor"),
         );
@@ -2493,9 +2484,9 @@ mod tests {
     #[test]
     fn effort_flag_write_is_observable_through_a_second_handle() {
         let mut gui = make_gui();
-        let observer = Arc::clone(&gui.effort_flag);
+        let observer = Arc::clone(&gui.handles.effort);
         gui.effort = Effort::Medium;
-        gui.effort.store(&gui.effort_flag);
+        gui.effort.store(&gui.handles.effort);
         assert_eq!(Effort::load(&observer), Effort::Medium);
     }
 
@@ -2574,12 +2565,14 @@ mod tests {
         let gui = DeepSeekGui::new(
             rx_events,
             tx_input,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU8::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicUsize::new(64_000)),
-            Arc::new(Mutex::new("deepseek-v4-flash".into())),
-            Arc::new(Mutex::new(seeded_dir.clone())),
+            AgentHandles {
+                interrupt: Arc::new(AtomicBool::new(false)),
+                effort: Arc::new(AtomicU8::new(0)),
+                voice_mode: Arc::new(AtomicBool::new(false)),
+                context_budget: Arc::new(AtomicUsize::new(64_000)),
+                model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+                working_dir: Arc::new(Mutex::new(seeded_dir.clone())),
+            },
             Settings::default(),
             unique_temp_dir("ctor"),
         );
@@ -2601,19 +2594,19 @@ mod tests {
 
         gui.commit_working_dir_change();
 
-        assert_eq!(*gui.working_dir_flag.lock().unwrap(), dir);
+        assert_eq!(*gui.handles.working_dir.lock().unwrap(), dir);
         assert_eq!(gui.settings.working_dir(), Some(dir.display().to_string()));
     }
 
     #[test]
     fn commit_working_dir_change_rejects_a_path_that_is_not_a_directory() {
         let mut gui = make_gui();
-        let original = gui.working_dir_flag.lock().unwrap().clone();
+        let original = gui.handles.working_dir.lock().unwrap().clone();
         gui.working_dir_buffer = "Z:/definitely/does/not/exist/anywhere".to_string();
 
         gui.commit_working_dir_change();
 
-        assert_eq!(*gui.working_dir_flag.lock().unwrap(), original);
+        assert_eq!(*gui.handles.working_dir.lock().unwrap(), original);
         assert!(gui.settings.working_dir().is_none());
     }
 
