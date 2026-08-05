@@ -1,15 +1,14 @@
-//! The one-slot pending image attachment, and the four ways an image
-//! reaches it.
+//! One image waits here for the next turn. Four input paths fill it.
 //!
-//! This owns every piece of state that exists only because a turn may
-//! carry an image: the slot itself, the OS clipboard handle, and the
-//! previous frame's Ctrl+V key state. It was split out of `DeepSeekGui`,
-//! which held those three fields alongside forty others.
+//! This owns every field that exists only because a turn may carry an
+//! image. Those are the slot itself, the OS clipboard handle, and the
+//! previous frame's Ctrl+V key state. All three were split out of
+//! `DeepSeekGui`, which held them alongside forty other fields.
 //!
-//! The slot holds at most one image because `AgentCommand::UserTurn`
-//! carries `Option<ImageAttachment>`. That is the whole reason for the
-//! cap, so this type models it as an `Option` directly rather than as a
-//! collection that happens never to reach length two.
+//! The slot holds at most one image. `AgentCommand::UserTurn` carries an
+//! `Option<ImageAttachment>`, and that is the whole reason for the cap.
+//! So this type uses an `Option` directly. It does not use a collection
+//! that never reaches length two.
 
 use std::path::Path;
 
@@ -25,10 +24,10 @@ use crate::api::types::ImageAttachment;
 /// Largest edge, in points, of a thumbnail in the pending strip.
 const PENDING_ATTACHMENT_THUMBNAIL_MAX: f32 = 80.0;
 
-/// The pending image attachment and the input sources that fill it.
+/// The pending image and the input sources that fill it.
 ///
-/// Every method that can reject an image takes the transcript, because a
-/// rejection is only useful if the user sees it: a silent drop leaves
+/// Every method that can reject an image takes the transcript. A
+/// rejection only helps if the user sees it. A silent drop leaves
 /// somebody watching the strip with no idea why nothing appeared.
 pub(crate) struct AttachmentSlot {
     /// The image the next turn will carry, if any.
@@ -47,7 +46,7 @@ pub(crate) struct AttachmentSlot {
 impl AttachmentSlot {
     /// An empty slot, with the clipboard opened if the OS allows it.
     /// A clipboard that will not open disables image paste and nothing
-    /// else, so it is logged rather than treated as a startup failure.
+    /// else. So it is logged, not treated as a startup failure.
     pub(crate) fn new() -> Self {
         Self {
             pending: None,
@@ -80,11 +79,10 @@ impl AttachmentSlot {
 
     /// Put `attachment` in the slot, replacing whatever was there.
     ///
-    /// A second paste or drop replaces the first rather than queuing
-    /// beside it, since a turn can only carry one image. The replacement
-    /// is never silent: a `Notice` says so, because a user watching only
-    /// the strip could otherwise lose track of which image is about to be
-    /// sent.
+    /// A turn can carry only one image. So a second paste or drop
+    /// replaces the first rather than queuing beside it. The replacement
+    /// is never silent. A `Notice` says so. A user watching only the strip
+    /// could otherwise lose track of which image is about to be sent.
     pub(crate) fn set(&mut self, attachment: ImageAttachment, transcript: &mut Transcript) {
         if self.pending.is_some() {
             transcript.push(BlockKind::Notice {
@@ -99,23 +97,24 @@ impl AttachmentSlot {
     /// Poll the raw Windows key state for a Ctrl+V edge and, on one, try to
     /// pull an image off the OS clipboard.
     ///
-    /// This does not go through egui's own event system on purpose, and it
-    /// cannot: reading `egui-winit-0.31.1`'s `State::on_keyboard_input`
-    /// (the function that turns a winit key event into an egui one) shows
-    /// `is_paste_command` intercepts Ctrl+V before egui's caller ever sees
-    /// a `Key` event for `V`. When the clipboard holds text, that becomes a
-    /// text-only `egui::Event::Paste(String)`, still no image bytes. When
-    /// the clipboard holds only an image, which is the common case for a
-    /// screenshot tool, `clipboard.get()` inside egui-winit returns `None`
-    /// and the function returns without pushing any event at all. Neither
-    /// case gives this app anything to read egui's own input for, and
-    /// `eframe` 0.31 has no `raw_input_hook` to intercept the winit event
-    /// first. `GetAsyncKeyState` is the only signal left.
+    /// This skips egui's own event system on purpose. It also has no
+    /// choice. `egui-winit-0.31.1` turns a winit key event into an egui one
+    /// in `State::on_keyboard_input`. Reading that function shows
+    /// `is_paste_command` catches Ctrl+V first. egui's caller never sees a
+    /// `Key` event for `V`.
     ///
-    /// Gated on `ctx`'s own focus flag so a Ctrl+V typed into a different
-    /// window never attaches an image here; the key state itself is
-    /// tracked regardless of focus so a press that started before this
-    /// window gained focus does not fire the instant it does.
+    /// A clipboard holding text becomes a text-only
+    /// `egui::Event::Paste(String)`, with no image bytes. A clipboard
+    /// holding only an image is the common case for a screenshot tool.
+    /// There, `clipboard.get()` inside egui-winit returns `None`, and the
+    /// function pushes no event at all. Neither case leaves this app
+    /// anything to read. `eframe` 0.31 has no `raw_input_hook` to catch the
+    /// winit event first. `GetAsyncKeyState` is the only signal left.
+    ///
+    /// The paste is gated on the focus flag from `ctx`. A Ctrl+V typed into
+    /// another window never attaches an image here. The key state itself is
+    /// tracked whether this window has focus or not. That way a press that
+    /// started earlier does not fire the instant focus arrives.
     pub(crate) fn poll_ctrl_v_paste(&mut self, ctx: &egui::Context, transcript: &mut Transcript) {
         let just_pressed = ctrl_v_edge_triggered(&mut self.ctrl_v_prev_down);
         if !just_pressed || !ctx.input(|i| i.focused) {
@@ -124,9 +123,9 @@ impl AttachmentSlot {
         let Some(clipboard) = self.clipboard.as_mut() else {
             return;
         };
-        // An `Err` here almost always just means the clipboard holds text,
-        // not an image: a plain-text Ctrl+V must keep working exactly as
-        // before, so this is not logged as a failure.
+        // An `Err` here almost always means the clipboard holds text
+        // rather than an image. A plain-text Ctrl+V must keep working as
+        // before. So this is not logged as a failure.
         let Ok(image) = clipboard.get_image() else {
             return;
         };
@@ -138,10 +137,10 @@ impl AttachmentSlot {
 
     /// Attach every dropped file that decodes as an image. eframe already
     /// collects a native drop into `RawInput::dropped_files` with a real
-    /// filesystem path (the `bytes` field on `DroppedFile` is web-only), so
-    /// this just reads each path, validates it decodes, and reports
-    /// anything that does not with a `Notice` rather than dropping it
-    /// without a trace.
+    /// filesystem path. The `bytes` field on `DroppedFile` is web-only. So
+    /// this reads each path and checks that it decodes. A file that does
+    /// not decode gets a `Notice`, rather than being dropped without a
+    /// trace.
     pub(crate) fn handle_dropped_files(
         &mut self,
         ctx: &egui::Context,
@@ -214,12 +213,11 @@ pub(crate) fn decode_image_bytes(image: &ImageAttachment) -> Option<Vec<u8>> {
 ///
 /// The raw `GetAsyncKeyState` read and the edge-detection bookkeeping are
 /// split apart so `edge_trigger` can be unit tested against synthetic key
-/// states: real hardware state cannot be driven from a test.
+/// states. A test cannot drive real hardware state.
 fn ctrl_v_edge_triggered(prev_down: &mut bool) -> bool {
-    // SAFETY: `GetAsyncKeyState` is a plain state query against user32.dll,
-    // takes a virtual-key code by value, and has no preconditions beyond
-    // being called from a thread with a message queue, which the GUI
-    // thread already has.
+    // SAFETY: `GetAsyncKeyState` is a plain state query against
+    // user32.dll. It takes a virtual-key code by value. It asks only to be
+    // called from a thread with a message queue. The GUI thread has one.
     let down = unsafe {
         let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
         let v_down = (GetAsyncKeyState(VK_V.0 as i32) as u16 & 0x8000) != 0;
@@ -237,9 +235,9 @@ fn edge_trigger(down: bool, prev_down: &mut bool) -> bool {
 }
 
 /// Encode `arboard`'s raw RGBA8 clipboard pixels as PNG bytes for an
-/// `ImageAttachment`. `arboard::ImageData` is unencoded pixels, not a
-/// file format, so there is nothing to sniff or validate beyond the
-/// buffer's length matching `width * height * 4`.
+/// `ImageAttachment`. `arboard::ImageData` holds raw pixels, not a file
+/// format. So the only check worth making is that the buffer's length
+/// matches `width * height * 4`.
 fn attachment_from_clipboard_image(image: &arboard::ImageData) -> Option<ImageAttachment> {
     if image.width == 0 || image.height == 0 || image.bytes.len() != image.width * image.height * 4
     {
@@ -260,23 +258,25 @@ fn attachment_from_clipboard_image(image: &arboard::ImageData) -> Option<ImageAt
     })
 }
 
-/// Read a dropped file off disk and build an `ImageAttachment` from it, or
-/// a message describing why not. Kept separate from
-/// `attachment_from_image_bytes` so a test can exercise the decode-and-
-/// validate logic on in-memory bytes without touching the filesystem.
+/// Read a dropped file off disk and build an `ImageAttachment` from it.
+/// Returns a message describing why not, on failure. This stays separate
+/// from `attachment_from_image_bytes`. That way a test can check the
+/// decode step on in-memory bytes, without touching the filesystem.
 fn attachment_from_file_path(path: &Path) -> Result<ImageAttachment, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     attachment_from_image_bytes(&bytes, &path.display().to_string())
 }
 
-/// Validate that `bytes` is a real, decodable image and wrap it as an
-/// `ImageAttachment`, keeping the original bytes rather than re-encoding:
-/// `image::guess_format` only sniffs magic bytes, so
-/// `load_from_memory_with_format` is what actually proves the file
-/// decodes, catching a truncated or corrupt file before it ever reaches a
-/// backend. `label` names the source in an error message; a dropped file
-/// uses its path, a test uses whatever it likes.
+/// Check that `bytes` is a real image and wrap it as an
+/// `ImageAttachment`. The original bytes are kept, not re-encoded.
+///
+/// `image::guess_format` only reads magic bytes. So
+/// `load_from_memory_with_format` is what proves the file decodes. That
+/// catches a truncated or corrupt file before it reaches a backend.
+///
+/// `label` names the source in an error message. A dropped file uses its
+/// path. A test uses whatever it likes.
 fn attachment_from_image_bytes(bytes: &[u8], label: &str) -> Result<ImageAttachment, String> {
     let format = image::guess_format(bytes)
         .map_err(|_| format!("{label} is not a recognized image format"))?;
@@ -288,13 +288,14 @@ fn attachment_from_image_bytes(bytes: &[u8], label: &str) -> Result<ImageAttachm
     })
 }
 
-/// The MIME type an `ImageAttachment` carries for a decoded `image::ImageFormat`.
-/// Only png, jpeg, and bmp are backed by an enabled decoder in this build
-/// (see the `image` dependency comment in `Cargo.toml`); any other format
-/// that `guess_format` recognises by its magic bytes still fails at the
-/// `load_from_memory_with_format` step in `attachment_from_image_bytes`; a
-/// separate name for it here would be an implementation detail
-/// no code round-trips through.
+/// The MIME type an `ImageAttachment` carries for a decoded
+/// `image::ImageFormat`.
+///
+/// This build enables a decoder for png, jpeg, and bmp only. See the
+/// `image` dependency comment in `Cargo.toml`. `guess_format` recognises
+/// other formats by their magic bytes. Those still fail at the
+/// `load_from_memory_with_format` step in `attachment_from_image_bytes`.
+/// No code round-trips through a separate name for them.
 fn mime_for_image_format(format: ImageFormat) -> &'static str {
     match format {
         ImageFormat::Png => "image/png",

@@ -25,15 +25,15 @@ use crate::session::{SessionId, SessionMeta, SessionRecord, SessionStore, now_ti
 /// The title a conversation carries until its first user message names it.
 const PLACEHOLDER_TITLE: &str = "New conversation";
 
-/// Which backend and model the running session is on. A save records both,
-/// and they can change under the GUI, so every call that writes metadata
-/// passes the current pair rather than trusting one captured at startup.
+/// Which backend and model the running session is on. A save records
+/// both. Either can change under the GUI. So every call that writes
+/// metadata passes the current pair, rather than one captured at startup.
 ///
 /// This owns its two strings rather than borrowing them. A borrowed
-/// version would hold a shared borrow of the whole GUI for as long as the
-/// call runs, which blocks the mutable borrows of the transcript and this
-/// state that the same call needs. Two short clones per save sit next to a
-/// file write, so the cost does not signify.
+/// version would hold a shared borrow of the whole GUI while the call
+/// runs. That blocks the borrows of the transcript and this state that
+/// the same call needs. Two short clones per save sit next to a file
+/// write, so the cost does not signify.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionOrigin {
     pub backend: String,
@@ -164,10 +164,9 @@ impl SessionState {
         self.saved = self.store.list();
     }
 
-    /// Save the outgoing conversation before switching away from it. Skips
-    /// the save when the transcript is empty, so opening a new session
-    /// twice in a row does not litter the sessions directory with empty
-    /// records.
+    /// Save the outgoing conversation before switching away from it.
+    /// Skips the save when the transcript is empty. That way opening a new
+    /// session twice in a row leaves no empty records behind.
     fn save_outgoing(&mut self, transcript: &mut Transcript, origin: SessionOrigin) {
         if transcript.blocks().is_empty() {
             return;
@@ -204,10 +203,11 @@ impl SessionState {
         self.refresh_saved();
     }
 
-    /// Load a saved conversation: save the outgoing one, install the loaded
-    /// transcript and id, and hand back the command that tells the agent to
-    /// replay its history. Returns `None` when the record will not load, in
-    /// which case the current conversation is left alone.
+    /// Load a saved conversation. This saves the outgoing one first. It
+    /// then installs the loaded transcript and id. It hands back the
+    /// command that tells the agent to replay its history. Returns `None`
+    /// when the record will not load, leaving the current conversation
+    /// alone.
     pub(crate) fn load(
         &mut self,
         id: SessionId,

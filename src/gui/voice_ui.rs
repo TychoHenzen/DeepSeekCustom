@@ -46,8 +46,8 @@ pub(crate) enum PttSignal {
 /// waiting to be spoken.
 ///
 /// Both channels are `None` when voice is switched off or a model file is
-/// missing. Every send goes through `send`, which drops the command in
-/// that case, so no caller has to check first.
+/// missing. Every send goes through `send`. That method drops the command
+/// in this case, so no caller has to check first.
 pub(crate) struct VoiceUi {
     rx: Option<mpsc::UnboundedReceiver<VoiceEvent>>,
     tx: Option<mpsc::UnboundedSender<VoiceCommand>>,
@@ -84,9 +84,9 @@ impl VoiceUi {
         let voice_id_options: Vec<String> =
             KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect();
         let configured_voice = settings.voice_tts_voice();
-        // An unknown id falls back to the first voice rather than failing:
-        // a settings file naming a voice this build does not offer must
-        // not stop the panel from rendering.
+        // An unknown id falls back to the first voice rather than
+        // failing. A settings file may name a voice this build does not
+        // offer. That must not stop the panel from rendering.
         let selected_voice_idx = voice_id_options
             .iter()
             .position(|v| *v == configured_voice)
@@ -163,10 +163,10 @@ impl VoiceUi {
 
     /// Take every voice event queued since the last frame.
     ///
-    /// The events come back as a batch rather than being handled inline,
-    /// so the mutable borrow of the receiver ends before the caller starts
-    /// applying them. Handling one can start a turn, which needs the rest
-    /// of the GUI.
+    /// The events come back as a batch rather than being handled inline.
+    /// That ends the mutable borrow of the receiver before the caller
+    /// starts applying them. Handling one can start a turn, and a turn
+    /// needs the rest of the GUI.
     pub(crate) fn drain_events(&mut self) -> Vec<VoiceEvent> {
         let mut events = Vec::new();
         if let Some(rx) = self.rx.as_mut() {
@@ -198,9 +198,9 @@ impl VoiceUi {
                 });
                 None
             }
-            // The caller routes this through the input buffer and the same
-            // submit path Enter uses, so the agent sees a spoken turn
-            // exactly as if it had been typed.
+            // The caller routes this through the input buffer and the
+            // same submit path Enter uses. The agent then sees a spoken
+            // turn exactly as if it had been typed.
             VoiceEvent::Transcript(text) => Some(text),
             VoiceEvent::WakeDetected => {
                 // Reacting to wake detection beyond state tracking is not
