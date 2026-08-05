@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use eframe::egui;
@@ -14,6 +14,7 @@ use DeepSeekCustom::agent::repeat::RepeatCommand;
 use DeepSeekCustom::backend::factory::BackendFactory;
 use DeepSeekCustom::config::settings::Settings;
 use DeepSeekCustom::gui::DeepSeekGui;
+use DeepSeekCustom::gui::agent_handles::AgentHandles;
 use DeepSeekCustom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
@@ -206,12 +207,14 @@ async fn main() {
     let mut gui = DeepSeekGui::new(
         rx_events,
         tx_input,
-        interrupt_flag,
-        effort_flag,
-        voice_mode_flag,
-        context_budget_flag,
-        model_flag,
-        working_dir_flag,
+        AgentHandles {
+            interrupt: interrupt_flag,
+            effort: effort_flag,
+            voice_mode: voice_mode_flag,
+            context_budget: context_budget_flag,
+            model: model_flag,
+            working_dir: working_dir_flag,
+        },
         settings.clone(),
         project_root.clone(),
     )
@@ -403,4 +406,3 @@ fn spawn_voice_command_forwarder(
         info!("voice: shut down cleanly");
     })
 }
-
