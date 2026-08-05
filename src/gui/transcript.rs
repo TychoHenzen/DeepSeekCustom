@@ -337,9 +337,7 @@ impl Transcript {
         match event {
             StreamEvent::Text { text, .. } => self.apply_delta(Span::Text(text)),
             StreamEvent::Reasoning { text, .. } => self.apply_delta(Span::Reasoning(text)),
-            StreamEvent::ToolCallStart { tool, args, .. } => {
-                self.apply_tool_call_start(tool, args)
-            }
+            StreamEvent::ToolCallStart { tool, args, .. } => self.apply_tool_call_start(tool, args),
             StreamEvent::ToolCallEnd {
                 output, is_error, ..
             } => self.apply_tool_call_end(output, is_error),
@@ -423,7 +421,11 @@ impl Transcript {
     /// one, collapsed by default, seeded from `meta`. Every `RouteHop`
     /// carries `meta` fresh, so a block is fully formed the instant it is
     /// created: there is no "started" event to wait for separately.
-    fn find_or_create_subagent_block(&mut self, subagent_id: SubagentId, meta: SubagentMeta) -> BlockId {
+    fn find_or_create_subagent_block(
+        &mut self,
+        subagent_id: SubagentId,
+        meta: SubagentMeta,
+    ) -> BlockId {
         let existing = self.blocks.iter().find(|block| {
             matches!(
                 &block.kind,
@@ -557,10 +559,15 @@ impl Transcript {
     /// `output` is still `None`. Does nothing if every tool call already
     /// has a result, which should not happen in a well-formed stream.
     fn apply_tool_call_end(&mut self, output: String, is_error: bool) {
-        let Some(id) = self.blocks.iter().rev().find_map(|block| match &block.kind {
-            BlockKind::ToolCall { output: None, .. } => Some(block.id),
-            _ => None,
-        }) else {
+        let Some(id) = self
+            .blocks
+            .iter()
+            .rev()
+            .find_map(|block| match &block.kind {
+                BlockKind::ToolCall { output: None, .. } => Some(block.id),
+                _ => None,
+            })
+        else {
             return;
         };
         self.complete_tool_call(id, output, is_error);
@@ -970,7 +977,8 @@ mod tests {
     /// must still be able to take new blocks afterward.
     #[test]
     fn an_old_session_file_with_no_image_block_still_loads() {
-        let json = r#"{"blocks":[{"id":3,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":4}"#;
+        let json =
+            r#"{"blocks":[{"id":3,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":4}"#;
         let mut restored: Transcript = serde_json::from_str(json).unwrap();
         assert_eq!(restored.blocks().len(), 1);
         let new_id = restored.push(BlockKind::Image {
@@ -986,14 +994,9 @@ mod tests {
     #[test]
     fn round_trips_one_block_of_every_kind_through_json() {
         let mut transcript = Transcript::new();
-        transcript.push(BlockKind::User {
-            text: "hi".into(),
-        });
+        transcript.push(BlockKind::User { text: "hi".into() });
         transcript.push(BlockKind::Assistant {
-            spans: vec![
-                Span::Text("said".into()),
-                Span::Reasoning("thought".into()),
-            ],
+            spans: vec![Span::Text("said".into()), Span::Reasoning("thought".into())],
         });
         transcript.push(BlockKind::ToolCall {
             tool: "Bash".into(),
@@ -1025,10 +1028,8 @@ mod tests {
         let json = serde_json::to_string(&transcript).unwrap();
         let restored: Transcript = serde_json::from_str(&json).unwrap();
 
-        let original_kinds: Vec<&BlockKind> =
-            transcript.blocks().iter().map(|b| &b.kind).collect();
-        let restored_kinds: Vec<&BlockKind> =
-            restored.blocks().iter().map(|b| &b.kind).collect();
+        let original_kinds: Vec<&BlockKind> = transcript.blocks().iter().map(|b| &b.kind).collect();
+        let restored_kinds: Vec<&BlockKind> = restored.blocks().iter().map(|b| &b.kind).collect();
         assert_eq!(original_kinds, restored_kinds);
         let original_ids: Vec<BlockId> = transcript.blocks().iter().map(|b| b.id).collect();
         let restored_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
@@ -1044,15 +1045,14 @@ mod tests {
         let mut restored: Transcript = serde_json::from_str(&json).unwrap();
 
         let loaded_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
-        let new_id = restored.push(BlockKind::User {
-            text: "c".into(),
-        });
+        let new_id = restored.push(BlockKind::User { text: "c".into() });
         assert!(!loaded_ids.contains(&new_id));
     }
 
     #[test]
     fn a_bogus_next_id_in_the_json_still_yields_a_fresh_unused_id() {
-        let json = r#"{"blocks":[{"id":5,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":0}"#;
+        let json =
+            r#"{"blocks":[{"id":5,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":0}"#;
         let mut restored: Transcript = serde_json::from_str(json).unwrap();
         let new_id = restored.push(BlockKind::User {
             text: "next".into(),

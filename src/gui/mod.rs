@@ -1,22 +1,21 @@
+pub(crate) mod attachment;
 pub(crate) mod session_state;
 pub(crate) mod sessions_tab;
 pub(crate) mod settings_panel;
 pub(crate) mod transcript;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use eframe::App;
 use eframe::egui::{self, Color32, RichText, ScrollArea, TextEdit};
 use egui_commonmark::CommonMarkCache;
-use image::ImageFormat;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_V};
 
+use self::attachment::{AttachmentSlot, decode_image_bytes};
 use self::settings_panel::{spawn_model_list_fetch, voice_mode_flag_for_tts};
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
 use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
@@ -213,21 +212,9 @@ pub struct DeepSeekGui {
     current_claude_session_id: Option<String>,
 
     // ── Pending image attachment (P6S05) ──
-    /// Images attached to the turn not yet sent, shown as a thumbnail strip
-    /// above the input box. Capped at one: `Backend::run_with_image` takes
-    /// a single `Option<ImageAttachment>`, so `add_pending_attachment`
-    /// replaces rather than appends, with a transcript `Notice` naming the
-    /// replacement so nothing is dropped silently.
-    pending_attachments: Vec<ImageAttachment>,
-    /// Direct connection to the OS clipboard for `Ctrl+V` image paste.
-    /// Distinct from egui-winit's own internal clipboard, which only reads
-    /// and writes text. `None` when `arboard::Clipboard::new` fails, which
-    /// disables image paste without affecting anything else in the GUI.
-    clipboard: Option<arboard::Clipboard>,
-    /// Previous frame's raw Ctrl+V key state, for edge-triggering
-    /// `poll_ctrl_v_paste`. See that method's doc comment for why this
-    /// polls `GetAsyncKeyState` directly instead of an egui key event.
-    ctrl_v_prev_down: bool,
+    /// The image the next turn will carry, the OS clipboard handle, and
+    /// the four input paths that fill the slot. See `gui::attachment`.
+    attachment: AttachmentSlot,
 }
 
 impl DeepSeekGui {
@@ -274,11 +261,7 @@ impl DeepSeekGui {
         // `settings.working_dir()` a second time, keeps this single source
         // of truth: the buffer always starts equal to what the tools will
         // actually act against.
-        let working_dir_buffer = working_dir_flag
-            .lock()
-            .unwrap()
-            .display()
-            .to_string();
+        let working_dir_buffer = working_dir_flag.lock().unwrap().display().to_string();
         let voice_id_options: Vec<String> =
             KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect();
         let configured_voice = settings.voice_tts_voice();
@@ -363,11 +346,7 @@ impl DeepSeekGui {
             saved_sessions,
             current_messages: Vec::new(),
             current_claude_session_id: None,
-            pending_attachments: Vec::new(),
-            clipboard: arboard::Clipboard::new()
-                .inspect_err(|e| warn!(error = %e, "could not open OS clipboard; Ctrl+V image paste disabled"))
-                .ok(),
-            ctrl_v_prev_down: false,
+            attachment: AttachmentSlot::new(),
         }
     }
 
@@ -448,19 +427,19 @@ impl DeepSeekGui {
     /// apart from model output. `BlockKind::User` says that outright, and
     /// the renderer adds the marker back.
     fn submit_current_input(&mut self) {
-        if self.input_buffer.trim().is_empty() && self.pending_attachments.is_empty() {
+        if self.input_buffer.trim().is_empty() && self.attachment.is_empty() {
             return;
         }
         let input = std::mem::take(&mut self.input_buffer);
         self.transcript.push(BlockKind::User {
             text: input.clone(),
         });
-        // The strip is capped at one attachment (see `add_pending_attachment`),
+        // The slot holds at most one image (see `AttachmentSlot::set`),
         // so draining it hands over that single image, or `None`. Pushing
         // its own `Image` block here is what makes the sent image show up
         // in the transcript on the user's side, matching `render_image_block`
         // showing whatever an assistant or tool turn attaches on the other.
-        let attachment = self.pending_attachments.drain(..).next();
+        let attachment = self.attachment.take();
         if let Some(image) = attachment.clone() {
             self.transcript.push(BlockKind::Image { image });
         }
@@ -470,132 +449,6 @@ impl DeepSeekGui {
             image: attachment,
         });
         self.auto_scroll = true;
-    }
-
-    /// Add one image to the pending-attachment strip. `Backend::run_with_image`
-    /// takes a single `Option<ImageAttachment>`, so the strip holds at most
-    /// one: a second paste or drop replaces the first rather than queuing
-    /// beside it. The replacement is never silent, a `Notice` block says
-    /// so, since a user watching only the strip could otherwise lose track
-    /// of which image is about to be sent.
-    fn add_pending_attachment(&mut self, attachment: ImageAttachment) {
-        if !self.pending_attachments.is_empty() {
-            self.transcript.push(BlockKind::Notice {
-                text: "Only one image can be attached per turn; replacing the pending image."
-                    .into(),
-                severity: Severity::Info,
-            });
-        }
-        self.pending_attachments.clear();
-        self.pending_attachments.push(attachment);
-    }
-
-    /// Drop one attachment from the pending strip, e.g. from its remove
-    /// button. Out-of-range `index` is a no-op, since the strip's own
-    /// rendering is the only caller and its indices always come from the
-    /// same frame's `pending_attachments`.
-    fn remove_pending_attachment(&mut self, index: usize) {
-        if index < self.pending_attachments.len() {
-            self.pending_attachments.remove(index);
-        }
-    }
-
-    /// Poll the raw Windows key state for a Ctrl+V edge and, on one, try to
-    /// pull an image off the OS clipboard.
-    ///
-    /// This does not go through egui's own event system on purpose, and it
-    /// cannot: reading `egui-winit-0.31.1`'s `State::on_keyboard_input`
-    /// (the function that turns a winit key event into an egui one) shows
-    /// `is_paste_command` intercepts Ctrl+V before egui's caller ever sees
-    /// a `Key` event for `V`. When the clipboard holds text, that becomes a
-    /// text-only `egui::Event::Paste(String)`, still no image bytes. When
-    /// the clipboard holds only an image, which is the common case for a
-    /// screenshot tool, `clipboard.get()` inside egui-winit returns `None`
-    /// and the function returns without pushing any event at all. Neither
-    /// case gives this app anything to read egui's own input for, and
-    /// `eframe` 0.31 has no `raw_input_hook` to intercept the winit event
-    /// first. `GetAsyncKeyState` is the only signal left.
-    ///
-    /// Gated on `ctx`'s own focus flag so a Ctrl+V typed into a different
-    /// window never attaches an image here; the key state itself is
-    /// tracked regardless of focus so a press that started before this
-    /// window gained focus does not fire the instant it does.
-    fn poll_ctrl_v_paste(&mut self, ctx: &egui::Context) {
-        let just_pressed = ctrl_v_edge_triggered(&mut self.ctrl_v_prev_down);
-        if !just_pressed || !ctx.input(|i| i.focused) {
-            return;
-        }
-        let Some(clipboard) = self.clipboard.as_mut() else {
-            return;
-        };
-        // An `Err` here almost always just means the clipboard holds text,
-        // not an image: a plain-text Ctrl+V must keep working exactly as
-        // before, so this is not logged as a failure.
-        if let Ok(image) = clipboard.get_image() {
-            match attachment_from_clipboard_image(&image) {
-                Some(attachment) => self.add_pending_attachment(attachment),
-                None => warn!("clipboard image could not be encoded as PNG"),
-            }
-        }
-    }
-
-    /// Attach every dropped file that decodes as an image. eframe already
-    /// collects a native drop into `RawInput::dropped_files` with a real
-    /// filesystem path (the `bytes` field on `DroppedFile` is web-only), so
-    /// this just reads each path, validates it decodes, and reports
-    /// anything that does not with a `Notice` rather than dropping it
-    /// without a trace.
-    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        for file in dropped {
-            let Some(path) = file.path else {
-                self.transcript.push(BlockKind::Notice {
-                    text: "A dropped file carried no filesystem path and was ignored.".into(),
-                    severity: Severity::Warning,
-                });
-                continue;
-            };
-            match attachment_from_file_path(&path) {
-                Ok(attachment) => self.add_pending_attachment(attachment),
-                Err(message) => {
-                    warn!(%message, "dropped file rejected");
-                    self.transcript.push(BlockKind::Notice {
-                        text: message,
-                        severity: Severity::Warning,
-                    });
-                }
-            }
-        }
-    }
-
-    /// The pending-attachment strip: one thumbnail and one remove button
-    /// per attachment. Draws nothing when the strip is empty, so it never
-    /// reserves space in the input bar when there is nothing pending.
-    fn render_pending_attachments_strip(&mut self, ui: &mut egui::Ui) {
-        if self.pending_attachments.is_empty() {
-            return;
-        }
-        let mut remove_index = None;
-        ui.horizontal(|ui| {
-            for (index, attachment) in self.pending_attachments.iter().enumerate() {
-                let Some(bytes) = decode_image_bytes(attachment) else {
-                    continue;
-                };
-                ui.vertical(|ui| {
-                    let uri = format!("bytes://pending-attachment-{index}");
-                    ui.add(egui::Image::from_bytes(uri, bytes).max_size(egui::vec2(
-                        PENDING_ATTACHMENT_THUMBNAIL_MAX,
-                        PENDING_ATTACHMENT_THUMBNAIL_MAX,
-                    )));
-                    if ui.small_button("Remove").clicked() {
-                        remove_index = Some(index);
-                    }
-                });
-            }
-        });
-        if let Some(index) = remove_index {
-            self.remove_pending_attachment(index);
-        }
     }
 
     /// Send a voice command if the voice subsystem is attached. Silently
@@ -969,8 +822,7 @@ impl DeepSeekGui {
         ui.add_space(8.0);
 
         let mut iterations = self.autopilot_iterations;
-        let iter_response =
-            ui.add(egui::Slider::new(&mut iterations, 1..=100).text("Iterations"));
+        let iter_response = ui.add(egui::Slider::new(&mut iterations, 1..=100).text("Iterations"));
         if iter_response.changed() {
             self.autopilot_iterations = iterations;
         }
@@ -1076,8 +928,9 @@ impl App for DeepSeekGui {
         // attachment strip. Neither is tied to the Chat tab's text box
         // having focus: a screenshot pasted while the settings panel is
         // open, or a file dropped anywhere on the window, still attaches.
-        self.poll_ctrl_v_paste(ctx);
-        self.handle_dropped_files(ctx);
+        self.attachment.poll_ctrl_v_paste(ctx, &mut self.transcript);
+        self.attachment
+            .handle_dropped_files(ctx, &mut self.transcript);
 
         // Space held -> push-to-talk, only while not typing and the
         // settings panel is closed.
@@ -1154,7 +1007,7 @@ impl App for DeepSeekGui {
             egui::TopBottomPanel::bottom("input_panel")
                 .min_height(32.0)
                 .show(ctx, |ui| {
-                    self.render_pending_attachments_strip(ui);
+                    self.attachment.render_strip(ui);
                     ui.horizontal(|ui| {
                         ui.label(">");
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1274,10 +1127,6 @@ const IMAGE_LABEL_COLOR: Color32 = Color32::from_rgb(200, 160, 220);
 /// The longer side of an inline image thumbnail in the transcript, in
 /// points. Clicking it opens the same image full size in its own window.
 const IMAGE_THUMBNAIL_MAX: f32 = 240.0;
-/// The longer side of a pending-attachment thumbnail, in points. Smaller
-/// than `IMAGE_THUMBNAIL_MAX`: the strip sits above the input box and is
-/// meant to confirm what is about to be sent, not to be read in detail.
-const PENDING_ATTACHMENT_THUMBNAIL_MAX: f32 = 80.0;
 /// Space above a block that opens a new turn. This is what replaced the
 /// old grey "--- turn end ---" divider: a turn boundary now reads as a
 /// gap between bubbles instead of a line of its own.
@@ -1381,114 +1230,17 @@ fn render_image_block(ui: &mut egui::Ui, block_id: BlockId, image: &ImageAttachm
     ui.data_mut(|data| data.insert_temp(open_id, open));
 }
 
-/// Base64-decode a stored `ImageAttachment`'s payload into the raw image
-/// bytes egui's image loader expects. `None` on malformed base64, which
-/// `render_image_block` turns into a plain error label instead of a panic.
-fn decode_image_bytes(image: &ImageAttachment) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD
-        .decode(&image.data)
-        .ok()
-}
-
-/// True exactly on the frame Ctrl+V transitions from not-held to held,
-/// tracked by the caller's own `prev_down` across frames. See
-/// `DeepSeekGui::poll_ctrl_v_paste`'s doc comment for why this reads the
-/// raw key state instead of an egui event.
-///
-/// The raw `GetAsyncKeyState` read and the edge-detection bookkeeping are
-/// split apart so `edge_trigger` can be unit tested against synthetic key
-/// states: real hardware state cannot be driven from a test.
-fn ctrl_v_edge_triggered(prev_down: &mut bool) -> bool {
-    // SAFETY: `GetAsyncKeyState` is a plain state query against user32.dll,
-    // takes a virtual-key code by value, and has no preconditions beyond
-    // being called from a thread with a message queue, which the GUI
-    // thread already has.
-    let down = unsafe {
-        let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-        let v_down = (GetAsyncKeyState(VK_V.0 as i32) as u16 & 0x8000) != 0;
-        ctrl_down && v_down
-    };
-    edge_trigger(down, prev_down)
-}
-
-/// True exactly once, on the transition from not-`down` to `down`, using
-/// and updating `prev_down` as the state carried across calls.
-fn edge_trigger(down: bool, prev_down: &mut bool) -> bool {
-    let just_pressed = down && !*prev_down;
-    *prev_down = down;
-    just_pressed
-}
-
-/// Encode `arboard`'s raw RGBA8 clipboard pixels as PNG bytes for an
-/// `ImageAttachment`. `arboard::ImageData` is unencoded pixels, not a
-/// file format, so there is nothing to sniff or validate beyond the
-/// buffer's length matching `width * height * 4`.
-fn attachment_from_clipboard_image(image: &arboard::ImageData) -> Option<ImageAttachment> {
-    if image.width == 0 || image.height == 0 || image.bytes.len() != image.width * image.height * 4
-    {
-        return None;
-    }
-    let buffer =
-        image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.to_vec())?;
-    let mut png_bytes = Vec::new();
-    image::DynamicImage::ImageRgba8(buffer)
-        .write_to(&mut std::io::Cursor::new(&mut png_bytes), ImageFormat::Png)
-        .ok()?;
-    Some(ImageAttachment {
-        data: base64::engine::general_purpose::STANDARD.encode(png_bytes),
-        media_type: "image/png".into(),
-    })
-}
-
-/// Read a dropped file off disk and build an `ImageAttachment` from it, or
-/// a message describing why not. Kept separate from
-/// `attachment_from_image_bytes` so a test can exercise the decode-and-
-/// validate logic on in-memory bytes without touching the filesystem.
-fn attachment_from_file_path(path: &Path) -> Result<ImageAttachment, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    attachment_from_image_bytes(&bytes, &path.display().to_string())
-}
-
-/// Validate that `bytes` is a real, decodable image and wrap it as an
-/// `ImageAttachment`, keeping the original bytes rather than re-encoding:
-/// `image::guess_format` only sniffs magic bytes, so
-/// `load_from_memory_with_format` is what actually proves the file
-/// decodes, catching a truncated or corrupt file before it ever reaches a
-/// backend. `label` names the source in an error message; a dropped file
-/// uses its path, a test uses whatever it likes.
-fn attachment_from_image_bytes(bytes: &[u8], label: &str) -> Result<ImageAttachment, String> {
-    let format = image::guess_format(bytes)
-        .map_err(|_| format!("{label} is not a recognized image format"))?;
-    image::load_from_memory_with_format(bytes, format)
-        .map_err(|e| format!("{label} could not be decoded: {e}"))?;
-    Ok(ImageAttachment {
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-        media_type: mime_for_image_format(format).to_string(),
-    })
-}
-
-/// The MIME type an `ImageAttachment` carries for a decoded `image::ImageFormat`.
-/// Only png, jpeg, and bmp are backed by an enabled decoder in this build
-/// (see the `image` dependency comment in `Cargo.toml`); any other format
-/// that `guess_format` recognises by its magic bytes still fails at the
-/// `load_from_memory_with_format` step in `attachment_from_image_bytes`; a
-/// separate name for it here would be an implementation detail
-/// no code round-trips through.
-fn mime_for_image_format(format: ImageFormat) -> &'static str {
-    match format {
-        ImageFormat::Png => "image/png",
-        ImageFormat::Jpeg => "image/jpeg",
-        ImageFormat::Bmp => "image/bmp",
-        _ => "application/octet-stream",
-    }
-}
-
 /// A tool call as one clickable summary line that opens to show the full
 /// arguments and the output. The click is reported through `toggled`, not
 /// applied here, since the block is only held by shared reference. `path`
 /// is the full path to this block (see `DeepSeekGui::render_block`),
 /// recorded on a click rather than the bare id.
-fn render_tool_call(ui: &mut egui::Ui, block: &Block, path: &[BlockId], toggled: &mut Vec<Vec<BlockId>>) {
+fn render_tool_call(
+    ui: &mut egui::Ui,
+    block: &Block,
+    path: &[BlockId],
+    toggled: &mut Vec<Vec<BlockId>>,
+) {
     let BlockKind::ToolCall {
         tool,
         args,
@@ -1817,7 +1569,6 @@ fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::settings_panel::{
         apply_backend_model, apply_context_budget, apply_default_backend, apply_effort,
         apply_show_raw_output, apply_stt_enabled, apply_trigger_mode, apply_tts_enabled,
@@ -1825,6 +1576,7 @@ mod tests {
         apply_working_dir, speed_command, stt_enabled_command, trigger_mode_command,
         tts_enabled_command, voice_enabled_command, voice_id_command, wake_phrase_command,
     };
+    use super::*;
     use crate::agent::agent_loop::{RouteHop, SubagentId, SubagentMeta};
     use crate::api::types::{Content, Role};
     use crate::config::settings::{ApiProvider, BackendConfig, VoiceConfig};
@@ -1841,7 +1593,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dsc-gui-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dsc-gui-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -2178,7 +1931,10 @@ mod tests {
             spans: vec![Span::Reasoning("thought".into()), Span::Text("said".into())],
         });
         let block = transcript.find(id).unwrap();
-        assert_eq!(raw_block_text(block), "Assistant:\n[reasoning] thought\nsaid");
+        assert_eq!(
+            raw_block_text(block),
+            "Assistant:\n[reasoning] thought\nsaid"
+        );
     }
 
     #[test]
@@ -2193,7 +1949,10 @@ mod tests {
     fn raw_text_for_a_tool_call_carries_its_arguments_and_output() {
         let block = tool_block("ls -la", Some("file1\nfile2"), false);
         let text = raw_block_text(&block);
-        assert!(text.contains("ls -la"), "arguments must be reachable: {text}");
+        assert!(
+            text.contains("ls -la"),
+            "arguments must be reachable: {text}"
+        );
         assert!(
             text.contains("file1\nfile2"),
             "output must be reachable: {text}"
@@ -2252,8 +2011,14 @@ mod tests {
             text.contains("hi from a subagent"),
             "must carry the nested content: {text}"
         );
-        assert!(text.contains("turns 1/20"), "must show the turn count and cap: {text}");
-        assert!(text.contains("sends 0/10"), "must show the call count and cap: {text}");
+        assert!(
+            text.contains("turns 1/20"),
+            "must show the turn count and cap: {text}"
+        );
+        assert!(
+            text.contains("sends 0/10"),
+            "must show the call count and cap: {text}"
+        );
     }
 
     #[test]
@@ -2306,7 +2071,10 @@ mod tests {
         let image = test_image_attachment();
         let bytes = decode_image_bytes(&image).expect("valid base64 must decode");
         // PNG's fixed 8-byte magic number.
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']);
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']
+        );
     }
 
     #[test]
@@ -2326,140 +2094,22 @@ mod tests {
         });
         let block = transcript.find(id).unwrap();
         let text = raw_block_text(block);
-        assert!(text.contains("image/png"), "must name the media type: {text}");
-    }
-
-    /// Build in-memory image bytes of the given format for a test, without
-    /// touching the filesystem. A 2x2 image is the smallest either the PNG
-    /// or the JPEG encoder will accept.
-    fn encode_test_image(format: ImageFormat) -> Vec<u8> {
-        let buffer =
-            image::RgbaImage::from_raw(2, 2, vec![255u8; 2 * 2 * 4]).expect("valid buffer");
-        let mut bytes = Vec::new();
-        image::DynamicImage::ImageRgba8(buffer)
-            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
-            .expect("encode");
-        bytes
-    }
-
-    #[test]
-    fn attachment_from_image_bytes_accepts_a_real_png() {
-        let bytes = encode_test_image(ImageFormat::Png);
-        let attachment = attachment_from_image_bytes(&bytes, "test.png").expect("must decode");
-        assert_eq!(attachment.media_type, "image/png");
-    }
-
-    #[test]
-    fn attachment_from_image_bytes_accepts_a_real_jpeg() {
-        // The finding this step exists to fix: only png and bmp decoders
-        // were enabled anywhere in the dependency tree before this step
-        // added the "jpeg" feature directly. This must decode, not just
-        // sniff as jpeg by its magic bytes.
-        let bytes = encode_test_image(ImageFormat::Jpeg);
-        let attachment = attachment_from_image_bytes(&bytes, "test.jpg").expect("must decode");
-        assert_eq!(attachment.media_type, "image/jpeg");
-    }
-
-    #[test]
-    fn attachment_from_image_bytes_rejects_garbage() {
-        let bytes = b"this is not an image".to_vec();
-        assert!(attachment_from_image_bytes(&bytes, "garbage").is_err());
-    }
-
-    #[test]
-    fn attachment_from_image_bytes_keeps_the_original_bytes_on_the_wire() {
-        let bytes = encode_test_image(ImageFormat::Png);
-        let attachment = attachment_from_image_bytes(&bytes, "test.png").expect("must decode");
-        let decoded = decode_image_bytes(&attachment).expect("valid base64");
-        assert_eq!(decoded, bytes, "must not silently re-encode the file");
-    }
-
-    #[test]
-    fn attachment_from_clipboard_image_encodes_rgba_pixels_as_png() {
-        let image = arboard::ImageData {
-            width: 2,
-            height: 2,
-            bytes: std::borrow::Cow::Owned(vec![255u8; 2 * 2 * 4]),
-        };
-        let attachment =
-            attachment_from_clipboard_image(&image).expect("valid buffer must encode");
-        assert_eq!(attachment.media_type, "image/png");
-        let bytes = decode_image_bytes(&attachment).expect("valid base64");
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']);
-    }
-
-    #[test]
-    fn attachment_from_clipboard_image_rejects_a_mismatched_buffer() {
-        let image = arboard::ImageData {
-            width: 2,
-            height: 2,
-            // 4 bytes short of the 16 a 2x2 RGBA8 buffer needs.
-            bytes: std::borrow::Cow::Owned(vec![255u8; 12]),
-        };
-        assert!(attachment_from_clipboard_image(&image).is_none());
-    }
-
-    #[test]
-    fn edge_trigger_fires_once_on_the_press_not_while_held() {
-        let mut prev = false;
-        assert!(edge_trigger(true, &mut prev), "first press must fire");
         assert!(
-            !edge_trigger(true, &mut prev),
-            "holding the key must not fire again"
+            text.contains("image/png"),
+            "must name the media type: {text}"
         );
-        assert!(!edge_trigger(false, &mut prev), "release does not fire");
-        assert!(
-            edge_trigger(true, &mut prev),
-            "a second press after a release must fire again"
-        );
-    }
-
-    #[test]
-    fn add_pending_attachment_caps_at_one_and_notices_the_replacement() {
-        let mut gui = make_gui();
-        gui.add_pending_attachment(test_image_attachment());
-        assert_eq!(gui.pending_attachments.len(), 1);
-        assert!(
-            gui.transcript.blocks().is_empty(),
-            "the first attachment is not a replacement, so no notice yet"
-        );
-
-        gui.add_pending_attachment(test_image_attachment());
-        assert_eq!(
-            gui.pending_attachments.len(),
-            1,
-            "a second attachment replaces rather than appends"
-        );
-        let blocks = gui.transcript.blocks();
-        assert_eq!(blocks.len(), 1, "the replacement must be reported, not silent");
-        assert!(matches!(blocks[0].kind, BlockKind::Notice { .. }));
-    }
-
-    #[test]
-    fn remove_pending_attachment_drops_the_only_slot() {
-        let mut gui = make_gui();
-        gui.add_pending_attachment(test_image_attachment());
-        gui.remove_pending_attachment(0);
-        assert!(gui.pending_attachments.is_empty());
-    }
-
-    #[test]
-    fn remove_pending_attachment_out_of_range_is_a_no_op() {
-        let mut gui = make_gui();
-        gui.add_pending_attachment(test_image_attachment());
-        gui.remove_pending_attachment(5);
-        assert_eq!(gui.pending_attachments.len(), 1);
     }
 
     #[test]
     fn submit_current_input_attaches_the_pending_image_and_clears_the_strip() {
         let mut gui = make_gui();
-        gui.add_pending_attachment(test_image_attachment());
+        gui.attachment
+            .set(test_image_attachment(), &mut gui.transcript);
         gui.input_buffer = "look at this".into();
 
         gui.submit_current_input();
 
-        assert!(gui.pending_attachments.is_empty(), "the strip must clear on send");
+        assert!(gui.attachment.is_empty(), "the strip must clear on send");
         let blocks = gui.transcript.blocks();
         assert_eq!(blocks.len(), 2, "a User block and an Image block");
         assert!(matches!(blocks[0].kind, BlockKind::User { .. }));
@@ -2476,7 +2126,8 @@ mod tests {
         let mut gui = make_gui();
         let (tx_input, mut rx_input) = mpsc::unbounded_channel();
         gui.tx_input = tx_input;
-        gui.add_pending_attachment(test_image_attachment());
+        gui.attachment
+            .set(test_image_attachment(), &mut gui.transcript);
         gui.input_buffer = "look at this".into();
 
         gui.submit_current_input();
@@ -2500,7 +2151,8 @@ mod tests {
         let (tx_input, mut rx_input) = mpsc::unbounded_channel();
         gui.tx_input = tx_input;
 
-        gui.add_pending_attachment(test_image_attachment());
+        gui.attachment
+            .set(test_image_attachment(), &mut gui.transcript);
         gui.input_buffer = "first turn".into();
         gui.submit_current_input();
 
@@ -2517,7 +2169,10 @@ mod tests {
         match rx_input.try_recv().unwrap() {
             AgentCommand::UserTurn { text, image } => {
                 assert_eq!(text, "second turn");
-                assert_eq!(image, None, "the second turn must not inherit the first's image");
+                assert_eq!(
+                    image, None,
+                    "the second turn must not inherit the first's image"
+                );
             }
             other => panic!("expected UserTurn, got {other:?}"),
         }
@@ -2526,21 +2181,37 @@ mod tests {
     #[test]
     fn submit_current_input_sends_an_image_with_no_text() {
         let mut gui = make_gui();
-        gui.add_pending_attachment(test_image_attachment());
+        gui.attachment
+            .set(test_image_attachment(), &mut gui.transcript);
         assert!(gui.input_buffer.is_empty());
 
         gui.submit_current_input();
 
-        assert_eq!(gui.session_status, "Running...", "an image-only turn must still send");
-        assert!(gui.pending_attachments.is_empty());
+        assert_eq!(
+            gui.session_status, "Running...",
+            "an image-only turn must still send"
+        );
+        assert!(gui.attachment.is_empty());
     }
 
     #[test]
     fn subagent_header_summary_names_backend_model_depth_and_elapsed() {
-        let header =
-            subagent_header_summary("ollama", "test-model", 2, SubagentState::Running, 1500, 1, 20, 0, 10);
+        let header = subagent_header_summary(
+            "ollama",
+            "test-model",
+            2,
+            SubagentState::Running,
+            1500,
+            1,
+            20,
+            0,
+            10,
+        );
         assert!(header.contains("ollama"), "must name the backend: {header}");
-        assert!(header.contains("test-model"), "must name the model: {header}");
+        assert!(
+            header.contains("test-model"),
+            "must name the model: {header}"
+        );
         assert!(header.contains('2'), "must name the depth: {header}");
         assert!(header.contains("1.5s"), "must show elapsed time: {header}");
     }
@@ -2551,10 +2222,25 @@ mod tests {
     /// time a session is open, not only once a cap trips.
     #[test]
     fn subagent_header_summary_names_both_counts_against_their_caps() {
-        let header =
-            subagent_header_summary("ollama", "test-model", 1, SubagentState::Running, 0, 3, 20, 2, 10);
-        assert!(header.contains("3/20"), "must show turns against its cap: {header}");
-        assert!(header.contains("2/10"), "must show sends against its cap: {header}");
+        let header = subagent_header_summary(
+            "ollama",
+            "test-model",
+            1,
+            SubagentState::Running,
+            0,
+            3,
+            20,
+            2,
+            10,
+        );
+        assert!(
+            header.contains("3/20"),
+            "must show turns against its cap: {header}"
+        );
+        assert!(
+            header.contains("2/10"),
+            "must show sends against its cap: {header}"
+        );
     }
 
     #[test]
@@ -3673,8 +3359,10 @@ mod tests {
     #[test]
     fn resolve_autopilot_policy_path_resolves_relative_override_against_root() {
         let root = PathBuf::from("/project");
-        let store =
-            crate::autopilot::policy::PolicyStore::new(root.clone(), Some("custom-policy.md".into()));
+        let store = crate::autopilot::policy::PolicyStore::new(
+            root.clone(),
+            Some("custom-policy.md".into()),
+        );
         let path = store.resolved_policy_path();
         assert_eq!(path, root.join("custom-policy.md"));
     }

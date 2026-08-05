@@ -392,7 +392,8 @@ impl DeepSeekGui {
     /// running backend would otherwise be asked for a model name belonging
     /// to a different provider, and every following turn would fail.
     pub(super) fn switch_model(&mut self, new_model: String) {
-        let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned() else {
+        let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned()
+        else {
             return;
         };
         if self.active_backend.as_deref() == Some(backend_name.as_str())
