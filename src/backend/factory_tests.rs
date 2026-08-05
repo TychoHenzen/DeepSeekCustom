@@ -4,6 +4,7 @@
 //! `resolve_active_backend`, and `BackendFactory` itself.
 
 use super::*;
+use crate::agent::agent_loop::SubagentId;
 use std::collections::HashMap;
 
 fn settings_with_backends(
@@ -48,6 +49,7 @@ fn resolves_valid_api_entry() {
             assert_eq!(api_key, "ollama");
         }
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -71,6 +73,7 @@ fn entry_api_key_beats_environment() {
     match resolved {
         ResolvedBackend::Api { api_key, .. } => assert_eq!(api_key, "entry-key-123"),
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -126,6 +129,7 @@ fn resolves_valid_claude_cli_entry() {
             assert_eq!(resolved_env, Some(env));
         }
         ResolvedBackend::Api { .. } => panic!("expected ClaudeCli variant"),
+        ResolvedBackend::Stub { .. } => panic!("expected ClaudeCli variant"),
     }
 }
 
@@ -155,6 +159,7 @@ fn claude_cli_entry_permission_mode_passes_through_none_when_omitted() {
             assert_eq!(permission_mode, None);
         }
         ResolvedBackend::Api { .. } => panic!("expected ClaudeCli variant"),
+        ResolvedBackend::Stub { .. } => panic!("expected ClaudeCli variant"),
     }
 }
 
@@ -181,6 +186,7 @@ fn absent_default_backend_selects_deepseek() {
             assert_eq!(provider, Provider::DeepSeek);
         }
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -296,6 +302,7 @@ fn task_tool_registered_below_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "Task")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
 
@@ -311,7 +318,136 @@ fn task_tool_absent_at_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "Task")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
     }
+}
+
+/// `SendMessage` is gated by the exact same depth check as `Task`: below
+/// the limit, a backend gets both, since a session it cannot open through
+/// `Task` is never reachable through `SendMessage` either.
+#[test]
+fn send_message_tool_registered_below_the_depth_limit() {
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+
+    match backend {
+        Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "SendMessage")),
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+}
+
+/// At the depth limit, a subagent's registry carries neither `Task` nor
+/// `SendMessage`.
+#[test]
+fn send_message_tool_absent_at_the_depth_limit() {
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory.build("deepseek", None, tx, 2).expect("should build");
+
+    match backend {
+        Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "SendMessage")),
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+}
+
+/// `CloseSession` is gated by the exact same depth check as `Task` and
+/// `SendMessage`: all three appear together below the limit.
+#[test]
+fn close_session_tool_registered_below_the_depth_limit() {
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+
+    match backend {
+        Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "CloseSession")),
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+}
+
+/// At the depth limit, a subagent's registry carries none of `Task`,
+/// `SendMessage`, or `CloseSession`: all three disappear together.
+#[test]
+fn close_session_tool_absent_at_the_depth_limit() {
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory.build("deepseek", None, tx, 2).expect("should build");
+
+    match backend {
+        Backend::Api(agent) => {
+            assert!(!agent.tool_names().iter().any(|n| n == "Task"));
+            assert!(!agent.tool_names().iter().any(|n| n == "SendMessage"));
+            assert!(!agent.tool_names().iter().any(|n| n == "CloseSession"));
+        }
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+}
+
+/// The Phase 3 lifetime rule from the roadmap: a subagent session lives
+/// until *its parent's* turn ends, or until it is closed, whichever comes
+/// first. Not until *any* agent's turn ends. Two agents built off the same
+/// factory, exactly as a main session and a subagent are, must each get
+/// their own registry. Against a factory that hands out one shared
+/// registry to every backend it builds, agent A's `Reset` would empty
+/// agent B's registry too, since both would hold the literal same `Arc`.
+/// This test fails on that build and passes once each agent owns its own.
+#[tokio::test]
+async fn one_agents_reset_does_not_close_another_agents_session() {
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let (tx_a, _rx_a) = mpsc::unbounded_channel();
+    let (tx_b, _rx_b) = mpsc::unbounded_channel();
+
+    let backend_a = factory.build("deepseek", None, tx_a, 0).expect("should build");
+    let backend_b = factory.build("deepseek", None, tx_b, 0).expect("should build");
+
+    let Backend::Api(agent_a) = backend_a else {
+        panic!("expected Api variant");
+    };
+    let Backend::Api(agent_b) = backend_b else {
+        panic!("expected Api variant");
+    };
+
+    let registry_a = agent_a
+        .subagent_registry_for_test()
+        .expect("build_api_backend should set a registry");
+    let registry_b = agent_b
+        .subagent_registry_for_test()
+        .expect("build_api_backend should set a registry");
+
+    let stub_session = || {
+        Backend::Stub(Box::new(crate::backend::stub::StubBackend::new(
+            Vec::new(),
+            "stub-model".to_string(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )))
+    };
+    let id_a = SubagentId::next();
+    let id_b = SubagentId::next();
+    registry_a.register(id_a, stub_session()).await;
+    registry_b.register(id_b, stub_session()).await;
+
+    let output = agent_a
+        .execute_tool("reset", "{\"prompt\":\"start fresh\"}")
+        .await;
+
+    assert!(!output.is_error);
+    assert!(
+        !registry_a.contains(id_a).await,
+        "agent A's own session should close on its own reset"
+    );
+    assert!(
+        registry_b.contains(id_b).await,
+        "agent B's session must not be closed by agent A's reset"
+    );
+    assert_eq!(registry_b.len().await, 1);
 }
 
 #[test]
@@ -329,4 +465,33 @@ fn built_backend_carries_the_factorys_injected_interrupt_flag() {
     // the backend's own getter, then check the backend reads it as true.
     injected.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(backend.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// `with_working_dir` reports the exact `Arc` it was given, and that value
+/// is independent of the original factory's own: writing through either
+/// handle after the split never moves the other. This is the isolation
+/// P4S05's subagent `working_dir` override relies on.
+#[test]
+fn with_working_dir_reports_the_given_arc_independent_of_the_original() {
+    let factory = Arc::new(BackendFactory::new(Settings::default(), PathBuf::from(".")));
+    let original_snapshot = factory.working_dir_snapshot();
+
+    let replacement = Arc::new(Mutex::new(PathBuf::from("C:/subagent-only")));
+    let sub_factory = factory.with_working_dir(Arc::clone(&replacement));
+
+    assert_eq!(*sub_factory.working_dir().lock().unwrap(), PathBuf::from("C:/subagent-only"));
+
+    *sub_factory.working_dir().lock().unwrap() = PathBuf::from("C:/moved-by-subagent");
+    assert_eq!(
+        factory.working_dir_snapshot(),
+        original_snapshot,
+        "writing through the split-off factory must never move the original"
+    );
+
+    *factory.working_dir().lock().unwrap() = PathBuf::from("C:/moved-by-parent");
+    assert_eq!(
+        *sub_factory.working_dir().lock().unwrap(),
+        PathBuf::from("C:/moved-by-subagent"),
+        "writing through the original must never move the split-off factory"
+    );
 }

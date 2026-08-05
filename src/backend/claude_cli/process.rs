@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,8 +13,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::StreamEvent;
+use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
 use crate::agent::prompt::voice_mode_instructions;
+use crate::api::types::ImageAttachment;
+use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
 use super::events::{ClaudeEvent, parse_line};
@@ -78,17 +80,22 @@ fn fallback_claude_path() -> Option<PathBuf> {
 }
 
 /// Build the argument vector for `claude -p`, in the exact order the
-/// protocol expects. `append_system_prompt`, when set, adds
-/// `--append-system-prompt <text>` at the end: this is how voice reply mode
-/// reaches the child, since the child has no per-turn config channel.
-/// `resume_id`, when set, adds `--resume <id>` at the end, so the child
-/// resumes a saved conversation instead of starting a fresh one. See
-/// `docs/notes/claude-resume.md` for the verified flag shape.
+/// protocol expects. `effort`, when it maps to a CLI value, adds
+/// `--effort <level>` right after the base flags: `Effort::None` omits it
+/// entirely, since the CLI has no `none` value of its own. See
+/// `docs/notes/claude-effort.md` for the verified value set.
+/// `append_system_prompt`, when set, adds `--append-system-prompt <text>`
+/// next: this is how voice reply mode reaches the child, since the child
+/// has no per-turn config channel. `resume_id`, when set, adds `--resume
+/// <id>` at the end, so the child resumes a saved conversation instead of
+/// starting a fresh one. See `docs/notes/claude-resume.md` for the
+/// verified flag shape.
 fn build_args(
     model: &str,
     permission_mode: Option<&str>,
     append_system_prompt: Option<&str>,
     resume_id: Option<&str>,
+    effort: Effort,
 ) -> Vec<String> {
     let mode = permission_mode.unwrap_or("bypassPermissions");
     let mut args = vec![
@@ -104,6 +111,10 @@ fn build_args(
         "--permission-mode".to_string(),
         mode.to_string(),
     ];
+    if let Some(level) = effort.claude_cli_effort() {
+        args.push("--effort".to_string());
+        args.push(level.to_string());
+    }
     if let Some(prompt) = append_system_prompt {
         args.push("--append-system-prompt".to_string());
         args.push(prompt.to_string());
@@ -124,14 +135,48 @@ fn resume_id_changed(current: &Option<String>, spawned: &Option<String>) -> bool
     current != spawned
 }
 
-/// Build one stdin line for a plain-text user turn, in the verified
-/// stream-json shape.
-fn build_user_turn_line(text: &str) -> String {
+/// True when the live working directory differs from the one the running
+/// child was spawned under. The child's cwd is a spawn-time argument, so a
+/// changed directory leaves the running child stale, and it must be
+/// replaced before the next turn. `ensure_ready` applies the same rule to a
+/// changed voice-mode flag and a changed resume id. `spawned` is `None`
+/// before the first child is ever spawned, which always counts as changed.
+fn working_dir_changed(current: &std::path::Path, spawned: &Option<PathBuf>) -> bool {
+    Some(current) != spawned.as_deref()
+}
+
+/// True when the live effort level differs from the one the running child
+/// was spawned under. `--effort` is a spawn-time argument, same as
+/// `--resume` and the working directory, so a changed level leaves the
+/// running child stale and it must be replaced before the next turn.
+fn effort_changed(current: Effort, spawned: Effort) -> bool {
+    current != spawned
+}
+
+/// Build one stdin line for a user turn, in the verified stream-json shape.
+/// With no image this is exactly the plain-text shape confirmed against the
+/// real `claude` binary. With one, an Anthropic `image` content block
+/// follows the text block: `{"type":"image","source":{"type":"base64",
+/// "media_type":"...","data":"..."}}`. That shape, not the OpenAI
+/// `image_url` shape the API backends speak, is what a real turn against
+/// this stdin protocol actually accepts; see `docs/notes/image-support.md`.
+fn build_user_turn_line(text: &str, image: Option<&ImageAttachment>) -> String {
+    let mut content = vec![serde_json::json!({"type": "text", "text": text})];
+    if let Some(image) = image {
+        content.push(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": image.data,
+            }
+        }));
+    }
     let value = serde_json::json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "text", "text": text}]
+            "content": content
         }
     });
     value.to_string()
@@ -141,11 +186,14 @@ fn build_user_turn_line(text: &str) -> String {
 /// owns the six shared flags `Backend` exposes to the GUI, in place of the
 /// ones `AgentLoop` owns for the API path.
 ///
-/// Three of those flags have no meaning here: `thinking_flag`,
-/// `context_budget_flag`, and `model_flag`. Claude Code manages its own
-/// thinking level, its own context compaction, and its own model choice.
-/// The GUI can still write to them. The settings panel does not know which
-/// backend is active. Nothing in this driver ever reads them back.
+/// Two of those flags have no meaning here: `context_budget_flag` and
+/// `model_flag`. Claude Code manages its own context compaction, and the
+/// model is fixed for the lifetime of the child. The GUI can still write to
+/// them. The settings panel does not know which backend is active. Nothing
+/// in this driver ever reads them back. `effort_flag` is different: `send`
+/// reads it before every turn through `ensure_ready`, and respawns the
+/// child on a change, the same way it already does for voice mode, the
+/// resume id, and the working directory.
 pub struct ClaudeCliDriver {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -161,8 +209,13 @@ pub struct ClaudeCliDriver {
     model: String,
     permission_mode: Option<String>,
     extra_env: Option<HashMap<String, String>>,
-    project_root: PathBuf,
-    tx_events: mpsc::UnboundedSender<StreamEvent>,
+    /// Where the child is spawned. Shared with `BackendFactory` and every
+    /// tool it builds, the same `Arc<Mutex<PathBuf>>` `BashTool`, `ReadTool`,
+    /// and `WriteTool` read per call. Read fresh in `ensure_ready` before
+    /// every turn, since the child's cwd is a spawn-time argument that a
+    /// later write to this value cannot change on a running child.
+    working_dir: Arc<Mutex<PathBuf>>,
+    tx_events: mpsc::UnboundedSender<RoutedEvent>,
     /// The voice-mode flag's value at the time the current child was
     /// spawned. `send` compares this against the live flag before every
     /// turn, and respawns the child on a mismatch, since
@@ -174,8 +227,18 @@ pub struct ClaudeCliDriver {
     /// `--resume` is a spawn-time argument, so a changed id needs a
     /// respawn before the next turn.
     spawned_resume_id: Option<String>,
+    /// The working directory the current child was spawned with. `ensure_ready`
+    /// compares it against the live value in `working_dir`, the same way it
+    /// compares `spawned_voice_mode` and `spawned_resume_id`. `None` until
+    /// the first child is spawned.
+    spawned_working_dir: Option<PathBuf>,
+    /// The effort level the current child was spawned with. `ensure_ready`
+    /// compares it against the live value in `effort_flag`, the same way it
+    /// compares `spawned_voice_mode`, `spawned_resume_id`, and
+    /// `spawned_working_dir`. `--effort` is a spawn-time argument.
+    spawned_effort: Effort,
     interrupt_flag: Arc<AtomicBool>,
-    thinking_flag: Arc<AtomicBool>,
+    effort_flag: Arc<AtomicU8>,
     voice_mode_flag: Arc<AtomicBool>,
     context_budget_flag: Arc<AtomicUsize>,
     model_flag: Arc<Mutex<String>>,
@@ -193,8 +256,8 @@ impl ClaudeCliDriver {
         model: String,
         permission_mode: Option<String>,
         extra_env: Option<HashMap<String, String>>,
-        project_root: PathBuf,
-        tx_events: mpsc::UnboundedSender<StreamEvent>,
+        working_dir: Arc<Mutex<PathBuf>>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
     ) -> Self {
         let model_flag = Arc::new(Mutex::new(model.clone()));
         Self {
@@ -205,12 +268,14 @@ impl ClaudeCliDriver {
             model,
             permission_mode,
             extra_env,
-            project_root,
+            working_dir,
             tx_events,
             spawned_voice_mode: false,
             spawned_resume_id: None,
+            spawned_working_dir: None,
+            spawned_effort: Effort::None,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
-            thinking_flag: Arc::new(AtomicBool::new(false)),
+            effort_flag: Arc::new(AtomicU8::new(Effort::None.to_u8())),
             voice_mode_flag: Arc::new(AtomicBool::new(false)),
             context_budget_flag: Arc::new(AtomicUsize::new(UNUSED_CONTEXT_BUDGET)),
             model_flag,
@@ -232,16 +297,25 @@ impl ClaudeCliDriver {
         self.claude_session_id.as_deref()
     }
 
+    /// The OS process id of the currently running child, if any. Exists so
+    /// a test can prove a respawn happened (or did not) by process identity
+    /// directly, rather than inferring it indirectly from the session id,
+    /// which a genuine `--resume` deliberately keeps stable across a
+    /// respawn.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|child| child.id())
+    }
+
     /// Return a clone of the interrupt flag so the GUI can signal
     /// interruption. Polled by `await_turn_end` while a turn is in flight.
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
     }
 
-    /// Return a clone of the thinking flag. Unread: Claude Code manages its
-    /// own thinking level.
-    pub fn thinking_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.thinking_flag)
+    /// Return a clone of the effort flag. Read before every turn in `send`,
+    /// through `ensure_ready`, to decide whether the child needs a respawn.
+    pub fn effort_flag(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.effort_flag)
     }
 
     /// Return a clone of the voice-mode flag. Read before every turn in
@@ -279,9 +353,21 @@ impl ClaudeCliDriver {
     /// flushed would report a turn finished while the model was still
     /// answering.
     pub async fn send(&mut self, text: &str) -> Result<()> {
+        self.send_with_image(text, None).await
+    }
+
+    /// Same as `send`, with an optional image attachment mapped onto the
+    /// Anthropic content-block shape `build_user_turn_line` builds. `send`
+    /// is this method called with no image, so a turn with no attachment is
+    /// unaffected.
+    pub async fn send_with_image(
+        &mut self,
+        text: &str,
+        image: Option<&ImageAttachment>,
+    ) -> Result<()> {
         self.interrupt_flag.store(false, Ordering::SeqCst);
         self.ensure_ready().await?;
-        let line = build_user_turn_line(text);
+        let line = build_user_turn_line(text, image);
         let stdin = self
             .stdin
             .as_mut()
@@ -298,12 +384,23 @@ impl ClaudeCliDriver {
     /// `init` event since the last drain. This never blocks. The reader
     /// sends at most once per spawned child, right after the first
     /// event. So one `try_recv` after each turn is enough to notice it.
+    ///
+    /// The running child IS the session it just reported, so this also
+    /// updates `spawned_resume_id` to match. Without that, the next
+    /// `ensure_ready` would compare a freshly-learned id against the `None`
+    /// (or older id) the child was actually spawned under, read that as a
+    /// change, and kill a perfectly healthy child to "resume" it into
+    /// itself. Setting only `claude_session_id` here, and leaving
+    /// `spawned_resume_id` for `spawn_child` alone to write, was the bug: it
+    /// let bookkeeping about what to pass on the next spawn look identical
+    /// to a signal that the current child is stale.
     fn drain_session_id(&mut self) {
         let Some(rx) = self.session_id_rx.as_mut() else {
             return;
         };
         if let Ok(id) = rx.try_recv() {
-            self.claude_session_id = Some(id);
+            self.claude_session_id = Some(id.clone());
+            self.spawned_resume_id = Some(id);
         }
     }
 
@@ -332,19 +429,29 @@ impl ClaudeCliDriver {
         }
     }
 
-    /// Ensure a child is running with the voice-mode setting and resume id
-    /// currently held. Respawns when a child exists but was spawned under a
-    /// different voice-mode value or a different resume id, and when the
-    /// child it holds has already exited: killed on interrupt, crashed, or
-    /// ended by itself.
+    /// Ensure a child is running with the voice-mode setting, resume id,
+    /// working directory, and effort level currently held. Respawns when a
+    /// child exists but was spawned under a different voice-mode value, a
+    /// different resume id, a different working directory, or a different
+    /// effort level, and when the child it holds has already exited:
+    /// killed on interrupt, crashed, or ended by itself.
     async fn ensure_ready(&mut self) -> Result<()> {
         let want_voice = self.voice_mode_flag.load(Ordering::SeqCst);
+        let want_effort = Effort::load(&self.effort_flag);
         let resume_changed = resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
-        if self.child.is_some() && (want_voice != self.spawned_voice_mode || resume_changed || self.child_exited()) {
+        let current_dir = self.working_dir.lock().unwrap().clone();
+        let dir_changed = working_dir_changed(&current_dir, &self.spawned_working_dir);
+        if self.child.is_some()
+            && (want_voice != self.spawned_voice_mode
+                || resume_changed
+                || dir_changed
+                || effort_changed(want_effort, self.spawned_effort)
+                || self.child_exited())
+        {
             self.shutdown().await;
         }
         if self.child.is_none() {
-            self.spawn_child(want_voice)?;
+            self.spawn_child(want_voice, current_dir, want_effort)?;
         }
         Ok(())
     }
@@ -361,13 +468,18 @@ impl ClaudeCliDriver {
 
     /// Spawn the child process and start reading its stdout and stderr in
     /// background tasks. Every parsed event is published on `tx_events`.
-    fn spawn_child(&mut self, voice_mode: bool) -> Result<()> {
+    /// `working_dir` is the directory to spawn it in, read from the shared
+    /// flag by `ensure_ready` just before the call, since the child's cwd
+    /// is fixed at spawn time. `effort` is the level to spawn under, read
+    /// from `effort_flag` the same way, since `--effort` is also fixed at
+    /// spawn time.
+    fn spawn_child(&mut self, voice_mode: bool, working_dir: PathBuf, effort: Effort) -> Result<()> {
         let Some(binary) = resolve_claude_binary(self.extra_env.as_ref()) else {
             let message =
                 format!("could not resolve the claude CLI binary; set {CLAUDE_CLI_PATH_KEY}");
-            let _ = self.tx_events.send(StreamEvent::Error {
+            let _ = self.tx_events.send(RoutedEvent::own(StreamEvent::Error {
                 message: message.clone(),
-            });
+            }));
             return Err(HarnessError::Tool(message));
         };
 
@@ -381,12 +493,13 @@ impl ClaudeCliDriver {
             self.permission_mode.as_deref(),
             append_prompt,
             self.claude_session_id.as_deref(),
+            effort,
         );
 
         let mut command = Command::new(&binary);
         command
             .args(&args)
-            .current_dir(&self.project_root)
+            .current_dir(&working_dir)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -407,9 +520,9 @@ impl ClaudeCliDriver {
                     "failed to spawn claude CLI at {}: {e}; set {CLAUDE_CLI_PATH_KEY}",
                     binary.display()
                 );
-                let _ = self.tx_events.send(StreamEvent::Error {
+                let _ = self.tx_events.send(RoutedEvent::own(StreamEvent::Error {
                     message: message.clone(),
-                });
+                }));
                 return Err(HarnessError::Io(e));
             }
         };
@@ -438,6 +551,8 @@ impl ClaudeCliDriver {
         self.session_id_rx = Some(session_id_rx);
         self.spawned_voice_mode = voice_mode;
         self.spawned_resume_id = self.claude_session_id.clone();
+        self.spawned_working_dir = Some(working_dir);
+        self.spawned_effort = effort;
         Ok(())
     }
 
@@ -454,9 +569,9 @@ impl ClaudeCliDriver {
         self.stdin = None;
         self.turn_done = None;
         self.session_id_rx = None;
-        let _ = self.tx_events.send(StreamEvent::Interrupted {
+        let _ = self.tx_events.send(RoutedEvent::own(StreamEvent::Interrupted {
             message: "Interrupted by user (Escape)".into(),
-        });
+        }));
     }
 
     /// Close stdin and wait for the child to exit, for the ordinary
@@ -482,7 +597,7 @@ impl ClaudeCliDriver {
     /// `src/agent/repeat.rs` can drive this backend the same way it drives
     /// `AgentLoop`.
     fn send_event(&self, event: StreamEvent) {
-        let _ = self.tx_events.send(event);
+        let _ = self.tx_events.send(RoutedEvent::own(event));
     }
 }
 
@@ -517,7 +632,7 @@ impl crate::agent::repeat::RepeatTarget for ClaudeCliDriver {
 /// that died mid-turn.
 fn spawn_stdout_reader(
     stdout: tokio::process::ChildStdout,
-    tx_events: mpsc::UnboundedSender<StreamEvent>,
+    tx_events: mpsc::UnboundedSender<RoutedEvent>,
     turn_done: mpsc::UnboundedSender<()>,
     session_id: mpsc::UnboundedSender<String>,
 ) {
@@ -531,9 +646,9 @@ fn spawn_stdout_reader(
                 Ok(None) => break,
                 Err(e) => {
                     tracing::warn!("claude_cli: error reading stdout: {e}");
-                    let _ = tx_events.send(StreamEvent::Error {
+                    let _ = tx_events.send(RoutedEvent::own(StreamEvent::Error {
                         message: format!("claude CLI stdout read error: {e}"),
-                    });
+                    }));
                     break;
                 }
             };
@@ -542,7 +657,7 @@ fn spawn_stdout_reader(
             };
             let ends_turn = matches!(event, ClaudeEvent::Result(_));
             for stream_event in mapper.map(event) {
-                if tx_events.send(stream_event).is_err() {
+                if tx_events.send(RoutedEvent::own(stream_event)).is_err() {
                     return;
                 }
             }
@@ -585,6 +700,12 @@ pub(super) fn spawn_stderr_drain(stderr: tokio::process::ChildStderr) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A fresh `Arc<Mutex<PathBuf>>` for tests that need a `working_dir`
+    /// but never spawn a real child, so the exact path does not matter.
+    fn test_working_dir() -> Arc<Mutex<PathBuf>> {
+        Arc::new(Mutex::new(PathBuf::from(".")))
+    }
 
     #[test]
     fn resolve_prefers_env_map_over_environment_variable() {
@@ -642,7 +763,7 @@ mod tests {
 
     #[test]
     fn stdin_line_builder_matches_verified_shape_for_plain_text() {
-        let line = build_user_turn_line("hello there");
+        let line = build_user_turn_line("hello there", None);
         let expected = serde_json::json!({
             "type": "user",
             "message": {
@@ -657,15 +778,61 @@ mod tests {
     #[test]
     fn stdin_line_builder_escapes_quotes_newlines_and_unicode() {
         let text = "she said \"hi\"\nline two \u{00e9}";
-        let line = build_user_turn_line(text);
+        let line = build_user_turn_line(text, None);
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
         let round_tripped = parsed["message"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(round_tripped, text);
     }
 
+    /// Pins the exact wire shape confirmed against the real `claude`
+    /// binary in `docs/notes/image-support.md`: an Anthropic `image`
+    /// content block, base64 source, after the text block, not the OpenAI
+    /// `image_url` shape the API backends speak.
+    #[test]
+    fn stdin_line_builder_appends_an_anthropic_image_block_when_an_image_is_given() {
+        let image = ImageAttachment {
+            data: "AAA".into(),
+            media_type: "image/png".into(),
+        };
+        let line = build_user_turn_line("what color is this?", Some(&image));
+        let expected = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what color is this?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AAA"
+                        }
+                    }
+                ]
+            }
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn stdin_line_builder_with_no_image_is_unaffected_compared_to_before() {
+        let with_none = build_user_turn_line("hello", None);
+        let expected = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "hello"}]
+            }
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&with_none).unwrap();
+        assert_eq!(parsed, expected);
+    }
+
     #[test]
     fn args_builder_produces_exact_flag_list_in_order() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
         assert_eq!(
             args,
             vec![
@@ -686,26 +853,32 @@ mod tests {
 
     #[test]
     fn args_builder_defaults_permission_mode_to_bypass_permissions() {
-        let args = build_args("claude-opus-x", None, None, None);
+        let args = build_args("claude-opus-x", None, None, None, Effort::None);
         assert_eq!(args[10], "bypassPermissions");
     }
 
     #[test]
     fn args_builder_appends_system_prompt_when_voice_mode_is_on() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), Some("voice text"), None);
+        let args = build_args(
+            "claude-opus-x",
+            Some("acceptEdits"),
+            Some("voice text"),
+            None,
+            Effort::None,
+        );
         assert_eq!(args[11], "--append-system-prompt");
         assert_eq!(args[12], "voice text");
     }
 
     #[test]
     fn args_builder_omits_system_prompt_flag_when_not_given() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
         assert!(!args.contains(&"--append-system-prompt".to_string()));
     }
 
     #[test]
     fn args_builder_omits_resume_flag_when_no_id_is_held() {
-        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None);
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
         assert!(!args.contains(&"--resume".to_string()));
     }
 
@@ -716,6 +889,7 @@ mod tests {
             Some("acceptEdits"),
             None,
             Some("c18eb67f-6873-45a4-aa7a-8755cecb4361"),
+            Effort::None,
         );
         assert_eq!(args[11], "--resume");
         assert_eq!(args[12], "c18eb67f-6873-45a4-aa7a-8755cecb4361");
@@ -728,6 +902,7 @@ mod tests {
             Some("acceptEdits"),
             Some("voice text"),
             Some("some-id"),
+            Effort::None,
         );
         assert_eq!(args[11], "--append-system-prompt");
         assert_eq!(args[12], "voice text");
@@ -736,17 +911,65 @@ mod tests {
     }
 
     #[test]
+    fn args_builder_omits_effort_flag_for_effort_none() {
+        let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
+        assert!(!args.contains(&"--effort".to_string()));
+    }
+
+    #[test]
+    fn args_builder_appends_effort_flag_for_every_other_level() {
+        let cases = [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Max, "max"),
+        ];
+        for (level, expected) in cases {
+            let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, level);
+            assert_eq!(args[11], "--effort", "level {level:?}");
+            assert_eq!(args[12], expected, "level {level:?}");
+        }
+    }
+
+    #[test]
+    fn args_builder_puts_effort_before_system_prompt_and_resume() {
+        let args = build_args(
+            "claude-opus-x",
+            Some("acceptEdits"),
+            Some("voice text"),
+            Some("some-id"),
+            Effort::Max,
+        );
+        assert_eq!(args[11], "--effort");
+        assert_eq!(args[12], "max");
+        assert_eq!(args[13], "--append-system-prompt");
+        assert_eq!(args[14], "voice text");
+        assert_eq!(args[15], "--resume");
+        assert_eq!(args[16], "some-id");
+    }
+
+    #[test]
+    fn effort_changed_is_false_when_levels_match() {
+        assert!(!effort_changed(Effort::Low, Effort::Low));
+    }
+
+    #[test]
+    fn effort_changed_is_true_when_levels_differ() {
+        assert!(effort_changed(Effort::Low, Effort::High));
+    }
+
+    #[test]
     fn interrupt_drops_the_child_handles_so_the_next_turn_respawns() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut driver =
-            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+            ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
         driver.interrupt();
 
         assert!(driver.child.is_none());
         assert!(driver.stdin.is_none());
         assert!(driver.turn_done.is_none());
-        match rx.try_recv().expect("expected an Interrupted event") {
+        match rx.try_recv().expect("expected an Interrupted event").event {
             StreamEvent::Interrupted { .. } => {}
             other => panic!("expected Interrupted, got {other:?}"),
         }
@@ -756,7 +979,7 @@ mod tests {
     fn child_exited_is_false_when_no_child_is_running() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut driver =
-            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+            ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
         assert!(!driver.child_exited());
     }
@@ -787,11 +1010,78 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn working_dir_changed_is_true_before_any_child_has_spawned() {
+        // `spawned` is `None` until the first `spawn_child` call, which
+        // always counts as changed so the very first spawn goes ahead.
+        assert!(working_dir_changed(std::path::Path::new("."), &None));
+    }
+
+    #[test]
+    fn working_dir_changed_is_false_when_the_directory_matches_the_spawned_one() {
+        let dir = PathBuf::from("C:/some/project");
+        assert!(!working_dir_changed(&dir, &Some(dir.clone())));
+    }
+
+    #[test]
+    fn working_dir_changed_is_true_when_the_directory_differs_from_the_spawned_one() {
+        let spawned = PathBuf::from("C:/some/project");
+        let current = PathBuf::from("C:/some/other-project");
+        assert!(working_dir_changed(&current, &Some(spawned)));
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_reads_the_live_working_dir_before_every_spawn_attempt() {
+        // Forces every spawn attempt to fail without ever running a real
+        // `claude` binary, the same way the `resolve_*` tests above point
+        // `CLAUDE_CLI_PATH` at a file that exists but is not executable.
+        // Each failed attempt still proves `ensure_ready` read the live
+        // directory and tried to spawn: `spawn_child` sends a
+        // `StreamEvent::Error` before it returns, and never reaches the
+        // line that would record `spawned_working_dir` on success.
+        let mut file = tempfile_named();
+        std::io::Write::write_all(&mut file.1, b"not a real binary").unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            CLAUDE_CLI_PATH_KEY.to_string(),
+            file.0.to_string_lossy().to_string(),
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let working_dir = Arc::new(Mutex::new(PathBuf::from("C:/first-dir")));
+        let mut driver = ClaudeCliDriver::new(
+            "opus".to_string(),
+            None,
+            Some(env),
+            Arc::clone(&working_dir),
+            tx,
+        );
+
+        assert!(driver.ensure_ready().await.is_err());
+        assert!(driver.spawned_working_dir.is_none());
+        assert!(matches!(
+            rx.try_recv().expect("expected an Error event").event,
+            StreamEvent::Error { .. }
+        ));
+
+        // The change is picked up from the shared `Arc`, not a value the
+        // driver captured at construction: mutating it here is visible to
+        // the very next `ensure_ready` call.
+        *working_dir.lock().unwrap() = PathBuf::from("C:/second-dir");
+
+        assert!(driver.ensure_ready().await.is_err());
+        assert!(driver.spawned_working_dir.is_none());
+        assert!(matches!(
+            rx.try_recv().expect("expected a second Error event").event,
+            StreamEvent::Error { .. }
+        ));
+    }
+
     #[tokio::test]
     async fn await_turn_end_returns_at_once_when_no_turn_is_in_flight() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut driver =
-            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+            ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
         // No child, so no `turn_done` channel. This must return rather
         // than poll forever.
@@ -802,7 +1092,7 @@ mod tests {
     async fn await_turn_end_returns_when_the_reader_signals_the_turn_ended() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut driver =
-            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+            ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
         let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
         driver.turn_done = Some(turn_done_rx);
         turn_done_tx.send(()).unwrap();
@@ -818,7 +1108,7 @@ mod tests {
     async fn await_turn_end_kills_the_child_when_the_interrupt_flag_is_set() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut driver =
-            ClaudeCliDriver::new("opus".to_string(), None, None, PathBuf::from("."), tx);
+            ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
         let (_turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
         driver.turn_done = Some(turn_done_rx);
         driver.interrupt_flag().store(true, Ordering::SeqCst);
@@ -839,7 +1129,7 @@ mod tests {
             "opus".to_string(),
             None,
             None,
-            PathBuf::from("."),
+            test_working_dir(),
             tx,
         );
         assert_eq!(*driver.model_flag().lock().unwrap(), "opus");

@@ -1,4 +1,5 @@
 use crate::agent::history::MessageHistory;
+use crate::api::types::Content;
 
 /// Configuration for the dual-agent hemisphere system.
 #[derive(Debug, Clone)]
@@ -44,7 +45,7 @@ pub fn compress_for_right(history: &MessageHistory, keep_verbatim: usize) -> Str
     let messages = history.to_api_messages();
     let total = messages.len();
 
-    // Skip system prompt — right hemisphere has its own
+    // Skip system prompt, right hemisphere has its own
     let user_messages = total.saturating_sub(1);
 
     if user_messages == 0 {
@@ -70,12 +71,12 @@ pub fn compress_for_right(history: &MessageHistory, keep_verbatim: usize) -> Str
     };
     for msg in &messages[start..] {
         let role = format!("{:?}", msg.role).to_lowercase();
-        if let Some(ref content) = msg.content {
+        if let Some(content) = msg.content.as_ref().and_then(Content::as_text) {
             // Truncate long messages
             let truncated = if content.len() > 500 {
                 format!("{}...", &content[..500])
             } else {
-                content.clone()
+                content.to_string()
             };
             parts.push(format!("[{role}] {truncated}"));
         }
@@ -93,7 +94,7 @@ pub fn fits_context_window(content: &str, max_tokens: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::{Message, Role};
+    use crate::api::types::Message;
 
     #[test]
     fn hemisphere_config_defaults_disabled() {

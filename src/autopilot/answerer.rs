@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 
 use crate::api::client::ApiClient;
-use crate::api::types::{ChatRequest, Message};
+use crate::api::types::{ChatRequest, Content, Message};
 use crate::autopilot::policy::{format_policy_prompt_section, PolicyStore};
 use crate::autopilot::question::{Answer, AskInput};
 use crate::error::Result;
@@ -66,14 +66,15 @@ impl QuestionAnswerer for PolicyAnswerer {
             temperature: Some(0.0),
             max_tokens: Some((input.questions.len() as u32) * 200 + 128),
             thinking: None,
-            thinking_mode: Some("non-thinking".to_string()),
+            thinking_mode: None,
             reasoning_effort: None,
+            effort: Some(crate::effort::Effort::None),
         };
 
         let parsed = match self.client.chat(&req).await {
             Ok(response) => match response.choices.first() {
-                Some(choice) => match &choice.message.content {
-                    Some(content) => match parse_reply(content) {
+                Some(choice) => match choice.message.content.as_ref().and_then(Content::as_text) {
+                    Some(text) => match parse_reply(text) {
                         Some(answers) => Some(answers),
                         None => {
                             warn!("autopilot answerer: failed to parse model reply into answers");

@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, info, warn};
 
+use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
 /// Top-level settings (deserialized from settings.json).
@@ -15,8 +16,15 @@ pub struct Settings {
     pub permissions: Option<PermissionsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
+    /// The reasoning-effort level, shared across every backend. Replaces
+    /// the old `thinking` block (`enabled: bool`, one bit for what is now
+    /// a five-level control). A `settings.json` that still carries a
+    /// `thinking` block is not an error: `serde` drops the unknown field
+    /// silently, and this field just defaults to `None`, i.e.
+    /// `Effort::None`. The old value is not migrated, on purpose: see
+    /// `Settings::effort`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingSettingsConfig>,
+    pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +46,21 @@ pub struct Settings {
     /// Defaults to 2. See `Settings::subagent_max_depth`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_depth: Option<u32>,
+    /// Cap on turns within one `SendMessage`-kept-open subagent session,
+    /// counting the turn that opened it. Defaults to 20. See
+    /// `Settings::session_turn_cap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_turn_cap: Option<u32>,
+    /// Cap on total `SendMessage` calls during one parent turn, across
+    /// every session that parent has open. Defaults to 10. See
+    /// `Settings::send_message_call_cap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_message_call_cap: Option<u32>,
+    /// Where the `Bash`, `Read`, and `Write` tools act, as distinct from
+    /// `project_root`. `None` means the tools act at `project_root`. See
+    /// the phase 4 section of `docs/plans/2026-08-04-long-term-roadmap.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 impl Default for Settings {
@@ -46,7 +69,7 @@ impl Default for Settings {
             api_key: None,
             permissions: None,
             hooks: None,
-            thinking: None,
+            effort: None,
             voice: None,
             autopilot: None,
             context_budget: None,
@@ -54,6 +77,9 @@ impl Default for Settings {
             backends: None,
             default_backend: None,
             subagent_max_depth: None,
+            session_turn_cap: None,
+            send_message_call_cap: None,
+            working_dir: None,
         }
     }
 }
@@ -112,7 +138,7 @@ impl Settings {
     pub fn log_redacted(&self) {
         let backend = self.default_backend().unwrap_or("deepseek");
         info!(
-            "config loaded: backend={}, api_key={}, permissions={}, hooks={}, thinking={}, voice={}",
+            "config loaded: backend={}, api_key={}, permissions={}, hooks={}, effort={:?}, voice={}",
             backend,
             if self.api_key.is_some() {
                 "***REDACTED***"
@@ -121,7 +147,7 @@ impl Settings {
             },
             self.permissions.is_some(),
             self.hooks.is_some(),
-            self.thinking.is_some(),
+            self.effort(),
             self.voice_enabled(),
         );
     }
@@ -141,9 +167,18 @@ impl Settings {
         self.show_raw_output.unwrap_or(false)
     }
 
-    /// Whether thinking mode is enabled, defaulting to false.
-    pub fn thinking_enabled(&self) -> bool {
-        self.thinking.as_ref().map(|t| t.enabled).unwrap_or(false)
+    /// The configured working directory override, if any. `None` means the
+    /// tools act at `project_root`. A caller that seeds the shared working
+    /// directory at startup decides for itself what an invalid or missing
+    /// path here should fall back to; this accessor only reports what was
+    /// saved.
+    pub fn working_dir(&self) -> Option<String> {
+        self.working_dir.clone()
+    }
+
+    /// The current reasoning-effort level, defaulting to `Effort::None`.
+    pub fn effort(&self) -> Effort {
+        self.effort.unwrap_or(Effort::None)
     }
 
     /// Whether the voice subsystem is enabled at all.
@@ -217,13 +252,6 @@ impl Settings {
         self.voice.get_or_insert_with(VoiceConfig::default)
     }
 
-    /// The thinking block, created with defaults if it is not there yet.
-    /// See [`Settings::voice_mut`].
-    pub fn thinking_mut(&mut self) -> &mut ThinkingSettingsConfig {
-        self.thinking
-            .get_or_insert_with(ThinkingSettingsConfig::default)
-    }
-
     /// Number of times autopilot repeats the task, defaulting to 5.
     pub fn autopilot_iterations(&self) -> u32 {
         self.autopilot
@@ -289,6 +317,22 @@ impl Settings {
         self.subagent_max_depth.unwrap_or(2)
     }
 
+    /// Cap on turns within one kept-open subagent session, counting the
+    /// turn that opened it. Defaults to 20. Exceeding it comes back as a
+    /// `SendMessage` tool error, not a hard failure. See "Risk to name
+    /// plainly" in phase 3 of the long-term roadmap.
+    pub fn session_turn_cap(&self) -> u32 {
+        self.session_turn_cap.unwrap_or(20)
+    }
+
+    /// Cap on total `SendMessage` calls during one parent turn, across
+    /// every session that parent has open. Defaults to 10. Resets when the
+    /// parent's turn ends, the same moment its subagent registry closes
+    /// every session it has open.
+    pub fn send_message_call_cap(&self) -> u32 {
+        self.send_message_call_cap.unwrap_or(10)
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -315,8 +359,8 @@ impl Settings {
         if other.hooks.is_some() {
             self.hooks = other.hooks;
         }
-        if other.thinking.is_some() {
-            self.thinking = other.thinking;
+        if other.effort.is_some() {
+            self.effort = other.effort;
         }
         if other.voice.is_some() {
             self.voice = other.voice;
@@ -338,6 +382,15 @@ impl Settings {
         }
         if other.subagent_max_depth.is_some() {
             self.subagent_max_depth = other.subagent_max_depth;
+        }
+        if other.session_turn_cap.is_some() {
+            self.session_turn_cap = other.session_turn_cap;
+        }
+        if other.send_message_call_cap.is_some() {
+            self.send_message_call_cap = other.send_message_call_cap;
+        }
+        if other.working_dir.is_some() {
+            self.working_dir = other.working_dir;
         }
     }
 }
@@ -383,14 +436,6 @@ pub struct HookDef {
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ThinkingSettingsConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -655,10 +700,7 @@ mod tests {
                 deny: None,
             }),
             hooks: None,
-            thinking: Some(ThinkingSettingsConfig {
-                enabled: true,
-                effort: Some("high".into()),
-            }),
+            effort: Some(Effort::High),
             voice: Some(VoiceConfig {
                 enabled: true,
                 stt_enabled: true,
@@ -681,7 +723,10 @@ mod tests {
             show_raw_output: Some(true),
             backends: None,
             default_backend: None,
+            session_turn_cap: None,
+            send_message_call_cap: None,
             subagent_max_depth: Some(3),
+            working_dir: None,
         };
 
         original.save(&dir).unwrap();
@@ -696,9 +741,7 @@ mod tests {
             &vec!["Bash".to_string(), "Read".to_string()]
         );
         assert!(perms.deny.is_none());
-        let thinking = loaded.thinking.as_ref().unwrap();
-        assert!(thinking.enabled);
-        assert_eq!(thinking.effort.as_deref(), Some("high"));
+        assert_eq!(loaded.effort(), Effort::High);
         assert!(loaded.voice_enabled());
         assert!(loaded.voice_stt_enabled());
         assert!(loaded.voice_tts_enabled());
@@ -778,7 +821,7 @@ mod tests {
             api_key: None,
             permissions: None,
             hooks: None,
-            thinking: None,
+            effort: None,
             voice: None,
             autopilot: None,
             context_budget: None,
@@ -786,6 +829,9 @@ mod tests {
             backends: None,
             default_backend: None,
             subagent_max_depth: None,
+            session_turn_cap: None,
+            send_message_call_cap: None,
+            working_dir: None,
         };
         s.save(&dir).unwrap();
         let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
@@ -836,15 +882,27 @@ mod tests {
     }
 
     #[test]
-    fn thinking_enabled_defaults_to_false() {
+    fn effort_defaults_to_none() {
         let s: Settings = serde_json::from_str("{}").unwrap();
-        assert!(!s.thinking_enabled());
+        assert_eq!(s.effort(), Effort::None);
     }
 
     #[test]
-    fn thinking_enabled_reads_set_value() {
-        let s: Settings = serde_json::from_str(r#"{"thinking": {"enabled": true}}"#).unwrap();
-        assert!(s.thinking_enabled());
+    fn effort_reads_set_value() {
+        let s: Settings = serde_json::from_str(r#"{"effort": "high"}"#).unwrap();
+        assert_eq!(s.effort(), Effort::High);
+    }
+
+    /// A `settings.json` written before this control existed may still
+    /// carry the old `thinking` block. Loading it must not fail, and it
+    /// must not resurrect the old boolean behaviour: the unknown field is
+    /// dropped, and `effort()` reports its own default, `Effort::None`,
+    /// same as a `settings.json` that never had a `thinking` block at all.
+    #[test]
+    fn a_settings_file_with_the_old_thinking_block_loads_and_effort_defaults_to_none() {
+        let s: Settings =
+            serde_json::from_str(r#"{"thinking": {"enabled": true, "effort": "high"}}"#).unwrap();
+        assert_eq!(s.effort(), Effort::None);
     }
 
     #[test]
@@ -854,10 +912,7 @@ mod tests {
         let original = Settings {
             context_budget: Some(150_000),
             show_raw_output: Some(true),
-            thinking: Some(ThinkingSettingsConfig {
-                enabled: true,
-                effort: None,
-            }),
+            effort: Some(Effort::Max),
             ..Default::default()
         };
         original.save(&dir).unwrap();
@@ -865,7 +920,7 @@ mod tests {
         let loaded = Settings::load(&dir).unwrap();
         assert_eq!(loaded.context_budget(), 150_000);
         assert!(loaded.show_raw_output());
-        assert!(loaded.thinking_enabled());
+        assert_eq!(loaded.effort(), Effort::Max);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

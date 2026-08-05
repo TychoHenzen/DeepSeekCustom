@@ -5,7 +5,7 @@
 //! one). No disk IO and no GUI wiring happen here, only the types and
 //! the title derivation logic that later steps depend on.
 
-use crate::api::types::{Message, Role};
+use crate::api::types::{Content, Message, Role};
 use crate::gui::transcript::{BlockKind, Transcript};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -114,7 +114,8 @@ pub fn derive_title(messages: &[Message], transcript: &Transcript) -> String {
     let first_user_text = messages
         .iter()
         .find(|message| message.role == Role::User)
-        .and_then(|message| message.content.as_deref());
+        .and_then(|message| message.content.as_ref())
+        .and_then(Content::as_text);
 
     let text = match first_user_text {
         Some(text) => Some(text.to_string()),
@@ -160,7 +161,7 @@ mod tests {
     fn user_message(content: &str) -> Message {
         Message {
             role: Role::User,
-            content: Some(content.to_string()),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -170,7 +171,7 @@ mod tests {
     fn assistant_message(content: &str) -> Message {
         Message {
             role: Role::Assistant,
-            content: Some(content.to_string()),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -180,7 +181,7 @@ mod tests {
     fn system_message(content: &str) -> Message {
         Message {
             role: Role::System,
-            content: Some(content.to_string()),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,

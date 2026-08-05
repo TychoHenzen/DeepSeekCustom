@@ -44,6 +44,7 @@ impl Tool for AskUserQuestionTool {
                 return Ok(ToolOutput {
                     content: format!("Invalid AskUserQuestion input: {e}"),
                     is_error: true,
+                    image: None,
                 });
             }
         };
@@ -52,6 +53,7 @@ impl Tool for AskUserQuestionTool {
             return Ok(ToolOutput {
                 content: format!("Invalid AskUserQuestion input: {e}"),
                 is_error: true,
+                image: None,
             });
         }
 
@@ -59,10 +61,12 @@ impl Tool for AskUserQuestionTool {
             Ok(answers) => Ok(ToolOutput {
                 content: question::format_answers(&answers),
                 is_error: false,
+                image: None,
             }),
             Err(e) => Ok(ToolOutput {
                 content: format!("Failed to answer question: {e}"),
                 is_error: true,
+                image: None,
             }),
         }
     }

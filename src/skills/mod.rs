@@ -245,7 +245,7 @@ Just raw markdown content."#;
         // Missing closing --- delimiter
         let content = "---\nname: broken\n";
         let skill = Skill::from_markdown(content, "broken.md").unwrap();
-        // Falls through — frontmatter delimiter not found
+        // Falls through, frontmatter delimiter not found
         assert!(skill.name == "broken" || !skill.content.is_empty());
     }
 }

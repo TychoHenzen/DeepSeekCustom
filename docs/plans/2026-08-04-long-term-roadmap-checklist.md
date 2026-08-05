@@ -42,66 +42,76 @@ Decisions already settled:
 
 ## Phase 2: subagent blocks
 
-- [ ] Add `RoutedEvent { route: Vec<SubagentId>, event: StreamEvent }`.
-- [ ] Replace `spawn_event_drain` with a forwarder that prepends its own id.
-- [ ] Resolve a route to a block and append to that block's inner transcript.
-- [ ] Render a `Subagent` block as a collapsing header with backend, model,
+- [x] Add `RoutedEvent { route: Vec<SubagentId>, event: StreamEvent }`.
+- [x] Replace `spawn_event_drain` with a forwarder that prepends its own id.
+- [x] Resolve a route to a block and append to that block's inner transcript.
+- [x] Render a `Subagent` block as a collapsing header with backend, model,
       depth, state badge, and elapsed time. Collapsed by default.
-- [ ] Settle whether a running subagent auto-expands. Suggested: no, with a
-      live one-line header status and a pin.
+- [x] Settle whether a running subagent auto-expands. Settled as no: collapsed
+      by default, a live one-line header status, and a pin button to hold one
+      open. A fanout of five subagents must not push the main conversation
+      off screen.
 
 ## Phase 3: multi-turn subagent sessions
 
-- [ ] `SubagentRegistry` holding live sessions keyed by `SubagentId`.
-- [ ] `Task` gains `keep_open` and returns a session id when it stays open.
-- [ ] `SendMessage { session_id, prompt }` tool.
-- [ ] `CloseSession { session_id }` tool.
-- [ ] Lifetime rule: a session dies with its parent's turn. `Reset` closes all.
-- [ ] Multi-turn `claude_cli` sessions run on `process.rs`, not `one_shot.rs`.
-- [ ] `may_dispatch` gates `SendMessage` the same way it gates `Task`.
-- [ ] Turn caps: per session and per parent turn, both shown in the header.
+- [x] `SubagentRegistry` holding live sessions keyed by `SubagentId`.
+- [x] `Task` gains `keep_open` and returns a session id when it stays open.
+- [x] `SendMessage { session_id, prompt }` tool.
+- [x] `CloseSession { session_id }` tool.
+- [x] Lifetime rule: a session dies with its parent's turn. `Reset` closes all.
+- [x] Multi-turn `claude_cli` sessions run on `process.rs`, not `one_shot.rs`.
+- [x] `may_dispatch` gates `SendMessage` the same way it gates `Task`.
+- [x] Turn caps: per session and per parent turn, both shown in the header.
       Built in the same change, not after.
-- [ ] Stub backend for subagent tests (phase 7 piece 4).
+- [x] Stub backend for subagent tests (phase 7 piece 4).
 
 ## Phase 4: a switchable working directory
 
-- [ ] Split `project_root` from `working_dir` and name the split in the docs.
-- [ ] `working_dir` as `Arc<Mutex<PathBuf>>`, read per tool call.
-- [ ] `SystemPrompt` reads it each turn and stops calling `current_dir()`.
-- [ ] `ClaudeCliDriver` restarts its child on a change.
-- [ ] `Cd { path }` tool, returning a tool error for a bad target.
-- [ ] Directory field in the sidebar and current directory in the status bar.
-- [ ] `working_dir` override on `Task`.
-- [ ] Document that there is no path sandbox, on purpose.
+- [x] Split `project_root` from `working_dir` and name the split in the docs.
+- [x] `working_dir` as `Arc<Mutex<PathBuf>>`, read per tool call.
+- [x] `SystemPrompt` reads it each turn and stops calling `current_dir()`.
+- [x] `ClaudeCliDriver` restarts its child on a change.
+- [x] `Cd { path }` tool, returning a tool error for a bad target.
+- [x] Directory field in the sidebar and current directory in the status bar.
+- [x] `working_dir` override on `Task`.
+- [x] Document that there is no path sandbox, on purpose.
 
 ## Phase 5: one effort control across every backend
 
-- [ ] `enum Effort { None, Low, Medium, High, Max }`.
-- [ ] Per-provider mapping in `prepare_request`. Check the `claude_cli` mapping
+- [x] `enum Effort { None, Low, Medium, High, Max }`.
+- [x] Per-provider mapping in `prepare_request`. Check the `claude_cli` mapping
       against the real binary before writing it.
-- [ ] Sidebar control replaces the thinking checkbox. `Arc<AtomicU8>` flag.
-- [ ] Delete `thinking_flag` and the `thinking.enabled` settings block.
-- [ ] Optional `effort` field on `Task`.
-- [ ] Mock test: every level produces a different request on each backend.
+- [x] Sidebar control replaces the thinking checkbox. `Arc<AtomicU8>` flag.
+- [x] Delete `thinking_flag` and the `thinking.enabled` settings block.
+- [x] Optional `effort` field on `Task`.
+- [x] Mock test: every level produces a different request on each backend.
 
 ## Phase 6: image input
 
-- [ ] `Content` and `ContentPart` enums, serializing text-only messages exactly
+- [x] `Content` and `ContentPart` enums, serializing text-only messages exactly
       as they serialize today.
-- [ ] Check image support per backend with a real request before mapping.
-- [ ] Say so in the transcript when a backend cannot take an image.
-- [ ] Ctrl+V paste and drag and drop into a pending attachment strip.
-- [ ] `Image` block renders inline at a capped size.
-- [ ] `ReadImage` tool, or an image-aware branch in `ReadTool`.
-- [ ] Pruner tier one elides image parts before tool bodies.
+- [x] Check image support per backend with a real request before mapping.
+- [x] Say so in the transcript when a backend cannot take an image.
+- [x] Ctrl+V paste and drag and drop into a pending attachment strip.
+- [x] `Image` block renders inline at a capped size.
+- [x] `ReadImage` tool, or an image-aware branch in `ReadTool`.
+- [x] Pruner tier one elides image parts before tool bodies.
 
 ## Phase 7: the rest of the test layer
 
-- [ ] Fake `claude` binary replaying a fixture, pointed at by an env override.
-- [ ] Process lifecycle tests: turn boundary, interrupt, respawn, voice restart.
-- [ ] `cargo-llvm-cov` line coverage, to find uncovered modules.
-- [ ] `cargo-mutants` on `agent/`, `api/`, and `backend/`.
+- Piece 4, the stub backend, is already done: it landed early, in phase 3, as
+  the scripted backend `SubagentRegistry`'s own tests run against. See phase
+  3's checklist item above. A later reader picking up this phase should not
+  build it again.
+- [x] Fake `claude` binary replaying a fixture, pointed at by an env override.
+- [x] Process lifecycle tests: turn boundary, interrupt, respawn, voice restart.
+- [x] `cargo-llvm-cov` line coverage, to find uncovered modules.
+- [ ] `cargo-mutants` on `agent/`, `api/`, and `backend/`. Deferred: a full
+      run was estimated at 5.8+ hours on this machine, likely an undercount.
+      See `docs/notes/mutants.md` for the measured evidence and a script for
+      a future run on better hardware.
 
 ## Unscheduled
 
-- [ ] Extract the settings sidebar out of `src/gui/mod.rs`.
+- [x] Extract the settings sidebar out of `src/gui/mod.rs`. It now lives in
+      `src/gui/settings_panel.rs`, and `mod.rs` fell from 4534 lines to 3986.

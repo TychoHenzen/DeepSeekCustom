@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::agent::history::estimate_message_tokens;
 use crate::api::client::{ApiClient, Provider};
-use crate::api::types::{ChatRequest, Message};
+use crate::api::types::{ChatRequest, Content, Message};
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
 trimmed to save tokens. For each entry, score from 0.0 to 1.0 how much its full content is \
@@ -58,8 +58,8 @@ fn role_name(msg: &Message) -> &'static str {
 /// tool call names when there is no content, and to an empty string when
 /// there is nothing to preview.
 fn build_preview(msg: &Message) -> String {
-    if let Some(content) = &msg.content {
-        return collapse_whitespace(content).chars().take(100).collect();
+    if let Some(text) = msg.content.as_ref().and_then(Content::as_text) {
+        return collapse_whitespace(text).chars().take(100).collect();
     }
     if let Some(tool_calls) = &msg.tool_calls {
         let names: Vec<&str> = tool_calls
@@ -152,8 +152,9 @@ pub async fn score_messages(
         temperature: Some(0.0),
         max_tokens: Some((messages.len() as u32) * 20 + 64),
         thinking: None,
-        thinking_mode: Some("non-thinking".to_string()),
+        thinking_mode: None,
         reasoning_effort: None,
+        effort: Some(crate::effort::Effort::None),
     };
 
     let response = match client.chat(&req).await {
@@ -168,7 +169,7 @@ pub async fn score_messages(
         warn!("relevance scoring: empty choices in response");
         return None;
     };
-    let Some(content) = &choice.message.content else {
+    let Some(content) = choice.message.content.as_ref().and_then(Content::as_text) else {
         warn!("relevance scoring: no content in response");
         return None;
     };

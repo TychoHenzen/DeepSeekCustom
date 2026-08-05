@@ -130,7 +130,7 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::{Message, Role};
+    use crate::api::types::{Content, Message, Role};
     use crate::gui::transcript::Transcript;
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -156,7 +156,7 @@ mod tests {
             },
             messages: vec![Message {
                 role: Role::User,
-                content: Some(title.into()),
+                content: Some(Content::text(title)),
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
@@ -261,6 +261,35 @@ mod tests {
         let parse_err = store.load(&missing_id).unwrap_err();
         assert!(matches!(parse_err, HarnessError::Parse(_)));
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_session_file_saved_before_content_was_an_enum_still_loads() {
+        // Hand-written JSON in the shape a session file had before
+        // `Message.content` became `Option<Content>`: a bare string, the
+        // exact wire shape `Option<String>` produced. The untagged
+        // `Content` enum must still parse it as `Content::Text`.
+        let dir = temp_dir("old-shape");
+        let store = SessionStore::new(dir.clone());
+        let id = SessionId::new();
+        let old_shape_json = format!(
+            r#"{{"meta":{{"id":"{}","title":"old session","created_at":1000,"updated_at":1000,"backend":"deepseek","model":"deepseek-v4-flash","message_count":1}},"messages":[{{"role":"user","content":"hello from before Content existed"}}],"transcript":{{"blocks":[]}},"claude_session_id":null}}"#,
+            id.as_str()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{}.json", id.as_str())), old_shape_json).unwrap();
+
+        let loaded = store.load(&id).expect("old-shape session file should still load");
+
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(
+            loaded.messages[0]
+                .content
+                .as_ref()
+                .and_then(Content::as_text),
+            Some("hello from before Content existed")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1,11 +1,14 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::api::client::ApiClient;
-use crate::api::types::{ChatRequest, Message, Role, ToolCall};
+use crate::api::client::{ApiClient, Provider};
+use crate::api::types::{ChatRequest, Content, ContentPart, ImageAttachment, Message, Role, ToolCall};
+use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 use crate::tools::{ToolOutput, ToolRegistry};
 
@@ -21,7 +24,7 @@ const DEFAULT_CONTEXT_BUDGET: usize = 100_000;
 pub struct AgentConfig {
     pub max_turns: u32,
     pub model: String,
-    pub thinking: bool,
+    pub effort: Effort,
 }
 
 impl Default for AgentConfig {
@@ -29,7 +32,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: 100,
             model: "deepseek-v4-flash".into(),
-            thinking: false,
+            effort: Effort::None,
         }
     }
 }
@@ -40,9 +43,15 @@ impl Default for AgentConfig {
 /// which left session switching with no way to reach the backend.
 #[derive(Debug)]
 pub enum AgentCommand {
-    /// Run one user turn with this text, the same as the old `String`
-    /// channel used to mean unconditionally.
-    UserTurn(String),
+    /// Run one user turn with this text and, when the user pasted or
+    /// dropped one, the image to send alongside it. Text and image travel
+    /// together on one command so a single `send` is one indivisible turn:
+    /// two turns sent back to back can never cross-pair their images, and
+    /// nothing needs a side channel to carry per-turn payload.
+    UserTurn {
+        text: String,
+        image: Option<ImageAttachment>,
+    },
     /// Start a fresh, empty conversation.
     NewSession,
     /// Load a saved conversation. `messages` restores the `Api` backend's
@@ -108,21 +117,133 @@ pub enum StreamEvent {
     RepeatFinished { completed: u32, total: u32 },
 }
 
+/// Identifies one subagent dispatch, for event routing. Cheap to copy and
+/// compare, and usable as a map key: a later phase keys a subagent
+/// registry by it. Allocated by `run_subagent` in
+/// `src/backend/subagent.rs`, one id per dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubagentId(u64);
+
+impl SubagentId {
+    /// Allocate a fresh, process-unique id. Each call returns a distinct
+    /// value, so two concurrent dispatches never collide.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        SubagentId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl std::fmt::Display for SubagentId {
+    /// Renders as the bare numeric id, the same form `Task`'s tool output
+    /// puts in front of the model when a `keep_open` dispatch stays open,
+    /// so a later `SendMessage` call can quote it back verbatim.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for SubagentId {
+    type Err = std::num::ParseIntError;
+
+    /// Parses the decimal form `Display` renders. This is how the
+    /// `SendMessage` tool turns its `session_id` input back into a
+    /// `SubagentId`, matching the id `Task`'s `keep_open` result names.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(SubagentId(s.parse()?))
+    }
+}
+
+/// The dispatch-time facts about a subagent that the transcript needs to
+/// draw its block, but that no `StreamEvent` carries on its own: which
+/// backend it runs on, which model resolved for it, and how deep in the
+/// dispatch chain it sits. Captured once, at dispatch time, in
+/// `run_subagent` (`src/backend/subagent.rs`), and carried on the first
+/// `RouteHop` a forwarder ever prepends for that subagent, so the
+/// transcript can fill in a `Subagent` block the moment it first sees the
+/// id, with no separate "subagent started" event needed.
+#[derive(Debug, Clone)]
+pub struct SubagentMeta {
+    pub backend: String,
+    pub model: String,
+    pub depth: u32,
+}
+
+/// One hop in a `RoutedEvent`'s route: the subagent that relayed the event
+/// upward, plus the dispatch-time facts about it. Carrying `meta` on every
+/// hop, not just the first, means the transcript never has to remember
+/// whether it already recorded a given subagent's backend and model: it is
+/// simply present on every event that subagent ever forwards.
+///
+/// `session_turns` and `send_message_calls` are not dispatch-time facts:
+/// they change turn by turn, so every event carries the values current at
+/// the moment it was forwarded rather than a value fixed once at dispatch.
+/// `session_turns` is how many turns the session named by `id` has run so
+/// far, against `session_turn_cap`. `send_message_calls` is the total
+/// `SendMessage` calls the session's owner has made so far during its own
+/// current turn, across every session it has open, against
+/// `send_message_call_cap`. See "both counts visible in the subagent
+/// block header" in the roadmap's Phase 3 section
+/// (`docs/plans/2026-08-04-long-term-roadmap.md`).
+#[derive(Debug, Clone)]
+pub struct RouteHop {
+    pub id: SubagentId,
+    pub meta: SubagentMeta,
+    pub session_turns: u32,
+    pub session_turn_cap: u32,
+    pub send_message_calls: u32,
+    pub send_message_call_cap: u32,
+}
+
+/// One `StreamEvent`, tagged with the chain of subagents it passed through
+/// on its way up to the top of the dispatch tree. Empty for an event the
+/// main session emits directly. A depth-1 subagent's own event carries a
+/// one-element route. A depth-2 subagent's event carries two elements,
+/// outermost first: `route[0]` is the subagent the main session dispatched
+/// directly, `route[1]` is the one it in turn dispatched.
+///
+/// `StreamEvent` itself gains no new variants for this. Every sender of
+/// events, `AgentLoop` and `ClaudeCliDriver` alike, wraps its own event
+/// with an empty route. A subagent's forwarder (`src/backend/subagent.rs`)
+/// prepends its own id and meta to the route of every event it relays
+/// upward, so nesting accumulates a route for free as an event travels up
+/// the chain.
+#[derive(Debug, Clone)]
+pub struct RoutedEvent {
+    pub route: Vec<RouteHop>,
+    pub event: StreamEvent,
+}
+
+impl RoutedEvent {
+    /// Wrap `event` with an empty route: the shape every direct sender
+    /// (an `AgentLoop` or a `ClaudeCliDriver`, main session or subagent)
+    /// uses for its own events. Routing is added later, only by a
+    /// forwarder relaying the event up from a nested dispatch.
+    pub fn own(event: StreamEvent) -> Self {
+        Self {
+            route: Vec::new(),
+            event,
+        }
+    }
+}
+
 /// Core agent loop: user input → API call → tool execution → repeat.
 pub struct AgentLoop {
     client: ApiClient,
     tools: ToolRegistry,
     history: MessageHistory,
     config: AgentConfig,
-    tx_events: Option<mpsc::UnboundedSender<StreamEvent>>,
+    tx_events: Option<mpsc::UnboundedSender<RoutedEvent>>,
     /// Flag set by GUI when user presses Escape to interrupt streaming.
     /// Injected at construction rather than created here, so a subagent
     /// built through `BackendFactory` can share the same flag the GUI
     /// holds for the main session. Escape then reaches a dispatched
     /// subagent, not just the turn in front of the user.
     interrupt_flag: Arc<AtomicBool>,
-    /// Shared flag: GUI sets this to enable/disable thinking.
-    thinking_flag: Arc<AtomicBool>,
+    /// Shared flag: GUI sets this to the current reasoning-effort level,
+    /// encoded as a `u8` via `Effort::to_u8`/`Effort::from_u8`. Replaces the
+    /// old `thinking_flag: Arc<AtomicBool>`, which could only ever mean
+    /// "high or none".
+    effort_flag: Arc<AtomicU8>,
     /// Shared model name: GUI sets this when user changes model in settings.
     model_name: Arc<Mutex<String>>,
     /// Shared flag: GUI sets this when text to speech is turned on or off.
@@ -136,6 +257,25 @@ pub struct AgentLoop {
     /// to false once it breaks out of a stream. So `interrupt_flag` cannot
     /// survive past one iteration. This flag is separate and stays set.
     repeat_interrupt_flag: Arc<AtomicBool>,
+    /// Live subagent sessions this agent may have opened through a future
+    /// `keep_open` dispatch. `None` until `set_subagent_registry` is
+    /// called; `BackendFactory` gives every `Api` backend it builds a
+    /// fresh registry of its own, not one shared across the dispatch tree.
+    /// That is what makes ownership real: a session belongs to the agent
+    /// that opened it, and only that agent's registry can hold it. `run`
+    /// and the `SessionReset` branch of `execute_tool` both close every
+    /// entry on this agent's own registry, enforcing the lifetime rule: a
+    /// session cannot outlive the turn of the agent that opened it, and
+    /// `Reset` closes every session that agent owns.
+    subagent_registry: Option<Arc<crate::backend::registry::SubagentRegistry>>,
+    /// Shared working directory, the same one `BashTool`, `ReadTool`, and
+    /// `WriteTool` read fresh on every call. `None` until
+    /// `set_working_dir` is called; `BackendFactory` gives every `Api`
+    /// backend it builds its own `working_dir()` handle. Read fresh every
+    /// turn in `sync_dynamic_config`, the same pattern as the thinking and
+    /// voice-mode flags, so the model is never told a directory it was
+    /// handed once at startup and never revisited.
+    working_dir: Option<Arc<Mutex<PathBuf>>>,
 }
 
 impl AgentLoop {
@@ -149,7 +289,7 @@ impl AgentLoop {
         config: AgentConfig,
         interrupt_flag: Arc<AtomicBool>,
     ) -> Self {
-        let thinking = config.thinking;
+        let effort = config.effort;
         let model = config.model.clone();
         Self {
             client,
@@ -158,17 +298,59 @@ impl AgentLoop {
             config,
             tx_events: None,
             interrupt_flag,
-            thinking_flag: Arc::new(AtomicBool::new(thinking)),
+            effort_flag: Arc::new(AtomicU8::new(effort.to_u8())),
             model_name: Arc::new(Mutex::new(model)),
             voice_mode_flag: Arc::new(AtomicBool::new(false)),
             context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
+            subagent_registry: None,
+            working_dir: None,
         }
     }
 
     /// Set the event sender for streaming output.
-    pub fn set_event_sender(&mut self, tx: mpsc::UnboundedSender<StreamEvent>) {
+    pub fn set_event_sender(&mut self, tx: mpsc::UnboundedSender<RoutedEvent>) {
         self.tx_events = Some(tx);
+    }
+
+    /// Give this agent a handle to the subagent registry it should close
+    /// out on every turn end and on every reset. `BackendFactory` calls
+    /// this on every `Api` backend it builds, main session or subagent.
+    pub fn set_subagent_registry(&mut self, registry: Arc<crate::backend::registry::SubagentRegistry>) {
+        self.subagent_registry = Some(registry);
+    }
+
+    /// Give this agent a handle to the shared working directory the tools
+    /// act against, the same `Arc` `BackendFactory::working_dir` hands to
+    /// `BashTool`, `ReadTool`, and `WriteTool`. `sync_dynamic_config` reads
+    /// it fresh every turn, so a change other than through this agent's
+    /// own tools (a GUI control, a future `Cd` tool) still shows up in the
+    /// next turn's system prompt.
+    pub fn set_working_dir(&mut self, working_dir: Arc<Mutex<PathBuf>>) {
+        self.working_dir = Some(working_dir);
+    }
+
+    /// Replace this agent's own effort flag with one the caller already
+    /// holds, in place of the fresh one `new` created from `config.effort`.
+    /// `BackendFactory` calls this right after construction so this agent's
+    /// own `effort_flag()` and the `Arc` its own `Task` tool was given as
+    /// `parent_effort_flag` are the exact same object. Whichever value ends
+    /// up seeded into it, at startup from settings or later from a GUI
+    /// control, is then visible immediately to a `Task` dispatch's own
+    /// "inherit the session's current level" default, with no separate
+    /// sync step needed.
+    pub fn set_effort_flag(&mut self, effort_flag: Arc<AtomicU8>) {
+        self.effort_flag = effort_flag;
+    }
+
+    /// The subagent registry this agent owns, if any. Test-only: used by
+    /// `factory_tests.rs` to prove two agents `BackendFactory` builds get
+    /// distinct registries rather than one shared across the dispatch tree.
+    #[cfg(test)]
+    pub(crate) fn subagent_registry_for_test(
+        &self,
+    ) -> Option<Arc<crate::backend::registry::SubagentRegistry>> {
+        self.subagent_registry.clone()
     }
 
     /// Return a clone of the interrupt flag so the GUI can signal interruption.
@@ -176,9 +358,10 @@ impl AgentLoop {
         Arc::clone(&self.interrupt_flag)
     }
 
-    /// Return a clone of the thinking flag so the GUI can toggle thinking.
-    pub fn thinking_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.thinking_flag)
+    /// Return a clone of the effort flag so the GUI can change the
+    /// reasoning-effort level.
+    pub fn effort_flag(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.effort_flag)
     }
 
     /// Return a clone of the model name so the GUI can change the model.
@@ -227,9 +410,10 @@ impl AgentLoop {
     }
 
     /// Sync dynamic config from the GUI before building requests: thinking
-    /// mode, model name, and the voice-mode system prompt suffix.
+    /// mode, model name, the voice-mode system prompt suffix, and the
+    /// working directory line.
     fn sync_dynamic_config(&mut self) {
-        self.config.thinking = self.thinking_flag.load(Ordering::SeqCst);
+        self.config.effort = Effort::load(&self.effort_flag);
         if let Ok(model) = self.model_name.lock() {
             self.config.model.clone_from(&*model);
         }
@@ -238,6 +422,11 @@ impl AgentLoop {
                 .set_system_suffix(Some(voice_mode_instructions().to_string()));
         } else {
             self.history.set_system_suffix(None);
+        }
+        if let Some(working_dir) = &self.working_dir {
+            if let Ok(dir) = working_dir.lock() {
+                self.history.set_working_dir(Some(dir.display().to_string()));
+            }
         }
     }
 
@@ -253,6 +442,7 @@ impl AgentLoop {
         info!(
             tokens_before = report.tokens_before,
             tokens_after = report.tokens_after,
+            images_elided = report.images_elided,
             tool_bodies_elided = report.tool_bodies_elided,
             groups_collapsed = report.groups_collapsed,
             groups_dropped = report.groups_dropped,
@@ -285,13 +475,55 @@ impl AgentLoop {
 
     /// Run the agent loop for a single user message.
     /// Returns the final assistant text or an error.
+    ///
+    /// Wraps `run_turn`: whichever way that returns, success, an error, or
+    /// an interrupt, this closes every subagent session this turn opened
+    /// before handing the result back. That is the lifetime rule from the
+    /// roadmap's Phase 3: a session lives until its parent's turn ends, or
+    /// until it is closed, whichever comes first. Wrapping the whole
+    /// method, rather than adding a close call at each of `run_turn`'s own
+    /// return points, means a future return point added there cannot
+    /// forget it.
     pub async fn run(&mut self, user_input: &str) -> Result<Vec<String>> {
+        self.run_with_image(user_input, None).await
+    }
+
+    /// Run the agent loop for a single user message, with an optional image
+    /// attachment. See `build_user_content` for how the image maps per
+    /// provider: dropped with a transcript notice for DeepSeek, sent as an
+    /// `image_url` content part for Ollama. `run` is this method called
+    /// with no image, so a turn with no attachment is unaffected.
+    pub async fn run_with_image(
+        &mut self,
+        user_input: &str,
+        image: Option<&ImageAttachment>,
+    ) -> Result<Vec<String>> {
+        let result = self.run_turn(user_input, image).await;
+        if let Some(registry) = self.subagent_registry.clone() {
+            registry.close_all().await;
+        }
+        result
+    }
+
+    /// The turn body `run_with_image` wraps. See `run`'s own doc comment
+    /// for why the subagent-closing step lives outside this method instead
+    /// of inside it.
+    async fn run_turn(
+        &mut self,
+        user_input: &str,
+        image: Option<&ImageAttachment>,
+    ) -> Result<Vec<String>> {
         self.sync_dynamic_config();
+
+        let (content, notice) = build_user_content(self.client.provider(), user_input, image);
+        if let Some(message) = notice {
+            self.send_event(StreamEvent::Error { message });
+        }
 
         // Add user message
         self.history.push(Message {
             role: Role::User,
-            content: Some(user_input.to_string()),
+            content: Some(content),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -308,12 +540,8 @@ impl AgentLoop {
             let tools = self.tools.to_api_definitions();
             let messages = self.history.to_api_messages();
 
-            let thinking_mode = if self.config.thinking {
-                "thinking"
-            } else {
-                "non-thinking"
-            };
-            info!(thinking_mode = thinking_mode, "building API request");
+            let effort = self.config.effort;
+            info!(effort = ?effort, "building API request");
 
             let request = ChatRequest {
                 model: self.config.model.clone(),
@@ -324,8 +552,9 @@ impl AgentLoop {
                 temperature: Some(0.7),
                 max_tokens: Some(4096),
                 thinking: None,
-                thinking_mode: Some(thinking_mode.to_string()),
+                thinking_mode: None,
                 reasoning_effort: None,
+                effort: Some(effort),
             };
 
             // Call API (streaming)
@@ -452,7 +681,7 @@ impl AgentLoop {
                     content: if stream_text.is_empty() {
                         None
                     } else {
-                        Some(stream_text.clone())
+                        Some(Content::text(stream_text.clone()))
                     },
                     tool_calls: Some(stream_tool_calls.clone()),
                     tool_call_id: None,
@@ -494,14 +723,41 @@ impl AgentLoop {
                         is_error: result.is_error,
                     });
 
+                    let tool_image = result.image;
+
                     // Feed tool result back to history
                     self.history.push(Message {
                         role: Role::Tool,
-                        content: Some(result.content),
+                        content: Some(Content::text(result.content)),
                         tool_calls: None,
                         tool_call_id: Some(tc.id.clone()),
                         reasoning_content: None,
                     });
+
+                    // A tool-returned image cannot travel inside the tool
+                    // result message itself: `ToolOutput::image`'s doc
+                    // comment explains why. Carry it instead as a synthetic
+                    // user turn right after the tool result, mapped through
+                    // the same per-provider logic a pasted or dropped image
+                    // already goes through, so it reaches the model on the
+                    // next request built this loop.
+                    if let Some(image) = tool_image {
+                        let (content, notice) = build_user_content(
+                            self.client.provider(),
+                            "(image read by the tool call above)",
+                            Some(&image),
+                        );
+                        if let Some(message) = notice {
+                            self.send_event(StreamEvent::Error { message });
+                        }
+                        self.history.push(Message {
+                            role: Role::User,
+                            content: Some(content),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            reasoning_content: None,
+                        });
+                    }
                 }
             } else {
                 // Text-only response - done
@@ -516,7 +772,7 @@ impl AgentLoop {
                 }
                 self.history.push(Message {
                     role: Role::Assistant,
-                    content: Some(stream_text.clone()),
+                    content: Some(Content::text(stream_text.clone())),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: if stream_reasoning.is_empty() {
@@ -538,7 +794,13 @@ impl AgentLoop {
     }
 
     /// Execute a tool by name, handling SessionReset specially.
-    async fn execute_tool(&self, name: &str, args: &str) -> ToolOutput {
+    ///
+    /// `pub(crate)`, not private: `factory_tests.rs`
+    /// (`backend::factory_tests`) drives a reset directly through this to
+    /// prove the subagent-registry lifetime rule holds across two agents
+    /// built from the same `BackendFactory`, without needing a live HTTP
+    /// call the way exercising it through `run` would.
+    pub(crate) async fn execute_tool(&self, name: &str, args: &str) -> ToolOutput {
         let input: serde_json::Value = match serde_json::from_str(args) {
             Ok(v) => v,
             Err(e) => {
@@ -546,6 +808,7 @@ impl AgentLoop {
                 return ToolOutput {
                     content: format!("Tool error: Invalid input: {e}"),
                     is_error: true,
+                    image: None,
                 };
             }
         };
@@ -555,28 +818,37 @@ impl AgentLoop {
                 Ok(output) => output,
                 Err(HarnessError::SessionReset) => {
                     info!("session reset triggered by tool '{}'", name);
+                    if let Some(registry) = self.subagent_registry.clone() {
+                        registry.close_all().await;
+                    }
                     self.send_event(StreamEvent::SessionReset);
                     ToolOutput {
                         content: "Session reset initiated.".into(),
                         is_error: false,
+                        image: None,
                     }
                 }
                 Err(e) => ToolOutput {
                     content: format!("Tool error: {e}"),
                     is_error: true,
+                    image: None,
                 },
             },
             None => ToolOutput {
                 content: format!("Unknown tool: {name}"),
                 is_error: true,
+                image: None,
             },
         }
     }
 
-    /// Send a StreamEvent to the TUI if a sender is configured.
+    /// Send a StreamEvent to the TUI if a sender is configured. Wrapped
+    /// with an empty route: this agent loop never knows whether it is the
+    /// main session or a subagent. A route, if any, is added later by a
+    /// forwarder relaying the event up from a nested dispatch.
     pub(crate) fn send_event(&self, event: StreamEvent) {
         if let Some(ref tx) = self.tx_events {
-            let _ = tx.send(event);
+            let _ = tx.send(RoutedEvent::own(event));
         }
     }
 
@@ -597,7 +869,7 @@ impl AgentLoop {
         self.history = MessageHistory::new(new_system_prompt);
         self.history.push(Message {
             role: Role::User,
-            content: Some(new_user_prompt),
+            content: Some(Content::text(new_user_prompt)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -623,6 +895,51 @@ impl AgentLoop {
 /// That buys headroom for several turns before it fires again.
 fn context_low_water(budget: usize) -> usize {
     budget / 3
+}
+
+/// Build the outgoing `Content` for a turn's user message, mapping an
+/// optional image attachment onto what `provider` actually accepts. Also
+/// returns a notice message to show in the transcript, when the image had
+/// to be dropped.
+///
+/// DeepSeek accepts no image content part at all: a hard 400 naming
+/// `image_url` as an unknown variant, confirmed against the live API (see
+/// `docs/notes/image-support.md`). So an image attachment on a DeepSeek
+/// turn is dropped before the request is ever built, and the notice fires
+/// up front rather than waiting on a 400 that would only confirm what is
+/// already known. Ollama accepts the same OpenAI `image_url` shape on a
+/// vision model; a non-vision model's own 400 comes back later, through
+/// the ordinary stream-error path `run_turn` already has, not from here.
+///
+/// A `None` image leaves the returned `Content` exactly what plain text
+/// already produced, on either provider: a turn with no attachment is
+/// unaffected.
+fn build_user_content(
+    provider: Provider,
+    text: &str,
+    image: Option<&ImageAttachment>,
+) -> (Content, Option<String>) {
+    let Some(image) = image else {
+        return (Content::text(text), None);
+    };
+    match provider {
+        Provider::DeepSeek => (
+            Content::text(text),
+            Some(
+                "DeepSeek does not support image attachments; the image was not sent."
+                    .to_string(),
+            ),
+        ),
+        Provider::Ollama => (
+            Content::Parts(vec![
+                ContentPart::Text { text: text.to_string() },
+                ContentPart::ImageUrl {
+                    url: format!("data:{};base64,{}", image.media_type, image.data),
+                },
+            ]),
+            None,
+        ),
+    }
 }
 
 /// Merge a streaming tool call delta into the accumulated tool calls list.
@@ -698,6 +1015,7 @@ mod tests {
             Ok(ToolOutput {
                 content: "echoed".into(),
                 is_error: false,
+                image: None,
             })
         }
     }
@@ -707,7 +1025,7 @@ mod tests {
         let cfg = AgentConfig::default();
         assert_eq!(cfg.max_turns, 100);
         assert_eq!(cfg.model, "deepseek-v4-flash");
-        assert!(!cfg.thinking);
+        assert_eq!(cfg.effort, Effort::None);
     }
 
     #[test]
@@ -811,6 +1129,38 @@ mod tests {
     }
 
     #[test]
+    fn effort_flag_defaults_to_none() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let agent = AgentLoop::new(
+            client,
+            tools,
+            "test".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(Effort::load(&agent.effort_flag()), Effort::None);
+    }
+
+    #[test]
+    fn sync_dynamic_config_reads_the_effort_flag() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        Effort::Max.store(&agent.effort_flag());
+
+        agent.sync_dynamic_config();
+
+        assert_eq!(agent.config.effort, Effort::Max);
+    }
+
+    #[test]
     fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
         let tools = ToolRegistry::new();
@@ -831,7 +1181,8 @@ mod tests {
         assert!(
             api[0]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .contains("## Voice reply mode")
         );
@@ -862,10 +1213,134 @@ mod tests {
         assert!(
             !api[0]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .contains("## Voice reply mode")
         );
+    }
+
+    #[test]
+    fn sync_dynamic_config_reports_working_dir_when_set() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let working_dir = Arc::new(Mutex::new(PathBuf::from("C:\\proj")));
+        agent.set_working_dir(Arc::clone(&working_dir));
+
+        agent.sync_dynamic_config();
+
+        let api = agent.history().to_api_messages();
+        assert!(
+            api[0]
+                .content
+                .as_ref()
+                .and_then(Content::as_text)
+                .unwrap()
+                .contains("Working directory: C:\\proj.")
+        );
+    }
+
+    #[test]
+    fn sync_dynamic_config_omits_working_dir_when_never_set() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        agent.sync_dynamic_config();
+
+        let api = agent.history().to_api_messages();
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
+    }
+
+    #[test]
+    fn changing_shared_working_dir_between_turns_changes_next_syncs_prompt() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let working_dir = Arc::new(Mutex::new(PathBuf::from("C:\\proj")));
+        agent.set_working_dir(Arc::clone(&working_dir));
+
+        agent.sync_dynamic_config();
+        let first = agent.history().to_api_messages();
+        assert!(first[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+
+        // Change the shared value the way a future Cd tool or GUI control
+        // would, with no restart and no re-registering of the agent.
+        *working_dir.lock().unwrap() = PathBuf::from("C:\\other");
+        agent.sync_dynamic_config();
+        let second = agent.history().to_api_messages();
+        assert!(second[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\other"));
+        assert!(!second[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+    }
+
+    #[test]
+    fn clear_history_then_sync_still_reports_the_current_directory() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let working_dir = Arc::new(Mutex::new(PathBuf::from("C:\\proj")));
+        agent.set_working_dir(Arc::clone(&working_dir));
+        agent.sync_dynamic_config();
+        agent.history.push(Message::user("hello".into()));
+
+        agent.clear_history();
+        // Rebuilt history has dropped the working directory line, exactly
+        // like it drops the voice suffix, until the next sync restores it.
+        assert_eq!(agent.history().len(), 0);
+
+        agent.sync_dynamic_config();
+        let api = agent.history().to_api_messages();
+        assert!(api[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+    }
+
+    #[test]
+    fn working_dir_and_voice_suffix_both_survive_together() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys prompt".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let working_dir = Arc::new(Mutex::new(PathBuf::from("C:\\proj")));
+        agent.set_working_dir(working_dir);
+        agent
+            .voice_mode_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        agent.sync_dynamic_config();
+
+        let api = agent.history().to_api_messages();
+        let content = api[0].content.as_ref().and_then(Content::as_text).unwrap();
+        assert!(content.contains("Working directory: C:\\proj."));
+        assert!(content.contains("## Voice reply mode"));
     }
 
     #[test]
@@ -1057,10 +1532,57 @@ mod tests {
         assert!(output.content.contains("Unknown tool"));
     }
 
+    fn sample_image() -> ImageAttachment {
+        ImageAttachment {
+            data: "AAA".into(),
+            media_type: "image/png".into(),
+        }
+    }
+
+    #[test]
+    fn build_user_content_with_no_image_is_plain_text_on_either_provider() {
+        for provider in [crate::api::client::Provider::DeepSeek, crate::api::client::Provider::Ollama] {
+            let (content, notice) = build_user_content(provider, "hello", None);
+            assert_eq!(content, Content::text("hello"));
+            assert!(notice.is_none(), "provider {provider:?}");
+        }
+    }
+
+    #[test]
+    fn build_user_content_drops_the_image_on_deepseek_and_names_it_in_the_notice() {
+        let image = sample_image();
+        let (content, notice) =
+            build_user_content(crate::api::client::Provider::DeepSeek, "look at this", Some(&image));
+
+        assert_eq!(content, Content::text("look at this"));
+        let notice = notice.expect("expected a notice for a DeepSeek image attachment");
+        assert!(notice.contains("DeepSeek"), "notice should name the backend: {notice}");
+    }
+
+    #[test]
+    fn build_user_content_maps_the_image_to_an_image_url_part_on_ollama() {
+        let image = sample_image();
+        let (content, notice) =
+            build_user_content(crate::api::client::Provider::Ollama, "look at this", Some(&image));
+
+        assert!(notice.is_none());
+        assert_eq!(
+            content,
+            Content::Parts(vec![
+                ContentPart::Text {
+                    text: "look at this".into(),
+                },
+                ContentPart::ImageUrl {
+                    url: "data:image/png;base64,AAA".into(),
+                },
+            ])
+        );
+    }
+
     /// Integration test: spawn a mock HTTP server returning SSE with reasoning_content,
     /// run the full agent loop, and verify Reasoning events are emitted.
     #[tokio::test]
-    async fn thinking_enabled_emits_reasoning_events() {
+    async fn effort_above_none_emits_reasoning_events() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
@@ -1114,7 +1636,7 @@ mod tests {
 
         let tools = ToolRegistry::new();
         let mut config = AgentConfig::default();
-        config.thinking = true;
+        config.effort = Effort::High;
 
         let mut agent = AgentLoop::new(
             client,
@@ -1141,7 +1663,7 @@ mod tests {
         // Collect all events
         let mut events: Vec<StreamEvent> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
+            events.push(ev.event);
         }
 
         // Verify Reasoning events were emitted
@@ -1180,6 +1702,128 @@ mod tests {
         assert!(text_count > 0, "expected at least one Text event");
     }
 
+    /// Build a stub subagent session ready to register into a
+    /// `SubagentRegistry`. Its own script never matters here: these tests
+    /// only check whether the session is still registered afterward, not
+    /// what it would have answered.
+    fn stub_session() -> crate::backend::Backend {
+        crate::backend::Backend::Stub(Box::new(crate::backend::stub::StubBackend::new(
+            Vec::new(),
+            "stub-model".to_string(),
+            Arc::new(AtomicBool::new(false)),
+        )))
+    }
+
+    /// A minimal mock server that answers one turn with plain text and no
+    /// tool calls, so `run` completes on its first attempt with no retry
+    /// delay. Returns the port it bound to.
+    fn spawn_text_only_mock_server() -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let response_body = concat!(
+            "data: {\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":",
+            "{\"content\":\"hi\"},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},",
+            "\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body,
+            );
+            let _ = stream.write_all(http_response.as_bytes());
+            let _ = stream.flush();
+            thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        port
+    }
+
+    /// The lifetime rule from the roadmap's Phase 3: a subagent session
+    /// registered against the agent's registry does not survive the turn
+    /// that opened it. `run` wraps `run_turn` specifically to guarantee
+    /// this regardless of how the turn finishes.
+    #[tokio::test]
+    async fn no_session_survives_a_parent_turn_end() {
+        let port = spawn_text_only_mock_server();
+        let client = ApiClient::new(
+            crate::api::client::Provider::DeepSeek,
+            "sk-test".into(),
+            Some(format!("http://127.0.0.1:{port}")),
+            Some("deepseek-v4-flash".into()),
+        );
+        let tools = ToolRegistry::new();
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let registry = Arc::new(crate::backend::registry::SubagentRegistry::new());
+        agent.set_subagent_registry(Arc::clone(&registry));
+        let id = SubagentId::next();
+        registry.register(id, stub_session()).await;
+        assert!(registry.contains(id).await, "session should be live before the turn runs");
+
+        let result = agent.run("hello").await;
+
+        assert!(result.is_ok(), "turn should succeed: {:?}", result.err());
+        assert!(
+            !registry.contains(id).await,
+            "session should not survive the turn that opened it"
+        );
+        assert_eq!(registry.len().await, 0);
+    }
+
+    /// `Reset` closes every session, per the roadmap's Phase 3 lifetime
+    /// rule, even though `ResetTool` itself never touches the registry: the
+    /// close happens in `execute_tool`'s `SessionReset` branch.
+    #[tokio::test]
+    async fn no_session_survives_a_reset() {
+        let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(crate::tools::reset::ResetTool));
+        let mut agent = AgentLoop::new(
+            client,
+            tools,
+            "sys".into(),
+            AgentConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let registry = Arc::new(crate::backend::registry::SubagentRegistry::new());
+        agent.set_subagent_registry(Arc::clone(&registry));
+        let id = SubagentId::next();
+        registry.register(id, stub_session()).await;
+
+        let output = agent
+            .execute_tool("reset", "{\"prompt\":\"start fresh\"}")
+            .await;
+
+        assert!(!output.is_error);
+        assert!(
+            !registry.contains(id).await,
+            "session should not survive a reset"
+        );
+        assert_eq!(registry.len().await, 0);
+    }
+
     #[test]
     fn clear_history_drops_messages_keeps_system_prompt() {
         let client = ApiClient::new(crate::api::client::Provider::DeepSeek, "sk-test".into(), None, None);
@@ -1199,7 +1843,7 @@ mod tests {
         assert_eq!(agent.history().len(), 0);
         let api = agent.history().to_api_messages();
         assert_eq!(api.len(), 1);
-        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
     }
 
     #[test]
@@ -1222,7 +1866,7 @@ mod tests {
 
         assert_eq!(agent.history().len(), 2);
         let api = agent.history().to_api_messages();
-        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
     }
 
     #[test]
@@ -1247,7 +1891,7 @@ mod tests {
         assert_eq!(agent.history().len(), 0);
         let api = agent.history().to_api_messages();
         assert_eq!(api.len(), 1);
-        assert_eq!(api[0].content.as_deref(), Some("sys prompt"));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
 
         // sync_dynamic_config still works after clear_history and restores
         // the voice suffix on the next turn.
@@ -1256,7 +1900,8 @@ mod tests {
         assert!(
             api[0]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .contains("## Voice reply mode")
         );
@@ -1280,7 +1925,7 @@ mod tests {
 
         let mut events: Vec<StreamEvent> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
+            events.push(ev.event);
         }
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -1313,7 +1958,7 @@ mod tests {
 
         let mut events: Vec<StreamEvent> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
+            events.push(ev.event);
         }
         // No iteration should have started.
         assert!(
@@ -1398,7 +2043,7 @@ mod tests {
 
         let mut events: Vec<StreamEvent> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
+            events.push(ev.event);
         }
 
         let starts: Vec<(u32, u32)> = events
@@ -1431,6 +2076,6 @@ mod tests {
             .rev()
             .find(|m| m.role == crate::api::types::Role::Assistant)
             .expect("expected an assistant message");
-        assert_eq!(last_assistant.content.as_deref(), Some("answer 1"));
+        assert_eq!(last_assistant.content.as_ref().and_then(Content::as_text), Some("answer 1"));
     }
 }

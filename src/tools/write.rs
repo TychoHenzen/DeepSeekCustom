@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use tracing::{debug, info};
@@ -5,14 +7,18 @@ use tracing::{debug, info};
 use crate::error::{HarnessError, Result};
 use crate::tools::{Tool, ToolOutput};
 
-/// File write tool with path safety.
+/// File write tool. Resolves a relative path against `working_dir`, read
+/// fresh on every call so a change takes effect on the next tool use. There
+/// is no path sandbox: `working_dir` may point outside `project_root`, on
+/// purpose. See the phase 4 section of
+/// `docs/plans/2026-08-04-long-term-roadmap.md`.
 pub struct WriteTool {
-    project_root: std::path::PathBuf,
+    working_dir: Arc<Mutex<std::path::PathBuf>>,
 }
 
 impl WriteTool {
-    pub fn new(project_root: std::path::PathBuf) -> Self {
-        Self { project_root }
+    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+        Self { working_dir }
     }
 }
 
@@ -29,7 +35,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file within the project. Creates parent directories if needed."
+        "Write content to a file in the current working directory. Creates parent directories if needed."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -53,7 +59,7 @@ impl Tool for WriteTool {
         let parsed: WriteInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid write input: {e}")))?;
 
-        let path = self.resolve_path(&parsed.file_path)?;
+        let path = self.resolve_path(&parsed.file_path);
         debug!(
             "write: path={}, bytes={}",
             path.display(),
@@ -77,50 +83,25 @@ impl Tool for WriteTool {
         Ok(ToolOutput {
             content: format!("Wrote {} bytes to {}", parsed.content.len(), path.display()),
             is_error: false,
+            image: None,
         })
     }
 }
 
 impl WriteTool {
-    /// Resolve a file path relative to project root. Rejects `..` escape attempts.
-    fn resolve_path(&self, file_path: &str) -> Result<std::path::PathBuf> {
+    /// Resolve a file path against the current working directory, read
+    /// fresh from the shared flag. An absolute path is used as given.
+    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
         let path = std::path::Path::new(file_path);
-
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.project_root.join(path)
-        };
-
-        let canonical_root = self
-            .project_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.project_root.clone());
-
-        // For new files (don't exist yet), canonicalize the parent
-        let canonical = if resolved.exists() {
-            resolved.canonicalize()
-        } else {
-            resolved
-                .parent()
-                .map(|p| p.canonicalize())
-                .unwrap_or_else(|| {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "no parent",
-                    ))
-                })
+        if path.is_absolute() {
+            return path.to_path_buf();
         }
-        .map_err(|e| HarnessError::Tool(format!("Invalid path '{}': {e}", file_path)))?;
-
-        if !canonical.starts_with(&canonical_root) {
-            return Err(HarnessError::Tool(format!(
-                "Path traversal detected: '{}' is outside project root",
-                file_path
-            )));
-        }
-
-        Ok(resolved)
+        let working_dir = self
+            .working_dir
+            .lock()
+            .expect("working_dir mutex poisoned")
+            .clone();
+        working_dir.join(path)
     }
 }
 
@@ -128,10 +109,25 @@ impl WriteTool {
 mod tests {
     use super::*;
 
+    fn dir_arc(p: std::path::PathBuf) -> Arc<Mutex<std::path::PathBuf>> {
+        Arc::new(Mutex::new(p))
+    }
+
+    /// Create a uniquely named directory under the system temp dir.
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dsc-write-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[tokio::test]
     async fn writes_and_verifies_file() {
         let root = std::env::current_dir().unwrap();
-        let tool = WriteTool::new(root.clone());
+        let tool = WriteTool::new(dir_arc(root.clone()));
 
         let test_path = "target/test_write_output.txt";
         let content = "hello from write tool";
@@ -149,13 +145,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_paths_outside_project_root() {
-        let root = std::env::current_dir().unwrap();
-        let tool = WriteTool::new(root);
+    async fn writes_via_absolute_path() {
+        let dir = unique_temp_dir("absolute");
+        let file = dir.join("hello.txt");
 
+        let tool = WriteTool::new(dir_arc(std::env::current_dir().unwrap()));
         let input =
-            serde_json::json!({"file_path": "../../Windows/System32/hack.exe", "content": "bad"});
-        let result = tool.execute(input).await;
-        assert!(result.is_err());
+            serde_json::json!({"file_path": file.to_string_lossy(), "content": "hello world"});
+        let output = tool.execute(input).await.expect("execute");
+        assert!(!output.is_error);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn changing_shared_working_dir_moves_where_relative_writes_land() {
+        let dir_a = unique_temp_dir("a");
+        let dir_b = unique_temp_dir("b");
+
+        let shared = dir_arc(dir_a.clone());
+        let tool = WriteTool::new(shared.clone());
+
+        let first = tool
+            .execute(serde_json::json!({"file_path": "out.txt", "content": "in_a"}))
+            .await
+            .expect("execute");
+        assert!(!first.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir_a.join("out.txt")).unwrap(),
+            "in_a"
+        );
+        assert!(!dir_b.join("out.txt").exists());
+
+        *shared.lock().unwrap() = dir_b.clone();
+
+        let second = tool
+            .execute(serde_json::json!({"file_path": "out.txt", "content": "in_b"}))
+            .await
+            .expect("execute");
+        assert!(!second.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir_b.join("out.txt")).unwrap(),
+            "in_b"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

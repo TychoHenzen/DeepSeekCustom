@@ -1,6 +1,6 @@
 use crate::agent::pruning;
 pub use crate::agent::pruning::PruneReport;
-use crate::api::types::Message;
+use crate::api::types::{Content, Message};
 
 /// Thread-safe conversation history with approximate token tracking.
 pub struct MessageHistory {
@@ -10,6 +10,13 @@ pub struct MessageHistory {
     /// setting (e.g. a voice-mode toggle), without rebuilding the whole
     /// system prompt each time.
     system_suffix: Option<String>,
+    /// The working directory line, re-read every turn by
+    /// `AgentLoop::sync_dynamic_config` from the same shared value the
+    /// `Bash`, `Read`, and `Write` tools act against. `None` until the
+    /// first sync. Kept separate from `system_suffix` so a directory
+    /// change and the voice-mode suffix can both be present in the system
+    /// message at once, neither one overwriting the other.
+    working_dir: Option<String>,
     messages: Vec<Message>,
     token_count: usize,
 }
@@ -20,6 +27,7 @@ impl MessageHistory {
         Self {
             system_prompt,
             system_suffix: None,
+            working_dir: None,
             messages: Vec::new(),
             token_count,
         }
@@ -39,6 +47,17 @@ impl MessageHistory {
         let new_tokens = suffix_tokens(suffix.as_deref());
         self.token_count = self.token_count - old_tokens + new_tokens;
         self.system_suffix = suffix;
+    }
+
+    /// Set or clear the reported working directory. Called every turn by
+    /// `AgentLoop::sync_dynamic_config`, so a directory change takes effect
+    /// on the next turn's system prompt with no restart. Recomputes the
+    /// tracked token count so `estimated_tokens()` stays accurate.
+    pub fn set_working_dir(&mut self, working_dir: Option<String>) {
+        let old_tokens = working_dir_tokens(self.working_dir.as_deref());
+        let new_tokens = working_dir_tokens(working_dir.as_deref());
+        self.token_count = self.token_count - old_tokens + new_tokens;
+        self.working_dir = working_dir;
     }
 
     /// The base system prompt, without any per-turn suffix applied.
@@ -61,22 +80,25 @@ impl MessageHistory {
         self.messages.is_empty()
     }
 
-    /// Clear all messages (keep system prompt and its suffix).
+    /// Clear all messages (keep system prompt, working directory, and suffix).
     pub fn clear(&mut self) {
         self.messages.clear();
-        self.token_count =
-            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
+        self.token_count = self.base_tokens();
     }
 
-    /// Return messages in API-ready format (system prompt first). When a
-    /// suffix is set, it is appended after a blank line. With no suffix set,
-    /// the system message is unchanged from the base prompt.
+    /// Return messages in API-ready format (system prompt first). The
+    /// working directory line comes first, when set, then the voice-mode
+    /// suffix, when set. With neither set, the system message is unchanged
+    /// from the base prompt.
     pub fn to_api_messages(&self) -> Vec<Message> {
         let mut out = Vec::with_capacity(self.messages.len() + 1);
-        let system_content = match &self.system_suffix {
-            Some(suffix) => format!("{}{}", self.system_prompt, suffix_addition(suffix)),
-            None => self.system_prompt.clone(),
-        };
+        let mut system_content = self.system_prompt.clone();
+        if let Some(dir) = &self.working_dir {
+            system_content.push_str(&working_dir_addition(dir));
+        }
+        if let Some(suffix) = &self.system_suffix {
+            system_content.push_str(&suffix_addition(suffix));
+        }
         out.push(Message::system(system_content));
         out.extend(self.messages.clone());
         out
@@ -95,8 +117,7 @@ impl MessageHistory {
         low_water_tokens: usize,
         scores: Option<&[f32]>,
     ) -> PruneReport {
-        let base_tokens =
-            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
+        let base_tokens = self.base_tokens();
         let report =
             pruning::prune_to_budget(&mut self.messages, base_tokens, low_water_tokens, scores);
         self.recompute_token_count();
@@ -119,10 +140,18 @@ impl MessageHistory {
     /// Recompute `token_count` from scratch. The incremental count
     /// `push` and `clear` keep cannot survive pruning's removals.
     fn recompute_token_count(&mut self) {
-        let base_tokens =
-            estimate_tokens(&self.system_prompt) + suffix_tokens(self.system_suffix.as_deref());
+        let base_tokens = self.base_tokens();
         let messages_tokens: usize = self.messages.iter().map(estimate_message_tokens).sum();
         self.token_count = base_tokens + messages_tokens;
+    }
+
+    /// Token count of the system message alone: the base prompt plus the
+    /// working directory line and the voice-mode suffix, whichever of the
+    /// two are currently set.
+    fn base_tokens(&self) -> usize {
+        estimate_tokens(&self.system_prompt)
+            + working_dir_tokens(self.working_dir.as_deref())
+            + suffix_tokens(self.system_suffix.as_deref())
     }
 }
 
@@ -146,10 +175,27 @@ fn suffix_tokens(suffix: Option<&str>) -> usize {
     }
 }
 
+/// The text the working directory line contributes to the system message:
+/// a blank line followed by a "Working directory: ..." sentence. Matches
+/// the format `to_api_messages` emits, so token counts stay in sync with
+/// the real output.
+fn working_dir_addition(working_dir: &str) -> String {
+    format!("\n\nWorking directory: {}.", working_dir)
+}
+
+/// Token count the working directory line adds to the system message, or
+/// zero when unset.
+fn working_dir_tokens(working_dir: Option<&str>) -> usize {
+    match working_dir {
+        Some(d) => estimate_tokens(&working_dir_addition(d)),
+        None => 0,
+    }
+}
+
 pub(crate) fn estimate_message_tokens(msg: &Message) -> usize {
     let mut chars = 0;
     if let Some(ref c) = msg.content {
-        chars += c.chars().count();
+        chars += content_chars(c);
     }
     if let Some(ref r) = msg.reasoning_content {
         chars += r.chars().count();
@@ -169,12 +215,37 @@ pub(crate) fn estimate_message_tokens(msg: &Message) -> usize {
     chars.div_ceil(4)
 }
 
+/// Character count of a message's content, for the token estimate above.
+/// A `Text` message counts its own characters, matching the old
+/// `Option<String>` behaviour exactly. A `Parts` message sums the
+/// characters of its text parts plus the characters of every image part's
+/// `url` field, base64 payload included. The same ~4-chars-per-token rule
+/// this module already uses for plain text is applied to that payload too.
+/// It is not a real per-tile vision token count, but it is not meant to
+/// be one: it only needs to make an unelided image register as large in
+/// the budget, which a base64 payload of any real screenshot does. An
+/// image that counted as zero tokens, the prior behaviour, could never be
+/// the thing that pushes a conversation over budget, and eliding it would
+/// never show up as a token saving either.
+fn content_chars(content: &Content) -> usize {
+    match content {
+        Content::Text(s) => s.chars().count(),
+        Content::Parts(parts) => parts
+            .iter()
+            .map(|p| match p {
+                crate::api::types::ContentPart::Text { text } => text.chars().count(),
+                crate::api::types::ContentPart::ImageUrl { url } => url.chars().count(),
+            })
+            .sum(),
+    }
+}
+
 // Convenience constructors for Message (keeps types.rs clean)
 impl Message {
     pub fn system(content: String) -> Self {
         Self {
             role: crate::api::types::Role::System,
-            content: Some(content),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -184,7 +255,7 @@ impl Message {
     pub fn user(content: String) -> Self {
         Self {
             role: crate::api::types::Role::User,
-            content: Some(content),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -194,7 +265,7 @@ impl Message {
     pub fn assistant(content: String) -> Self {
         Self {
             role: crate::api::types::Role::Assistant,
-            content: Some(content),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -204,7 +275,7 @@ impl Message {
     pub fn tool_result(tool_call_id: String, content: String) -> Self {
         Self {
             role: crate::api::types::Role::Tool,
-            content: Some(content),
+            content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
             reasoning_content: None,
@@ -256,7 +327,7 @@ mod tests {
     fn no_suffix_leaves_system_message_unchanged() {
         let h = MessageHistory::new("You are helpful.".into());
         let api = h.to_api_messages();
-        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
     }
 
     #[test]
@@ -265,7 +336,7 @@ mod tests {
         h.set_system_suffix(Some("Reply briefly.".into()));
         let api = h.to_api_messages();
         assert_eq!(
-            api[0].content.as_deref(),
+            api[0].content.as_ref().and_then(Content::as_text),
             Some("You are helpful.\n\nReply briefly.")
         );
     }
@@ -276,7 +347,7 @@ mod tests {
         h.set_system_suffix(Some("Reply briefly.".into()));
         h.set_system_suffix(None);
         let api = h.to_api_messages();
-        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
     }
 
     #[test]
@@ -287,9 +358,81 @@ mod tests {
         h.clear();
         let api = h.to_api_messages();
         assert_eq!(
-            api[0].content.as_deref(),
+            api[0].content.as_ref().and_then(Content::as_text),
             Some("You are helpful.\n\nReply briefly.")
         );
+    }
+
+    #[test]
+    fn no_working_dir_leaves_system_message_unchanged() {
+        let h = MessageHistory::new("You are helpful.".into());
+        let api = h.to_api_messages();
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    }
+
+    #[test]
+    fn set_working_dir_appears_in_system_message() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_working_dir(Some("C:\\proj".into()));
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_ref().and_then(Content::as_text),
+            Some("You are helpful.\n\nWorking directory: C:\\proj.")
+        );
+    }
+
+    #[test]
+    fn set_working_dir_none_removes_it() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_working_dir(Some("C:\\proj".into()));
+        h.set_working_dir(None);
+        let api = h.to_api_messages();
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    }
+
+    #[test]
+    fn working_dir_and_suffix_both_appear_together() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_working_dir(Some("C:\\proj".into()));
+        h.set_system_suffix(Some("Reply briefly.".into()));
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_ref().and_then(Content::as_text),
+            Some("You are helpful.\n\nWorking directory: C:\\proj.\n\nReply briefly.")
+        );
+    }
+
+    #[test]
+    fn changing_working_dir_replaces_the_reported_directory() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_working_dir(Some("C:\\proj".into()));
+        h.set_working_dir(Some("C:\\other".into()));
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_ref().and_then(Content::as_text),
+            Some("You are helpful.\n\nWorking directory: C:\\other.")
+        );
+    }
+
+    #[test]
+    fn working_dir_survives_clear() {
+        let mut h = MessageHistory::new("You are helpful.".into());
+        h.set_working_dir(Some("C:\\proj".into()));
+        h.push(Message::user("hi".into()));
+        h.clear();
+        let api = h.to_api_messages();
+        assert_eq!(
+            api[0].content.as_ref().and_then(Content::as_text),
+            Some("You are helpful.\n\nWorking directory: C:\\proj.")
+        );
+    }
+
+    #[test]
+    fn estimated_tokens_reflects_set_working_dir() {
+        let mut h = MessageHistory::new("short".into());
+        let before = h.estimated_tokens();
+        h.set_working_dir(Some("a long directory path with many characters".into()));
+        assert!(h.estimated_tokens() > before);
     }
 
     #[test]
@@ -341,7 +484,7 @@ mod tests {
         h.restore(vec![Message::user("hi".into())]);
         let api = h.to_api_messages();
         assert_eq!(api[0].role, crate::api::types::Role::System);
-        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
     }
 
     #[test]
@@ -352,7 +495,7 @@ mod tests {
         h.restore(vec![Message::user("hi".into())]);
         let api = h.to_api_messages();
         assert_eq!(
-            api[0].content.as_deref(),
+            api[0].content.as_ref().and_then(Content::as_text),
             Some("You are helpful.\n\nReply briefly.")
         );
         // suffix contribution still reflected in the token count
@@ -371,7 +514,7 @@ mod tests {
         assert_eq!(h.len(), 0);
         let api = h.to_api_messages();
         assert_eq!(api.len(), 1);
-        assert_eq!(api[0].content.as_deref(), Some("You are helpful."));
+        assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
     }
 
     #[test]

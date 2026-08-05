@@ -9,21 +9,23 @@
 //! derived fresh from the message vector, never cached, so there is no
 //! parallel metadata to keep in sync.
 //!
-//! Pruning runs three tiers in order, cheapest first: elide tool bodies,
-//! collapse groups down to their user message and final reply, then drop
-//! groups outright. Each tier stops the moment the token budget is met, and
-//! never touches the last two groups.
+//! Pruning runs three tiers in order, cheapest first: elide image parts and
+//! tool bodies (images first), collapse groups down to their user message
+//! and final reply, then drop groups outright. Each tier stops the moment
+//! the token budget is met, and never touches the last two groups.
 
 use crate::agent::history::estimate_message_tokens;
-use crate::api::types::{Message, Role};
+use crate::api::types::{Content, ContentPart, Message, Role};
 
 const ELIDED_PREFIX: &str = "[elided:";
+const ELIDED_IMAGE_MARKER: &str = "[elided: image]";
 
 /// What a prune pass changed. The agent loop logs this.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PruneReport {
     pub tokens_before: usize,
     pub tokens_after: usize,
+    pub images_elided: usize,
     pub tool_bodies_elided: usize,
     pub groups_collapsed: usize,
     pub groups_dropped: usize,
@@ -34,6 +36,7 @@ impl PruneReport {
         Self {
             tokens_before: tokens,
             tokens_after: tokens,
+            images_elided: 0,
             tool_bodies_elided: 0,
             groups_collapsed: 0,
             groups_dropped: 0,
@@ -68,12 +71,16 @@ pub fn prune_to_budget(
     let mut report = PruneReport {
         tokens_before,
         tokens_after: tokens_before,
+        images_elided: 0,
         tool_bodies_elided: 0,
         groups_collapsed: 0,
         groups_dropped: 0,
     };
 
-    report.tool_bodies_elided = run_tier1(messages, &eff_scores, base_tokens, low_water_tokens);
+    let (images_elided, tool_bodies_elided) =
+        run_tier1(messages, &eff_scores, base_tokens, low_water_tokens);
+    report.images_elided = images_elided;
+    report.tool_bodies_elided = tool_bodies_elided;
     if total_tokens(base_tokens, messages) > low_water_tokens {
         report.groups_collapsed =
             run_tier2(messages, &mut eff_scores, base_tokens, low_water_tokens);
@@ -132,20 +139,96 @@ fn total_tokens(base_tokens: usize, messages: &[Message]) -> usize {
     base_tokens + messages.iter().map(estimate_message_tokens).sum::<usize>()
 }
 
-/// Tier 1: replace tool bodies with a placeholder, lowest score first and
-/// oldest first on a tie. Skips messages already elided so a second pass
-/// does not double-wrap. Leaves role, tool_call_id, and position alone.
+/// Tier 1: first elide image parts, then replace tool bodies with a
+/// placeholder. Both passes order lowest score first and oldest first on a
+/// tie. Skips content already elided so a second pass does not double-wrap.
+/// Leaves role, tool_call_id, and position alone. Returns
+/// `(images_elided, tool_bodies_elided)`.
+///
+/// Images go first because they never prune well and are expensive: an
+/// image part is either fully present or fully gone, and a single
+/// screenshot's base64 payload can outweigh a lot of text. Dropping it
+/// before touching any tool body reclaims the most budget for the least
+/// structural damage.
 fn run_tier1(
     messages: &mut [Message],
     eff_scores: &[f32],
     base_tokens: usize,
     low_water_tokens: usize,
-) -> usize {
+) -> (usize, usize) {
     let groups = compute_groups(messages);
     let pinned = pinned_start(groups.len());
-    let mut candidates: Vec<usize> = groups[..pinned]
+    let non_pinned: Vec<usize> = groups[..pinned].iter().flat_map(|&(s, e)| s..e).collect();
+
+    let images_elided = elide_images(messages, eff_scores, &non_pinned, base_tokens, low_water_tokens);
+
+    let tool_bodies_elided = if total_tokens(base_tokens, messages) > low_water_tokens {
+        elide_tool_bodies(messages, eff_scores, &non_pinned, base_tokens, low_water_tokens)
+    } else {
+        0
+    };
+
+    (images_elided, tool_bodies_elided)
+}
+
+/// Replace every `ContentPart::ImageUrl` in `indices` with a text marker,
+/// lowest score first and oldest first on a tie (message index first, part
+/// index second). Stops the moment the budget is met. Once elided, a part
+/// is a `Text` marker rather than an `ImageUrl`, so a second pass finds no
+/// image part left to touch and cannot double-wrap it.
+fn elide_images(
+    messages: &mut [Message],
+    eff_scores: &[f32],
+    indices: &[usize],
+    base_tokens: usize,
+    low_water_tokens: usize,
+) -> usize {
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for &idx in indices {
+        if let Some(Content::Parts(parts)) = &messages[idx].content {
+            for (part_idx, part) in parts.iter().enumerate() {
+                if matches!(part, ContentPart::ImageUrl { .. }) {
+                    candidates.push((idx, part_idx));
+                }
+            }
+        }
+    }
+    candidates.sort_by(|&(a_idx, a_part), &(b_idx, b_part)| {
+        eff_scores[a_idx]
+            .partial_cmp(&eff_scores[b_idx])
+            .unwrap()
+            .then(a_idx.cmp(&b_idx))
+            .then(a_part.cmp(&b_part))
+    });
+
+    let mut elided = 0;
+    for (msg_idx, part_idx) in candidates {
+        if total_tokens(base_tokens, messages) <= low_water_tokens {
+            break;
+        }
+        if let Some(Content::Parts(parts)) = &mut messages[msg_idx].content {
+            parts[part_idx] = ContentPart::Text {
+                text: ELIDED_IMAGE_MARKER.into(),
+            };
+        }
+        elided += 1;
+    }
+    elided
+}
+
+/// Replace tool bodies with a placeholder, lowest score first and oldest
+/// first on a tie. Skips messages already elided so a second pass does not
+/// double-wrap. Leaves role, tool_call_id, and position alone.
+fn elide_tool_bodies(
+    messages: &mut [Message],
+    eff_scores: &[f32],
+    indices: &[usize],
+    base_tokens: usize,
+    low_water_tokens: usize,
+) -> usize {
+    let mut candidates: Vec<usize> = indices
         .iter()
-        .flat_map(|&(s, e)| s..e)
+        .copied()
         .filter(|&idx| is_elidable(&messages[idx]))
         .collect();
     candidates.sort_by(|&a, &b| {
@@ -163,10 +246,11 @@ fn run_tier1(
         let n = messages[idx]
             .content
             .as_ref()
-            .expect("is_elidable checked content is Some")
+            .and_then(Content::as_text)
+            .expect("is_elidable checked content is Some text")
             .chars()
             .count();
-        messages[idx].content = Some(format!("[elided: {n} chars of tool output]"));
+        messages[idx].content = Some(Content::text(format!("[elided: {n} chars of tool output]")));
         elided += 1;
     }
     elided
@@ -176,7 +260,8 @@ fn is_elidable(msg: &Message) -> bool {
     msg.role == Role::Tool
         && msg
             .content
-            .as_deref()
+            .as_ref()
+            .and_then(Content::as_text)
             .is_some_and(|c| !c.starts_with(ELIDED_PREFIX))
 }
 
@@ -326,6 +411,46 @@ mod tests {
         }
     }
 
+    fn user_with_image(text: &str, url: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: Some(Content::Parts(vec![
+                ContentPart::Text { text: text.into() },
+                ContentPart::ImageUrl { url: url.into() },
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    fn image_only(url: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: Some(Content::Parts(vec![ContentPart::ImageUrl { url: url.into() }])),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    /// A turn like `tool_turn`, but the leading user message carries both
+    /// text and an image part instead of plain text.
+    fn image_turn(
+        user_text: &str,
+        image_url: &str,
+        call_id: &str,
+        tool_body: &str,
+        reply: &str,
+    ) -> Vec<Message> {
+        vec![
+            user_with_image(user_text, image_url),
+            assistant_with_call(call_id),
+            tool(call_id, tool_body),
+            assistant(reply),
+        ]
+    }
+
     /// A tool-using turn: user prompt, an assistant tool call, its tool
     /// result, and a final assistant reply with no tool calls.
     fn tool_turn(user_text: &str, call_id: &str, tool_body: &str, reply: &str) -> Vec<Message> {
@@ -339,7 +464,7 @@ mod tests {
 
     /// `Message` has no `PartialEq` (types.rs is out of scope for this
     /// step), so compare the fields these tests actually set.
-    fn message_snapshot(m: &Message) -> (Role, Option<String>, Option<String>) {
+    fn message_snapshot(m: &Message) -> (Role, Option<Content>, Option<String>) {
         (m.role.clone(), m.content.clone(), m.tool_call_id.clone())
     }
     fn messages_eq(a: &[Message], b: &[Message]) -> bool {
@@ -369,6 +494,7 @@ mod tests {
         let report = prune_to_budget(&mut messages, 0, before + 1000, None);
         assert_eq!(report.tokens_before, before);
         assert_eq!(report.tokens_after, before);
+        assert_eq!(report.images_elided, 0);
         assert_eq!(report.tool_bodies_elided, 0);
         assert_eq!(report.groups_collapsed, 0);
         assert_eq!(report.groups_dropped, 0);
@@ -389,7 +515,14 @@ mod tests {
         let tool_msg = &messages[2];
         assert_eq!(tool_msg.role, Role::Tool);
         assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call0"));
-        assert!(tool_msg.content.as_deref().unwrap().starts_with("[elided:"));
+        assert!(
+            tool_msg
+                .content
+                .as_ref()
+                .and_then(Content::as_text)
+                .unwrap()
+                .starts_with("[elided:")
+        );
     }
 
     #[test]
@@ -406,12 +539,129 @@ mod tests {
         assert!(
             !messages[2]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .contains("[elided: [elided:")
         );
         // Whatever tier1 touched this round, it did not re-wrap index 2.
         let _ = report2;
+    }
+
+    #[test]
+    fn tier1_elides_image_before_tool_body() {
+        let image_url = format!("data:image/png;base64,{}", "A".repeat(4000));
+        let mut messages = image_turn("look at this", &image_url, "call0", &"x".repeat(200), "reply0");
+        messages.extend(many_turns(2));
+        let full = total_tokens(0, &messages);
+
+        // Compute the token total right after only the image is elided, so
+        // the budget target lands exactly there and tier one has no reason
+        // to go on to the tool body.
+        let mut only_image_elided = messages.clone();
+        if let Some(Content::Parts(parts)) = &mut only_image_elided[0].content {
+            parts[1] = ContentPart::Text {
+                text: ELIDED_IMAGE_MARKER.into(),
+            };
+        }
+        let target = total_tokens(0, &only_image_elided);
+        assert!(target < full);
+
+        let report = prune_to_budget(&mut messages, 0, target, None);
+        assert_eq!(report.images_elided, 1);
+        assert_eq!(report.tool_bodies_elided, 0);
+
+        match &messages[0].content {
+            Some(Content::Parts(parts)) => assert_eq!(
+                parts[1],
+                ContentPart::Text {
+                    text: ELIDED_IMAGE_MARKER.into()
+                }
+            ),
+            other => panic!("expected Parts content, got {other:?}"),
+        }
+        // The tool body is untouched: image elision alone met the budget.
+        assert_eq!(
+            messages[2].content.as_ref().and_then(Content::as_text),
+            Some("x".repeat(200)).as_deref()
+        );
+    }
+
+    #[test]
+    fn image_eliding_is_idempotent_and_then_falls_through_to_tool_bodies() {
+        let image_url = format!("data:image/png;base64,{}", "A".repeat(4000));
+        let mut messages = image_turn("look at this", &image_url, "call0", &"x".repeat(200), "reply0");
+        messages.extend(many_turns(2));
+
+        let mut only_image_elided = messages.clone();
+        if let Some(Content::Parts(parts)) = &mut only_image_elided[0].content {
+            parts[1] = ContentPart::Text {
+                text: ELIDED_IMAGE_MARKER.into(),
+            };
+        }
+        let target = total_tokens(0, &only_image_elided);
+
+        let mut both_elided = only_image_elided.clone();
+        let tool_chars = both_elided[2]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .chars()
+            .count();
+        both_elided[2].content = Some(Content::text(format!(
+            "[elided: {tool_chars} chars of tool output]"
+        )));
+        let target2 = total_tokens(0, &both_elided);
+        assert!(target2 < target);
+
+        let report1 = prune_to_budget(&mut messages, 0, target, None);
+        assert_eq!(report1.images_elided, 1);
+        let elided_image_content = messages[0].content.clone();
+
+        // A second, lower-budget pass finds no image part left to touch
+        // (it is now a Text marker, not an ImageUrl) and does not double
+        // wrap it. It falls through to eliding the tool body instead.
+        let report2 = prune_to_budget(&mut messages, 0, target2, None);
+        assert_eq!(report2.images_elided, 0);
+        assert_eq!(report2.tool_bodies_elided, 1);
+        assert_eq!(messages[0].content, elided_image_content);
+        match &messages[0].content {
+            Some(Content::Parts(parts)) => match &parts[1] {
+                ContentPart::Text { text } => {
+                    assert!(!text.contains("[elided: [elided:"));
+                }
+                other => panic!("expected an elided text marker, got {other:?}"),
+            },
+            other => panic!("expected Parts content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_only_message_elides_sanely() {
+        let image_url = format!("data:image/png;base64,{}", "B".repeat(3000));
+        let mut messages = vec![image_only(&image_url), assistant("ack")];
+        messages.extend(many_turns(2));
+        let full = total_tokens(0, &messages);
+
+        let mut only_image_elided = messages.clone();
+        if let Some(Content::Parts(parts)) = &mut only_image_elided[0].content {
+            parts[0] = ContentPart::Text {
+                text: ELIDED_IMAGE_MARKER.into(),
+            };
+        }
+        let target = total_tokens(0, &only_image_elided);
+        assert!(target < full);
+
+        let report = prune_to_budget(&mut messages, 0, target, None);
+        assert_eq!(report.images_elided, 1);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(
+            messages[0].content,
+            Some(Content::Parts(vec![ContentPart::Text {
+                text: ELIDED_IMAGE_MARKER.into()
+            }]))
+        );
     }
 
     #[test]
@@ -437,13 +687,14 @@ mod tests {
         assert!(
             messages[2]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .starts_with("[elided:")
         );
         // Every later tool body is untouched.
         assert_eq!(
-            messages[6].content.as_deref(),
+            messages[6].content.as_ref().and_then(Content::as_text),
             Some("x".repeat(200)).as_deref()
         );
     }
@@ -464,14 +715,16 @@ mod tests {
         assert!(
             messages[6]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .starts_with("[elided:")
         );
         assert!(
             !messages[2]
                 .content
-                .as_deref()
+                .as_ref()
+                .and_then(Content::as_text)
                 .unwrap()
                 .starts_with("[elided:")
         );

@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::agent::agent_loop::StreamEvent;
+use crate::effort::Effort;
 
 use super::events::{parse_line, ClaudeEvent};
 use super::map::EventMapper;
@@ -42,10 +43,18 @@ pub struct OneShotResult {
 /// Build the argument vector for a one-shot `claude -p <prompt>` run. The
 /// prompt is a positional argument instead of going over stdin. There is no
 /// `--input-format` flag, since there is no streaming input to declare a
-/// format for.
-fn build_one_shot_args(model: &str, permission_mode: Option<&str>, prompt: &str) -> Vec<String> {
+/// format for. `effort`, when it maps to a CLI value, adds `--effort
+/// <level>` right after the base flags, the same rule `build_args` in
+/// `process.rs` applies for the long-lived driver: `Effort::None` omits
+/// the flag entirely, since the CLI has no `none` value of its own.
+fn build_one_shot_args(
+    model: &str,
+    permission_mode: Option<&str>,
+    prompt: &str,
+    effort: Effort,
+) -> Vec<String> {
     let mode = permission_mode.unwrap_or("bypassPermissions");
-    vec![
+    let mut args = vec![
         "-p".to_string(),
         prompt.to_string(),
         "--output-format".to_string(),
@@ -56,7 +65,12 @@ fn build_one_shot_args(model: &str, permission_mode: Option<&str>, prompt: &str)
         model.to_string(),
         "--permission-mode".to_string(),
         mode.to_string(),
-    ]
+    ];
+    if let Some(level) = effort.claude_cli_effort() {
+        args.push("--effort".to_string());
+        args.push(level.to_string());
+    }
+    args
 }
 
 /// Fold one `ClaudeEvent` into the running one-shot accumulation state.
@@ -93,23 +107,27 @@ fn accumulate_one_shot_event(
 
 /// Spawn the one-shot child: resolve the binary, build the argument vector,
 /// and pipe stdout/stderr. Stdin is closed immediately, since the prompt
-/// travels as a positional argument and no turn ever follows it.
+/// travels as a positional argument and no turn ever follows it. `working_dir`
+/// is where the child spawns, the harness's own working directory, not
+/// necessarily `project_root`: see `Task`'s `working_dir` override in
+/// `src/tools/task.rs`.
 fn spawn_one_shot_child(
     model: &str,
     permission_mode: Option<&str>,
     extra_env: Option<&HashMap<String, String>>,
-    project_root: &Path,
+    working_dir: &Path,
     prompt: &str,
+    effort: Effort,
 ) -> Result<Child, String> {
     let binary = resolve_claude_binary(extra_env).ok_or_else(|| {
         format!("could not resolve the claude CLI binary; set {CLAUDE_CLI_PATH_KEY}")
     })?;
-    let args = build_one_shot_args(model, permission_mode, prompt);
+    let args = build_one_shot_args(model, permission_mode, prompt, effort);
 
     let mut command = Command::new(&binary);
     command
         .args(&args)
-        .current_dir(project_root)
+        .current_dir(working_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -175,12 +193,19 @@ impl ClaudeCliDriver {
         model: &str,
         permission_mode: Option<&str>,
         extra_env: Option<&HashMap<String, String>>,
-        project_root: &Path,
+        working_dir: &Path,
         prompt: &str,
         interrupt_flag: Arc<AtomicBool>,
+        effort: Effort,
     ) -> Result<OneShotResult, String> {
-        let mut child =
-            spawn_one_shot_child(model, permission_mode, extra_env, project_root, prompt)?;
+        let mut child = spawn_one_shot_child(
+            model,
+            permission_mode,
+            extra_env,
+            working_dir,
+            prompt,
+            effort,
+        )?;
         let stdout = child
             .stdout
             .take()
@@ -202,13 +227,71 @@ impl ClaudeCliDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const TOOLS_FIXTURE: &str =
         include_str!("../../../tests/fixtures/claude_stream_json_tools.jsonl");
 
+    /// `spawn_one_shot_child` builds its `Command` with `working_dir`, not
+    /// `project_root`: there is no `project_root` in this function's scope
+    /// at all, `working_dir` is the only directory it is ever given. This
+    /// proves the wiring the same way `process.rs`'s spawn-wiring tests do,
+    /// without ever running a real `claude` binary: `cmd.exe`, always
+    /// present at this path on Windows (this is a Windows-only project, see
+    /// CLAUDE.md), starts as a plain shell on unrecognized switches, and
+    /// Windows refuses to start any process at all when its working
+    /// directory does not exist. So a spawn into a missing directory only
+    /// fails if `working_dir` really reached `Command::current_dir`.
+    #[tokio::test]
+    async fn spawn_one_shot_child_honors_the_given_working_dir() {
+        let cmd_exe = PathBuf::from(r"C:\Windows\System32\cmd.exe");
+        if !cmd_exe.is_file() {
+            return;
+        }
+        let mut env = HashMap::new();
+        env.insert(
+            CLAUDE_CLI_PATH_KEY.to_string(),
+            cmd_exe.to_string_lossy().to_string(),
+        );
+
+        let missing_dir = std::env::temp_dir().join(format!(
+            "one_shot_missing_dir_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!missing_dir.exists());
+
+        let err = spawn_one_shot_child(
+            "opus",
+            None,
+            Some(&env),
+            &missing_dir,
+            "hello",
+            Effort::None,
+        )
+        .expect_err("spawning into a nonexistent working directory must fail");
+        assert!(err.contains("failed to spawn"), "unexpected error: {err}");
+
+        let existing_dir = std::env::temp_dir();
+        let mut child = spawn_one_shot_child(
+            "opus",
+            None,
+            Some(&env),
+            &existing_dir,
+            "hello",
+            Effort::None,
+        )
+        .expect("spawning into an existing directory should succeed");
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+    }
+
     #[test]
     fn one_shot_args_builder_produces_exact_flag_list_with_prompt_positional() {
-        let args = build_one_shot_args("claude-opus-x", Some("acceptEdits"), "hello there");
+        let args = build_one_shot_args("claude-opus-x", Some("acceptEdits"), "hello there", Effort::None);
         assert_eq!(
             args,
             vec![
@@ -228,14 +311,34 @@ mod tests {
 
     #[test]
     fn one_shot_args_builder_omits_input_format() {
-        let args = build_one_shot_args("claude-opus-x", Some("acceptEdits"), "hello");
+        let args = build_one_shot_args("claude-opus-x", Some("acceptEdits"), "hello", Effort::None);
         assert!(!args.contains(&"--input-format".to_string()));
     }
 
     #[test]
     fn one_shot_args_builder_defaults_permission_mode_to_bypass_permissions() {
-        let args = build_one_shot_args("claude-opus-x", None, "hello");
+        let args = build_one_shot_args("claude-opus-x", None, "hello", Effort::None);
         assert_eq!(args[9], "bypassPermissions");
+    }
+
+    #[test]
+    fn one_shot_args_builder_omits_effort_flag_for_effort_none() {
+        let args = build_one_shot_args("claude-opus-x", None, "hello", Effort::None);
+        assert!(!args.contains(&"--effort".to_string()));
+    }
+
+    #[test]
+    fn one_shot_args_builder_appends_effort_flag_for_every_other_level() {
+        for (level, expected) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Max, "max"),
+        ] {
+            let args = build_one_shot_args("claude-opus-x", None, "hello", level);
+            assert_eq!(args[10], "--effort", "level {level:?}");
+            assert_eq!(args[11], expected, "level {level:?}");
+        }
     }
 
     #[test]

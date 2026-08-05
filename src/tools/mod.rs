@@ -1,7 +1,11 @@
 pub mod ask;
 pub mod bash;
+pub mod cd;
+pub mod close_session;
 pub mod read;
+pub mod read_image;
 pub mod reset;
+pub mod send_message;
 pub mod task;
 pub mod write;
 
@@ -10,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::api::types::ToolDef;
+use crate::api::types::{ImageAttachment, ToolDef};
 use crate::config::settings::PermissionsConfig;
 use crate::error::Result;
 
@@ -31,10 +35,26 @@ pub trait Tool: Send + Sync {
 }
 
 /// Result of a tool execution.
+///
+/// `image` carries a decoded image an image-reading tool wants to hand
+/// back, on top of `content`'s plain text. A `Role::Tool` message's content
+/// has to stay text: the OpenAI-compatible schema both DeepSeek and Ollama
+/// speak accepts an `image_url` content part only inside a `user` role
+/// message, never a `tool` role message. So a tool cannot put the image
+/// straight into its own result. `AgentLoop::run_turn`
+/// (`src/agent/agent_loop.rs`) reads this field after the tool result
+/// message is pushed and, when set, appends a synthetic `Role::User`
+/// message carrying the image, mapped through the same
+/// `build_user_content` a pasted or dropped image already goes through.
+/// That is what actually gets the bytes in front of the model on a turn
+/// after the one that read them: DeepSeek gets a transcript notice instead,
+/// same as a pasted image, since it accepts no image content part at all.
+/// Every other tool leaves this `None`, unaffected.
 #[derive(Debug)]
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    pub image: Option<ImageAttachment>,
 }
 
 /// Registry of all available tools, keyed by name.

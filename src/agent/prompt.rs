@@ -1,10 +1,14 @@
 use crate::api::types::ToolDef;
 
 /// Builds the system prompt from base instructions, memory files, skills, and tool definitions.
+///
+/// This builder does not report a working directory. That line is added by
+/// `MessageHistory`, re-read every turn from the shared `working_dir` the
+/// tools also read from, so the model is never told a directory it built
+/// once at startup and never revisited. See `MessageHistory::set_working_dir`.
 pub struct SystemPromptBuilder {
     base_instructions: String,
     current_date: String,
-    working_dir: String,
 }
 
 impl SystemPromptBuilder {
@@ -12,9 +16,6 @@ impl SystemPromptBuilder {
         Self {
             base_instructions: default_base_instructions(),
             current_date: chrono_now_or_empty(),
-            working_dir: std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "unknown".into()),
         }
     }
 
@@ -39,11 +40,9 @@ impl SystemPromptBuilder {
     ) -> String {
         let mut parts: Vec<String> = Vec::new();
 
-        // 1. Date and working directory
-        parts.push(format!(
-            "Today's date is {}.\nWorking directory: {}.\n",
-            self.current_date, self.working_dir
-        ));
+        // 1. Date. The working directory is not built in here: it is added
+        // by `MessageHistory` on every turn, see the struct doc comment.
+        parts.push(format!("Today's date is {}.\n", self.current_date));
 
         // 2. Base instructions
         parts.push(self.base_instructions.clone());
@@ -105,7 +104,7 @@ Tool use is unchanged. Only the text spoken back to the user is constrained."#
 }
 
 fn chrono_now_or_empty() -> String {
-    // Simple date without chrono dependency — just use UTC timestamp
+    // Simple date without chrono dependency, just use UTC timestamp
     // Format: YYYY-MM-DD
     use std::time::SystemTime;
     match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
@@ -153,7 +152,6 @@ mod tests {
         assert!(prompt.contains("memory content"));
         assert!(prompt.contains("skill list"));
         assert!(prompt.contains("\"name\": \"read\""));
-        assert!(prompt.contains("Working directory"));
     }
 
     #[test]

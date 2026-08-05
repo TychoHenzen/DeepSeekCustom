@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use DeepSeekCustom::agent::agent_loop::{AgentCommand, StreamEvent};
+use DeepSeekCustom::agent::agent_loop::{AgentCommand, RoutedEvent};
 use DeepSeekCustom::agent::repeat::RepeatCommand;
 use DeepSeekCustom::backend::factory::BackendFactory;
 use DeepSeekCustom::config::settings::Settings;
@@ -92,9 +92,27 @@ async fn main() {
             .with_interrupt_flag(shared_interrupt_flag),
     );
 
+    // The working directory the `Bash`, `Read`, `Write`, and `Cd` tools act
+    // against. Starts equal to `project_root`. Seeded here from a saved
+    // `working_dir` setting, if one is present and still a real directory.
+    // An invalid or missing saved directory is not an error: it just leaves
+    // the factory's default of `project_root` in place, logged at `warn`.
+    let working_dir_flag = factory.working_dir();
+    if let Some(saved_dir) = settings.working_dir() {
+        let candidate = PathBuf::from(&saved_dir);
+        if candidate.is_dir() {
+            *working_dir_flag.lock().unwrap() = candidate;
+        } else {
+            tracing::warn!(
+                "configured working_dir \"{saved_dir}\" is not a directory; \
+                 staying at the project root"
+            );
+        }
+    }
+
     // ── Channels ────────────────────────────────────────────
 
-    let (tx_events, rx_events) = mpsc::unbounded_channel::<StreamEvent>();
+    let (tx_events, rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
 
@@ -116,9 +134,9 @@ async fn main() {
 
     // Share interrupt flag between GUI and agent
     let interrupt_flag = backend.interrupt_flag();
-    let thinking_flag = backend.thinking_flag();
-    // Seeded by `DeepSeekGui::new`, which sets the checkbox and this flag
-    // together from the same settings value.
+    let effort_flag = backend.effort_flag();
+    // Seeded below from the same settings value a future effort control
+    // (P5S03) will also read.
     let voice_mode_flag = backend.voice_mode_flag();
     let context_budget_flag = backend.context_budget_flag();
     let model_flag = backend.model_flag();
@@ -126,11 +144,11 @@ async fn main() {
 
     // ── Seed agent flags from settings ──────────────────────
 
-    let thinking_enabled = settings.thinking_enabled();
+    let effort = settings.effort();
     let context_budget = settings.context_budget();
-    thinking_flag.store(thinking_enabled, Ordering::SeqCst);
+    effort.store(&effort_flag);
     context_budget_flag.store(context_budget, Ordering::SeqCst);
-    info!("seeded from settings: thinking={thinking_enabled} context_budget={context_budget}");
+    info!("seeded from settings: effort={effort:?} context_budget={context_budget}");
 
     // ── Spawn agent task ────────────────────────────────────
 
@@ -140,9 +158,9 @@ async fn main() {
             tokio::select! {
                 input = rx_input.recv() => {
                     match input {
-                        Some(AgentCommand::UserTurn(text)) => {
+                        Some(AgentCommand::UserTurn { text, image }) => {
                             debug_agent_input(&text);
-                            match backend.run(&text).await {
+                            match backend.run_with_image(&text, image.as_ref()).await {
                                 Ok(responses) => {
                                     info!(
                                         "agent turn complete: {} response segments",
@@ -189,10 +207,11 @@ async fn main() {
         rx_events,
         tx_input,
         interrupt_flag,
-        thinking_flag,
+        effort_flag,
         voice_mode_flag,
         context_budget_flag,
         model_flag,
+        working_dir_flag,
         settings.clone(),
         project_root.clone(),
     )
@@ -220,7 +239,15 @@ async fn main() {
     eframe::run_native(
         "DeepSeekCustom",
         native_options,
-        Box::new(|_cc| Ok(Box::new(gui))),
+        Box::new(|cc| {
+            // Installs the loader that turns `egui::Image::from_bytes` into
+            // an actual texture, for the transcript's `Image` block (see
+            // `render_image_block` in `src/gui/mod.rs`). Without this call
+            // that widget silently shows nothing: the bytes reach the
+            // context, but no loader is registered to decode them.
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(gui))
+        }),
     )
     .expect("GUI failed");
 

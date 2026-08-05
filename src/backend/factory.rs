@@ -6,25 +6,29 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::agent::agent_loop::{AgentConfig, AgentLoop, StreamEvent};
+use crate::agent::agent_loop::{AgentConfig, AgentLoop, RoutedEvent};
 use crate::agent::prompt::SystemPromptBuilder;
 use crate::api::client::{ApiClient, Provider, resolve_api_key};
 use crate::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
 use crate::autopilot::policy::PolicyStore;
 use crate::backend::Backend;
+use crate::effort::Effort;
+use crate::backend::registry::SubagentRegistry;
+use crate::backend::stub::{StubBackend, StubTurn};
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
-    ask::AskUserQuestionTool, bash::BashTool, read::ReadTool, reset::ResetTool, task::TaskTool,
-    write::WriteTool,
+    ask::AskUserQuestionTool, bash::BashTool, cd::CdTool, close_session::CloseSessionTool,
+    read::ReadTool, read_image::ReadImageTool, reset::ResetTool, send_message::SendMessageTool,
+    task::TaskTool, write::WriteTool,
 };
 
 /// The pieces needed to build either kind of backend, resolved from a
@@ -47,6 +51,14 @@ pub(crate) enum ResolvedBackend {
         model: String,
         permission_mode: Option<String>,
         env: Option<HashMap<String, String>>,
+    },
+    /// Enough to build a `StubBackend`. Never produced from `settings.json`:
+    /// only `BackendFactory::with_stub` (`#[cfg(test)]`) puts an entry in
+    /// the map `resolve` checks first. See `src/backend/stub.rs`.
+    Stub {
+        name: String,
+        script: Vec<StubTurn>,
+        model: String,
     },
 }
 
@@ -167,7 +179,7 @@ fn build_api_backend(
     base_url: Option<String>,
     model: String,
     factory: &Arc<BackendFactory>,
-    tx_events: mpsc::UnboundedSender<StreamEvent>,
+    tx_events: mpsc::UnboundedSender<RoutedEvent>,
     depth: u32,
 ) -> Backend {
     let settings = &factory.settings;
@@ -199,17 +211,60 @@ fn build_api_backend(
         answerer_model(settings, provider, &model),
     ));
 
+    // Created before the tools that need it, not after the agent: `TaskTool`
+    // registers a `keep_open` session into this same registry, so it needs
+    // a handle to it at construction time. The agent gets the identical
+    // `Arc` below, once it exists, so "the tool registers into it" and "the
+    // agent closes it on turn end" are provably the same registry.
+    let subagent_registry = Arc::new(SubagentRegistry::new());
+    // Created before the tools too, for the same reason: `TaskTool` needs a
+    // handle to it as `parent_effort_flag`, to read this session's current
+    // effort level as the default for a dispatch that carries no explicit
+    // `effort` override. `agent.set_effort_flag(effort_flag)` below hands
+    // this exact `Arc` to the agent as well, in place of the fresh one
+    // `AgentLoop::new` would otherwise create from `config.effort`. So
+    // "what `TaskTool` reads as the current level" and "what this agent's
+    // own `effort_flag()` reports" are provably the same object, the same
+    // way `subagent_registry` above is shared between the tool and the
+    // agent that closes it.
+    let effort_flag: Arc<AtomicU8> = Arc::new(AtomicU8::new(Effort::None.to_u8()));
+
     let mut tools = ToolRegistry::new();
-    tools.register(Arc::new(BashTool::new(project_root.to_path_buf())));
-    tools.register(Arc::new(ReadTool::new(project_root.to_path_buf())));
-    tools.register(Arc::new(WriteTool::new(project_root.to_path_buf())));
+    tools.register(Arc::new(BashTool::new(factory.working_dir())));
+    tools.register(Arc::new(ReadTool::new(factory.working_dir())));
+    tools.register(Arc::new(ReadImageTool::new(factory.working_dir())));
+    tools.register(Arc::new(WriteTool::new(factory.working_dir())));
+    // Not depth-gated, unlike `Task`, `SendMessage`, and `CloseSession`
+    // below: a subagent may change its own working directory regardless
+    // of how deep the dispatch chain has gone.
+    tools.register(Arc::new(CdTool::new(factory.working_dir())));
     tools.register(Arc::new(ResetTool));
     tools.register(Arc::new(AskUserQuestionTool::new(answerer)));
     // Below the depth limit, this backend may dispatch a subagent of its
     // own. The dispatched subagent sits one depth deeper, hence `depth +
     // 1`. At the limit, no `Task` tool goes in and the chain stops.
     if may_dispatch(depth, settings.subagent_max_depth()) {
-        tools.register(Arc::new(TaskTool::new(factory.clone(), depth + 1)));
+        tools.register(Arc::new(TaskTool::new(
+            factory.clone(),
+            depth + 1,
+            tx_events.clone(),
+            subagent_registry.clone(),
+            effort_flag.clone(),
+        )));
+        // Gated the same way as `Task`, not separately: a session this
+        // backend cannot open in the first place is never reachable
+        // through `SendMessage` either, so gating the two independently
+        // would only let a subagent at the depth limit send follow-ups
+        // into sessions it could never have opened.
+        tools.register(Arc::new(SendMessageTool::new(
+            subagent_registry.clone(),
+            settings.session_turn_cap(),
+            settings.send_message_call_cap(),
+        )));
+        // Same gate as `Task` and `SendMessage`, for the same reason: a
+        // session that could never be opened at this depth can never need
+        // closing at this depth either.
+        tools.register(Arc::new(CloseSessionTool::new(subagent_registry.clone())));
     }
     info!("registered {} tools", tools.list().len());
 
@@ -241,6 +296,21 @@ fn build_api_backend(
     };
     let mut agent = AgentLoop::new(client, tools, system_prompt, config, factory.interrupt_flag.clone());
     agent.set_event_sender(tx_events);
+    agent.set_working_dir(factory.working_dir());
+    // A fresh registry per agent, not one shared across the whole dispatch
+    // tree. The roadmap's lifetime rule is "a session lives until its
+    // parent's turn ends": each agent owns the sessions it opened, and
+    // only its own turn end or its own Reset may close them. Handing every
+    // agent in the tree the same `Arc` would let any agent's turn end
+    // close a completely different agent's still-live session. This is the
+    // exact `Arc` `TaskTool` above was given, so a `keep_open` session it
+    // registers is closed by this agent's own turn end, never anyone else's.
+    agent.set_subagent_registry(subagent_registry);
+    // Same `Arc` `TaskTool` above was given as `parent_effort_flag`: a
+    // seed written into it now (main.rs, at startup) or later (a GUI
+    // control) is visible to a `Task` dispatch's "inherit the session's
+    // current level" default with no extra sync step.
+    agent.set_effort_flag(effort_flag);
     Backend::Api(Box::new(agent))
 }
 
@@ -256,14 +326,32 @@ pub struct BackendFactory {
     /// nobody holds. `with_interrupt_flag` replaces it with the one the
     /// GUI actually has.
     interrupt_flag: Arc<AtomicBool>,
+    /// Where the `Bash`, `Read`, and `Write` tools act, as distinct from
+    /// `project_root`, which stays the fixed anchor for config and memory
+    /// files. Starts equal to `project_root`. Shared with every tool this
+    /// factory builds the same way `interrupt_flag` is: the tools read it
+    /// fresh on every call, so a change takes effect on the next tool use.
+    /// There is no path sandbox tying it back to `project_root`, on
+    /// purpose: see the phase 4 section of
+    /// `docs/plans/2026-08-04-long-term-roadmap.md`.
+    working_dir: Arc<Mutex<PathBuf>>,
+    /// Named scripts for `StubBackend`, checked by `resolve` before it ever
+    /// looks at `settings.backends`. Always empty outside a test build:
+    /// only `with_stub` inserts into it, and that method is `#[cfg(test)]`.
+    /// This is what keeps a stub unreachable from a normal run without
+    /// needing to gate the `Stub` variant itself behind `cfg(test)`.
+    stubs: HashMap<String, Vec<StubTurn>>,
 }
 
 impl BackendFactory {
     pub fn new(settings: Settings, project_root: PathBuf) -> Self {
+        let working_dir = Arc::new(Mutex::new(project_root.clone()));
         Self {
             settings,
             project_root,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
+            working_dir,
+            stubs: HashMap::new(),
         }
     }
 
@@ -272,6 +360,16 @@ impl BackendFactory {
     /// every backend and subagent the factory builds.
     pub fn with_interrupt_flag(mut self, interrupt_flag: Arc<AtomicBool>) -> Self {
         self.interrupt_flag = interrupt_flag;
+        self
+    }
+
+    /// Register a named script so `build`/`resolve` produce a
+    /// `StubBackend` for that name instead of consulting
+    /// `settings.backends`. Test-only on purpose: this is the one place a
+    /// stub can enter a `BackendFactory` at all.
+    #[cfg(test)]
+    pub(crate) fn with_stub(mut self, name: impl Into<String>, script: Vec<StubTurn>) -> Self {
+        self.stubs.insert(name.into(), script);
         self
     }
 
@@ -293,12 +391,16 @@ impl BackendFactory {
         name: &str,
         model_override: Option<&str>,
     ) -> Result<ResolvedBackend, String> {
+        if let Some(script) = self.stubs.get(name) {
+            return Ok(ResolvedBackend::Stub {
+                name: name.to_string(),
+                script: script.clone(),
+                model: model_override
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "stub-model".to_string()),
+            });
+        }
         resolve_named_backend(&self.settings, &self.project_root, name, model_override)
-    }
-
-    /// The project root this factory resolves backends against.
-    pub(crate) fn project_root(&self) -> &Path {
-        &self.project_root
     }
 
     /// The shared interrupt flag every backend this factory builds gets.
@@ -306,6 +408,65 @@ impl BackendFactory {
     /// handle directly. Without it, Escape could not stop that subagent.
     pub(crate) fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
+    }
+
+    /// The shared working directory every tool this factory builds reads
+    /// from, fresh on every call. Starts equal to `project_root`. A clone
+    /// of the `Arc`, not a snapshot of the path: writing through it (a
+    /// GUI control, the `Cd` tool) is visible to every tool holding a
+    /// clone. `pub`, not `pub(crate)`: `main.rs`, in the binary crate,
+    /// reads this once at startup to seed the GUI's working-directory
+    /// control the same way it already reads the other shared handles off
+    /// `Backend`.
+    pub fn working_dir(&self) -> Arc<Mutex<PathBuf>> {
+        Arc::clone(&self.working_dir)
+    }
+
+    /// A snapshot of this factory's current working directory, as a plain
+    /// `PathBuf` rather than the shared `Arc`. Used by a subagent dispatch
+    /// (`src/backend/subagent.rs`) to seed a fresh, independent working
+    /// directory for a subagent that carries no `working_dir` override of
+    /// its own: the subagent starts where its parent currently stands, but
+    /// from a value it owns, not one it shares.
+    pub(crate) fn working_dir_snapshot(&self) -> PathBuf {
+        self.working_dir.lock().unwrap().clone()
+    }
+
+    /// A clone of this factory with `working_dir` replaced by the given
+    /// value, everything else unchanged. A build made through the result
+    /// acts in that directory instead of this factory's own shared one.
+    ///
+    /// This is how a subagent dispatch gets its own working directory
+    /// without ever touching the parent's: the parent's `working_dir` stays
+    /// exactly the `Arc` it always was, untouched by anything the returned
+    /// factory or a backend built through it does. A subagent's own `Cd`
+    /// tool call writes only the `Arc` passed in here. If that subagent
+    /// dispatches a `Task` of its own, the nested dispatch resolves its
+    /// working directory against this same clone, so an inherited
+    /// grandchild sees its immediate parent's current directory, not the
+    /// top-level session's.
+    pub(crate) fn with_working_dir(&self, working_dir: Arc<Mutex<PathBuf>>) -> Arc<Self> {
+        Arc::new(Self {
+            settings: self.settings.clone(),
+            project_root: self.project_root.clone(),
+            interrupt_flag: Arc::clone(&self.interrupt_flag),
+            working_dir,
+            stubs: self.stubs.clone(),
+        })
+    }
+
+    /// The per-session turn cap a subagent dispatch reports on its
+    /// `RouteHop`s, so the GUI's subagent block header can show it. See
+    /// `Settings::session_turn_cap`.
+    pub(crate) fn session_turn_cap(&self) -> u32 {
+        self.settings.session_turn_cap()
+    }
+
+    /// The per-parent-turn `SendMessage` call cap a subagent dispatch
+    /// reports on its `RouteHop`s, for the same reason. See
+    /// `Settings::send_message_call_cap`.
+    pub(crate) fn send_message_call_cap(&self) -> u32 {
+        self.settings.send_message_call_cap()
     }
 
     /// Build a backend by name from the `backends` map, optionally
@@ -321,10 +482,10 @@ impl BackendFactory {
         self: &Arc<Self>,
         name: &str,
         model_override: Option<&str>,
-        tx_events: mpsc::UnboundedSender<StreamEvent>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
         depth: u32,
     ) -> Result<Backend, String> {
-        let resolved = resolve_named_backend(&self.settings, &self.project_root, name, model_override)?;
+        let resolved = self.resolve(name, model_override)?;
 
         Ok(match resolved {
             ResolvedBackend::Api {
@@ -363,7 +524,17 @@ impl BackendFactory {
                 // skills, and its own hooks, and it runs its own tools.
                 // There is no flag to hand this harness's tool definitions
                 // to the child, and no way for the child to execute them.
-                Backend::new_claude_cli(model, permission_mode, env, self.project_root.clone(), tx_events)
+                Backend::new_claude_cli(model, permission_mode, env, self.working_dir(), tx_events)
+            }
+            ResolvedBackend::Stub { name, script, model } => {
+                info!(
+                    "resolved backend: name={} kind=stub turns={}",
+                    name,
+                    script.len(),
+                );
+                let mut stub = StubBackend::new(script, model, self.interrupt_flag.clone());
+                stub.set_event_sender(tx_events);
+                Backend::Stub(Box::new(stub))
             }
         })
     }

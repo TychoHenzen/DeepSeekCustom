@@ -1,4 +1,5 @@
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,13 +22,17 @@ enum Shell {
     Ps,
 }
 
-/// Shell command execution tool.
+/// Shell command execution tool. `work_dir` is shared with every other tool
+/// this harness registers, the same `Arc<Mutex<PathBuf>>` a `Cd` tool (a
+/// later phase) will write into. It is read fresh on every `execute` call,
+/// not captured at construction, so a change takes effect on the next
+/// command run.
 pub struct BashTool {
-    work_dir: std::path::PathBuf,
+    work_dir: Arc<Mutex<std::path::PathBuf>>,
 }
 
 impl BashTool {
-    pub fn new(work_dir: std::path::PathBuf) -> Self {
+    pub fn new(work_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
         Self { work_dir }
     }
 }
@@ -98,11 +103,15 @@ impl Tool for BashTool {
         let shell = parsed.resolve_shell();
         debug!("bash: command={}, shell={:?}", parsed.command, shell);
 
-        let result = timeout(
-            timeout_dur,
-            run_command(&parsed.command, &self.work_dir, shell),
-        )
-        .await;
+        // Read the shared working directory fresh on every call, so a
+        // change made between two calls takes effect on the next one.
+        let work_dir = self
+            .work_dir
+            .lock()
+            .expect("work_dir mutex poisoned")
+            .clone();
+
+        let result = timeout(timeout_dur, run_command(&parsed.command, &work_dir, shell)).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -110,6 +119,7 @@ impl Tool for BashTool {
                 Ok(ToolOutput {
                     content: format_output(&output),
                     is_error: output.exit_code != 0,
+                    image: None,
                 })
             }
             Ok(Err(e)) => Err(HarnessError::Tool(format!("bash: {e}"))),
@@ -120,6 +130,7 @@ impl Tool for BashTool {
                     parsed.command
                 ),
                 is_error: true,
+                image: None,
             }),
         }
     }
@@ -254,9 +265,13 @@ fn split_shell_words(input: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn dir_arc(p: std::path::PathBuf) -> Arc<Mutex<std::path::PathBuf>> {
+        Arc::new(Mutex::new(p))
+    }
+
     #[test]
     fn input_schema_is_valid_json() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["command"]["type"] == "string");
@@ -264,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn echo_hello_returns_correct_stdout() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         let input = serde_json::json!({"command": "echo hello"});
         let output = tool.execute(input).await.expect("execute");
         assert!(!output.is_error);
@@ -274,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_kills_long_running_command() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         // A cmd builtin loop, so the test does not depend on any program being
         // on PATH. It runs for minutes, and the timeout must cut it short.
         let input = serde_json::json!({
@@ -296,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn powershell_auto_detected_and_run_directly() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         let input = serde_json::json!({
             "command": "powershell -NoProfile -Command \"Write-Output 'ps_hello'\""
         });
@@ -312,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_shell_cmd_works() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         let input = serde_json::json!({
             "command": "echo cmd_explicit",
             "shell": "cmd"
@@ -324,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_shell_powershell_works() {
-        let tool = BashTool::new(std::env::current_dir().unwrap());
+        let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
         let input = serde_json::json!({
             "command": "powershell -NoProfile -Command \"Write-Output 'pwsh_explicit'\"",
             "shell": "powershell"
@@ -382,5 +397,45 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(input.resolve_shell(), Shell::Ps);
+    }
+
+    /// Create a uniquely named directory under the system temp dir.
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dsc-bash-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn changing_shared_work_dir_moves_where_the_next_command_runs() {
+        let dir_a = unique_temp_dir("a");
+        let dir_b = unique_temp_dir("b");
+        std::fs::write(dir_a.join("marker.txt"), "in_a").unwrap();
+        std::fs::write(dir_b.join("marker.txt"), "in_b").unwrap();
+
+        let shared = dir_arc(dir_a.clone());
+        let tool = BashTool::new(shared.clone());
+
+        let first = tool
+            .execute(serde_json::json!({"command": "type marker.txt"}))
+            .await
+            .expect("execute");
+        assert!(first.content.contains("in_a"), "got: {}", first.content);
+
+        // Change the shared value between calls, same tool instance.
+        *shared.lock().unwrap() = dir_b.clone();
+
+        let second = tool
+            .execute(serde_json::json!({"command": "type marker.txt"}))
+            .await
+            .expect("execute");
+        assert!(second.content.contains("in_b"), "got: {}", second.content);
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

@@ -19,3 +19,7 @@ deepseek_custom.log
 
 # Saved conversations. User data, not source.
 .deepseek/
+
+# cargo-mutants scratch output
+mutants.out/
+mutants.out.old/

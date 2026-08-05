@@ -6,13 +6,17 @@ version = 4
 name = "DeepSeekCustom"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "async-trait",
+ "base64",
  "bytes",
  "color-eyre",
  "cpal",
  "eframe",
  "egui_commonmark",
+ "egui_extras",
  "futures",
+ "image",
  "kokoro-en",
  "ort",
  "reqwest",
@@ -2225,6 +2229,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

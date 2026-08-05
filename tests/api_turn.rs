@@ -2,13 +2,16 @@
 //! turn against a canned SSE stream served by a local wiremock server,
 //! rather than any real DeepSeek or Ollama endpoint.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
-use DeepSeekCustom::agent::agent_loop::{AgentConfig, AgentLoop, StreamEvent};
+use DeepSeekCustom::agent::agent_loop::{AgentConfig, AgentLoop, RoutedEvent, StreamEvent};
 use DeepSeekCustom::api::client::{ApiClient, Provider};
+use DeepSeekCustom::api::types::ImageAttachment;
+use DeepSeekCustom::effort::Effort;
 use DeepSeekCustom::tools::ToolRegistry;
 use DeepSeekCustom::tools::read::ReadTool;
+use DeepSeekCustom::tools::read_image::ReadImageTool;
 
 use wiremock::matchers::{method, path};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
@@ -71,7 +74,7 @@ async fn full_turn_against_mock_server_collects_text_and_turn_end() {
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        events.push(ev);
+        events.push(ev.event);
     }
 
     let text: String = events
@@ -148,7 +151,7 @@ const FOLLOWUP_TEXT_SSE_BODY: &str = concat!(
 /// tests below that don't need the tool-call round trip.
 fn new_agent_against(
     mock_server: &MockServer,
-) -> (AgentLoop, tokio::sync::mpsc::UnboundedReceiver<StreamEvent>) {
+) -> (AgentLoop, tokio::sync::mpsc::UnboundedReceiver<RoutedEvent>) {
     let client = ApiClient::new(
         Provider::DeepSeek,
         "sk-test".into(),
@@ -226,7 +229,9 @@ async fn tool_call_round_trip_feeds_result_back_and_reaches_turn_end() {
     );
 
     let mut tools = ToolRegistry::new();
-    tools.register(Arc::new(ReadTool::new(std::env::current_dir().unwrap())));
+    tools.register(Arc::new(ReadTool::new(Arc::new(Mutex::new(
+        std::env::current_dir().unwrap(),
+    )))));
 
     let mut agent = AgentLoop::new(
         client,
@@ -244,7 +249,7 @@ async fn tool_call_round_trip_feeds_result_back_and_reaches_turn_end() {
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        events.push(ev);
+        events.push(ev.event);
     }
 
     let start_idx = events
@@ -389,7 +394,7 @@ async fn retries_after_a_500_and_completes_the_turn() {
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        events.push(ev);
+        events.push(ev.event);
     }
 
     let text: String = events
@@ -442,7 +447,7 @@ async fn a_malformed_chunk_is_skipped_and_the_turn_still_completes() {
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        events.push(ev);
+        events.push(ev.event);
     }
 
     // The broken chunk contributes no text. The two valid chunks around it
@@ -491,7 +496,7 @@ async fn a_stream_missing_the_done_sentinel_still_terminates_the_turn() {
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        events.push(ev);
+        events.push(ev.event);
     }
 
     let text: String = events
@@ -510,4 +515,459 @@ async fn a_stream_missing_the_done_sentinel_still_terminates_the_turn() {
     );
 
     mock_server.verify().await;
+}
+
+/// Runs one full turn against a fresh wiremock server for `provider` at the
+/// given `effort` level, and returns the outgoing request body the server
+/// recorded. `SSE_BODY`'s shape is generic OpenAI-compatible chunk data, so
+/// it works as the canned response for either provider.
+async fn request_body_for_effort(provider: Provider, effort: Effort) -> serde_json::Value {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(SSE_BODY, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let client = ApiClient::new(
+        provider,
+        "sk-test".into(),
+        Some(mock_server.uri()),
+        Some("deepseek-v4-flash".into()),
+    );
+
+    let tools = ToolRegistry::new();
+    let config = AgentConfig {
+        effort,
+        ..AgentConfig::default()
+    };
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        config,
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.set_event_sender(tx);
+
+    let result = agent.run("hello").await;
+    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    assert_eq!(received.len(), 1, "expected exactly one request");
+
+    received[0]
+        .body_json()
+        .expect("request body should be valid JSON")
+}
+
+/// Proves every `Effort` level actually reaches the wire for the DeepSeek
+/// provider, per the mapping `Effort::deepseek_thinking_mode` documents.
+/// This mapping is deliberately not one to one: `Low`, `Medium`, and `High`
+/// all send `"thinking"`, since DeepSeek only offers three modes. What this
+/// closes is that `Max` reaches `"thinking_max"` and `None` reaches
+/// `"non-thinking"`, the two values the old boolean toggle could never
+/// reach at all.
+#[tokio::test]
+async fn deepseek_sends_the_documented_thinking_mode_per_effort_level_on_the_wire() {
+    for (effort, expected_thinking_mode) in [
+        (Effort::None, "non-thinking"),
+        (Effort::Low, "thinking"),
+        (Effort::Medium, "thinking"),
+        (Effort::High, "thinking"),
+        (Effort::Max, "thinking_max"),
+    ] {
+        let body = request_body_for_effort(Provider::DeepSeek, effort).await;
+        assert_eq!(
+            body["thinking_mode"], expected_thinking_mode,
+            "effort {effort:?} should send thinking_mode {expected_thinking_mode:?}"
+        );
+        assert!(
+            body.get("reasoning_effort").is_none() || body["reasoning_effort"].is_null(),
+            "DeepSeek should never send reasoning_effort on the wire, got {:?}",
+            body.get("reasoning_effort")
+        );
+    }
+}
+
+/// Proves every `Effort` level reaches the wire as a distinct
+/// `reasoning_effort` value for the Ollama provider, per
+/// `Effort::ollama_reasoning_effort`'s one-to-one mapping. Unlike DeepSeek,
+/// none of Ollama's five levels collapse into another.
+#[tokio::test]
+async fn ollama_sends_a_distinct_reasoning_effort_per_effort_level_on_the_wire() {
+    let mut seen = std::collections::HashSet::new();
+
+    for (effort, expected_reasoning_effort) in [
+        (Effort::None, "none"),
+        (Effort::Low, "low"),
+        (Effort::Medium, "medium"),
+        (Effort::High, "high"),
+        (Effort::Max, "max"),
+    ] {
+        let body = request_body_for_effort(Provider::Ollama, effort).await;
+        assert_eq!(
+            body["reasoning_effort"], expected_reasoning_effort,
+            "effort {effort:?} should send reasoning_effort {expected_reasoning_effort:?}"
+        );
+        assert!(
+            body.get("thinking_mode").is_none() || body["thinking_mode"].is_null(),
+            "Ollama should never send thinking_mode on the wire, got {:?}",
+            body.get("thinking_mode")
+        );
+        assert!(
+            seen.insert(expected_reasoning_effort),
+            "reasoning_effort {expected_reasoning_effort:?} was not distinct across levels"
+        );
+    }
+}
+
+/// The 68-byte grayscale test PNG used throughout
+/// `docs/notes/image-support.md`, so these tests exercise the same bytes
+/// the real per-backend probes did.
+const TEST_IMAGE_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+fn test_image() -> ImageAttachment {
+    ImageAttachment {
+        data: TEST_IMAGE_BASE64.to_string(),
+        media_type: "image/png".to_string(),
+    }
+}
+
+/// Runs one full turn with `image` attached against a fresh wiremock server
+/// for `provider`, and returns the outgoing request body plus every event
+/// the turn emitted.
+async fn run_turn_with_image(
+    provider: Provider,
+    image: Option<&ImageAttachment>,
+) -> (serde_json::Value, Vec<StreamEvent>) {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(SSE_BODY, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let client = ApiClient::new(
+        provider,
+        "sk-test".into(),
+        Some(mock_server.uri()),
+        Some("deepseek-v4-flash".into()),
+    );
+
+    let tools = ToolRegistry::new();
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        AgentConfig::default(),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.set_event_sender(tx);
+
+    let result = agent.run_with_image("look at this", image).await;
+    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev.event);
+    }
+
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    assert_eq!(received.len(), 1, "expected exactly one request");
+    let body = received[0]
+        .body_json()
+        .expect("request body should be valid JSON");
+
+    (body, events)
+}
+
+/// Ollama accepts the OpenAI `image_url` content part shape, confirmed
+/// against a real local instance in `docs/notes/image-support.md`. The
+/// outgoing request must carry that exact shape: a `text` part followed by
+/// an `image_url` part with a `data:` URL.
+#[tokio::test]
+async fn ollama_sends_the_image_as_an_openai_image_url_part() {
+    let image = test_image();
+    let (body, events) = run_turn_with_image(Provider::Ollama, Some(&image)).await;
+
+    let content = &body["messages"][1]["content"];
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "look at this");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        format!("data:image/png;base64,{TEST_IMAGE_BASE64}")
+    );
+
+    // Ollama can take the image, so no unsupported-backend notice fires.
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+        "expected no Error/notice event, got {events:?}"
+    );
+}
+
+/// DeepSeek has no image support at all, confirmed against the live API in
+/// `docs/notes/image-support.md`: a hard 400 naming `image_url` as an
+/// unknown content-part variant. The mapping must drop the image before the
+/// request is built, rather than send it and let the 400 happen, and must
+/// post a transcript notice naming the backend.
+#[tokio::test]
+async fn deepseek_drops_the_image_and_posts_a_notice_naming_the_backend() {
+    let image = test_image();
+    let (body, events) = run_turn_with_image(Provider::DeepSeek, Some(&image)).await;
+
+    // The outgoing content is plain text: no image part was ever built,
+    // let alone sent.
+    assert_eq!(body["messages"][1]["content"], "look at this");
+
+    let notice = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Error { message } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("expected a notice (Error event) for the dropped image");
+    assert!(
+        notice.contains("DeepSeek"),
+        "notice should name the backend: {notice}"
+    );
+
+    // The notice must fire before the request goes out, not after some 400
+    // comes back: the mock only ever answers 200, so the turn completing
+    // successfully alongside the notice proves the notice did not come from
+    // a failed request.
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Hello, world!");
+}
+
+/// A turn with no image attached must be byte-for-byte unaffected: plain
+/// text content, and no notice, on either provider.
+#[tokio::test]
+async fn a_turn_with_no_image_is_unaffected_on_either_provider() {
+    for provider in [Provider::DeepSeek, Provider::Ollama] {
+        let (body, events) = run_turn_with_image(provider, None).await;
+
+        assert_eq!(
+            body["messages"][1]["content"], "look at this",
+            "provider {provider:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+            "provider {provider:?}: expected no notice, got {events:?}"
+        );
+    }
+}
+
+// ── Mechanism: a tool-returned image reaching the next request ──
+//
+// `ToolOutput::image` cannot travel inside the `Role::Tool` result message
+// itself (see that field's doc comment in `src/tools/mod.rs`). These tests
+// prove what `AgentLoop::run_turn` actually does instead: push a synthetic
+// `Role::User` message right after the tool result, mapped through the same
+// `build_user_content` a pasted or dropped image already goes through.
+
+/// A canned SSE stream carrying one `read_image` tool call, modeled on the
+/// real DeepSeek tool-call shape `TOOL_CALL_SSE_BODY` above already uses.
+const READ_IMAGE_TOOL_CALL_SSE_BODY: &str = concat!(
+    "data: {\"id\":\"t6\",\"object\":\"chat.completion.chunk\",\"created\":6,",
+    "\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":",
+    "{\"tool_calls\":[{\"index\":0,\"id\":\"call_img1\",\"type\":\"function\",",
+    "\"function\":{\"name\":\"read_image\",",
+    "\"arguments\":\"{\\\"file_path\\\":\\\"pixel.png\\\"}\"}}]},",
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"t6\",\"object\":\"chat.completion.chunk\",\"created\":6,",
+    "\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{},",
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// Sets up a temp directory with the same 68-byte grayscale test PNG, an
+/// `AgentLoop` with a `ReadImageTool` registered against it, and a mock
+/// server that answers the first request with a `read_image` tool call and
+/// the second with plain text. Returns the second request's body (the one
+/// built after the tool result and any synthetic image message were pushed)
+/// plus every event the turn emitted.
+async fn run_tool_returned_image_turn(provider: Provider) -> (serde_json::Value, Vec<StreamEvent>) {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(HasToolMessage(false))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(READ_IMAGE_TOOL_CALL_SSE_BODY, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(HasToolMessage(true))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(FOLLOWUP_TEXT_SSE_BODY, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let client = ApiClient::new(
+        provider,
+        "sk-test".into(),
+        Some(mock_server.uri()),
+        Some("deepseek-v4-flash".into()),
+    );
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "dsc-api-turn-read-image-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        TEST_IMAGE_BASE64,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pixel.png"), &image_bytes).unwrap();
+
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ReadImageTool::new(Arc::new(Mutex::new(dir.clone())))));
+
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        AgentConfig::default(),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.set_event_sender(tx);
+
+    let result = agent.run("please look at pixel.png").await;
+    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev.event);
+    }
+
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    assert_eq!(received.len(), 2, "expected exactly two requests");
+    let second_body: serde_json::Value = received[1]
+        .body_json()
+        .expect("second request body should be valid JSON");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    (second_body, events)
+}
+
+/// Ollama can take the image, so the synthetic follow-up message must carry
+/// it as an `image_url` content part, with the exact base64 payload the
+/// tool read off disk.
+#[tokio::test]
+async fn ollama_carries_a_tool_returned_image_into_the_next_request() {
+    let (second_body, events) = run_tool_returned_image_turn(Provider::Ollama).await;
+
+    let messages = second_body["messages"]
+        .as_array()
+        .expect("messages should be an array");
+    let image_message = messages
+        .iter()
+        .find(|m| {
+            m["role"] == "user"
+                && m["content"]
+                    .as_array()
+                    .map(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+                    .unwrap_or(false)
+        })
+        .expect("expected a user message carrying the tool-returned image");
+    let content = image_message["content"].as_array().unwrap();
+    let image_part = content
+        .iter()
+        .find(|p| p["type"] == "image_url")
+        .expect("image_url part present");
+    assert_eq!(
+        image_part["image_url"]["url"],
+        format!("data:image/png;base64,{TEST_IMAGE_BASE64}")
+    );
+
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+        "Ollama can take the image, expected no notice, got {events:?}"
+    );
+}
+
+/// DeepSeek cannot take an image at all. The synthetic follow-up message
+/// must drop it exactly the way a pasted image already does, and post the
+/// same transcript notice.
+#[tokio::test]
+async fn deepseek_drops_a_tool_returned_image_and_posts_a_notice() {
+    let (second_body, events) = run_tool_returned_image_turn(Provider::DeepSeek).await;
+
+    let messages = second_body["messages"]
+        .as_array()
+        .expect("messages should be an array");
+    let has_image_part = messages.iter().any(|m| {
+        m["content"]
+            .as_array()
+            .map(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+            .unwrap_or(false)
+    });
+    assert!(
+        !has_image_part,
+        "DeepSeek must never receive an image_url part, got {second_body:?}"
+    );
+
+    let notice = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Error { message } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("expected a notice (Error event) for the dropped tool-returned image");
+    assert!(
+        notice.contains("DeepSeek"),
+        "notice should name the backend: {notice}"
+    );
 }

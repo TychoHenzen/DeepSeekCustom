@@ -65,22 +65,32 @@ impl ApiClient {
 
     /// Adapt a request to what this client's provider accepts.
     ///
-    /// DeepSeek accepts the request as built. Ollama does not support
-    /// `tool_choice`, and ignores `thinking_mode` in favor of its own
-    /// `reasoning_effort` field, so this maps one onto the other:
-    /// `"thinking"` and `"thinking_max"` become `"high"`, `"non-thinking"`
-    /// becomes `"none"`. A missing or unrecognized `thinking_mode` leaves
-    /// whatever `reasoning_effort` the caller already set untouched.
+    /// Both `thinking_mode` (DeepSeek) and `reasoning_effort` (Ollama) are
+    /// filled in here, from `req.effort`, the harness's own five-level
+    /// control. A caller builds a `ChatRequest` by setting `effort` and
+    /// leaving both wire fields `None`; this is the one place that maps
+    /// `effort` onto whichever field the active provider actually reads.
+    /// See `crate::effort::Effort` for the per-provider mapping. A request
+    /// with no `effort` set leaves both fields untouched, whatever the
+    /// caller put there directly.
+    ///
+    /// Ollama also does not support `tool_choice`, so that is cleared here
+    /// too, regardless of `effort`.
     fn prepare_request(&self, req: &ChatRequest) -> ChatRequest {
         let mut prepared = req.clone();
-        if self.provider == Provider::Ollama {
-            prepared.tool_choice = None;
-            prepared.reasoning_effort = match req.thinking_mode.as_deref() {
-                Some("thinking") | Some("thinking_max") => Some("high".to_string()),
-                Some("non-thinking") => Some("none".to_string()),
-                _ => prepared.reasoning_effort,
-            };
-            prepared.thinking_mode = None;
+        match self.provider {
+            Provider::DeepSeek => {
+                if let Some(effort) = req.effort {
+                    prepared.thinking_mode = Some(effort.deepseek_thinking_mode().to_string());
+                }
+            }
+            Provider::Ollama => {
+                prepared.tool_choice = None;
+                prepared.thinking_mode = None;
+                if let Some(effort) = req.effort {
+                    prepared.reasoning_effort = Some(effort.ollama_reasoning_effort().to_string());
+                }
+            }
         }
         prepared
     }
@@ -442,6 +452,7 @@ fn backend_api_key(backend: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effort::Effort;
 
     #[test]
     fn missing_api_key_returns_clear_error() {
@@ -517,7 +528,7 @@ mod tests {
         assert_eq!(parse_backends_json(contents), None);
     }
 
-    fn sample_request(thinking_mode: Option<&str>) -> ChatRequest {
+    fn sample_request(effort: Option<Effort>) -> ChatRequest {
         ChatRequest {
             model: "test-model".into(),
             messages: vec![],
@@ -527,27 +538,63 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: Some(1024),
             thinking: None,
-            thinking_mode: thinking_mode.map(|s| s.to_string()),
+            thinking_mode: None,
             reasoning_effort: None,
+            effort,
         }
     }
 
     #[test]
-    fn deepseek_leaves_request_untouched() {
+    fn deepseek_sets_non_thinking_for_effort_none() {
         let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
-        let req = sample_request(Some("thinking"));
+        let req = sample_request(Some(Effort::None));
 
         let prepared = client.prepare_request(&req);
 
-        assert_eq!(prepared.thinking_mode.as_deref(), Some("thinking"));
+        assert_eq!(prepared.thinking_mode.as_deref(), Some("non-thinking"));
         assert!(prepared.tool_choice.is_some());
         assert_eq!(prepared.reasoning_effort, None);
     }
 
     #[test]
+    fn deepseek_collapses_low_medium_high_into_thinking() {
+        let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+        for level in [Effort::Low, Effort::Medium, Effort::High] {
+            let req = sample_request(Some(level));
+            let prepared = client.prepare_request(&req);
+            assert_eq!(
+                prepared.thinking_mode.as_deref(),
+                Some("thinking"),
+                "level {level:?} should map to \"thinking\""
+            );
+        }
+    }
+
+    #[test]
+    fn deepseek_sets_thinking_max_for_effort_max() {
+        let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+        let req = sample_request(Some(Effort::Max));
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.thinking_mode.as_deref(), Some("thinking_max"));
+    }
+
+    #[test]
+    fn deepseek_with_no_effort_leaves_thinking_mode_untouched() {
+        let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+        let mut req = sample_request(None);
+        req.thinking_mode = Some("thinking".to_string());
+
+        let prepared = client.prepare_request(&req);
+
+        assert_eq!(prepared.thinking_mode.as_deref(), Some("thinking"));
+    }
+
+    #[test]
     fn ollama_clears_thinking_mode_and_tool_choice() {
         let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
-        let req = sample_request(Some("thinking"));
+        let req = sample_request(Some(Effort::High));
 
         let prepared = client.prepare_request(&req);
 
@@ -556,37 +603,28 @@ mod tests {
     }
 
     #[test]
-    fn ollama_maps_thinking_to_high_reasoning_effort() {
+    fn ollama_maps_every_level_one_to_one() {
         let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
-        let req = sample_request(Some("thinking"));
-
-        let prepared = client.prepare_request(&req);
-
-        assert_eq!(prepared.reasoning_effort.as_deref(), Some("high"));
+        let cases = [
+            (Effort::None, "none"),
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Max, "max"),
+        ];
+        for (level, expected) in cases {
+            let req = sample_request(Some(level));
+            let prepared = client.prepare_request(&req);
+            assert_eq!(
+                prepared.reasoning_effort.as_deref(),
+                Some(expected),
+                "level {level:?} should map to {expected:?}"
+            );
+        }
     }
 
     #[test]
-    fn ollama_maps_thinking_max_to_high_reasoning_effort() {
-        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
-        let req = sample_request(Some("thinking_max"));
-
-        let prepared = client.prepare_request(&req);
-
-        assert_eq!(prepared.reasoning_effort.as_deref(), Some("high"));
-    }
-
-    #[test]
-    fn ollama_maps_non_thinking_to_none_reasoning_effort() {
-        let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
-        let req = sample_request(Some("non-thinking"));
-
-        let prepared = client.prepare_request(&req);
-
-        assert_eq!(prepared.reasoning_effort.as_deref(), Some("none"));
-    }
-
-    #[test]
-    fn ollama_with_no_thinking_mode_leaves_reasoning_effort_alone() {
+    fn ollama_with_no_effort_leaves_reasoning_effort_alone() {
         let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
         let mut req = sample_request(None);
         req.reasoning_effort = Some("low".to_string());

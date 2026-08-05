@@ -1,24 +1,29 @@
 pub(crate) mod session_state;
 pub(crate) mod sessions_tab;
+pub(crate) mod settings_panel;
 pub(crate) mod transcript;
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base64::Engine;
 use eframe::App;
 use eframe::egui::{self, Color32, RichText, ScrollArea, TextEdit};
 use egui_commonmark::CommonMarkCache;
+use image::ImageFormat;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_V};
 
-use self::transcript::{Block, BlockId, BlockKind, Severity, Span, Transcript};
-use crate::agent::agent_loop::{AgentCommand, StreamEvent};
+use self::settings_panel::{spawn_model_list_fetch, voice_mode_flag_for_tts};
+use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
+use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
-use crate::api::models::list_models;
-use crate::api::types::Message;
-use crate::config::settings::{BackendConfig, Settings, TriggerMode};
+use crate::api::types::{ImageAttachment, Message};
+use crate::config::settings::{Settings, TriggerMode};
+use crate::effort::Effort;
 use crate::session::{SessionId, SessionMeta, SessionStore};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
@@ -73,7 +78,7 @@ pub struct DeepSeekGui {
     total_cache_hit_tokens: u32,
     /// Cumulative prompt cache miss tokens (charged as input).
     total_cache_miss_tokens: u32,
-    rx_events: mpsc::UnboundedReceiver<StreamEvent>,
+    rx_events: mpsc::UnboundedReceiver<RoutedEvent>,
     tx_input: mpsc::UnboundedSender<AgentCommand>,
     auto_scroll: bool,
 
@@ -107,7 +112,11 @@ pub struct DeepSeekGui {
     model_list_tx: mpsc::UnboundedSender<(String, Vec<String>)>,
 
     // ── Shared state with agent ──
-    thinking_flag: Arc<AtomicBool>,
+    effort_flag: Arc<AtomicU8>,
+    /// Sidebar combo box's current selection, seeded from `effort_flag` in
+    /// `new`. Mirrors `context_budget`: the flag is what the agent reads
+    /// each turn, this field is what the control renders and edits.
+    effort: Effort,
     model_flag: Arc<Mutex<String>>,
     /// Flag shared with agent loop. Kept in sync with `voice_tts_enabled` so
     /// the agent knows to shape replies for speech while text to speech is on.
@@ -116,6 +125,16 @@ pub struct DeepSeekGui {
     context_budget_flag: Arc<AtomicUsize>,
     /// Slider's current value, seeded from `context_budget_flag` in `new`.
     context_budget: usize,
+    /// Shared with the agent and with `Bash`, `Read`, `Write`, and `Cd`.
+    /// Where those tools act, distinct from `project_root`, which never
+    /// moves. A write here takes effect on the next tool call and the next
+    /// turn's system prompt.
+    working_dir_flag: Arc<Mutex<PathBuf>>,
+    /// Sidebar text field's buffer, seeded from `working_dir_flag` in
+    /// `new`. Only a valid, existing directory is written back to
+    /// `working_dir_flag`; an invalid entry stays in the buffer for the
+    /// user to see and correct, without touching the shared handle.
+    working_dir_buffer: String,
 
     // ── Output display ──
     show_raw_output: bool,
@@ -192,17 +211,35 @@ pub struct DeepSeekGui {
     /// The `claude` CLI's own session id, for `--resume`, as of the latest
     /// `ConversationSnapshot` event. Always `None` on an `Api` session.
     current_claude_session_id: Option<String>,
+
+    // ── Pending image attachment (P6S05) ──
+    /// Images attached to the turn not yet sent, shown as a thumbnail strip
+    /// above the input box. Capped at one: `Backend::run_with_image` takes
+    /// a single `Option<ImageAttachment>`, so `add_pending_attachment`
+    /// replaces rather than appends, with a transcript `Notice` naming the
+    /// replacement so nothing is dropped silently.
+    pending_attachments: Vec<ImageAttachment>,
+    /// Direct connection to the OS clipboard for `Ctrl+V` image paste.
+    /// Distinct from egui-winit's own internal clipboard, which only reads
+    /// and writes text. `None` when `arboard::Clipboard::new` fails, which
+    /// disables image paste without affecting anything else in the GUI.
+    clipboard: Option<arboard::Clipboard>,
+    /// Previous frame's raw Ctrl+V key state, for edge-triggering
+    /// `poll_ctrl_v_paste`. See that method's doc comment for why this
+    /// polls `GetAsyncKeyState` directly instead of an egui key event.
+    ctrl_v_prev_down: bool,
 }
 
 impl DeepSeekGui {
     pub fn new(
-        rx_events: mpsc::UnboundedReceiver<StreamEvent>,
+        rx_events: mpsc::UnboundedReceiver<RoutedEvent>,
         tx_input: mpsc::UnboundedSender<AgentCommand>,
         interrupt_flag: Arc<AtomicBool>,
-        thinking_flag: Arc<AtomicBool>,
+        effort_flag: Arc<AtomicU8>,
         voice_mode_flag: Arc<AtomicBool>,
         context_budget_flag: Arc<AtomicUsize>,
         model_flag: Arc<Mutex<String>>,
+        working_dir_flag: Arc<Mutex<PathBuf>>,
         settings: Settings,
         project_root: PathBuf,
     ) -> Self {
@@ -229,6 +266,19 @@ impl DeepSeekGui {
             Ordering::SeqCst,
         );
         let context_budget = context_budget_flag.load(Ordering::SeqCst);
+        let effort = Effort::load(&effort_flag);
+        // Seed the text field from the shared handle, which `main.rs`
+        // already resolved against a saved `working_dir` setting (falling
+        // back to `project_root` when that setting was absent or no longer
+        // a real directory). Reading it back here, rather than reading
+        // `settings.working_dir()` a second time, keeps this single source
+        // of truth: the buffer always starts equal to what the tools will
+        // actually act against.
+        let working_dir_buffer = working_dir_flag
+            .lock()
+            .unwrap()
+            .display()
+            .to_string();
         let voice_id_options: Vec<String> =
             KOKORO_VOICE_IDS.iter().map(|s| s.to_string()).collect();
         let configured_voice = settings.voice_tts_voice();
@@ -276,11 +326,14 @@ impl DeepSeekGui {
             model_options,
             model_list_rx,
             model_list_tx,
-            thinking_flag,
+            effort_flag,
+            effort,
             voice_mode_flag,
             context_budget_flag,
             context_budget,
             model_flag,
+            working_dir_flag,
+            working_dir_buffer,
             show_raw_output: settings.show_raw_output(),
             markdown_cache: CommonMarkCache::default(),
             voice_rx: None,
@@ -310,6 +363,11 @@ impl DeepSeekGui {
             saved_sessions,
             current_messages: Vec::new(),
             current_claude_session_id: None,
+            pending_attachments: Vec::new(),
+            clipboard: arboard::Clipboard::new()
+                .inspect_err(|e| warn!(error = %e, "could not open OS clipboard; Ctrl+V image paste disabled"))
+                .ok(),
+            ctrl_v_prev_down: false,
         }
     }
 
@@ -334,73 +392,6 @@ impl DeepSeekGui {
     fn persist_settings(&self) {
         if let Err(e) = self.settings.save(&self.project_root) {
             warn!(error = %e, "failed to save settings.json");
-        }
-    }
-
-    /// Handle the backend picker's selection changing.
-    ///
-    /// Shows the new backend's declared model. Seeds `model_options` with
-    /// it, so the dropdown is never empty. Kicks off a background refetch
-    /// of the full list. Persists the new default backend.
-    ///
-    /// The running session keeps its own backend and model until the next
-    /// app start, so this never writes `model_flag` for a backend that is
-    /// not the running one.
-    fn switch_backend(&mut self, new_backend: String) {
-        if let Some(cfg) = self.settings.resolve_backend(&new_backend) {
-            let new_model = cfg.model().to_string();
-            self.model = new_model.clone();
-            if self.active_backend.as_deref() == Some(new_backend.as_str())
-                && let Ok(mut model) = self.model_flag.lock()
-            {
-                *model = new_model;
-            }
-            self.model_options = vec![cfg.model().to_string()];
-            spawn_model_list_fetch(self.model_list_tx.clone(), new_backend.clone(), cfg.clone());
-        }
-        info!(backend = %new_backend, "backend changed via settings panel");
-        apply_default_backend(&mut self.settings, &new_backend);
-        self.persist_settings();
-    }
-
-    /// Handle the model dropdown's selection changing.
-    ///
-    /// Persists the new model onto the currently selected backend's entry
-    /// in `settings.json`. Writes it into `model_flag` for the next turn
-    /// only while that entry is the backend the session is running on. The
-    /// running backend would otherwise be asked for a model name belonging
-    /// to a different provider, and every following turn would fail.
-    fn switch_model(&mut self, new_model: String) {
-        let Some(backend_name) = self.backend_options.get(self.selected_backend_idx).cloned() else {
-            return;
-        };
-        if self.active_backend.as_deref() == Some(backend_name.as_str())
-            && let Ok(mut model) = self.model_flag.lock()
-        {
-            *model = new_model.clone();
-        }
-        info!(backend = %backend_name, model = %new_model, "model changed via settings panel");
-        apply_backend_model(&mut self.settings, &backend_name, &new_model);
-        self.persist_settings();
-    }
-
-    /// Apply one background model-discovery result.
-    ///
-    /// Ignored when `backend_name` no longer matches the selected backend.
-    /// That result is already stale by the time it arrives. The currently
-    /// active model is added if the fetch omitted it, so the dropdown
-    /// never loses the current selection.
-    fn apply_fetched_model_list(&mut self, backend_name: &str, models: Vec<String>) {
-        let current_backend = self
-            .backend_options
-            .get(self.selected_backend_idx)
-            .map(String::as_str);
-        if current_backend != Some(backend_name) {
-            return;
-        }
-        self.model_options = models;
-        if !self.model_options.contains(&self.model) {
-            self.model_options.push(self.model.clone());
         }
     }
 
@@ -457,16 +448,154 @@ impl DeepSeekGui {
     /// apart from model output. `BlockKind::User` says that outright, and
     /// the renderer adds the marker back.
     fn submit_current_input(&mut self) {
-        if self.input_buffer.trim().is_empty() {
+        if self.input_buffer.trim().is_empty() && self.pending_attachments.is_empty() {
             return;
         }
         let input = std::mem::take(&mut self.input_buffer);
         self.transcript.push(BlockKind::User {
             text: input.clone(),
         });
+        // The strip is capped at one attachment (see `add_pending_attachment`),
+        // so draining it hands over that single image, or `None`. Pushing
+        // its own `Image` block here is what makes the sent image show up
+        // in the transcript on the user's side, matching `render_image_block`
+        // showing whatever an assistant or tool turn attaches on the other.
+        let attachment = self.pending_attachments.drain(..).next();
+        if let Some(image) = attachment.clone() {
+            self.transcript.push(BlockKind::Image { image });
+        }
         self.session_status = "Running...".into();
-        let _ = self.tx_input.send(AgentCommand::UserTurn(input));
+        let _ = self.tx_input.send(AgentCommand::UserTurn {
+            text: input,
+            image: attachment,
+        });
         self.auto_scroll = true;
+    }
+
+    /// Add one image to the pending-attachment strip. `Backend::run_with_image`
+    /// takes a single `Option<ImageAttachment>`, so the strip holds at most
+    /// one: a second paste or drop replaces the first rather than queuing
+    /// beside it. The replacement is never silent, a `Notice` block says
+    /// so, since a user watching only the strip could otherwise lose track
+    /// of which image is about to be sent.
+    fn add_pending_attachment(&mut self, attachment: ImageAttachment) {
+        if !self.pending_attachments.is_empty() {
+            self.transcript.push(BlockKind::Notice {
+                text: "Only one image can be attached per turn; replacing the pending image."
+                    .into(),
+                severity: Severity::Info,
+            });
+        }
+        self.pending_attachments.clear();
+        self.pending_attachments.push(attachment);
+    }
+
+    /// Drop one attachment from the pending strip, e.g. from its remove
+    /// button. Out-of-range `index` is a no-op, since the strip's own
+    /// rendering is the only caller and its indices always come from the
+    /// same frame's `pending_attachments`.
+    fn remove_pending_attachment(&mut self, index: usize) {
+        if index < self.pending_attachments.len() {
+            self.pending_attachments.remove(index);
+        }
+    }
+
+    /// Poll the raw Windows key state for a Ctrl+V edge and, on one, try to
+    /// pull an image off the OS clipboard.
+    ///
+    /// This does not go through egui's own event system on purpose, and it
+    /// cannot: reading `egui-winit-0.31.1`'s `State::on_keyboard_input`
+    /// (the function that turns a winit key event into an egui one) shows
+    /// `is_paste_command` intercepts Ctrl+V before egui's caller ever sees
+    /// a `Key` event for `V`. When the clipboard holds text, that becomes a
+    /// text-only `egui::Event::Paste(String)`, still no image bytes. When
+    /// the clipboard holds only an image, which is the common case for a
+    /// screenshot tool, `clipboard.get()` inside egui-winit returns `None`
+    /// and the function returns without pushing any event at all. Neither
+    /// case gives this app anything to read egui's own input for, and
+    /// `eframe` 0.31 has no `raw_input_hook` to intercept the winit event
+    /// first. `GetAsyncKeyState` is the only signal left.
+    ///
+    /// Gated on `ctx`'s own focus flag so a Ctrl+V typed into a different
+    /// window never attaches an image here; the key state itself is
+    /// tracked regardless of focus so a press that started before this
+    /// window gained focus does not fire the instant it does.
+    fn poll_ctrl_v_paste(&mut self, ctx: &egui::Context) {
+        let just_pressed = ctrl_v_edge_triggered(&mut self.ctrl_v_prev_down);
+        if !just_pressed || !ctx.input(|i| i.focused) {
+            return;
+        }
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        // An `Err` here almost always just means the clipboard holds text,
+        // not an image: a plain-text Ctrl+V must keep working exactly as
+        // before, so this is not logged as a failure.
+        if let Ok(image) = clipboard.get_image() {
+            match attachment_from_clipboard_image(&image) {
+                Some(attachment) => self.add_pending_attachment(attachment),
+                None => warn!("clipboard image could not be encoded as PNG"),
+            }
+        }
+    }
+
+    /// Attach every dropped file that decodes as an image. eframe already
+    /// collects a native drop into `RawInput::dropped_files` with a real
+    /// filesystem path (the `bytes` field on `DroppedFile` is web-only), so
+    /// this just reads each path, validates it decodes, and reports
+    /// anything that does not with a `Notice` rather than dropping it
+    /// without a trace.
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            let Some(path) = file.path else {
+                self.transcript.push(BlockKind::Notice {
+                    text: "A dropped file carried no filesystem path and was ignored.".into(),
+                    severity: Severity::Warning,
+                });
+                continue;
+            };
+            match attachment_from_file_path(&path) {
+                Ok(attachment) => self.add_pending_attachment(attachment),
+                Err(message) => {
+                    warn!(%message, "dropped file rejected");
+                    self.transcript.push(BlockKind::Notice {
+                        text: message,
+                        severity: Severity::Warning,
+                    });
+                }
+            }
+        }
+    }
+
+    /// The pending-attachment strip: one thumbnail and one remove button
+    /// per attachment. Draws nothing when the strip is empty, so it never
+    /// reserves space in the input bar when there is nothing pending.
+    fn render_pending_attachments_strip(&mut self, ui: &mut egui::Ui) {
+        if self.pending_attachments.is_empty() {
+            return;
+        }
+        let mut remove_index = None;
+        ui.horizontal(|ui| {
+            for (index, attachment) in self.pending_attachments.iter().enumerate() {
+                let Some(bytes) = decode_image_bytes(attachment) else {
+                    continue;
+                };
+                ui.vertical(|ui| {
+                    let uri = format!("bytes://pending-attachment-{index}");
+                    ui.add(egui::Image::from_bytes(uri, bytes).max_size(egui::vec2(
+                        PENDING_ATTACHMENT_THUMBNAIL_MAX,
+                        PENDING_ATTACHMENT_THUMBNAIL_MAX,
+                    )));
+                    if ui.small_button("Remove").clicked() {
+                        remove_index = Some(index);
+                    }
+                });
+            }
+        });
+        if let Some(index) = remove_index {
+            self.remove_pending_attachment(index);
+        }
     }
 
     /// Send a voice command if the voice subsystem is attached. Silently
@@ -494,13 +623,28 @@ impl DeepSeekGui {
         self.send_voice_command(VoiceCommand::Speak(spoken));
     }
 
-    /// Route one stream event. Everything that changes the conversation
-    /// itself goes to `Transcript::apply_stream_event`. This method keeps
-    /// only what lives outside the transcript: the status bar counters,
-    /// the speech buffer, the Autopilot progress readout, and logging.
+    /// Route one main-session stream event, exactly as if it arrived with
+    /// an empty route. A test-only convenience: every real event from
+    /// `rx_events` goes through `handle_routed_event` instead, since only
+    /// that method can tell a main-session event apart from a subagent's.
+    #[cfg(test)]
     fn handle_stream_event(&mut self, event: StreamEvent) {
-        self.apply_event_side_effects(&event);
-        self.transcript.apply_stream_event(event);
+        self.handle_routed_event(RoutedEvent::own(event));
+    }
+
+    /// Route one `RoutedEvent`. An empty route names a main-session event:
+    /// it gets everything `apply_event_side_effects` does today, the same
+    /// as before routing existed, then reaches the transcript. A non-empty
+    /// route names a subagent's event: it is not this session's own turn,
+    /// so none of the status bar counters, the speech buffer, the
+    /// Autopilot progress readout, the session autosave, or any other
+    /// side effect may fire for it. It only ever reaches the transcript,
+    /// which resolves the route to the right nested block.
+    fn handle_routed_event(&mut self, routed: RoutedEvent) {
+        if routed.route.is_empty() {
+            self.apply_event_side_effects(&routed.event);
+        }
+        self.transcript.apply_routed_event(routed);
     }
 
     /// Update everything a stream event touches other than the transcript.
@@ -600,7 +744,8 @@ impl DeepSeekGui {
         // markdown cache by mutable reference at the same moment, which
         // it cannot have while both live on `self`.
         let transcript = std::mem::take(&mut self.transcript);
-        let mut toggled: Vec<BlockId> = Vec::new();
+        let mut toggled: Vec<Vec<BlockId>> = Vec::new();
+        let mut pin_toggled: Vec<Vec<BlockId>> = Vec::new();
         ScrollArea::vertical()
             .stick_to_bottom(self.auto_scroll)
             .show(ui, |ui| {
@@ -610,34 +755,157 @@ impl DeepSeekGui {
                 }
                 for (index, block) in transcript.blocks().iter().enumerate() {
                     ui.add_space(gap_before(index, &block.kind));
-                    self.render_block(ui, block, &mut toggled);
+                    self.render_block(ui, block, &[], &mut toggled, &mut pin_toggled);
                 }
             });
         self.transcript = transcript;
         // Applied after the draw, since the closure above only holds the
-        // blocks by shared reference.
-        for id in toggled {
+        // blocks by shared reference. A path may name a block nested
+        // inside a `Subagent` block's own transcript, not just a
+        // top-level one, so both go through the path-aware setters.
+        for path in toggled {
             let collapsed = self
                 .transcript
-                .find(id)
+                .find_mut_by_path(&path)
                 .is_some_and(|block| block.collapsed);
-            self.transcript.set_collapsed(id, !collapsed);
+            self.transcript.set_collapsed_by_path(&path, !collapsed);
+        }
+        for path in pin_toggled {
+            let pinned = self
+                .transcript
+                .find_mut_by_path(&path)
+                .is_some_and(|block| block.pinned);
+            self.transcript.set_pinned_by_path(&path, !pinned);
         }
     }
 
     /// Draw one block with the widget its kind calls for. Every clicked
-    /// disclosure toggle is recorded in `toggled` instead of applied here.
-    fn render_block(&mut self, ui: &mut egui::Ui, block: &Block, toggled: &mut Vec<BlockId>) {
+    /// disclosure or pin toggle is recorded in `toggled` / `pin_toggled`
+    /// instead of applied here. `path_prefix` names the chain of
+    /// `Subagent` block ids this block is nested inside, outermost first,
+    /// empty for a top-level block. The full path to `block` itself is
+    /// `path_prefix` with `block.id` appended, and that full path is what
+    /// gets recorded on a click, since a `BlockId` alone is only unique
+    /// within the `Transcript` that owns it.
+    fn render_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        block: &Block,
+        path_prefix: &[BlockId],
+        toggled: &mut Vec<Vec<BlockId>>,
+        pin_toggled: &mut Vec<Vec<BlockId>>,
+    ) {
         match &block.kind {
             BlockKind::User { text } => render_user_bubble(ui, role_label(&block.kind), text),
             BlockKind::Assistant { spans } => {
                 self.render_assistant_bubble(ui, block, spans);
             }
-            BlockKind::ToolCall { .. } => render_tool_call(ui, block, toggled),
+            BlockKind::ToolCall { .. } => {
+                let mut path = path_prefix.to_vec();
+                path.push(block.id);
+                render_tool_call(ui, block, &path, toggled);
+            }
             BlockKind::Notice { text, severity } => {
                 ui.label(RichText::new(text).color(severity_color(*severity)));
             }
+            BlockKind::Image { image } => render_image_block(ui, block.id, image),
+            BlockKind::Subagent {
+                backend,
+                model,
+                depth,
+                state,
+                elapsed_ms,
+                started_at,
+                transcript,
+                session_turns,
+                session_turn_cap,
+                send_message_calls,
+                send_message_call_cap,
+                ..
+            } => {
+                self.render_subagent_block(
+                    ui,
+                    block,
+                    backend,
+                    model,
+                    *depth,
+                    *state,
+                    subagent_elapsed_ms(*started_at, *elapsed_ms),
+                    *session_turns,
+                    *session_turn_cap,
+                    *send_message_calls,
+                    *send_message_call_cap,
+                    transcript,
+                    path_prefix,
+                    toggled,
+                    pin_toggled,
+                );
+            }
         }
+    }
+
+    /// One `Subagent` block: a collapsing header carrying the backend,
+    /// model, depth, state badge and elapsed time, plus a pin control.
+    /// Collapsed by default; a running dispatch never auto-expands, since
+    /// a fanout of several subagents must not push the main conversation
+    /// off screen. Opening it renders the subagent's own inner transcript
+    /// through this same method, indented, so a nested dispatch inside it
+    /// draws exactly the way a top-level one does.
+    #[allow(clippy::too_many_arguments)]
+    fn render_subagent_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        block: &Block,
+        backend: &str,
+        model: &str,
+        depth: u32,
+        state: SubagentState,
+        elapsed_ms: u64,
+        session_turns: u32,
+        session_turn_cap: u32,
+        send_message_calls: u32,
+        send_message_call_cap: u32,
+        inner: &Transcript,
+        path_prefix: &[BlockId],
+        toggled: &mut Vec<Vec<BlockId>>,
+        pin_toggled: &mut Vec<Vec<BlockId>>,
+    ) {
+        let mut path = path_prefix.to_vec();
+        path.push(block.id);
+        let open = block.pinned || !block.collapsed;
+        let header_text = subagent_header_summary(
+            backend,
+            model,
+            depth,
+            state,
+            elapsed_ms,
+            session_turns,
+            session_turn_cap,
+            send_message_calls,
+            send_message_call_cap,
+        );
+        ui.horizontal(|ui| {
+            let pin_label = if block.pinned { "Unpin" } else { "Pin" };
+            if ui.small_button(pin_label).clicked() {
+                pin_toggled.push(path.clone());
+            }
+            let header = egui::CollapsingHeader::new(
+                RichText::new(header_text).color(subagent_state_color(state)),
+            )
+            .id_salt(path.clone())
+            .open(Some(open))
+            .show(ui, |ui| {
+                ui.indent(("subagent-body", path.clone()), |ui| {
+                    for (index, inner_block) in inner.blocks().iter().enumerate() {
+                        ui.add_space(gap_before(index, &inner_block.kind));
+                        self.render_block(ui, inner_block, &path, toggled, pin_toggled);
+                    }
+                });
+            });
+            if header.header_response.clicked() {
+                toggled.push(path.clone());
+            }
+        });
     }
 
     /// The assistant's reply as a bubble: a role label, then every span in
@@ -758,9 +1026,13 @@ impl DeepSeekGui {
 
 impl App for DeepSeekGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Poll agent events each frame
-        while let Ok(event) = self.rx_events.try_recv() {
-            self.handle_stream_event(event);
+        // Poll agent events each frame. `handle_routed_event` resolves the
+        // route: an empty one behaves exactly as a main-session event
+        // always did, a non-empty one lands inside the right nested
+        // `Subagent` block instead of triggering any main-session side
+        // effect.
+        while let Ok(routed) = self.rx_events.try_recv() {
+            self.handle_routed_event(routed);
             self.auto_scroll = true;
         }
         // Poll voice events each frame too, alongside agent events. Drain
@@ -783,267 +1055,7 @@ impl App for DeepSeekGui {
         ctx.request_repaint_after(Duration::from_millis(50));
 
         // ── Settings panel (right side, Tab toggles) ──
-        if self.settings_visible {
-            egui::SidePanel::right("settings_panel")
-                .min_width(220.0)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.heading("Settings");
-                    ui.separator();
-
-                    // ── Backend selector ──
-                    let prev_idx = self.selected_backend_idx;
-                    let selected_text = self
-                        .backend_options
-                        .get(self.selected_backend_idx)
-                        .map(String::as_str)
-                        .unwrap_or("(none configured)");
-                    egui::ComboBox::from_label("Backend")
-                        .selected_text(selected_text)
-                        .show_ui(ui, |ui| {
-                            for (i, opt) in self.backend_options.iter().enumerate() {
-                                ui.selectable_value(&mut self.selected_backend_idx, i, opt);
-                            }
-                        });
-                    if self.selected_backend_idx != prev_idx {
-                        let new_backend = self.backend_options[self.selected_backend_idx].clone();
-                        self.switch_backend(new_backend);
-                    }
-
-                    // ── Model selector ──
-                    let prev_model = self.model.clone();
-                    egui::ComboBox::from_label("Model")
-                        .selected_text(self.model.clone())
-                        .show_ui(ui, |ui| {
-                            for opt in &self.model_options {
-                                ui.selectable_value(&mut self.model, opt.clone(), opt);
-                            }
-                        });
-                    if self.model != prev_model {
-                        self.switch_model(self.model.clone());
-                    }
-
-                    ui.label(
-                        RichText::new(
-                            "Switching backends takes effect on the next app start.",
-                        )
-                        .color(Color32::GRAY)
-                        .small(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "Model changes apply next turn (DeepSeek, Ollama). Claude respawns its child.",
-                        )
-                        .color(Color32::GRAY)
-                        .small(),
-                    );
-
-                    ui.add_space(8.0);
-
-                    // ── Thinking toggle ──
-                    let mut thinking = self.thinking_flag.load(Ordering::SeqCst);
-                    if ui.checkbox(&mut thinking, "Thinking enabled").changed() {
-                        self.thinking_flag.store(thinking, Ordering::SeqCst);
-                        info!(thinking = thinking, "thinking toggled via settings panel");
-                        apply_thinking_enabled(&mut self.settings, thinking);
-                        self.persist_settings();
-                    }
-                    if thinking {
-                        ui.label(
-                            RichText::new("  Model will output reasoning trace")
-                                .color(Color32::GRAY)
-                                .small(),
-                        );
-                    }
-
-                    ui.add_space(8.0);
-
-                    // ── Output display toggle ──
-                    let mut show_raw = self.show_raw_output;
-                    if ui.checkbox(&mut show_raw, "Show raw output").changed() {
-                        self.show_raw_output = show_raw;
-                        apply_show_raw_output(&mut self.settings, show_raw);
-                        self.persist_settings();
-                    }
-                    if self.show_raw_output {
-                        ui.label(
-                            RichText::new("  Plain text with ANSI-like coloring")
-                                .color(Color32::GRAY)
-                                .small(),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new("  Rendered markdown")
-                                .color(Color32::GRAY)
-                                .small(),
-                        );
-                    }
-
-                    ui.add_space(8.0);
-                    ui.separator();
-
-                    // ── Voice section ──
-                    ui.label(RichText::new("Voice").color(Color32::from_rgb(180, 220, 255)));
-
-                    let mut voice_enabled = self.voice_master_enabled;
-                    if ui.checkbox(&mut voice_enabled, "Voice enabled").changed() {
-                        self.voice_master_enabled = voice_enabled;
-                        self.send_voice_command(voice_enabled_command(voice_enabled));
-                        info!(voice_enabled, "voice enabled toggled via settings panel");
-                        apply_voice_enabled(&mut self.settings, voice_enabled);
-                        self.persist_settings();
-                    }
-
-                    let mut stt_enabled = self.voice_stt_enabled;
-                    if ui.checkbox(&mut stt_enabled, "Speech to text").changed() {
-                        self.voice_stt_enabled = stt_enabled;
-                        self.send_voice_command(stt_enabled_command(stt_enabled));
-                        info!(stt_enabled, "speech-to-text toggled via settings panel");
-                        apply_stt_enabled(&mut self.settings, stt_enabled);
-                        self.persist_settings();
-                    }
-
-                    let mut tts_enabled = self.voice_tts_enabled;
-                    if ui.checkbox(&mut tts_enabled, "Text to speech").changed() {
-                        self.voice_tts_enabled = tts_enabled;
-                        self.voice_mode_flag
-                            .store(voice_mode_flag_for_tts(tts_enabled), Ordering::SeqCst);
-                        self.send_voice_command(tts_enabled_command(tts_enabled));
-                        info!(tts_enabled, "text-to-speech toggled via settings panel");
-                        apply_tts_enabled(&mut self.settings, tts_enabled);
-                        self.persist_settings();
-                    }
-
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Trigger mode").color(Color32::GRAY).small());
-                    let prev_trigger_mode = self.voice_trigger_mode;
-                    ui.horizontal(|ui| {
-                        ui.radio_value(
-                            &mut self.voice_trigger_mode,
-                            TriggerMode::PushToTalk,
-                            "Push to talk",
-                        );
-                        ui.radio_value(
-                            &mut self.voice_trigger_mode,
-                            TriggerMode::WakeWord,
-                            "Wake word",
-                        );
-                    });
-                    if self.voice_trigger_mode != prev_trigger_mode {
-                        self.send_voice_command(trigger_mode_command(self.voice_trigger_mode));
-                        info!(
-                            mode = ?self.voice_trigger_mode,
-                            "voice trigger mode changed via settings panel"
-                        );
-                        let mode = self.voice_trigger_mode;
-                        apply_trigger_mode(&mut self.settings, mode);
-                        self.persist_settings();
-                    }
-
-                    ui.add_space(4.0);
-                    let wake_response = ui.add(
-                        TextEdit::singleline(&mut self.voice_wake_phrase).hint_text("wake phrase"),
-                    );
-                    if wake_response.changed() {
-                        self.send_voice_command(wake_phrase_command(&self.voice_wake_phrase));
-                        info!(
-                            phrase = %self.voice_wake_phrase,
-                            "wake phrase changed via settings panel"
-                        );
-                    }
-                    // Save on focus loss, not on every keystroke, so typing
-                    // a phrase writes the file once.
-                    if wake_response.lost_focus() {
-                        let phrase = self.voice_wake_phrase.clone();
-                        apply_wake_phrase(&mut self.settings, &phrase);
-                        self.persist_settings();
-                    }
-
-                    ui.add_space(4.0);
-                    let prev_voice_idx = self.selected_voice_idx;
-                    egui::ComboBox::from_label("Kokoro voice")
-                        .selected_text(&self.voice_id_options[self.selected_voice_idx])
-                        .show_ui(ui, |ui| {
-                            for (i, opt) in self.voice_id_options.iter().enumerate() {
-                                ui.selectable_value(&mut self.selected_voice_idx, i, opt);
-                            }
-                        });
-                    if self.selected_voice_idx != prev_voice_idx {
-                        let voice_id = self.voice_id_options[self.selected_voice_idx].clone();
-                        self.send_voice_command(voice_id_command(&voice_id));
-                        info!(voice_id = %voice_id, "kokoro voice changed via settings panel");
-                        apply_tts_voice(&mut self.settings, &voice_id);
-                        self.persist_settings();
-                    }
-
-                    ui.add_space(4.0);
-                    let speed_response =
-                        ui.add(egui::Slider::new(&mut self.voice_speed, 0.5..=2.0).text("Speed"));
-                    if speed_response.changed() {
-                        self.send_voice_command(speed_command(self.voice_speed));
-                        info!(
-                            speed = self.voice_speed,
-                            "voice speed changed via settings panel"
-                        );
-                    }
-                    // Save when the drag ends, so one drag writes the file
-                    // once instead of once per frame.
-                    if speed_response.drag_stopped() {
-                        let speed = self.voice_speed;
-                        apply_tts_speed(&mut self.settings, speed);
-                        self.persist_settings();
-                    }
-
-                    ui.add_space(8.0);
-                    ui.separator();
-
-                    // ── Experimental features section ──
-                    ui.label(RichText::new("Experimental").color(Color32::from_rgb(255, 200, 100)));
-
-                    let mut context_budget = self.context_budget;
-                    let budget_response = ui.add(
-                        egui::Slider::new(&mut context_budget, 32_000..=200_000)
-                            .step_by(1000.0)
-                            .text("Context budget"),
-                    );
-                    if budget_response.changed() {
-                        self.context_budget = context_budget;
-                        self.context_budget_flag
-                            .store(context_budget, Ordering::SeqCst);
-                        info!(
-                            context_budget = context_budget,
-                            "context budget changed via settings panel"
-                        );
-                    }
-                    // Same as the speed slider: one write per drag.
-                    if budget_response.drag_stopped() {
-                        let budget = self.context_budget;
-                        apply_context_budget(&mut self.settings, budget);
-                        self.persist_settings();
-                    }
-                    ui.label(
-                        RichText::new(format!(
-                            "  Prunes to {} tokens when exceeded",
-                            self.context_budget / 3
-                        ))
-                        .color(Color32::GRAY)
-                        .small(),
-                    );
-
-                    ui.add_space(16.0);
-                    ui.separator();
-
-                    // ── Close button ──
-                    if ui.button("Close panel (Tab)").clicked() {
-                        self.settings_visible = false;
-                    }
-
-                    ui.add_space(4.0);
-                    if ui.button("Quit (Ctrl+Q)").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-        }
+        self.render_settings_panel(ctx);
 
         // ── Global keybindings ──
         //
@@ -1059,6 +1071,13 @@ impl App for DeepSeekGui {
         let space_released = ctx.input(|i| i.key_released(egui::Key::Space));
         let ctrl_space_pressed = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Space));
         let any_widget_focused = ctx.memory(|mem| mem.focused().is_some());
+
+        // Ctrl+V image paste and drag-and-drop, both feeding the pending
+        // attachment strip. Neither is tied to the Chat tab's text box
+        // having focus: a screenshot pasted while the settings panel is
+        // open, or a file dropped anywhere on the window, still attaches.
+        self.poll_ctrl_v_paste(ctx);
+        self.handle_dropped_files(ctx);
 
         // Space held -> push-to-talk, only while not typing and the
         // settings panel is closed.
@@ -1135,6 +1154,7 @@ impl App for DeepSeekGui {
             egui::TopBottomPanel::bottom("input_panel")
                 .min_height(32.0)
                 .show(ctx, |ui| {
+                    self.render_pending_attachments_strip(ui);
                     ui.horizontal(|ui| {
                         ui.label(">");
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1176,6 +1196,14 @@ impl App for DeepSeekGui {
                     );
                     ui.separator();
                     ui.label(
+                        RichText::new(format!(
+                            "Dir: {}",
+                            self.working_dir_flag.lock().unwrap().display()
+                        ))
+                        .color(Color32::from_rgb(160, 160, 160)),
+                    );
+                    ui.separator();
+                    ui.label(
                         RichText::new(format!("Tokens: {}", self.token_count))
                             .color(Color32::from_rgb(160, 160, 160)),
                     );
@@ -1196,13 +1224,9 @@ impl App for DeepSeekGui {
                         RichText::new(&self.session_status).color(Color32::from_rgb(0, 200, 0)),
                     );
                     ui.separator();
-                    let thinking_label = if self.thinking_flag.load(Ordering::SeqCst) {
-                        "Think: ON"
-                    } else {
-                        "Think: OFF"
-                    };
+                    let effort_label = format!("Effort: {:?}", Effort::load(&self.effort_flag));
                     ui.label(
-                        RichText::new(thinking_label)
+                        RichText::new(effort_label)
                             .color(Color32::from_rgb(200, 200, 100))
                             .small(),
                     );
@@ -1246,6 +1270,14 @@ const TOOL_COLOR: Color32 = Color32::from_rgb(255, 255, 0);
 const TOOL_ERROR_COLOR: Color32 = Color32::from_rgb(255, 80, 80);
 const TOOL_OUTPUT_COLOR: Color32 = Color32::from_rgb(0, 200, 0);
 const REASONING_LABEL: &str = "Reasoning";
+const IMAGE_LABEL_COLOR: Color32 = Color32::from_rgb(200, 160, 220);
+/// The longer side of an inline image thumbnail in the transcript, in
+/// points. Clicking it opens the same image full size in its own window.
+const IMAGE_THUMBNAIL_MAX: f32 = 240.0;
+/// The longer side of a pending-attachment thumbnail, in points. Smaller
+/// than `IMAGE_THUMBNAIL_MAX`: the strip sits above the input box and is
+/// meant to confirm what is about to be sent, not to be read in detail.
+const PENDING_ATTACHMENT_THUMBNAIL_MAX: f32 = 80.0;
 /// Space above a block that opens a new turn. This is what replaced the
 /// old grey "--- turn end ---" divider: a turn boundary now reads as a
 /// gap between bubbles instead of a line of its own.
@@ -1276,6 +1308,8 @@ fn role_label(kind: &BlockKind) -> &'static str {
         BlockKind::Assistant { .. } => "Assistant",
         BlockKind::ToolCall { .. } => "Tool",
         BlockKind::Notice { .. } => "Notice",
+        BlockKind::Subagent { .. } => "Subagent",
+        BlockKind::Image { .. } => "Image",
     }
 }
 
@@ -1309,10 +1343,152 @@ fn render_user_bubble(ui: &mut egui::Ui, label: &str, text: &str) {
     });
 }
 
+/// An `Image` block: a thumbnail capped to `IMAGE_THUMBNAIL_MAX` on its
+/// longer side, clickable to open the same image full size in its own
+/// window. The open/closed state of that window lives in egui's own
+/// per-widget temp storage, keyed off `block_id`, rather than on
+/// `DeepSeekGui` or on the block itself: no other block needs GUI-only
+/// state, and adding a field for just this one kind would leak a rendering
+/// concern back into the plain-data transcript model.
+fn render_image_block(ui: &mut egui::Ui, block_id: BlockId, image: &ImageAttachment) {
+    let Some(bytes) = decode_image_bytes(image) else {
+        ui.colored_label(
+            IMAGE_LABEL_COLOR,
+            format!("[image: {} - could not decode]", image.media_type),
+        );
+        return;
+    };
+    let uri = format!("bytes://image-block-{block_id:?}");
+    let open_id = egui::Id::new(("image-block-open", block_id));
+    let mut open = ui.data(|data| data.get_temp::<bool>(open_id).unwrap_or(false));
+
+    let thumbnail = egui::Image::from_bytes(uri.clone(), bytes.clone())
+        .max_size(egui::vec2(IMAGE_THUMBNAIL_MAX, IMAGE_THUMBNAIL_MAX))
+        .sense(egui::Sense::click());
+    let response = ui.add(thumbnail).on_hover_text("Click to view full size");
+    if response.clicked() {
+        open = !open;
+    }
+
+    if open {
+        egui::Window::new(format!("Image ({})", image.media_type))
+            .id(egui::Id::new(("image-block-window", block_id)))
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.add(egui::Image::from_bytes(uri, bytes));
+            });
+    }
+    ui.data_mut(|data| data.insert_temp(open_id, open));
+}
+
+/// Base64-decode a stored `ImageAttachment`'s payload into the raw image
+/// bytes egui's image loader expects. `None` on malformed base64, which
+/// `render_image_block` turns into a plain error label instead of a panic.
+fn decode_image_bytes(image: &ImageAttachment) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(&image.data)
+        .ok()
+}
+
+/// True exactly on the frame Ctrl+V transitions from not-held to held,
+/// tracked by the caller's own `prev_down` across frames. See
+/// `DeepSeekGui::poll_ctrl_v_paste`'s doc comment for why this reads the
+/// raw key state instead of an egui event.
+///
+/// The raw `GetAsyncKeyState` read and the edge-detection bookkeeping are
+/// split apart so `edge_trigger` can be unit tested against synthetic key
+/// states: real hardware state cannot be driven from a test.
+fn ctrl_v_edge_triggered(prev_down: &mut bool) -> bool {
+    // SAFETY: `GetAsyncKeyState` is a plain state query against user32.dll,
+    // takes a virtual-key code by value, and has no preconditions beyond
+    // being called from a thread with a message queue, which the GUI
+    // thread already has.
+    let down = unsafe {
+        let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+        let v_down = (GetAsyncKeyState(VK_V.0 as i32) as u16 & 0x8000) != 0;
+        ctrl_down && v_down
+    };
+    edge_trigger(down, prev_down)
+}
+
+/// True exactly once, on the transition from not-`down` to `down`, using
+/// and updating `prev_down` as the state carried across calls.
+fn edge_trigger(down: bool, prev_down: &mut bool) -> bool {
+    let just_pressed = down && !*prev_down;
+    *prev_down = down;
+    just_pressed
+}
+
+/// Encode `arboard`'s raw RGBA8 clipboard pixels as PNG bytes for an
+/// `ImageAttachment`. `arboard::ImageData` is unencoded pixels, not a
+/// file format, so there is nothing to sniff or validate beyond the
+/// buffer's length matching `width * height * 4`.
+fn attachment_from_clipboard_image(image: &arboard::ImageData) -> Option<ImageAttachment> {
+    if image.width == 0 || image.height == 0 || image.bytes.len() != image.width * image.height * 4
+    {
+        return None;
+    }
+    let buffer =
+        image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.to_vec())?;
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), ImageFormat::Png)
+        .ok()?;
+    Some(ImageAttachment {
+        data: base64::engine::general_purpose::STANDARD.encode(png_bytes),
+        media_type: "image/png".into(),
+    })
+}
+
+/// Read a dropped file off disk and build an `ImageAttachment` from it, or
+/// a message describing why not. Kept separate from
+/// `attachment_from_image_bytes` so a test can exercise the decode-and-
+/// validate logic on in-memory bytes without touching the filesystem.
+fn attachment_from_file_path(path: &Path) -> Result<ImageAttachment, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    attachment_from_image_bytes(&bytes, &path.display().to_string())
+}
+
+/// Validate that `bytes` is a real, decodable image and wrap it as an
+/// `ImageAttachment`, keeping the original bytes rather than re-encoding:
+/// `image::guess_format` only sniffs magic bytes, so
+/// `load_from_memory_with_format` is what actually proves the file
+/// decodes, catching a truncated or corrupt file before it ever reaches a
+/// backend. `label` names the source in an error message; a dropped file
+/// uses its path, a test uses whatever it likes.
+fn attachment_from_image_bytes(bytes: &[u8], label: &str) -> Result<ImageAttachment, String> {
+    let format = image::guess_format(bytes)
+        .map_err(|_| format!("{label} is not a recognized image format"))?;
+    image::load_from_memory_with_format(bytes, format)
+        .map_err(|e| format!("{label} could not be decoded: {e}"))?;
+    Ok(ImageAttachment {
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        media_type: mime_for_image_format(format).to_string(),
+    })
+}
+
+/// The MIME type an `ImageAttachment` carries for a decoded `image::ImageFormat`.
+/// Only png, jpeg, and bmp are backed by an enabled decoder in this build
+/// (see the `image` dependency comment in `Cargo.toml`); any other format
+/// that `guess_format` recognises by its magic bytes still fails at the
+/// `load_from_memory_with_format` step in `attachment_from_image_bytes`; a
+/// separate name for it here would be an implementation detail
+/// no code round-trips through.
+fn mime_for_image_format(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "image/png",
+        ImageFormat::Jpeg => "image/jpeg",
+        ImageFormat::Bmp => "image/bmp",
+        _ => "application/octet-stream",
+    }
+}
+
 /// A tool call as one clickable summary line that opens to show the full
 /// arguments and the output. The click is reported through `toggled`, not
-/// applied here, since the block is only held by shared reference.
-fn render_tool_call(ui: &mut egui::Ui, block: &Block, toggled: &mut Vec<BlockId>) {
+/// applied here, since the block is only held by shared reference. `path`
+/// is the full path to this block (see `DeepSeekGui::render_block`),
+/// recorded on a click rather than the bare id.
+fn render_tool_call(ui: &mut egui::Ui, block: &Block, path: &[BlockId], toggled: &mut Vec<Vec<BlockId>>) {
     let BlockKind::ToolCall {
         tool,
         args,
@@ -1328,7 +1504,7 @@ fn render_tool_call(ui: &mut egui::Ui, block: &Block, toggled: &mut Vec<BlockId>
         .sense(egui::Sense::click())
         .wrap_mode(egui::TextWrapMode::Truncate);
     if ui.add(line).clicked() {
-        toggled.push(block.id);
+        toggled.push(path.to_vec());
     }
     if block.collapsed {
         return;
@@ -1416,6 +1592,54 @@ fn raw_block_text(block: &Block) -> String {
             format!("\u{2699} {tool} {args}\n  \u{2192} {body}")
         }
         BlockKind::Notice { text, .. } => text.clone(),
+        BlockKind::Image { image } => format!(
+            "[image: {}, {} bytes base64]",
+            image.media_type,
+            image.data.len()
+        ),
+        BlockKind::Subagent {
+            backend,
+            model,
+            depth,
+            state,
+            elapsed_ms,
+            started_at,
+            transcript,
+            session_turns,
+            session_turn_cap,
+            send_message_calls,
+            send_message_call_cap,
+            ..
+        } => {
+            let elapsed = subagent_elapsed_ms(*started_at, *elapsed_ms);
+            let header = subagent_header_summary(
+                backend,
+                model,
+                *depth,
+                *state,
+                elapsed,
+                *session_turns,
+                *session_turn_cap,
+                *send_message_calls,
+                *send_message_call_cap,
+            );
+            let body = transcript
+                .blocks()
+                .iter()
+                .map(raw_block_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if body.is_empty() {
+                header
+            } else {
+                let indented = body
+                    .lines()
+                    .map(|line| format!("  {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("{header}\n{indented}")
+            }
+        }
     }
 }
 
@@ -1435,7 +1659,74 @@ fn block_color(kind: &BlockKind) -> Color32 {
         BlockKind::Assistant { .. } => Color32::WHITE,
         BlockKind::ToolCall { is_error, .. } => tool_color(*is_error),
         BlockKind::Notice { severity, .. } => severity_color(*severity),
+        BlockKind::Subagent { state, .. } => subagent_state_color(*state),
+        BlockKind::Image { .. } => IMAGE_LABEL_COLOR,
     }
+}
+
+/// The elapsed time to show for a `Subagent` block: live, computed from
+/// `started_at`, while the dispatch is still running, or the stored value
+/// once it has reached a terminal state and `started_at` has been taken.
+fn subagent_elapsed_ms(started_at: Option<Instant>, stored_elapsed_ms: u64) -> u64 {
+    match started_at {
+        Some(start) => start.elapsed().as_millis() as u64,
+        None => stored_elapsed_ms,
+    }
+}
+
+/// The short word shown in a `Subagent` block's header for each state.
+fn subagent_state_label(state: SubagentState) -> &'static str {
+    match state {
+        SubagentState::Running => "RUNNING",
+        SubagentState::Done => "DONE",
+        SubagentState::Failed => "FAILED",
+        SubagentState::Interrupted => "INTERRUPTED",
+    }
+}
+
+/// Colour of a `Subagent` block's state badge and, on the raw path, its
+/// whole line.
+fn subagent_state_color(state: SubagentState) -> Color32 {
+    match state {
+        SubagentState::Running => Color32::from_rgb(150, 150, 255),
+        SubagentState::Done => Color32::from_rgb(100, 200, 100),
+        SubagentState::Failed => TOOL_ERROR_COLOR,
+        SubagentState::Interrupted => Color32::from_rgb(255, 165, 0),
+    }
+}
+
+/// Format a millisecond count as seconds with one decimal place, matching
+/// how the rest of this file reports durations to the user.
+fn format_elapsed_ms(elapsed_ms: u64) -> String {
+    format!("{:.1}s", elapsed_ms as f64 / 1000.0)
+}
+
+/// The one-line header summary for a `Subagent` block: state badge,
+/// backend and model, depth, elapsed time, and both runaway-cost counts
+/// from the roadmap's Phase 3 section against their caps (the session's
+/// own turn count, and its owner's total `SendMessage` calls this turn).
+/// Shared by the collapsing header and the raw-output path, so both name
+/// the same facts about a dispatch. Shown while the session is live and
+/// under both caps, not only once one of them trips: a count that only
+/// appears at the limit is not a warning, it is a surprise.
+#[allow(clippy::too_many_arguments)]
+fn subagent_header_summary(
+    backend: &str,
+    model: &str,
+    depth: u32,
+    state: SubagentState,
+    elapsed_ms: u64,
+    session_turns: u32,
+    session_turn_cap: u32,
+    send_message_calls: u32,
+    send_message_call_cap: u32,
+) -> String {
+    format!(
+        "[{}] {backend}/{model} (depth {depth}) - {} - turns {session_turns}/{session_turn_cap} \
+        - sends {send_message_calls}/{send_message_call_cap}",
+        subagent_state_label(state),
+        format_elapsed_ms(elapsed_ms)
+    )
 }
 
 /// Which push-to-talk action a key event should produce, if any. Kept
@@ -1514,161 +1805,6 @@ fn voice_state_color(state: VoiceState) -> Color32 {
     }
 }
 
-// ── Voice control-to-command mapping ──
-//
-// Each function below takes the plain value a settings-panel control just
-// changed to and returns the `VoiceCommand` that change should send. Kept
-// separate from the control's egui code so each mapping is unit-testable
-// without an egui context, the same way `space_ptt_signal` and
-// `ctrl_space_toggle_signal` above are.
-
-/// Build the command for the master voice-enable checkbox.
-fn voice_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetEnabled(enabled)
-}
-
-/// Build the command for the speech-to-text checkbox.
-fn stt_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetSttEnabled(enabled)
-}
-
-/// Build the command for the text-to-speech checkbox.
-fn tts_enabled_command(enabled: bool) -> VoiceCommand {
-    VoiceCommand::SetTtsEnabled(enabled)
-}
-
-/// Report the value `voice_mode_flag` should hold for a given text-to-speech
-/// checkbox state. The flag always matches the checkbox.
-fn voice_mode_flag_for_tts(tts_enabled: bool) -> bool {
-    tts_enabled
-}
-
-/// Build the command for the trigger-mode radio pair.
-fn trigger_mode_command(mode: TriggerMode) -> VoiceCommand {
-    VoiceCommand::SetTriggerMode(mode)
-}
-
-/// Build the command for the wake-phrase text field.
-fn wake_phrase_command(phrase: &str) -> VoiceCommand {
-    VoiceCommand::SetWakePhrase(phrase.to_string())
-}
-
-/// Build the command for the Kokoro voice id selector.
-fn voice_id_command(voice_id: &str) -> VoiceCommand {
-    VoiceCommand::SetVoice(voice_id.to_string())
-}
-
-/// Build the command for the speech speed slider.
-fn speed_command(speed: f32) -> VoiceCommand {
-    VoiceCommand::SetSpeed(speed)
-}
-
-// ── Background model discovery ──
-//
-// `list_models` is async. The paint loop must never block on it. Each
-// call below spawns one fetch and returns right away. A plain `#[test]`
-// has no Tokio runtime. Spawning without one panics, so the spawn is
-// skipped there instead.
-
-/// Fetch `cfg`'s model list in the background.
-///
-/// Sends it tagged with `backend_name`. That lets a result be told apart
-/// from one resolved for a backend the user has since switched away from.
-fn spawn_model_list_fetch(
-    tx: mpsc::UnboundedSender<(String, Vec<String>)>,
-    backend_name: String,
-    cfg: BackendConfig,
-) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    tokio::spawn(async move {
-        let models = list_models(&cfg).await;
-        let _ = tx.send((backend_name, models));
-    });
-}
-
-// ── Control-to-settings mapping ──
-//
-// Each function below takes the plain value a settings-panel control just
-// changed to and writes it into a `Settings`. Kept separate from the
-// control's egui code so each write is unit-testable without an egui
-// context, the same way the command builders above are. The voice and
-// thinking writers create their config block when it is missing, so a
-// change is never silently dropped.
-
-/// Store the backend picker's selection.
-fn apply_default_backend(settings: &mut Settings, name: &str) {
-    settings.default_backend = Some(name.to_string());
-}
-
-/// Store the model dropdown's selection onto the named backend's entry.
-///
-/// A name that does not resolve to any backend is a no-op. A stale
-/// selection must never write to the wrong entry or panic.
-fn apply_backend_model(settings: &mut Settings, backend_name: &str, model: &str) {
-    let Some(backends) = settings.backends.as_mut() else {
-        return;
-    };
-    let Some(entry) = backends.get_mut(backend_name) else {
-        return;
-    };
-    match entry {
-        BackendConfig::Api { model: m, .. } => *m = model.to_string(),
-        BackendConfig::ClaudeCli { model: m, .. } => *m = model.to_string(),
-    }
-}
-
-/// Store the thinking checkbox's value.
-fn apply_thinking_enabled(settings: &mut Settings, enabled: bool) {
-    settings.thinking_mut().enabled = enabled;
-}
-
-/// Store the raw-output checkbox's value.
-fn apply_show_raw_output(settings: &mut Settings, show_raw: bool) {
-    settings.show_raw_output = Some(show_raw);
-}
-
-/// Store the master voice checkbox's value.
-fn apply_voice_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().enabled = enabled;
-}
-
-/// Store the speech-to-text checkbox's value.
-fn apply_stt_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().stt_enabled = enabled;
-}
-
-/// Store the text-to-speech checkbox's value.
-fn apply_tts_enabled(settings: &mut Settings, enabled: bool) {
-    settings.voice_mut().tts_enabled = enabled;
-}
-
-/// Store the trigger-mode radio pair's selection.
-fn apply_trigger_mode(settings: &mut Settings, mode: TriggerMode) {
-    settings.voice_mut().trigger_mode = mode;
-}
-
-/// Store the wake-phrase field's text.
-fn apply_wake_phrase(settings: &mut Settings, phrase: &str) {
-    settings.voice_mut().wake_phrase = Some(phrase.to_string());
-}
-
-/// Store the Kokoro voice selector's choice.
-fn apply_tts_voice(settings: &mut Settings, voice_id: &str) {
-    settings.voice_mut().tts_voice = Some(voice_id.to_string());
-}
-
-/// Store the speech speed slider's value.
-fn apply_tts_speed(settings: &mut Settings, speed: f32) {
-    settings.voice_mut().tts_speed = Some(speed);
-}
-
-/// Store the context budget slider's value.
-fn apply_context_budget(settings: &mut Settings, budget: usize) {
-    settings.context_budget = Some(budget);
-}
-
 /// Store the Autopilot tab's task text box.
 fn apply_autopilot_task(settings: &mut Settings, task: &str) {
     settings.autopilot_mut().task = Some(task.to_string());
@@ -1682,7 +1818,15 @@ fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::Role;
+    use super::settings_panel::{
+        apply_backend_model, apply_context_budget, apply_default_backend, apply_effort,
+        apply_show_raw_output, apply_stt_enabled, apply_trigger_mode, apply_tts_enabled,
+        apply_tts_speed, apply_tts_voice, apply_voice_enabled, apply_wake_phrase,
+        apply_working_dir, speed_command, stt_enabled_command, trigger_mode_command,
+        tts_enabled_command, voice_enabled_command, voice_id_command, wake_phrase_command,
+    };
+    use crate::agent::agent_loop::{RouteHop, SubagentId, SubagentMeta};
+    use crate::api::types::{Content, Role};
     use crate::config::settings::{ApiProvider, BackendConfig, VoiceConfig};
     use std::collections::HashMap;
 
@@ -1712,14 +1856,20 @@ mod tests {
     fn make_gui_in(settings: &Settings, project_root: PathBuf) -> DeepSeekGui {
         let (_tx_events, rx_events) = mpsc::unbounded_channel();
         let (tx_input, _rx_input) = mpsc::unbounded_channel();
+        // Mirrors main.rs: the effort flag is seeded from settings before
+        // the GUI is constructed, so `new` can read the starting level back
+        // off the flag the same way it does for `context_budget_flag`.
+        let effort_flag = Arc::new(AtomicU8::new(0));
+        settings.effort().store(&effort_flag);
         DeepSeekGui::new(
             rx_events,
             tx_input,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            effort_flag,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Arc::new(Mutex::new(project_root.clone())),
             settings.clone(),
             project_root,
         )
@@ -1925,6 +2075,12 @@ mod tests {
             }),
             "Notice"
         );
+        assert_eq!(
+            role_label(&BlockKind::Image {
+                image: test_image_attachment(),
+            }),
+            "Image"
+        );
     }
 
     #[test]
@@ -2066,6 +2222,41 @@ mod tests {
     }
 
     #[test]
+    fn raw_text_for_a_subagent_block_carries_its_header_and_nested_content() {
+        let mut transcript = Transcript::new();
+        let subagent_id = SubagentId::next();
+        transcript.apply_routed_event(RoutedEvent {
+            route: vec![RouteHop {
+                id: subagent_id,
+                meta: SubagentMeta {
+                    backend: "ollama".into(),
+                    model: "test-model".into(),
+                    depth: 1,
+                },
+                session_turns: 1,
+                session_turn_cap: 20,
+                send_message_calls: 0,
+                send_message_call_cap: 10,
+            }],
+            event: StreamEvent::Text {
+                turn: 1,
+                text: "hi from a subagent".into(),
+            },
+        });
+        let block = &transcript.blocks()[0];
+        let text = raw_block_text(block);
+        assert!(text.contains("ollama"), "must name the backend: {text}");
+        assert!(text.contains("test-model"), "must name the model: {text}");
+        assert!(text.contains("RUNNING"), "must show the state: {text}");
+        assert!(
+            text.contains("hi from a subagent"),
+            "must carry the nested content: {text}"
+        );
+        assert!(text.contains("turns 1/20"), "must show the turn count and cap: {text}");
+        assert!(text.contains("sends 0/10"), "must show the call count and cap: {text}");
+    }
+
+    #[test]
     fn raw_span_text_marks_reasoning_and_leaves_reply_text_plain() {
         assert_eq!(raw_span_text(&Span::Text("hello".into())), "hello");
         assert_eq!(
@@ -2091,6 +2282,338 @@ mod tests {
             }),
             severity_color(Severity::Error)
         );
+        assert_eq!(
+            block_color(&BlockKind::Image {
+                image: test_image_attachment(),
+            }),
+            IMAGE_LABEL_COLOR
+        );
+    }
+
+    /// A tiny, real base64 payload for image-block tests: the 1x1
+    /// transparent PNG egui's own examples use. Its bytes are not
+    /// inspected, so any well-formed base64 string would do, but a real
+    /// PNG keeps the fixture honest about what this block actually holds.
+    fn test_image_attachment() -> ImageAttachment {
+        ImageAttachment {
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".into(),
+            media_type: "image/png".into(),
+        }
+    }
+
+    #[test]
+    fn decode_image_bytes_accepts_well_formed_base64() {
+        let image = test_image_attachment();
+        let bytes = decode_image_bytes(&image).expect("valid base64 must decode");
+        // PNG's fixed 8-byte magic number.
+        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']);
+    }
+
+    #[test]
+    fn decode_image_bytes_rejects_malformed_base64() {
+        let image = ImageAttachment {
+            data: "not valid base64 !!!".into(),
+            media_type: "image/png".into(),
+        };
+        assert!(decode_image_bytes(&image).is_none());
+    }
+
+    #[test]
+    fn raw_block_text_names_the_image_media_type() {
+        let mut transcript = Transcript::new();
+        let id = transcript.push(BlockKind::Image {
+            image: test_image_attachment(),
+        });
+        let block = transcript.find(id).unwrap();
+        let text = raw_block_text(block);
+        assert!(text.contains("image/png"), "must name the media type: {text}");
+    }
+
+    /// Build in-memory image bytes of the given format for a test, without
+    /// touching the filesystem. A 2x2 image is the smallest either the PNG
+    /// or the JPEG encoder will accept.
+    fn encode_test_image(format: ImageFormat) -> Vec<u8> {
+        let buffer =
+            image::RgbaImage::from_raw(2, 2, vec![255u8; 2 * 2 * 4]).expect("valid buffer");
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(buffer)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+            .expect("encode");
+        bytes
+    }
+
+    #[test]
+    fn attachment_from_image_bytes_accepts_a_real_png() {
+        let bytes = encode_test_image(ImageFormat::Png);
+        let attachment = attachment_from_image_bytes(&bytes, "test.png").expect("must decode");
+        assert_eq!(attachment.media_type, "image/png");
+    }
+
+    #[test]
+    fn attachment_from_image_bytes_accepts_a_real_jpeg() {
+        // The finding this step exists to fix: only png and bmp decoders
+        // were enabled anywhere in the dependency tree before this step
+        // added the "jpeg" feature directly. This must decode, not just
+        // sniff as jpeg by its magic bytes.
+        let bytes = encode_test_image(ImageFormat::Jpeg);
+        let attachment = attachment_from_image_bytes(&bytes, "test.jpg").expect("must decode");
+        assert_eq!(attachment.media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn attachment_from_image_bytes_rejects_garbage() {
+        let bytes = b"this is not an image".to_vec();
+        assert!(attachment_from_image_bytes(&bytes, "garbage").is_err());
+    }
+
+    #[test]
+    fn attachment_from_image_bytes_keeps_the_original_bytes_on_the_wire() {
+        let bytes = encode_test_image(ImageFormat::Png);
+        let attachment = attachment_from_image_bytes(&bytes, "test.png").expect("must decode");
+        let decoded = decode_image_bytes(&attachment).expect("valid base64");
+        assert_eq!(decoded, bytes, "must not silently re-encode the file");
+    }
+
+    #[test]
+    fn attachment_from_clipboard_image_encodes_rgba_pixels_as_png() {
+        let image = arboard::ImageData {
+            width: 2,
+            height: 2,
+            bytes: std::borrow::Cow::Owned(vec![255u8; 2 * 2 * 4]),
+        };
+        let attachment =
+            attachment_from_clipboard_image(&image).expect("valid buffer must encode");
+        assert_eq!(attachment.media_type, "image/png");
+        let bytes = decode_image_bytes(&attachment).expect("valid base64");
+        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']);
+    }
+
+    #[test]
+    fn attachment_from_clipboard_image_rejects_a_mismatched_buffer() {
+        let image = arboard::ImageData {
+            width: 2,
+            height: 2,
+            // 4 bytes short of the 16 a 2x2 RGBA8 buffer needs.
+            bytes: std::borrow::Cow::Owned(vec![255u8; 12]),
+        };
+        assert!(attachment_from_clipboard_image(&image).is_none());
+    }
+
+    #[test]
+    fn edge_trigger_fires_once_on_the_press_not_while_held() {
+        let mut prev = false;
+        assert!(edge_trigger(true, &mut prev), "first press must fire");
+        assert!(
+            !edge_trigger(true, &mut prev),
+            "holding the key must not fire again"
+        );
+        assert!(!edge_trigger(false, &mut prev), "release does not fire");
+        assert!(
+            edge_trigger(true, &mut prev),
+            "a second press after a release must fire again"
+        );
+    }
+
+    #[test]
+    fn add_pending_attachment_caps_at_one_and_notices_the_replacement() {
+        let mut gui = make_gui();
+        gui.add_pending_attachment(test_image_attachment());
+        assert_eq!(gui.pending_attachments.len(), 1);
+        assert!(
+            gui.transcript.blocks().is_empty(),
+            "the first attachment is not a replacement, so no notice yet"
+        );
+
+        gui.add_pending_attachment(test_image_attachment());
+        assert_eq!(
+            gui.pending_attachments.len(),
+            1,
+            "a second attachment replaces rather than appends"
+        );
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1, "the replacement must be reported, not silent");
+        assert!(matches!(blocks[0].kind, BlockKind::Notice { .. }));
+    }
+
+    #[test]
+    fn remove_pending_attachment_drops_the_only_slot() {
+        let mut gui = make_gui();
+        gui.add_pending_attachment(test_image_attachment());
+        gui.remove_pending_attachment(0);
+        assert!(gui.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn remove_pending_attachment_out_of_range_is_a_no_op() {
+        let mut gui = make_gui();
+        gui.add_pending_attachment(test_image_attachment());
+        gui.remove_pending_attachment(5);
+        assert_eq!(gui.pending_attachments.len(), 1);
+    }
+
+    #[test]
+    fn submit_current_input_attaches_the_pending_image_and_clears_the_strip() {
+        let mut gui = make_gui();
+        gui.add_pending_attachment(test_image_attachment());
+        gui.input_buffer = "look at this".into();
+
+        gui.submit_current_input();
+
+        assert!(gui.pending_attachments.is_empty(), "the strip must clear on send");
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 2, "a User block and an Image block");
+        assert!(matches!(blocks[0].kind, BlockKind::User { .. }));
+        assert!(matches!(blocks[1].kind, BlockKind::Image { .. }));
+    }
+
+    /// The image belongs on `AgentCommand::UserTurn` itself, not on a side
+    /// channel delivered separately. This is the fix for P6S05: a shared
+    /// `Arc<Mutex<Option<ImageAttachment>>>` used to carry the image next
+    /// to the command, with no guarantee the two paired up. Proves text
+    /// and image now arrive on the very same command.
+    #[test]
+    fn submit_current_input_sends_text_and_image_on_the_same_command() {
+        let mut gui = make_gui();
+        let (tx_input, mut rx_input) = mpsc::unbounded_channel();
+        gui.tx_input = tx_input;
+        gui.add_pending_attachment(test_image_attachment());
+        gui.input_buffer = "look at this".into();
+
+        gui.submit_current_input();
+
+        match rx_input.try_recv().unwrap() {
+            AgentCommand::UserTurn { text, image } => {
+                assert_eq!(text, "look at this");
+                assert_eq!(image, Some(test_image_attachment()));
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    /// Two turns sent back to back must each carry their own attachment,
+    /// never the other's. This is exactly the mis-pairing a shared side
+    /// channel allowed: a second send could overwrite the first turn's
+    /// image before the agent task read it out.
+    #[test]
+    fn two_turns_in_a_row_each_carry_their_own_attachment() {
+        let mut gui = make_gui();
+        let (tx_input, mut rx_input) = mpsc::unbounded_channel();
+        gui.tx_input = tx_input;
+
+        gui.add_pending_attachment(test_image_attachment());
+        gui.input_buffer = "first turn".into();
+        gui.submit_current_input();
+
+        gui.input_buffer = "second turn".into();
+        gui.submit_current_input();
+
+        match rx_input.try_recv().unwrap() {
+            AgentCommand::UserTurn { text, image } => {
+                assert_eq!(text, "first turn");
+                assert_eq!(image, Some(test_image_attachment()));
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+        match rx_input.try_recv().unwrap() {
+            AgentCommand::UserTurn { text, image } => {
+                assert_eq!(text, "second turn");
+                assert_eq!(image, None, "the second turn must not inherit the first's image");
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_current_input_sends_an_image_with_no_text() {
+        let mut gui = make_gui();
+        gui.add_pending_attachment(test_image_attachment());
+        assert!(gui.input_buffer.is_empty());
+
+        gui.submit_current_input();
+
+        assert_eq!(gui.session_status, "Running...", "an image-only turn must still send");
+        assert!(gui.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn subagent_header_summary_names_backend_model_depth_and_elapsed() {
+        let header =
+            subagent_header_summary("ollama", "test-model", 2, SubagentState::Running, 1500, 1, 20, 0, 10);
+        assert!(header.contains("ollama"), "must name the backend: {header}");
+        assert!(header.contains("test-model"), "must name the model: {header}");
+        assert!(header.contains('2'), "must name the depth: {header}");
+        assert!(header.contains("1.5s"), "must show elapsed time: {header}");
+    }
+
+    /// The header must name both runaway-cost counts against their caps,
+    /// and it must do so while the session is still comfortably under
+    /// both: the roadmap calls for the counts to be visible the whole
+    /// time a session is open, not only once a cap trips.
+    #[test]
+    fn subagent_header_summary_names_both_counts_against_their_caps() {
+        let header =
+            subagent_header_summary("ollama", "test-model", 1, SubagentState::Running, 0, 3, 20, 2, 10);
+        assert!(header.contains("3/20"), "must show turns against its cap: {header}");
+        assert!(header.contains("2/10"), "must show sends against its cap: {header}");
+    }
+
+    #[test]
+    fn subagent_header_summary_carries_a_distinct_badge_for_every_state() {
+        let states = [
+            SubagentState::Running,
+            SubagentState::Done,
+            SubagentState::Failed,
+            SubagentState::Interrupted,
+        ];
+        let headers: Vec<String> = states
+            .iter()
+            .map(|state| subagent_header_summary("ollama", "m", 1, *state, 0, 1, 20, 0, 10))
+            .collect();
+        for (index, header) in headers.iter().enumerate() {
+            for other in &headers[index + 1..] {
+                assert_ne!(header, other, "each state needs its own header text");
+            }
+        }
+        assert!(headers[0].contains("RUNNING"));
+        assert!(headers[1].contains("DONE"));
+        assert!(headers[2].contains("FAILED"));
+        assert!(headers[3].contains("INTERRUPTED"));
+    }
+
+    #[test]
+    fn subagent_state_color_is_distinct_per_state() {
+        let colors = [
+            subagent_state_color(SubagentState::Running),
+            subagent_state_color(SubagentState::Done),
+            subagent_state_color(SubagentState::Failed),
+            subagent_state_color(SubagentState::Interrupted),
+        ];
+        for (index, color) in colors.iter().enumerate() {
+            for other in &colors[index + 1..] {
+                assert_ne!(color, other, "each state needs its own colour");
+            }
+        }
+    }
+
+    #[test]
+    fn subagent_elapsed_ms_uses_the_stored_value_once_terminal() {
+        assert_eq!(subagent_elapsed_ms(None, 4200), 4200);
+    }
+
+    #[test]
+    fn subagent_elapsed_ms_computes_a_live_value_while_running() {
+        let start = Instant::now() - Duration::from_millis(50);
+        let live = subagent_elapsed_ms(Some(start), 0);
+        assert!(
+            live >= 50,
+            "a running block's elapsed time must grow from `started_at`, got {live}"
+        );
+    }
+
+    #[test]
+    fn format_elapsed_ms_shows_one_decimal_of_seconds() {
+        assert_eq!(format_elapsed_ms(1500), "1.5s");
+        assert_eq!(format_elapsed_ms(0), "0.0s");
     }
 
     #[test]
@@ -2468,22 +2991,23 @@ mod tests {
 
     #[test]
     fn transcript_event_forwards_text_to_the_agent_channel() {
-        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        let (_tx_events, rx_events) = mpsc::unbounded_channel();
         let (tx_input, mut rx_input) = mpsc::unbounded_channel();
         let mut gui = DeepSeekGui::new(
             rx_events,
             tx_input,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(100_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Arc::new(Mutex::new(PathBuf::from("."))),
             Settings::default(),
             unique_temp_dir("ctor"),
         );
         gui.handle_voice_event(VoiceEvent::Transcript("hello".into()));
         match rx_input.try_recv().unwrap() {
-            AgentCommand::UserTurn(text) => assert_eq!(text, "hello"),
+            AgentCommand::UserTurn { text, .. } => assert_eq!(text, "hello"),
             other => panic!("expected UserTurn, got {other:?}"),
         }
     }
@@ -2865,16 +3389,17 @@ mod tests {
 
     #[test]
     fn new_gui_seeds_context_budget_from_the_flag() {
-        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        let (_tx_events, rx_events) = mpsc::unbounded_channel();
         let (tx_input, _rx_input) = mpsc::unbounded_channel();
         let gui = DeepSeekGui::new(
             rx_events,
             tx_input,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicUsize::new(64_000)),
             Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Arc::new(Mutex::new(PathBuf::from("."))),
             Settings::default(),
             unique_temp_dir("ctor"),
         );
@@ -2895,6 +3420,81 @@ mod tests {
         let mut gui = make_gui();
         gui.context_budget = 90_000;
         assert_eq!(gui.context_budget / 3, 30_000);
+    }
+
+    #[test]
+    fn new_gui_seeds_effort_from_the_flag() {
+        let (tx_events, rx_events) = mpsc::unbounded_channel();
+        let (tx_input, _rx_input) = mpsc::unbounded_channel();
+        let effort_flag = Arc::new(AtomicU8::new(0));
+        Effort::High.store(&effort_flag);
+        let gui = DeepSeekGui::new(
+            rx_events,
+            tx_input,
+            Arc::new(AtomicBool::new(false)),
+            effort_flag,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(64_000)),
+            Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Arc::new(Mutex::new(PathBuf::from("."))),
+            Settings::default(),
+            unique_temp_dir("effort-ctor"),
+        );
+        let _ = tx_events;
+        assert_eq!(gui.effort, Effort::High);
+    }
+
+    #[test]
+    fn new_gui_seeds_effort_from_settings_via_the_test_helper() {
+        let settings = Settings {
+            effort: Some(Effort::Max),
+            ..Settings::default()
+        };
+        let gui = make_gui_with_settings(&settings);
+        assert_eq!(gui.effort, Effort::Max);
+    }
+
+    #[test]
+    fn effort_flag_write_is_observable_through_a_second_handle() {
+        let mut gui = make_gui();
+        let observer = Arc::clone(&gui.effort_flag);
+        gui.effort = Effort::Medium;
+        gui.effort.store(&gui.effort_flag);
+        assert_eq!(Effort::load(&observer), Effort::Medium);
+    }
+
+    #[test]
+    fn apply_effort_round_trips_through_settings() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.effort(), Effort::None);
+        apply_effort(&mut settings, Effort::Low);
+        assert_eq!(settings.effort(), Effort::Low);
+    }
+
+    #[test]
+    fn apply_effort_reaches_every_level() {
+        let mut settings = Settings::default();
+        for level in [
+            Effort::None,
+            Effort::Low,
+            Effort::Medium,
+            Effort::High,
+            Effort::Max,
+        ] {
+            apply_effort(&mut settings, level);
+            assert_eq!(settings.effort(), level);
+            assert_eq!(settings.effort().to_u8(), level.to_u8());
+        }
+    }
+
+    #[test]
+    fn apply_effort_persists_to_disk() {
+        let project_root = unique_temp_dir("effort-persist");
+        let mut gui = make_gui_in(&Settings::default(), project_root.clone());
+        apply_effort(&mut gui.settings, Effort::High);
+        gui.persist_settings();
+        let reloaded = Settings::load(&project_root).unwrap();
+        assert_eq!(reloaded.effort(), Effort::High);
     }
 
     /// Apply a change to a GUI's settings, persist it, and read the file
@@ -2931,14 +3531,54 @@ mod tests {
     }
 
     #[test]
-    fn thinking_change_creates_the_block_when_it_is_missing() {
-        let mut settings = Settings::default();
-        assert!(settings.thinking.is_none(), "no thinking block to start");
-        apply_thinking_enabled(&mut settings, true);
-        assert!(settings.thinking.is_some(), "the block gets created");
+    fn new_gui_seeds_working_dir_buffer_from_the_flag() {
+        let (_tx_events, rx_events) = mpsc::unbounded_channel();
+        let (tx_input, _rx_input) = mpsc::unbounded_channel();
+        let seeded_dir = unique_temp_dir("seed-workdir");
+        let gui = DeepSeekGui::new(
+            rx_events,
+            tx_input,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(64_000)),
+            Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            Arc::new(Mutex::new(seeded_dir.clone())),
+            Settings::default(),
+            unique_temp_dir("ctor"),
+        );
+        assert_eq!(gui.working_dir_buffer, seeded_dir.display().to_string());
+    }
 
-        let loaded = round_trip(|s| apply_thinking_enabled(s, true));
-        assert!(loaded.thinking_enabled());
+    #[test]
+    fn working_dir_change_survives_a_save_and_a_load() {
+        let dir = unique_temp_dir("workdir-persist");
+        let loaded = round_trip(|s| apply_working_dir(s, &dir.display().to_string()));
+        assert_eq!(loaded.working_dir(), Some(dir.display().to_string()));
+    }
+
+    #[test]
+    fn commit_working_dir_change_writes_a_valid_directory_to_the_shared_flag() {
+        let mut gui = make_gui();
+        let dir = unique_temp_dir("commit-valid");
+        gui.working_dir_buffer = dir.display().to_string();
+
+        gui.commit_working_dir_change();
+
+        assert_eq!(*gui.working_dir_flag.lock().unwrap(), dir);
+        assert_eq!(gui.settings.working_dir(), Some(dir.display().to_string()));
+    }
+
+    #[test]
+    fn commit_working_dir_change_rejects_a_path_that_is_not_a_directory() {
+        let mut gui = make_gui();
+        let original = gui.working_dir_flag.lock().unwrap().clone();
+        gui.working_dir_buffer = "Z:/definitely/does/not/exist/anywhere".to_string();
+
+        gui.commit_working_dir_change();
+
+        assert_eq!(*gui.working_dir_flag.lock().unwrap(), original);
+        assert!(gui.settings.working_dir().is_none());
     }
 
     #[test]
@@ -3063,7 +3703,7 @@ mod tests {
     fn user_message(text: &str) -> Message {
         Message {
             role: Role::User,
-            content: Some(text.to_string()),
+            content: Some(Content::text(text)),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -3241,5 +3881,106 @@ mod tests {
         gui.saved_sessions = gui.session_store.list();
 
         assert!(!gui.saved_sessions.iter().any(|meta| meta.id == id));
+    }
+
+    // ── Routed events (P2S03) ──
+
+    fn test_route_hop(id: SubagentId) -> RouteHop {
+        RouteHop {
+            id,
+            meta: SubagentMeta {
+                backend: "ollama".into(),
+                model: "test-model".into(),
+                depth: 1,
+            },
+            session_turns: 1,
+            session_turn_cap: 20,
+            send_message_calls: 0,
+            send_message_call_cap: 10,
+        }
+    }
+
+    /// A routed event with a non-empty route lands inside its own nested
+    /// `Subagent` block, not as a top-level block in the main transcript.
+    #[test]
+    fn a_routed_event_lands_in_a_nested_subagent_block_not_the_top_level_transcript() {
+        let mut gui = make_gui();
+        let subagent_id = SubagentId::next();
+
+        gui.handle_routed_event(RoutedEvent {
+            route: vec![test_route_hop(subagent_id)],
+            event: StreamEvent::Text {
+                turn: 1,
+                text: "hi from a subagent".into(),
+            },
+        });
+
+        let blocks = gui.transcript.blocks();
+        assert_eq!(blocks.len(), 1);
+        let BlockKind::Subagent { transcript, .. } = &blocks[0].kind else {
+            panic!("expected a Subagent block, got {:?}", blocks[0].kind);
+        };
+        assert_eq!(
+            transcript.blocks()[0].kind,
+            BlockKind::Assistant {
+                spans: vec![Span::Text("hi from a subagent".into())],
+            }
+        );
+    }
+
+    /// A subagent's own `TurnEnd`, arriving with a non-empty route, must
+    /// not trigger any of the main session's `TurnEnd` side effects: no
+    /// token-count update, no cache-counter update, no session autosave.
+    #[test]
+    fn a_subagent_turn_end_does_not_touch_main_session_counters_or_trigger_a_save() {
+        let mut gui = make_gui();
+        run_one_turn(&mut gui, "the real conversation");
+        let token_count_before = gui.token_count.clone();
+        let hit_before = gui.total_cache_hit_tokens;
+        let miss_before = gui.total_cache_miss_tokens;
+        let status_before = gui.session_status.clone();
+        let saved_sessions_before = gui.saved_sessions.len();
+        let subagent_id = SubagentId::next();
+
+        gui.handle_routed_event(RoutedEvent {
+            route: vec![test_route_hop(subagent_id)],
+            event: StreamEvent::TurnEnd {
+                turn: 1,
+                finish_reason: "stop".into(),
+                total_tokens: 9999,
+                prompt_cache_hit_tokens: 500,
+                prompt_cache_miss_tokens: 500,
+            },
+        });
+
+        assert_eq!(gui.token_count, token_count_before);
+        assert_eq!(gui.total_cache_hit_tokens, hit_before);
+        assert_eq!(gui.total_cache_miss_tokens, miss_before);
+        assert_eq!(gui.session_status, status_before);
+        assert_eq!(gui.saved_sessions.len(), saved_sessions_before);
+    }
+
+    /// A main-session event, empty route, still does everything it always
+    /// did: `handle_routed_event` with an empty route behaves exactly like
+    /// the old `handle_stream_event` path, side effects included.
+    #[test]
+    fn a_main_session_routed_event_still_applies_its_side_effects() {
+        let mut gui = make_gui();
+        assert_eq!(gui.total_cache_hit_tokens, 0);
+
+        gui.handle_routed_event(RoutedEvent::own(StreamEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "stop".into(),
+            total_tokens: 42,
+            prompt_cache_hit_tokens: 10,
+            prompt_cache_miss_tokens: 5,
+        }));
+
+        assert_eq!(gui.token_count, "42");
+        assert_eq!(gui.total_cache_hit_tokens, 10);
+        assert_eq!(gui.total_cache_miss_tokens, 5);
+        // And the transcript still sees it too, exactly as
+        // `apply_stream_event` would have handled it directly.
+        assert!(gui.transcript.blocks().is_empty());
     }
 }
