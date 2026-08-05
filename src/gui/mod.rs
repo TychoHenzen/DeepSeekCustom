@@ -17,15 +17,16 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use self::attachment::{AttachmentSlot, decode_image_bytes};
+use self::session_state::{SessionOrigin, SessionState};
 use self::settings_panel::spawn_model_list_fetch;
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
 use self::voice_ui::{PttKeys, VoiceUi, voice_state_color, voice_state_label};
 use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
-use crate::api::types::{ImageAttachment, Message};
+use crate::api::types::ImageAttachment;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
-use crate::session::{SessionId, SessionMeta, SessionStore};
+use crate::session::{SessionId, SessionStore};
 use crate::voice::service::{VoiceCommand, VoiceEvent};
 
 /// Which tab the main window shows. Chat is the default; Autopilot is a
@@ -165,23 +166,9 @@ pub struct DeepSeekGui {
     autopilot_policy_path: PathBuf,
 
     // ── Session state (S08): saved conversations, no UI yet ──
-    /// Disk layer for saved conversations, rooted under `project_root`.
-    session_store: SessionStore,
-    /// The session id the current conversation will save under.
-    current_session_id: SessionId,
-    /// Summary metadata for the current conversation. Kept in sync with
-    /// `current_session_id` by every method that changes either.
-    current_session_meta: SessionMeta,
-    /// Every saved session's metadata, loaded once at startup and
-    /// refreshed after every save. Not rendered yet; a later step adds the
-    /// Sessions tab that reads this.
-    saved_sessions: Vec<SessionMeta>,
-    /// The API history as of the latest `ConversationSnapshot` event.
-    /// Always empty on a `claude_cli` session: see `StreamEvent::ConversationSnapshot`.
-    current_messages: Vec<Message>,
-    /// The `claude` CLI's own session id, for `--resume`, as of the latest
-    /// `ConversationSnapshot` event. Always `None` on an `Api` session.
-    current_claude_session_id: Option<String>,
+    // Saved conversations: the current id and metadata, the saved list,
+    // and the API history a save needs. See `gui::session_state`.
+    sessions: SessionState,
 
     // ── Pending image attachment (P6S05) ──
     /// The image the next turn will carry, the OS clipboard handle, and
@@ -237,20 +224,17 @@ impl DeepSeekGui {
             settings.autopilot_policy_path(),
         )
         .resolved_policy_path();
-        let session_store = SessionStore::for_project(&project_root);
-        let saved_sessions = session_store.list();
-        let current_session_id = SessionId::new();
-        let session_backend = backend_options.get(selected_backend_idx).cloned();
-        let now = crate::session::now_timestamp();
-        let current_session_meta = SessionMeta {
-            id: current_session_id,
-            title: "New conversation".to_string(),
-            created_at: now,
-            updated_at: now,
-            backend: session_backend.unwrap_or_default(),
-            model: current_model.clone(),
-            message_count: 0,
-        };
+        let session_backend = backend_options
+            .get(selected_backend_idx)
+            .cloned()
+            .unwrap_or_default();
+        let sessions = SessionState::new(
+            SessionStore::for_project(&project_root),
+            SessionOrigin {
+                backend: session_backend,
+                model: current_model.clone(),
+            },
+        );
         Self {
             transcript: Transcript::new(),
             input_buffer: String::new(),
@@ -290,12 +274,7 @@ impl DeepSeekGui {
             autopilot_iterations,
             autopilot_progress: AutopilotProgress::Idle,
             autopilot_policy_path,
-            session_store,
-            current_session_id,
-            current_session_meta,
-            saved_sessions,
-            current_messages: Vec::new(),
-            current_claude_session_id: None,
+            sessions,
             attachment: AttachmentSlot::new(),
         }
     }
@@ -383,6 +362,36 @@ impl DeepSeekGui {
         }
     }
 
+    /// Which backend and model a save should record. Built fresh on each
+    /// call rather than held, since the model picker can move under it.
+    fn session_origin(&self) -> SessionOrigin {
+        SessionOrigin {
+            backend: self.active_backend.clone().unwrap_or_default(),
+            model: self.model.clone(),
+        }
+    }
+
+    /// Save the current conversation to disk. Called after every `TurnEnd`.
+    fn autosave_session(&mut self) {
+        let origin = self.session_origin();
+        self.sessions.autosave(&mut self.transcript, origin);
+    }
+
+    /// Start a fresh conversation and tell the agent to start over.
+    fn start_new_session(&mut self) {
+        let origin = self.session_origin();
+        let command = self.sessions.start_new(&mut self.transcript, origin);
+        let _ = self.tx_input.send(command);
+    }
+
+    /// Open a saved conversation and tell the agent to replay its history.
+    fn load_session(&mut self, id: SessionId) {
+        let origin = self.session_origin();
+        if let Some(command) = self.sessions.load(id, &mut self.transcript, origin) {
+            let _ = self.tx_input.send(command);
+        }
+    }
+
     /// Route one main-session stream event, exactly as if it arrived with
     /// an empty route. A test-only convenience: every real event from
     /// `rx_events` goes through `handle_routed_event` instead, since only
@@ -425,7 +434,7 @@ impl DeepSeekGui {
             StreamEvent::ConversationSnapshot {
                 messages,
                 claude_session_id,
-            } => self.record_conversation_snapshot(messages, claude_session_id),
+            } => self.sessions.record_snapshot(messages, claude_session_id),
             StreamEvent::TurnEnd {
                 total_tokens,
                 prompt_cache_hit_tokens,
@@ -436,7 +445,7 @@ impl DeepSeekGui {
                 self.total_cache_hit_tokens += prompt_cache_hit_tokens;
                 self.total_cache_miss_tokens += prompt_cache_miss_tokens;
                 self.voice.speak_accumulated_reply();
-                self.autosave_current_session();
+                self.autosave_session();
             }
             StreamEvent::SessionReset => self.reset_session_state(),
             StreamEvent::Error { message } => error!(%message, "stream error event"),
@@ -473,7 +482,9 @@ impl DeepSeekGui {
     /// behind. The transcript's own `SessionReset` arm is a no-op, so the
     /// clear belongs here, where the rest of the reset already lives.
     fn reset_session_state(&mut self) {
-        self.save_outgoing_and_start_new();
+        let origin = self.session_origin();
+        self.sessions
+            .save_outgoing_and_start_new(&mut self.transcript, origin);
         self.transcript.push(BlockKind::Notice {
             text: "Session reset".into(),
             severity: Severity::Info,
@@ -1395,7 +1406,7 @@ mod tests {
     };
     use super::*;
     use crate::agent::agent_loop::{RouteHop, SubagentId, SubagentMeta};
-    use crate::api::types::{Content, Role};
+    use crate::api::types::{Content, Message, Role};
     use crate::config::settings::{ApiProvider, BackendConfig, TriggerMode, VoiceConfig};
     use std::collections::HashMap;
 
@@ -2998,8 +3009,9 @@ mod tests {
         run_one_turn(&mut gui, "fix the parser bug");
 
         let loaded = gui
-            .session_store
-            .load(&gui.current_session_id)
+            .sessions
+            .store()
+            .load(&gui.sessions.current_id())
             .expect("expected the autosaved session to load back");
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.meta.title, "fix the parser bug");
@@ -3009,43 +3021,44 @@ mod tests {
     fn new_session_saves_outgoing_then_leaves_an_empty_transcript_and_a_different_id() {
         let mut gui = make_gui();
         run_one_turn(&mut gui, "add a new endpoint");
-        let old_id = gui.current_session_id;
+        let old_id = gui.sessions.current_id();
 
         gui.start_new_session();
 
-        assert!(gui.session_store.load(&old_id).is_ok());
+        assert!(gui.sessions.store().load(&old_id).is_ok());
         assert!(gui.transcript.blocks().is_empty());
-        assert_ne!(gui.current_session_id, old_id);
-        assert!(gui.current_messages.is_empty());
+        assert_ne!(gui.sessions.current_id(), old_id);
+        assert!(gui.sessions.messages().is_empty());
     }
 
     #[test]
     fn new_session_from_empty_conversation_writes_nothing_to_disk() {
         let mut gui = make_gui();
-        let old_id = gui.current_session_id;
+        let old_id = gui.sessions.current_id();
 
         gui.start_new_session();
 
-        assert!(gui.session_store.load(&old_id).is_err());
-        assert!(gui.saved_sessions.is_empty());
+        assert!(gui.sessions.store().load(&old_id).is_err());
+        assert!(gui.sessions.saved().is_empty());
     }
 
     #[test]
     fn load_session_saves_outgoing_then_installs_the_loaded_transcript_and_id() {
         let mut gui = make_gui();
         run_one_turn(&mut gui, "first conversation");
-        let first_id = gui.current_session_id;
+        let first_id = gui.sessions.current_id();
 
         gui.start_new_session();
         run_one_turn(&mut gui, "second conversation");
-        let second_id = gui.current_session_id;
+        let second_id = gui.sessions.current_id();
 
         gui.load_session(first_id);
 
-        assert_eq!(gui.current_session_id, first_id);
+        assert_eq!(gui.sessions.current_id(), first_id);
         assert_eq!(gui.transcript.blocks().len(), 1);
         let saved_second = gui
-            .session_store
+            .sessions
+            .store()
             .load(&second_id)
             .expect("expected the outgoing second conversation to be saved");
         assert_eq!(saved_second.meta.title, "second conversation");
@@ -3055,16 +3068,17 @@ mod tests {
     fn session_reset_saves_the_outgoing_conversation_rather_than_discarding_it() {
         let mut gui = make_gui();
         run_one_turn(&mut gui, "reset me please");
-        let old_id = gui.current_session_id;
+        let old_id = gui.sessions.current_id();
 
         gui.handle_stream_event(StreamEvent::SessionReset);
 
         let loaded = gui
-            .session_store
+            .sessions
+            .store()
             .load(&old_id)
             .expect("expected the pre-reset conversation to have been saved");
         assert_eq!(loaded.meta.title, "reset me please");
-        assert_ne!(gui.current_session_id, old_id);
+        assert_ne!(gui.sessions.current_id(), old_id);
     }
 
     #[test]
@@ -3085,7 +3099,7 @@ mod tests {
     fn title_is_derived_on_first_turn_and_not_rederived_once_set() {
         let mut gui = make_gui();
         run_one_turn(&mut gui, "the original title");
-        assert_eq!(gui.current_session_meta.title, "the original title");
+        assert_eq!(gui.sessions.title_for_test(), "the original title");
 
         gui.handle_stream_event(StreamEvent::ConversationSnapshot {
             messages: vec![
@@ -3102,7 +3116,7 @@ mod tests {
             prompt_cache_miss_tokens: 0,
         });
 
-        assert_eq!(gui.current_session_meta.title, "the original title");
+        assert_eq!(gui.sessions.title_for_test(), "the original title");
     }
 
     #[test]
@@ -3136,13 +3150,12 @@ mod tests {
     fn deleting_a_session_removes_it_from_the_list() {
         let mut gui = make_gui();
         run_one_turn(&mut gui, "a session to delete");
-        let id = gui.current_session_id;
-        assert!(gui.saved_sessions.iter().any(|meta| meta.id == id));
+        let id = gui.sessions.current_id();
+        assert!(gui.sessions.saved().iter().any(|meta| meta.id == id));
 
-        gui.session_store.delete(&id).unwrap();
-        gui.saved_sessions = gui.session_store.list();
+        gui.delete_saved_session(id);
 
-        assert!(!gui.saved_sessions.iter().any(|meta| meta.id == id));
+        assert!(!gui.sessions.saved().iter().any(|meta| meta.id == id));
     }
 
     // ── Routed events (P2S03) ──
@@ -3201,7 +3214,7 @@ mod tests {
         let hit_before = gui.total_cache_hit_tokens;
         let miss_before = gui.total_cache_miss_tokens;
         let status_before = gui.session_status.clone();
-        let saved_sessions_before = gui.saved_sessions.len();
+        let saved_sessions_before = gui.sessions.saved().len();
         let subagent_id = SubagentId::next();
 
         gui.handle_routed_event(RoutedEvent {
@@ -3219,7 +3232,7 @@ mod tests {
         assert_eq!(gui.total_cache_hit_tokens, hit_before);
         assert_eq!(gui.total_cache_miss_tokens, miss_before);
         assert_eq!(gui.session_status, status_before);
-        assert_eq!(gui.saved_sessions.len(), saved_sessions_before);
+        assert_eq!(gui.sessions.saved().len(), saved_sessions_before);
     }
 
     /// A main-session event, empty route, still does everything it always

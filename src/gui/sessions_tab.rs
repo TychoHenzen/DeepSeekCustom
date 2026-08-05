@@ -5,7 +5,6 @@
 //! free of egui so it can be unit tested without a window.
 
 use eframe::egui::{self, Color32, RichText};
-use tracing::warn;
 
 use crate::session::{SessionId, Timestamp, now_timestamp};
 
@@ -49,7 +48,7 @@ impl DeepSeekGui {
 
         ui.add_space(8.0);
 
-        if self.saved_sessions.is_empty() {
+        if self.sessions.saved().is_empty() {
             ui.label(
                 RichText::new("No saved conversations yet.")
                     .color(Color32::GRAY)
@@ -62,9 +61,9 @@ impl DeepSeekGui {
         let mut to_open: Option<SessionId> = None;
         let mut to_delete: Option<SessionId> = None;
 
-        for meta in &self.saved_sessions {
+        for meta in self.sessions.saved() {
             ui.horizontal(|ui| {
-                let is_current = meta.id == self.current_session_id;
+                let is_current = meta.id == self.sessions.current_id();
                 let label = if is_current {
                     format!("* {}", meta.title)
                 } else {
@@ -102,11 +101,8 @@ impl DeepSeekGui {
     /// currently open session is allowed: it removes the file, and the
     /// open conversation stays as is, becoming unsaved again until the
     /// next autosave writes it back.
-    fn delete_saved_session(&mut self, id: SessionId) {
-        if let Err(e) = self.session_store.delete(&id) {
-            warn!(error = %e, "failed to delete session");
-        }
-        self.saved_sessions = self.session_store.list();
+    pub(super) fn delete_saved_session(&mut self, id: SessionId) {
+        self.sessions.delete(id);
     }
 }
 
