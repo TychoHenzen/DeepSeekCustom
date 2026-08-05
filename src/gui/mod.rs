@@ -1,5 +1,6 @@
 pub(crate) mod attachment;
 pub(crate) mod autopilot_tab;
+pub(crate) mod backend_picker;
 pub(crate) mod session_state;
 pub(crate) mod sessions_tab;
 pub(crate) mod settings_panel;
@@ -19,8 +20,8 @@ use tracing::{debug, error, info, warn};
 
 use self::attachment::{AttachmentSlot, decode_image_bytes};
 use self::autopilot_tab::AutopilotTab;
+use self::backend_picker::BackendPicker;
 use self::session_state::{SessionOrigin, SessionState};
-use self::settings_panel::spawn_model_list_fetch;
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
 use self::voice_ui::{PttKeys, VoiceUi, voice_state_color, voice_state_label};
 use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
@@ -52,7 +53,6 @@ pub struct DeepSeekGui {
     /// be filled in after its block was appended.
     transcript: Transcript,
     input_buffer: String,
-    model: String,
     token_count: String,
     session_status: String,
     /// Cumulative prompt cache hit tokens (not charged as input).
@@ -70,27 +70,10 @@ pub struct DeepSeekGui {
     // ── Settings panel ──
     settings_visible: bool,
     /// Sorted backend names, the keys of `settings.backends()`.
-    backend_options: Vec<String>,
-    selected_backend_idx: usize,
-    /// The backend the running session was actually built on, fixed at
-    /// startup. The picker may point somewhere else, since a backend
-    /// switch only takes effect on the next start. A model change writes
-    /// the shared `model_flag` only while the two still agree: sending
-    /// another backend's model name to the running one would break the
-    /// next turn.
-    active_backend: Option<String>,
-    /// Options for the model dropdown, resolved for the selected backend.
-    /// Seeded synchronously with that backend's declared model, so the
-    /// dropdown is never empty. Replaced once the background fetch in
-    /// `spawn_model_list_fetch` completes.
-    model_options: Vec<String>,
-    /// Background model-discovery results, tagged with the backend name
-    /// they were resolved for. `update()` drains this each frame. A
-    /// result tagged for a backend that is no longer selected is dropped.
-    model_list_rx: mpsc::UnboundedReceiver<(String, Vec<String>)>,
-    /// Sender half of `model_list_rx`. Cloned into each background fetch
-    /// spawned by `spawn_model_list_fetch`.
-    model_list_tx: mpsc::UnboundedSender<(String, Vec<String>)>,
+    /// The backend and model dropdowns, the running backend's name and
+    /// model, and the background model discovery. See
+    /// `gui::backend_picker`.
+    backends: BackendPicker,
 
     // ── Shared state with agent ──
     effort_flag: Arc<AtomicU8>,
@@ -98,7 +81,6 @@ pub struct DeepSeekGui {
     /// `new`. Mirrors `context_budget`: the flag is what the agent reads
     /// each turn, this field is what the control renders and edits.
     effort: Effort,
-    model_flag: Arc<Mutex<String>>,
     /// Flag shared with agent loop. Kept in sync with `voice_tts_enabled` so
     /// the agent knows to shape replies for speech while text to speech is on.
     voice_mode_flag: Arc<AtomicBool>,
@@ -167,23 +149,7 @@ impl DeepSeekGui {
         settings: Settings,
         project_root: PathBuf,
     ) -> Self {
-        let mut backend_options: Vec<String> = settings
-            .backends()
-            .map(|b| b.keys().cloned().collect())
-            .unwrap_or_default();
-        backend_options.sort();
-        let selected_backend_idx = settings
-            .default_backend()
-            .and_then(|name| backend_options.iter().position(|b| b == name))
-            .unwrap_or(0);
-        let current_model = model_flag.lock().unwrap().clone();
-        let (model_list_tx, model_list_rx) = mpsc::unbounded_channel::<(String, Vec<String>)>();
-        let model_options = vec![current_model.clone()];
-        if let Some(name) = backend_options.get(selected_backend_idx) {
-            if let Some(cfg) = settings.resolve_backend(name) {
-                spawn_model_list_fetch(model_list_tx.clone(), name.clone(), cfg.clone());
-            }
-        }
+        let backends = BackendPicker::new(&settings, model_flag);
         let voice = VoiceUi::new(&settings, &voice_mode_flag);
         let context_budget = context_budget_flag.load(Ordering::SeqCst);
         let effort = Effort::load(&effort_flag);
@@ -196,21 +162,16 @@ impl DeepSeekGui {
         // actually act against.
         let working_dir_buffer = working_dir_flag.lock().unwrap().display().to_string();
         let autopilot = AutopilotTab::new(&settings, &project_root);
-        let session_backend = backend_options
-            .get(selected_backend_idx)
-            .cloned()
-            .unwrap_or_default();
         let sessions = SessionState::new(
             SessionStore::for_project(&project_root),
             SessionOrigin {
-                backend: session_backend,
-                model: current_model.clone(),
+                backend: backends.active_backend().to_string(),
+                model: backends.model().to_string(),
             },
         );
         Self {
             transcript: Transcript::new(),
             input_buffer: String::new(),
-            model: current_model,
             token_count: "0".into(),
             session_status: "Ready".into(),
             total_cache_hit_tokens: 0,
@@ -220,18 +181,12 @@ impl DeepSeekGui {
             auto_scroll: false,
             interrupt_flag,
             settings_visible: false,
-            active_backend: backend_options.get(selected_backend_idx).cloned(),
-            backend_options,
-            selected_backend_idx,
-            model_options,
-            model_list_rx,
-            model_list_tx,
+            backends,
             effort_flag,
             effort,
             voice_mode_flag,
             context_budget_flag,
             context_budget,
-            model_flag,
             working_dir_flag,
             working_dir_buffer,
             show_raw_output: settings.show_raw_output(),
@@ -332,8 +287,8 @@ impl DeepSeekGui {
     /// call rather than held, since the model picker can move under it.
     fn session_origin(&self) -> SessionOrigin {
         SessionOrigin {
-            backend: self.active_backend.clone().unwrap_or_default(),
-            model: self.model.clone(),
+            backend: self.backends.active_backend().to_string(),
+            model: self.backends.model().to_string(),
         }
     }
 
@@ -702,8 +657,8 @@ impl App for DeepSeekGui {
             }
         }
         // Poll background model-list fetches each frame.
-        while let Ok((backend_name, models)) = self.model_list_rx.try_recv() {
-            self.apply_fetched_model_list(&backend_name, models);
+        for (backend_name, models) in self.backends.drain_fetched_lists() {
+            self.backends.apply_fetched_list(&backend_name, models);
         }
         // Keep polling at ~20fps even when no user input
         ctx.request_repaint_after(Duration::from_millis(50));
@@ -827,14 +782,13 @@ impl App for DeepSeekGui {
             .min_height(24.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let backend_name = self
-                        .backend_options
-                        .get(self.selected_backend_idx)
-                        .map(String::as_str)
-                        .unwrap_or("unknown");
+                    let backend_name = self.backends.selected_name().unwrap_or("unknown");
                     ui.label(
-                        RichText::new(format!("Backend: {backend_name} ({})", self.model))
-                            .color(Color32::from_rgb(0, 255, 255)),
+                        RichText::new(format!(
+                            "Backend: {backend_name} ({})",
+                            self.backends.model()
+                        ))
+                        .color(Color32::from_rgb(0, 255, 255)),
                     );
                     ui.separator();
                     ui.label(
@@ -1275,9 +1229,9 @@ mod tests {
     use super::autopilot_tab::{
         AutopilotProgress, apply_autopilot_iterations, apply_autopilot_task,
     };
+    use super::backend_picker::apply_default_backend;
     use super::settings_panel::{
-        apply_backend_model, apply_context_budget, apply_default_backend, apply_effort,
-        apply_show_raw_output, apply_working_dir,
+        apply_context_budget, apply_effort, apply_show_raw_output, apply_working_dir,
     };
     use super::voice_ui::{
         apply_stt_enabled, apply_trigger_mode, apply_tts_enabled, apply_tts_speed, apply_tts_voice,
@@ -1385,86 +1339,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn new_seeds_the_backend_picker_from_default_backend() {
-        let gui = make_gui_with_settings(&settings_with_backends(Some("beta")));
-        assert_eq!(gui.backend_options, vec!["alpha", "beta"]);
-        assert_eq!(gui.backend_options[gui.selected_backend_idx], "beta");
-    }
-
-    #[test]
-    fn new_falls_back_to_the_first_sorted_backend_when_default_is_absent() {
-        let gui = make_gui_with_settings(&settings_with_backends(None));
-        assert_eq!(gui.selected_backend_idx, 0);
-        assert_eq!(gui.backend_options[0], "alpha");
-    }
-
-    #[test]
-    fn new_falls_back_to_the_first_sorted_backend_when_default_is_unknown() {
-        let gui = make_gui_with_settings(&settings_with_backends(Some("nonexistent")));
-        assert_eq!(gui.selected_backend_idx, 0);
-        assert_eq!(gui.backend_options[0], "alpha");
-    }
-
-    #[test]
-    fn apply_backend_model_writes_onto_named_backend_and_round_trips() {
-        let dir = unique_temp_dir("apply-backend-model-roundtrip");
-        let mut settings = settings_with_backends(Some("alpha"));
-        apply_backend_model(&mut settings, "alpha", "new-model");
-        settings.save(&dir).unwrap();
-
-        let loaded = Settings::load(&dir).unwrap();
-        match loaded.resolve_backend("alpha").unwrap() {
-            BackendConfig::Api { model, .. } => assert_eq!(model, "new-model"),
-            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
-        }
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn apply_backend_model_on_unknown_backend_is_a_no_op() {
-        let mut settings = settings_with_backends(Some("alpha"));
-        apply_backend_model(&mut settings, "nonexistent", "new-model");
-        match settings.resolve_backend("alpha").unwrap() {
-            BackendConfig::Api { model, .. } => assert_eq!(model, "alpha-model"),
-            BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
-        }
-    }
-
-    #[test]
-    fn apply_backend_model_works_for_the_claude_cli_variant() {
-        let mut settings = settings_with_backends(Some("beta"));
-        apply_backend_model(&mut settings, "beta", "sonnet");
-        match settings.resolve_backend("beta").unwrap() {
-            BackendConfig::ClaudeCli { model, .. } => assert_eq!(model, "sonnet"),
-            BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
-        }
-    }
-
-    #[test]
-    fn switch_backend_updates_selected_model_to_the_new_backends_declared_model() {
-        let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
-        gui.switch_backend("beta".to_string());
-        assert_eq!(gui.model, "beta-model");
-        gui.switch_backend("alpha".to_string());
-        assert_eq!(gui.model, "alpha-model");
-    }
-
-    #[test]
-    fn switch_backend_seeds_model_options_with_the_declared_model() {
-        let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
-        gui.switch_backend("beta".to_string());
-        assert!(gui.model_options.contains(&"beta-model".to_string()));
-    }
-
     #[tokio::test]
     async fn model_options_always_contain_the_backends_declared_model_after_a_fetch() {
         let mut gui = make_gui_with_settings(&settings_with_backends(Some("alpha")));
-        let (backend_name, models) = gui.model_list_rx.recv().await.unwrap();
+        let (backend_name, models) = gui
+            .backends
+            .recv_fetched_list()
+            .await
+            .expect("the startup fetch must report a result");
         assert_eq!(backend_name, "alpha");
-        gui.apply_fetched_model_list(&backend_name, models);
-        assert!(gui.model_options.contains(&gui.model));
+        gui.backends.apply_fetched_list(&backend_name, models);
+        let current = gui.backends.model().to_string();
+        assert!(gui.backends.model_options().contains(&current));
     }
 
     /// The spans of the only block in the transcript, which must be an
