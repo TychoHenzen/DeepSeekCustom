@@ -31,3 +31,9 @@ mutants.out.old/
 .solve-session/
 .refactor-session/
 .tdd-session/
+
+# scratch state written by the /tighten loop (ledger, quarantine, contract)
+.tighten/
+
+# checkpoint state written by gitevo (evo_init)
+.evo/

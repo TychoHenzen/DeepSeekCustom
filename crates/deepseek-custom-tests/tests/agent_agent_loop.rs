@@ -267,7 +267,10 @@ fn sync_dynamic_config_omits_working_dir_when_never_set() {
     agent.sync_dynamic_config_for_test();
 
     let api = agent.history().to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("sys prompt")
+    );
 }
 
 #[test]
@@ -286,15 +289,36 @@ fn changing_shared_working_dir_between_turns_changes_next_syncs_prompt() {
 
     agent.sync_dynamic_config_for_test();
     let first = agent.history().to_api_messages();
-    assert!(first[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+    assert!(
+        first[0]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .contains("C:\\proj")
+    );
 
     // Change the shared value the way a future Cd tool or GUI control
     // would, with no restart and no re-registering of the agent.
     *working_dir.lock().unwrap() = PathBuf::from("C:\\other");
     agent.sync_dynamic_config_for_test();
     let second = agent.history().to_api_messages();
-    assert!(second[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\other"));
-    assert!(!second[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+    assert!(
+        second[0]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .contains("C:\\other")
+    );
+    assert!(
+        !second[0]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .contains("C:\\proj")
+    );
 }
 
 #[test]
@@ -320,7 +344,14 @@ fn clear_history_then_sync_still_reports_the_current_directory() {
 
     agent.sync_dynamic_config_for_test();
     let api = agent.history().to_api_messages();
-    assert!(api[0].content.as_ref().and_then(Content::as_text).unwrap().contains("C:\\proj"));
+    assert!(
+        api[0]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .contains("C:\\proj")
+    );
 }
 
 #[test]
@@ -363,7 +394,10 @@ fn context_budget_flag_defaults_to_100000() {
         AgentConfig::default(),
         Arc::new(AtomicBool::new(false)),
     );
-    assert_eq!(agent.context_budget_flag().load(Ordering::SeqCst), DEFAULT_CONTEXT_BUDGET);
+    assert_eq!(
+        agent.context_budget_flag().load(Ordering::SeqCst),
+        DEFAULT_CONTEXT_BUDGET
+    );
 }
 
 #[test]
@@ -424,9 +458,10 @@ fn apply_prune_reduces_oversized_history_to_low_water() {
         agent
             .history_mut()
             .push(Message::user(format!("question {i} {}", "x".repeat(200))));
-        agent
-            .history_mut()
-            .push(Message::assistant(format!("answer {i} {}", "x".repeat(200))));
+        agent.history_mut().push(Message::assistant(format!(
+            "answer {i} {}",
+            "x".repeat(200)
+        )));
     }
     agent.history_mut().push(Message::user("hi".into()));
     agent.history_mut().push(Message::assistant("ok".into()));
@@ -440,7 +475,9 @@ fn apply_prune_reduces_oversized_history_to_low_water() {
     assert!(agent.history().estimated_tokens() <= context_low_water(200));
     assert_eq!(report.tokens_after, agent.history().estimated_tokens());
     assert!(report.tokens_after < report.tokens_before);
-    assert!(report.tool_bodies_elided > 0 || report.groups_collapsed > 0 || report.groups_dropped > 0);
+    assert!(
+        report.tool_bodies_elided > 0 || report.groups_collapsed > 0 || report.groups_dropped > 0
+    );
 }
 
 #[test]
@@ -456,7 +493,9 @@ fn apply_prune_with_none_scores_does_not_panic() {
     );
     for i in 0..10 {
         agent.history_mut().push(Message::user(format!("q{i}")));
-        agent.history_mut().push(Message::assistant(format!("a{i}")));
+        agent
+            .history_mut()
+            .push(Message::assistant(format!("a{i}")));
     }
     agent.context_budget_flag().store(1, Ordering::SeqCst);
 
@@ -540,7 +579,10 @@ fn build_user_content_drops_the_image_on_deepseek_and_names_it_in_the_notice() {
 
     assert_eq!(content, Content::text("look at this"));
     let notice = notice.expect("expected a notice for a DeepSeek image attachment");
-    assert!(notice.contains("DeepSeek"), "notice should name the backend: {notice}");
+    assert!(
+        notice.contains("DeepSeek"),
+        "notice should name the backend: {notice}"
+    );
 }
 
 #[test]
@@ -621,7 +663,13 @@ async fn effort_above_none_emits_reasoning_events() {
     let mut config = AgentConfig::default();
     config.effort = Effort::High;
 
-    let mut agent = AgentLoop::new(client, tools, "sys".into(), config, Arc::new(AtomicBool::new(false)));
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        config,
+        Arc::new(AtomicBool::new(false)),
+    );
 
     // Capture events via channel
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -629,7 +677,11 @@ async fn effort_above_none_emits_reasoning_events() {
 
     // Run the agent
     let result = agent.run("hello").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
     let responses = result.unwrap();
     assert!(!responses.is_empty(), "should have response text");
 
@@ -647,7 +699,11 @@ async fn effort_above_none_emits_reasoning_events() {
     assert!(
         !reasoning_events.is_empty(),
         "expected at least one Reasoning event, got events: {:?}",
-        events.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ")
+        events
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     // Verify reasoning content is correct
@@ -664,7 +720,10 @@ async fn effort_above_none_emits_reasoning_events() {
     assert_eq!(reasoning, "I should think about this");
 
     // Verify Text events were also emitted
-    let text_count = events.iter().filter(|e| matches!(e, StreamEvent::Text { .. })).count();
+    let text_count = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::Text { .. }))
+        .count();
     assert!(text_count > 0, "expected at least one Text event");
 }
 
@@ -673,7 +732,11 @@ async fn effort_above_none_emits_reasoning_events() {
 /// only check whether the session is still registered afterward, not
 /// what it would have answered.
 fn stub_session() -> Backend {
-    Backend::Stub(Box::new(StubBackend::new(Vec::new(), "stub-model".to_string(), Arc::new(AtomicBool::new(false)))))
+    Backend::Stub(Box::new(StubBackend::new(
+        Vec::new(),
+        "stub-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+    )))
 }
 
 /// A minimal mock server that answers one turn with plain text and no
@@ -741,12 +804,18 @@ async fn no_session_survives_a_parent_turn_end() {
     agent.set_subagent_registry(Arc::clone(&registry));
     let id = SubagentId::next();
     registry.register(id, stub_session()).await;
-    assert!(registry.contains(id).await, "session should be live before the turn runs");
+    assert!(
+        registry.contains(id).await,
+        "session should be live before the turn runs"
+    );
 
     let result = agent.run("hello").await;
 
     assert!(result.is_ok(), "turn should succeed: {:?}", result.err());
-    assert!(!registry.contains(id).await, "session should not survive the turn that opened it");
+    assert!(
+        !registry.contains(id).await,
+        "session should not survive the turn that opened it"
+    );
     assert_eq!(registry.len().await, 0);
 }
 
@@ -771,10 +840,15 @@ async fn no_session_survives_a_reset() {
     let id = SubagentId::next();
     registry.register(id, stub_session()).await;
 
-    let output = agent.execute_tool_for_test("reset", "{\"prompt\":\"start fresh\"}").await;
+    let output = agent
+        .execute_tool_for_test("reset", "{\"prompt\":\"start fresh\"}")
+        .await;
 
     assert!(!output.is_error);
-    assert!(!registry.contains(id).await, "session should not survive a reset");
+    assert!(
+        !registry.contains(id).await,
+        "session should not survive a reset"
+    );
     assert_eq!(registry.len().await, 0);
 }
 
@@ -797,7 +871,10 @@ fn clear_history_drops_messages_keeps_system_prompt() {
     assert_eq!(agent.history().len(), 0);
     let api = agent.history().to_api_messages();
     assert_eq!(api.len(), 1);
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("sys prompt")
+    );
 }
 
 #[test]
@@ -813,11 +890,17 @@ fn restore_history_replaces_messages_and_keeps_system_prompt() {
     );
     agent.history_mut().push(Message::user("stale".into()));
 
-    agent.restore_history(vec![Message::user("saved one".into()), Message::assistant("saved reply".into())]);
+    agent.restore_history(vec![
+        Message::user("saved one".into()),
+        Message::assistant("saved reply".into()),
+    ]);
 
     assert_eq!(agent.history().len(), 2);
     let api = agent.history().to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("sys prompt")
+    );
 }
 
 #[test]
@@ -840,7 +923,10 @@ fn clear_history_after_voice_suffix_still_produces_working_system_message() {
     assert_eq!(agent.history().len(), 0);
     let api = agent.history().to_api_messages();
     assert_eq!(api.len(), 1);
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("sys prompt"));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("sys prompt")
+    );
 
     // sync_dynamic_config still works after clear_history and restores
     // the voice suffix on the next turn.
@@ -908,7 +994,11 @@ async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
         events.push(ev.event);
     }
     // No iteration should have started.
-    assert!(!events.iter().any(|e| matches!(e, StreamEvent::RepeatIterationStart { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::RepeatIterationStart { .. }))
+    );
     assert_eq!(events.len(), 1);
     match &events[0] {
         StreamEvent::RepeatFinished { completed, total } => {
@@ -992,7 +1082,7 @@ async fn run_repeat_two_iterations_against_mock_server() {
     let starts: Vec<(u32, u32)> = events
         .iter()
         .filter_map(|e| match e {
-            StreamEvent::RepeatIterationStart { index, total } => Some((*index, *total)),
+            StreamEvent::RepeatIterationStart { index, total, .. } => Some((*index, *total)),
             _ => None,
         })
         .collect();
@@ -1019,5 +1109,8 @@ async fn run_repeat_two_iterations_against_mock_server() {
         .rev()
         .find(|m| m.role == deepseek_custom::api::types::Role::Assistant)
         .expect("expected an assistant message");
-    assert_eq!(last_assistant.content.as_ref().and_then(Content::as_text), Some("answer 1"));
+    assert_eq!(
+        last_assistant.content.as_ref().and_then(Content::as_text),
+        Some("answer 1")
+    );
 }

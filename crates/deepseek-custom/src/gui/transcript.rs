@@ -350,9 +350,7 @@ impl Transcript {
         match event {
             StreamEvent::Text { text, .. } => self.apply_delta(Span::Text(text)),
             StreamEvent::Reasoning { text, .. } => self.apply_delta(Span::Reasoning(text)),
-            StreamEvent::ToolCallStart { tool, args, .. } => {
-                self.apply_tool_call_start(tool, args)
-            }
+            StreamEvent::ToolCallStart { tool, args, .. } => self.apply_tool_call_start(tool, args),
             StreamEvent::ToolCallEnd {
                 output, is_error, ..
             } => self.apply_tool_call_end(output, is_error),
@@ -376,15 +374,22 @@ impl Transcript {
             // A new iteration closes whatever `Assistant` block is still
             // open, so the first text delta of the new iteration starts a
             // fresh block instead of joining the one before it, then marks
-            // the boundary with an `Info` notice. The Autopilot tab's own
-            // progress readout is still driven separately, from
-            // `apply_event_side_effects` in `src/gui/mod.rs`.
-            StreamEvent::RepeatIterationStart { index, total } => {
+            // the boundary with an `Info` notice and draws the task as the
+            // iteration's own `User` block. That block is the only record
+            // of what an autopilot iteration was asked to do: the task
+            // text never passes through the input box, so nothing else
+            // would put it in the transcript, and `derive_title` would
+            // find no user message to name the saved session after. The
+            // Autopilot tab's own progress readout is still driven
+            // separately, from `apply_event_side_effects` in
+            // `src/gui/mod.rs`, as is the per-iteration session rotation.
+            StreamEvent::RepeatIterationStart { index, total, task } => {
                 self.close_open_assistant();
                 self.push(BlockKind::Notice {
                     text: format!("Iteration {index} of {total}"),
                     severity: Severity::Info,
                 });
+                self.push(BlockKind::User { text: task });
             }
             // Marks where a repeat run ended with an `Info` notice. The
             // Autopilot tab's own progress readout is still driven
@@ -455,7 +460,11 @@ impl Transcript {
     /// one, collapsed by default, seeded from `meta`. Every `RouteHop`
     /// carries `meta` fresh, so a block is fully formed the instant it is
     /// created: there is no "started" event to wait for separately.
-    fn find_or_create_subagent_block(&mut self, subagent_id: SubagentId, meta: SubagentMeta) -> BlockId {
+    fn find_or_create_subagent_block(
+        &mut self,
+        subagent_id: SubagentId,
+        meta: SubagentMeta,
+    ) -> BlockId {
         let existing = self.blocks.iter().find(|block| {
             matches!(
                 &block.kind,
@@ -589,10 +598,15 @@ impl Transcript {
     /// `output` is still `None`. Does nothing if every tool call already
     /// has a result, which should not happen in a well-formed stream.
     fn apply_tool_call_end(&mut self, output: String, is_error: bool) {
-        let Some(id) = self.blocks.iter().rev().find_map(|block| match &block.kind {
-            BlockKind::ToolCall { output: None, .. } => Some(block.id),
-            _ => None,
-        }) else {
+        let Some(id) = self
+            .blocks
+            .iter()
+            .rev()
+            .find_map(|block| match &block.kind {
+                BlockKind::ToolCall { output: None, .. } => Some(block.id),
+                _ => None,
+            })
+        else {
             return;
         };
         self.complete_tool_call(id, output, is_error);

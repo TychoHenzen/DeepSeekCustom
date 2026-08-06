@@ -15,7 +15,7 @@
 //! command, and the caller sends it. That keeps one place in the GUI that
 //! talks to the agent.
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::transcript::Transcript;
 use crate::agent::agent_loop::AgentCommand;
@@ -137,6 +137,15 @@ impl SessionState {
         self.current_meta.backend = origin.backend.clone();
         self.current_meta.model = origin.model.clone();
 
+        info!(
+            session_id = self.current_id.as_str(),
+            title = %self.current_meta.title,
+            message_count = self.current_meta.message_count,
+            block_count = transcript.blocks().len(),
+            backend = %self.current_meta.backend,
+            model = %self.current_meta.model,
+            "session autosave"
+        );
         self.write_to_disk(transcript);
         self.refresh_saved();
     }
@@ -168,6 +177,10 @@ impl SessionState {
     /// session twice in a row leaves no empty records behind.
     fn save_outgoing(&mut self, transcript: &mut Transcript, origin: SessionOrigin) {
         if transcript.blocks().is_empty() {
+            info!(
+                session_id = self.current_id.as_str(),
+                "session save skipped: transcript empty"
+            );
             return;
         }
         self.autosave(transcript, origin);
@@ -200,6 +213,10 @@ impl SessionState {
         self.current_id = id;
         self.current_meta = fresh_meta(id, &origin);
         self.refresh_saved();
+        info!(
+            session_id = id.as_str(),
+            "session: opened a fresh conversation"
+        );
     }
 
     /// Load a saved conversation. This saves the outgoing one first. It
@@ -228,6 +245,12 @@ impl SessionState {
         self.current_id = record.meta.id;
         self.current_meta = record.meta;
         self.refresh_saved();
+        info!(
+            session_id = self.current_id.as_str(),
+            message_count = self.messages.len(),
+            block_count = transcript.blocks().len(),
+            "session loaded"
+        );
         Some(AgentCommand::LoadSession {
             messages: record.messages,
             claude_session_id: record.claude_session_id,
@@ -237,6 +260,7 @@ impl SessionState {
     /// Delete one saved conversation and refresh the list. A failure is
     /// logged and otherwise ignored, matching every other disk error here.
     pub fn delete(&mut self, id: SessionId) {
+        info!(session_id = id.as_str(), "session delete requested");
         if let Err(e) = self.store.delete(&id) {
             warn!(error = %e, "failed to delete session");
         }

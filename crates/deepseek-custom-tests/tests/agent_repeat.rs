@@ -67,7 +67,17 @@ fn iteration_starts(events: &[StreamEvent]) -> Vec<(u32, u32)> {
     events
         .iter()
         .filter_map(|e| match e {
-            StreamEvent::RepeatIterationStart { index, total } => Some((*index, *total)),
+            StreamEvent::RepeatIterationStart { index, total, .. } => Some((*index, *total)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn iteration_tasks(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::RepeatIterationStart { task, .. } => Some(task.clone()),
             _ => None,
         })
         .collect()
@@ -89,7 +99,10 @@ async fn mock_target_emits_one_iteration_start_per_iteration_and_one_finished() 
     let events = target.events();
     assert_eq!(iteration_starts(&events), vec![(1, 3), (2, 3), (3, 3)]);
     assert_eq!(
-        events.iter().filter(|e| matches!(e, StreamEvent::RepeatFinished { .. })).count(),
+        events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::RepeatFinished { .. }))
+            .count(),
         1
     );
     assert_eq!(repeat_finished(&events), Some((3, 3)));
@@ -142,4 +155,21 @@ async fn mock_target_stops_on_turn_failure_and_reports_completed_before_it() {
     let events = target.events();
     assert_eq!(iteration_starts(&events), vec![(1, 4), (2, 4)]);
     assert_eq!(repeat_finished(&events), Some((1, 4)));
+}
+
+#[tokio::test]
+async fn every_iteration_start_carries_the_task_text() {
+    let mut target = MockTarget::new();
+
+    run_repeat(&mut target, "do the thing", 3).await;
+
+    let events = target.events();
+    assert_eq!(
+        iteration_tasks(&events),
+        vec![
+            "do the thing".to_string(),
+            "do the thing".to_string(),
+            "do the thing".to_string()
+        ]
+    );
 }

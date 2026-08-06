@@ -1506,7 +1506,11 @@ fn autopilot_progress_updates_from_iteration_start_then_finished() {
     let mut gui = make_gui();
     assert_eq!(gui.autopilot_for_test().progress(), AutopilotProgress::Idle);
 
-    gui.handle_stream_event(StreamEvent::RepeatIterationStart { index: 2, total: 5 });
+    gui.handle_stream_event(StreamEvent::RepeatIterationStart {
+        index: 2,
+        total: 5,
+        task: "run the plan".into(),
+    });
     assert_eq!(
         gui.autopilot_for_test().progress(),
         AutopilotProgress::Running { index: 2, total: 5 }
@@ -1855,4 +1859,72 @@ fn a_main_session_routed_event_still_applies_its_side_effects() {
     // And the transcript still sees it too, exactly as
     // `apply_stream_event` would have handled it directly.
     assert!(gui.transcript_for_test().blocks().is_empty());
+}
+
+/// Drive one autopilot iteration boundary the way `run_repeat` does.
+fn start_iteration(gui: &mut DeepSeekGui, index: u32, total: u32, task: &str) {
+    gui.handle_stream_event(StreamEvent::RepeatIterationStart {
+        index,
+        total,
+        task: task.into(),
+    });
+}
+
+#[test]
+fn each_autopilot_iteration_opens_its_own_session() {
+    let mut gui = make_gui();
+    start_iteration(&mut gui, 1, 2, "tighten the codebase");
+    run_one_turn(&mut gui, "tighten the codebase");
+    let first_id = gui.sessions_for_test().current_id();
+
+    start_iteration(&mut gui, 2, 2, "tighten the codebase");
+    let second_id = gui.sessions_for_test().current_id();
+
+    assert_ne!(second_id, first_id);
+    assert!(gui.sessions_for_test().store().load(&first_id).is_ok());
+}
+
+#[test]
+fn an_autopilot_iteration_starts_from_an_empty_transcript() {
+    let mut gui = make_gui();
+    start_iteration(&mut gui, 1, 2, "tighten the codebase");
+    run_one_turn(&mut gui, "tighten the codebase");
+
+    start_iteration(&mut gui, 2, 2, "tighten the codebase");
+
+    // Only this iteration's own notice and task block, nothing from the
+    // iteration before it.
+    let blocks = gui.transcript_for_test().blocks();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(
+        blocks[1].kind,
+        BlockKind::User {
+            text: "tighten the codebase".into()
+        }
+    );
+}
+
+#[test]
+fn an_autopilot_session_takes_its_title_from_the_task() {
+    let mut gui = make_gui();
+    start_iteration(&mut gui, 1, 1, "tighten the codebase");
+    let id = gui.sessions_for_test().current_id();
+    gui.handle_stream_event(StreamEvent::ConversationSnapshot {
+        messages: Vec::new(),
+        claude_session_id: Some("abc".into()),
+    });
+    gui.handle_stream_event(StreamEvent::TurnEnd {
+        turn: 1,
+        finish_reason: "stop".into(),
+        total_tokens: 10,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 0,
+    });
+
+    let loaded = gui
+        .sessions_for_test()
+        .store()
+        .load(&id)
+        .expect("expected the iteration's session to load back");
+    assert_eq!(loaded.meta.title, "tighten the codebase");
 }

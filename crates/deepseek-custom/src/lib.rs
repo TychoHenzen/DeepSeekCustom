@@ -10,6 +10,7 @@ pub mod gui;
 pub mod hemisphere;
 pub mod hooks;
 pub mod memory;
+pub mod process_group;
 pub mod session;
 pub mod skills;
 pub mod tools;

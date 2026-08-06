@@ -6,7 +6,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::{SessionId, SessionMeta, SessionRecord};
 use crate::error::{HarnessError, Result};
@@ -53,9 +53,16 @@ impl SessionStore {
 
         let json = serde_json::to_string_pretty(record)
             .map_err(|e| HarnessError::Parse(format!("could not serialize session: {e}")))?;
+        let bytes = json.len();
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &target)?;
 
+        debug!(
+            session_id = record.meta.id.as_str(),
+            bytes,
+            path = %target.display(),
+            "session store: wrote record"
+        );
         Ok(())
     }
 
@@ -68,8 +75,9 @@ impl SessionStore {
     pub fn load(&self, id: &SessionId) -> Result<SessionRecord> {
         let path = self.record_path(id);
         let content = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| HarnessError::Parse(format!("could not parse session {}: {e}", path.display())))
+        serde_json::from_str(&content).map_err(|e| {
+            HarnessError::Parse(format!("could not parse session {}: {e}", path.display()))
+        })
     }
 
     /// List the metadata for every session in the directory, sorted by
@@ -101,7 +109,10 @@ impl SessionStore {
                 .map_err(HarnessError::from)
                 .and_then(|content| {
                     serde_json::from_str::<SessionRecord>(&content).map_err(|e| {
-                        HarnessError::Parse(format!("could not parse session {}: {e}", path.display()))
+                        HarnessError::Parse(format!(
+                            "could not parse session {}: {e}",
+                            path.display()
+                        ))
                     })
                 }) {
                 Ok(record) => metas.push(record.meta),
@@ -126,4 +137,3 @@ impl SessionStore {
         }
     }
 }
-

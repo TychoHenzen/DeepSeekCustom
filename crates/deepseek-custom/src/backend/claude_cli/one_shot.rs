@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -17,9 +17,11 @@ use tokio::process::{Child, Command};
 use crate::agent::agent_loop::StreamEvent;
 use crate::effort::Effort;
 
-use super::events::{parse_line, ClaudeEvent};
+use super::events::{ClaudeEvent, parse_line};
 use super::map::EventMapper;
-use super::process::{resolve_claude_binary, spawn_stderr_drain, ClaudeCliDriver, CLAUDE_CLI_PATH_KEY};
+use super::process::{
+    CLAUDE_CLI_PATH_KEY, ClaudeCliDriver, resolve_claude_binary, spawn_stderr_drain,
+};
 
 /// How often the read loop checks the interrupt flag between lines. A
 /// shorter poll interval kills a stuck run faster. 100ms is short enough
@@ -128,6 +130,9 @@ pub fn spawn_one_shot_child(
     command
         .args(&args)
         .current_dir(working_dir)
+        // See the same call in `process.rs`: this covers a dropped `Child`,
+        // and `process_group::adopt` below covers everything else.
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -141,9 +146,13 @@ pub fn spawn_one_shot_child(
         }
     }
 
-    command
+    let child = command
         .spawn()
-        .map_err(|e| format!("failed to spawn claude CLI at {}: {e}", binary.display()))
+        .map_err(|e| format!("failed to spawn claude CLI at {}: {e}", binary.display()))?;
+    // A one-shot subagent is just as capable of outliving this harness as
+    // the long-lived child is. See `src/process_group.rs`.
+    crate::process_group::adopt(&child);
+    Ok(child)
 }
 
 /// Read the child's stdout line by line until the terminal `result` event

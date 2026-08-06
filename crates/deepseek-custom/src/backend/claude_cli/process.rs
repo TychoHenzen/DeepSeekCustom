@@ -70,13 +70,23 @@ pub fn resolve_claude_binary(extra_env: Option<&HashMap<String, String>>) -> Opt
 #[cfg(target_os = "windows")]
 pub fn fallback_claude_path() -> Option<PathBuf> {
     let home = std::env::var("USERPROFILE").ok()?;
-    Some(PathBuf::from(home).join(".local").join("bin").join("claude.exe"))
+    Some(
+        PathBuf::from(home)
+            .join(".local")
+            .join("bin")
+            .join("claude.exe"),
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn fallback_claude_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".local").join("bin").join("claude"))
+    Some(
+        PathBuf::from(home)
+            .join(".local")
+            .join("bin")
+            .join("claude"),
+    )
 }
 
 /// Build the argument vector for `claude -p`, in the exact order the
@@ -473,7 +483,12 @@ impl ClaudeCliDriver {
     /// is fixed at spawn time. `effort` is the level to spawn under, read
     /// from `effort_flag` the same way, since `--effort` is also fixed at
     /// spawn time.
-    fn spawn_child(&mut self, voice_mode: bool, working_dir: PathBuf, effort: Effort) -> Result<()> {
+    fn spawn_child(
+        &mut self,
+        voice_mode: bool,
+        working_dir: PathBuf,
+        effort: Effort,
+    ) -> Result<()> {
         let Some(binary) = resolve_claude_binary(self.extra_env.as_ref()) else {
             let message =
                 format!("could not resolve the claude CLI binary; set {CLAUDE_CLI_PATH_KEY}");
@@ -500,6 +515,10 @@ impl ClaudeCliDriver {
         command
             .args(&args)
             .current_dir(&working_dir)
+            // Second line of defence behind `process_group::adopt` below.
+            // This one only fires when the `Child` is really dropped, which
+            // the exit path does not guarantee. The job object does.
+            .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -526,6 +545,9 @@ impl ClaudeCliDriver {
                 return Err(HarnessError::Io(e));
             }
         };
+        // The child outlives this harness otherwise. See
+        // `src/process_group.rs` for what that cost once.
+        crate::process_group::adopt(&child);
 
         let stdin = child
             .stdin
@@ -569,9 +591,11 @@ impl ClaudeCliDriver {
         self.stdin = None;
         self.turn_done = None;
         self.session_id_rx = None;
-        let _ = self.tx_events.send(RoutedEvent::own(StreamEvent::Interrupted {
-            message: "Interrupted by user (Escape)".into(),
-        }));
+        let _ = self
+            .tx_events
+            .send(RoutedEvent::own(StreamEvent::Interrupted {
+                message: "Interrupted by user (Escape)".into(),
+            }));
     }
 
     /// Close stdin and wait for the child to exit, for the ordinary
@@ -728,9 +752,7 @@ fn spawn_stdout_reader(
                     return;
                 }
             }
-            if !session_id_sent
-                && let Some(id) = mapper.session_id()
-            {
+            if !session_id_sent && let Some(id) = mapper.session_id() {
                 session_id_sent = true;
                 if session_id.send(id.to_string()).is_err() {
                     return;

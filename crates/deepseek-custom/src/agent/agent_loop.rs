@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::api::client::{ApiClient, Provider};
-use crate::api::types::{ChatRequest, Content, ContentPart, ImageAttachment, Message, Role, ToolCall};
+use crate::api::types::{
+    ChatRequest, Content, ContentPart, ImageAttachment, Message, Role, ToolCall,
+};
 use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 use crate::tools::{ToolOutput, ToolRegistry};
@@ -110,8 +112,15 @@ pub enum StreamEvent {
     Interrupted { message: String },
     /// Reasoning/thinking chunk received (when thinking is enabled).
     Reasoning { turn: u32, text: String },
-    /// A repeat run started a new iteration.
-    RepeatIterationStart { index: u32, total: u32 },
+    /// A repeat run started a new iteration. Carries the task text, since
+    /// an autopilot iteration has no other user message: the transcript
+    /// draws it as the iteration's `User` block, and `derive_title` picks
+    /// it up from there when the iteration's own session is saved.
+    RepeatIterationStart {
+        index: u32,
+        total: u32,
+        task: String,
+    },
     /// A repeat run finished, whether by completing every iteration or by
     /// being interrupted partway through.
     RepeatFinished { completed: u32, total: u32 },
@@ -316,7 +325,10 @@ impl AgentLoop {
     /// Give this agent a handle to the subagent registry it should close
     /// out on every turn end and on every reset. `BackendFactory` calls
     /// this on every `Api` backend it builds, main session or subagent.
-    pub fn set_subagent_registry(&mut self, registry: Arc<crate::backend::registry::SubagentRegistry>) {
+    pub fn set_subagent_registry(
+        &mut self,
+        registry: Arc<crate::backend::registry::SubagentRegistry>,
+    ) {
         self.subagent_registry = Some(registry);
     }
 
@@ -394,7 +406,11 @@ impl AgentLoop {
     /// this crate, which `pub(crate)` cannot reach.
     #[cfg(feature = "test-support")]
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.list().iter().map(|t| t.name().to_string()).collect()
+        self.tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
     }
 
     /// Rebuild history from just the base system prompt, dropping every
@@ -432,7 +448,8 @@ impl AgentLoop {
         }
         if let Some(working_dir) = &self.working_dir {
             if let Ok(dir) = working_dir.lock() {
-                self.history.set_working_dir(Some(dir.display().to_string()));
+                self.history
+                    .set_working_dir(Some(dir.display().to_string()));
             }
         }
     }
@@ -492,12 +509,9 @@ impl AgentLoop {
         }
 
         let messages: Vec<Message> = self.history.iter().cloned().collect();
-        let scores = crate::context::relevance::score_messages(
-            &self.client,
-            &messages,
-            &self.config.model,
-        )
-        .await;
+        let scores =
+            crate::context::relevance::score_messages(&self.client, &messages, &self.config.model)
+                .await;
         if scores.is_none() {
             warn!("context pruning: relevance scoring failed, falling back to oldest-first order");
         }
@@ -1003,13 +1017,14 @@ pub fn build_user_content(
         Provider::DeepSeek => (
             Content::text(text),
             Some(
-                "DeepSeek does not support image attachments; the image was not sent."
-                    .to_string(),
+                "DeepSeek does not support image attachments; the image was not sent.".to_string(),
             ),
         ),
         Provider::Ollama => (
             Content::Parts(vec![
-                ContentPart::Text { text: text.to_string() },
+                ContentPart::Text {
+                    text: text.to_string(),
+                },
                 ContentPart::ImageUrl {
                     url: format!("data:{};base64,{}", image.media_type, image.data),
                 },
@@ -1068,4 +1083,3 @@ fn merge_tool_call(accumulated: &mut Vec<ToolCall>, delta: &ToolCall) {
         accumulated.push(tc);
     }
 }
-

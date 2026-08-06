@@ -98,6 +98,7 @@ pub async fn run_repeat<T: RepeatTarget>(target: &mut T, task: &str, iterations:
         target.send_event(StreamEvent::RepeatIterationStart {
             index,
             total: iterations,
+            task: task.to_string(),
         });
 
         match target.run_turn(task).await {
@@ -106,7 +107,11 @@ pub async fn run_repeat<T: RepeatTarget>(target: &mut T, task: &str, iterations:
                 info!(index, total = iterations, "repeat run: iteration finished");
             }
             Err(e) => {
-                error!(index, total = iterations, "repeat run: iteration failed: {e}");
+                error!(
+                    index,
+                    total = iterations,
+                    "repeat run: iteration failed: {e}"
+                );
                 break;
             }
         }
@@ -114,4 +119,3 @@ pub async fn run_repeat<T: RepeatTarget>(target: &mut T, task: &str, iterations:
 
     target.finish(completed, iterations);
 }
-

@@ -124,7 +124,23 @@ pub struct DeepSeekGui {
     /// The image the next turn will carry, the OS clipboard handle, and
     /// the four input paths that fill the slot. See `gui::attachment`.
     attachment: AttachmentSlot,
+
+    // ── Periodic autosave ──
+    /// Set whenever an event changes the transcript, cleared by every
+    /// save. Without it an idle window would rewrite the same record
+    /// every `PERIODIC_SAVE_INTERVAL`.
+    session_dirty: bool,
+    /// When the last save ran, for the interval check below.
+    last_save: Instant,
 }
+
+/// How long a changed transcript may go unsaved while a turn runs.
+///
+/// A save used to happen only on `TurnEnd`. One autopilot iteration is one
+/// turn, and an iteration can run for many minutes, so closing the window
+/// partway through one discarded everything it had done. This bounds that
+/// loss to the interval rather than the whole turn.
+const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(15);
 
 impl DeepSeekGui {
     pub fn new(
@@ -179,6 +195,8 @@ impl DeepSeekGui {
             active_tab: ActiveTab::default(),
             sessions,
             attachment: AttachmentSlot::new(),
+            session_dirty: false,
+            last_save: Instant::now(),
         }
     }
 
@@ -278,6 +296,50 @@ impl DeepSeekGui {
     fn autosave_session(&mut self) {
         let origin = self.session_origin();
         self.sessions.autosave(&mut self.transcript, origin);
+        self.session_dirty = false;
+        self.last_save = Instant::now();
+    }
+
+    /// Save a changed transcript once `PERIODIC_SAVE_INTERVAL` has passed,
+    /// so a turn that runs for minutes is not lost if the window closes
+    /// before it ends. An empty transcript is skipped, matching
+    /// `save_outgoing`: a session that has produced nothing yet leaves no
+    /// record behind.
+    ///
+    /// A mid-turn save writes the transcript as it stands next to the API
+    /// history from the last `ConversationSnapshot`, which only arrives
+    /// with `TurnEnd`. So the `messages` side of such a record lags the
+    /// transcript until the turn ends and the `TurnEnd` save corrects it.
+    /// That is the intended trade: a record that is behind beats no record
+    /// at all. It does not arise on the `claude_cli` path, where
+    /// `messages` is always empty.
+    fn maybe_periodic_save(&mut self) {
+        if !self.session_dirty || self.transcript.blocks().is_empty() {
+            return;
+        }
+        if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
+            return;
+        }
+        self.autosave_session();
+    }
+
+    /// Close the current conversation and open a fresh one for the
+    /// autopilot iteration that is about to run.
+    ///
+    /// Every iteration is its own conversation. `run_repeat` resets the
+    /// backend's history before each one, so an iteration shares nothing
+    /// with the one before it. Keeping them all in a single session record
+    /// would put a transcript covering every iteration next to an API
+    /// history covering only the last one. One session per iteration keeps
+    /// the two sides of a record describing the same conversation.
+    ///
+    /// The agent is not told anything here. It has already reset itself,
+    /// which is what sent the event this runs from.
+    fn rotate_session_for_iteration(&mut self) {
+        let origin = self.session_origin();
+        self.sessions
+            .save_outgoing_and_start_new(&mut self.transcript, origin);
+        self.session_dirty = false;
     }
 
     /// Start a fresh conversation and tell the agent to start over.
@@ -317,6 +379,10 @@ impl DeepSeekGui {
             self.apply_event_side_effects(&routed.event);
         }
         self.transcript.apply_routed_event(routed);
+        // Every event that reaches the transcript may have changed it, a
+        // subagent's included. `maybe_periodic_save` decides when that
+        // matters.
+        self.session_dirty = true;
     }
 
     /// Update everything a stream event touches other than the transcript.
@@ -337,13 +403,25 @@ impl DeepSeekGui {
             StreamEvent::ConversationSnapshot {
                 messages,
                 claude_session_id,
-            } => self.sessions.record_snapshot(messages, claude_session_id),
+            } => {
+                info!(
+                    message_count = messages.len(),
+                    has_claude_session_id = claude_session_id.is_some(),
+                    "conversation snapshot received"
+                );
+                self.sessions.record_snapshot(messages, claude_session_id);
+            }
             StreamEvent::TurnEnd {
                 total_tokens,
                 prompt_cache_hit_tokens,
                 prompt_cache_miss_tokens,
                 ..
             } => {
+                info!(
+                    total_tokens = *total_tokens,
+                    session_id = self.sessions.current_id().as_str(),
+                    "turn end: autosaving session"
+                );
                 self.token_count = total_tokens.to_string();
                 self.total_cache_hit_tokens += prompt_cache_hit_tokens;
                 self.total_cache_miss_tokens += prompt_cache_miss_tokens;
@@ -361,12 +439,25 @@ impl DeepSeekGui {
                 // turn's speech.
                 self.voice.clear_reply();
             }
-            StreamEvent::RepeatIterationStart { index, total } => {
-                info!(index, total, "repeat iteration start");
+            StreamEvent::RepeatIterationStart { index, total, .. } => {
+                info!(
+                    index,
+                    total,
+                    session_id = self.sessions.current_id().as_str(),
+                    block_count = self.transcript.blocks().len(),
+                    "repeat iteration start"
+                );
+                self.rotate_session_for_iteration();
                 self.autopilot.set_running(*index, *total);
             }
             StreamEvent::RepeatFinished { completed, total } => {
-                info!(completed, total, "repeat run finished");
+                info!(
+                    completed,
+                    total,
+                    session_id = self.sessions.current_id().as_str(),
+                    block_count = self.transcript.blocks().len(),
+                    "repeat run finished"
+                );
                 self.autopilot.set_finished(*completed, *total);
             }
             StreamEvent::Reasoning { .. } => {}
@@ -638,6 +729,8 @@ impl App for DeepSeekGui {
             self.handle_routed_event(routed);
             self.auto_scroll = true;
         }
+        // Bound how much of a long-running turn a closed window can lose.
+        self.maybe_periodic_save();
         // Poll voice events each frame too, alongside agent events. Drain
         // into a buffer first so the mutable borrow of `voice_rx` ends
         // before `handle_voice_event` needs `&mut self`.

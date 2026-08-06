@@ -1,9 +1,13 @@
 //! Unit tests for `deepseek_custom::gui::transcript` (`src/gui/transcript.rs`).
 //! Moved out of the production module as part of the two-crate workspace split.
 
-use deepseek_custom::agent::agent_loop::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
+use deepseek_custom::agent::agent_loop::{
+    RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
+};
 use deepseek_custom::api::types::ImageAttachment;
-use deepseek_custom::gui::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
+use deepseek_custom::gui::transcript::{
+    Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript,
+};
 
 #[test]
 fn ids_stay_stable_across_appends() {
@@ -393,7 +397,8 @@ fn an_image_block_round_trips_through_json() {
 /// must still be able to take new blocks afterward.
 #[test]
 fn an_old_session_file_with_no_image_block_still_loads() {
-    let json = r#"{"blocks":[{"id":3,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":4}"#;
+    let json =
+        r#"{"blocks":[{"id":3,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":4}"#;
     let mut restored: Transcript = serde_json::from_str(json).unwrap();
     assert_eq!(restored.blocks().len(), 1);
     let new_id = restored.push(BlockKind::Image {
@@ -409,14 +414,9 @@ fn an_old_session_file_with_no_image_block_still_loads() {
 #[test]
 fn round_trips_one_block_of_every_kind_through_json() {
     let mut transcript = Transcript::new();
-    transcript.push(BlockKind::User {
-        text: "hi".into(),
-    });
+    transcript.push(BlockKind::User { text: "hi".into() });
     transcript.push(BlockKind::Assistant {
-        spans: vec![
-            Span::Text("said".into()),
-            Span::Reasoning("thought".into()),
-        ],
+        spans: vec![Span::Text("said".into()), Span::Reasoning("thought".into())],
     });
     transcript.push(BlockKind::ToolCall {
         tool: "Bash".into(),
@@ -448,10 +448,8 @@ fn round_trips_one_block_of_every_kind_through_json() {
     let json = serde_json::to_string(&transcript).unwrap();
     let restored: Transcript = serde_json::from_str(&json).unwrap();
 
-    let original_kinds: Vec<&BlockKind> =
-        transcript.blocks().iter().map(|b| &b.kind).collect();
-    let restored_kinds: Vec<&BlockKind> =
-        restored.blocks().iter().map(|b| &b.kind).collect();
+    let original_kinds: Vec<&BlockKind> = transcript.blocks().iter().map(|b| &b.kind).collect();
+    let restored_kinds: Vec<&BlockKind> = restored.blocks().iter().map(|b| &b.kind).collect();
     assert_eq!(original_kinds, restored_kinds);
     let original_ids: Vec<BlockId> = transcript.blocks().iter().map(|b| b.id).collect();
     let restored_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
@@ -467,15 +465,14 @@ fn appending_after_deserialize_never_collides_with_a_loaded_id() {
     let mut restored: Transcript = serde_json::from_str(&json).unwrap();
 
     let loaded_ids: Vec<BlockId> = restored.blocks().iter().map(|b| b.id).collect();
-    let new_id = restored.push(BlockKind::User {
-        text: "c".into(),
-    });
+    let new_id = restored.push(BlockKind::User { text: "c".into() });
     assert!(!loaded_ids.contains(&new_id));
 }
 
 #[test]
 fn a_bogus_next_id_in_the_json_still_yields_a_fresh_unused_id() {
-    let json = r#"{"blocks":[{"id":5,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":0}"#;
+    let json =
+        r#"{"blocks":[{"id":5,"collapsed":false,"kind":{"User":{"text":"hi"}}}],"next_id":0}"#;
     let mut restored: Transcript = serde_json::from_str(json).unwrap();
     let new_id = restored.push(BlockKind::User {
         text: "next".into(),
@@ -547,7 +544,11 @@ fn set_pinned_by_path_flips_a_top_level_block() {
 #[test]
 fn find_mut_by_path_on_a_missing_top_level_id_returns_none() {
     let mut transcript = Transcript::new();
-    assert!(transcript.find_mut_by_path(&[BlockId::new_for_test(999)]).is_none());
+    assert!(
+        transcript
+            .find_mut_by_path(&[BlockId::new_for_test(999)])
+            .is_none()
+    );
 }
 
 fn test_hop(id: SubagentId, depth: u32) -> RouteHop {
@@ -941,13 +942,17 @@ fn repeat_iteration_start_closes_open_assistant_and_pushes_notice() {
         turn: 1,
         text: "first iteration text".into(),
     });
-    transcript.apply_stream_event(StreamEvent::RepeatIterationStart { index: 2, total: 5 });
+    transcript.apply_stream_event(StreamEvent::RepeatIterationStart {
+        index: 2,
+        total: 5,
+        task: "run the plan".into(),
+    });
     transcript.apply_stream_event(StreamEvent::Text {
         turn: 2,
         text: "second iteration text".into(),
     });
     let blocks = transcript.blocks();
-    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks.len(), 4);
     assert_eq!(
         blocks[1].kind,
         BlockKind::Notice {
@@ -962,9 +967,27 @@ fn repeat_iteration_start_closes_open_assistant_and_pushes_notice() {
         }
     );
     assert_eq!(
-        blocks[2].kind,
+        blocks[3].kind,
         BlockKind::Assistant {
             spans: vec![Span::Text("second iteration text".into())],
+        }
+    );
+}
+
+#[test]
+fn repeat_iteration_start_draws_the_task_as_a_user_block() {
+    let mut transcript = Transcript::new();
+    transcript.apply_stream_event(StreamEvent::RepeatIterationStart {
+        index: 1,
+        total: 3,
+        task: "tighten the codebase".into(),
+    });
+    let blocks = transcript.blocks();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(
+        blocks[1].kind,
+        BlockKind::User {
+            text: "tighten the codebase".into(),
         }
     );
 }
