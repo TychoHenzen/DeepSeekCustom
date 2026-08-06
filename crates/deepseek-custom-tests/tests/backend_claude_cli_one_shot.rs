@@ -91,8 +91,22 @@ fn one_shot_args_builder_produces_exact_flag_list_with_prompt_positional() {
             "claude-opus-x",
             "--permission-mode",
             "acceptEdits",
+            "--thinking-display",
+            "summarized",
         ]
     );
+}
+
+#[test]
+fn one_shot_args_builder_asks_for_visible_thinking() {
+    // A non-interactive run defaults to `omitted`, which makes the API
+    // send `thinking_delta` events with an empty `thinking` field.
+    let args = build_one_shot_args("claude-opus-x", None, "hello", Effort::Medium);
+    let index = args
+        .iter()
+        .position(|a| a == "--thinking-display")
+        .expect("expected a --thinking-display flag");
+    assert_eq!(args[index + 1], "summarized");
 }
 
 #[test]
@@ -122,8 +136,8 @@ fn one_shot_args_builder_appends_effort_flag_for_every_other_level() {
         (Effort::Max, "max"),
     ] {
         let args = build_one_shot_args("claude-opus-x", None, "hello", level);
-        assert_eq!(args[10], "--effort", "level {level:?}");
-        assert_eq!(args[11], expected, "level {level:?}");
+        assert_eq!(args[12], "--effort", "level {level:?}");
+        assert_eq!(args[13], expected, "level {level:?}");
     }
 }
 

@@ -195,6 +195,30 @@ fn unannounced_tool_use_id_maps_to_unknown_tool() {
 }
 
 #[test]
+fn empty_thinking_delta_yields_no_reasoning_event() {
+    // Claude Code redacts thinking text: it streams `thinking_delta` with an
+    // empty `thinking` field and keeps the real content in the encrypted
+    // `signature_delta` beside it. A `Reasoning` event for that would draw an
+    // empty "Reasoning" fold in the transcript.
+    let mut mapper = EventMapper::new();
+    let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}}"#;
+    let event = parse_line(line).expect("line should parse");
+    assert!(mapper.map(event).is_empty());
+}
+
+#[test]
+fn nonempty_thinking_delta_still_yields_a_reasoning_event() {
+    let mut mapper = EventMapper::new();
+    let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it up"}}}"#;
+    let event = parse_line(line).expect("line should parse");
+    let events = mapper.map(event);
+    match events.as_slice() {
+        [StreamEvent::Reasoning { text, .. }] => assert_eq!(text, "weighing it up"),
+        other => panic!("expected one Reasoning event, got {other:?}"),
+    }
+}
+
+#[test]
 fn no_fixture_duplicates_replies() {
     for fixture in [TEXT_ONLY_FIXTURE, TOOLS_FIXTURE] {
         let events = map_fixture(fixture);

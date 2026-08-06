@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 840 tests
-cargo test -p deepseek-custom-tests                  # The same 840, named directly
+cargo test --workspace                               # All 844 tests
+cargo test -p deepseek-custom-tests                  # The same 844, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -99,14 +99,14 @@ These facts about Ollama's OpenAI-compatible endpoint are confirmed against a li
 ```
 claude -p --output-format stream-json --input-format stream-json
   --include-partial-messages --verbose --model <model> --permission-mode <mode>
-  [--effort <level>]
+  --thinking-display summarized [--effort <level>]
 ```
 
-`permission_mode` defaults to `bypassPermissions`. This GUI has no permission prompt. This harness's own Bash tool already runs without asking. Any other mode would silently deny every tool call on this path. `--effort <level>` is appended only when the current `Effort` maps to a CLI value; `Effort::None` omits it, leaving the CLI's own default. See "Effort control" below.
+`permission_mode` defaults to `bypassPermissions`. This GUI has no permission prompt. This harness's own Bash tool already runs without asking. Any other mode would silently deny every tool call on this path. `--thinking-display summarized` is always passed, and it is what makes thinking text arrive at all: a non-interactive run defaults to `omitted`, which asks the API for no thinking text, so every `thinking_delta` comes back with an empty `thinking` field beside an encrypted `signature_delta`. The gate is on the request, not on the renderer, so nothing this side parses can recover the text. A patched `claude` binary does not help either, since both known patches touch the interactive Ink component, which print mode never mounts. Verified against `claude` 2.1.220: the same opus turn streams empty deltas without the flag and real text with it. See `docs/notes/claude-thinking-display.md` for the full trace. The flag takes `summarized` or `omitted`, nothing else. `--effort <level>` is appended only when the current `Effort` maps to a CLI value; `Effort::None` omits it, leaving the CLI's own default. See "Effort control" below.
 
 A user turn is one line on the child's stdin, shaped `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}`. This was verified against the real CLI.
 
-Output is parsed by `crates/deepseek-custom/src/backend/claude_cli/events.rs` and mapped to the existing `StreamEvent` by `crates/deepseek-custom/src/backend/claude_cli/map.rs`, in `EventMapper`, so the GUI needed no change at all. The mapping: a `text_delta` becomes `Text`. A `thinking_delta` becomes `Reasoning`. A `tool_use` content block becomes `ToolCallStart`. A `tool_result` becomes `ToolCallEnd`. A `result` event becomes `TurnEnd`, with `cache_read_input_tokens` as the cache hit count and `cache_creation_input_tokens` as the miss count.
+Output is parsed by `crates/deepseek-custom/src/backend/claude_cli/events.rs` and mapped to the existing `StreamEvent` by `crates/deepseek-custom/src/backend/claude_cli/map.rs`, in `EventMapper`, so the GUI needed no change at all. The mapping: a `text_delta` becomes `Text`. A `thinking_delta` becomes `Reasoning`. A `thinking_delta` carrying an empty `thinking` field produces no event at all, since a redacted-thinking phase streams pings with no text and an empty "Reasoning" fold promises content that does not exist. A `tool_use` content block becomes `ToolCallStart`. A `tool_result` becomes `ToolCallEnd`. A `result` event becomes `TurnEnd`, with `cache_read_input_tokens` as the cache hit count and `cache_creation_input_tokens` as the miss count.
 
 Tool call arguments arrive as `input_json_delta` fragments after the block's `content_block_start`, not inside it. `EventMapper` buffers those fragments per content-block index and only emits `ToolCallStart` at `content_block_stop`, once the full arguments have accumulated. This is easy to miss: the `input` field on `content_block_start` itself is still an empty object at that point in the protocol. The first implementation read `input` directly there and emitted a `ToolCallStart` with empty arguments every time.
 
@@ -407,13 +407,13 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 840 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 844 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
 Test files are named by one rule. Take the module path under `crates/deepseek-custom/src/`, drop a trailing `/mod.rs` or `.rs`, then join the remaining segments with an underscore. The examples that follow abbreviate that directory to `src/`. So `src/gui/transcript.rs` is covered by `crates/deepseek-custom-tests/tests/gui_transcript.rs`, and `src/backend/claude_cli/process.rs` by `tests/backend_claude_cli_process.rs`. `src/gui/mod.rs` lands on `tests/gui.rs` and `src/effort.rs` on `tests/effort.rs`. The mapping is injective, so two modules can never claim one file.
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 836.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 840.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -431,7 +431,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 820 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 824 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -451,10 +451,10 @@ These are the 820 tests that cover one production module each, counted per modul
 | `backend/registry.rs` | 14 |
 | `backend/stub.rs` | 9 |
 | `backend/subagent.rs` | 27 |
-| `backend/claude_cli/process.rs` | 33 |
+| `backend/claude_cli/process.rs` | 34 |
 | `backend/claude_cli/events.rs` | 12 |
-| `backend/claude_cli/map.rs` | 7 |
-| `backend/claude_cli/one_shot.rs` | 7 |
+| `backend/claude_cli/map.rs` | 9 |
+| `backend/claude_cli/one_shot.rs` | 8 |
 | `config/settings.rs` | 38 |
 | `context/relevance.rs` | 15 |
 | `effort.rs` | 9 |

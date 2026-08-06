@@ -67,6 +67,11 @@ pub fn build_one_shot_args(
         model.to_string(),
         "--permission-mode".to_string(),
         mode.to_string(),
+        // Same request-level thinking gate the long-lived child clears in
+        // `build_args`. A one-shot subagent would otherwise stream empty
+        // `thinking_delta` events too.
+        "--thinking-display".to_string(),
+        "summarized".to_string(),
     ];
     if let Some(level) = effort.claude_cli_effort() {
         args.push("--effort".to_string());

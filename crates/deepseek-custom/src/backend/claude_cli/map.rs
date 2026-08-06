@@ -79,6 +79,15 @@ impl EventMapper {
                     turn: self.turn,
                     text,
                 }],
+                // A `thinking_delta` can carry no text at all. During a
+                // redacted-thinking phase the API sends only pings, which
+                // arrive here as an empty `thinking` field beside an
+                // `estimated_tokens` count. Emitting a `Reasoning` event
+                // for one drew an empty "Reasoning" fold in the
+                // transcript, promising content that does not exist. The
+                // spawn flags cover the other cause of an empty field:
+                // see `--thinking-display` in `process.rs`'s `build_args`.
+                ContentDelta::ThinkingDelta { thinking } if thinking.is_empty() => Vec::new(),
                 ContentDelta::ThinkingDelta { thinking } => vec![StreamEvent::Reasoning {
                     turn: self.turn,
                     text: thinking,

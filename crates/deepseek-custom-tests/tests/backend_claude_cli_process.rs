@@ -188,8 +188,22 @@ fn args_builder_produces_exact_flag_list_in_order() {
             "claude-opus-x",
             "--permission-mode",
             "acceptEdits",
+            "--thinking-display",
+            "summarized",
         ]
     );
+}
+
+#[test]
+fn args_builder_asks_for_visible_thinking() {
+    // A non-interactive run defaults to `omitted`, which makes the API
+    // send `thinking_delta` events with an empty `thinking` field.
+    let args = build_args("claude-opus-x", None, None, None, Effort::Medium);
+    let index = args
+        .iter()
+        .position(|a| a == "--thinking-display")
+        .expect("expected a --thinking-display flag");
+    assert_eq!(args[index + 1], "summarized");
 }
 
 #[test]
@@ -207,8 +221,8 @@ fn args_builder_appends_system_prompt_when_voice_mode_is_on() {
         None,
         Effort::None,
     );
-    assert_eq!(args[11], "--append-system-prompt");
-    assert_eq!(args[12], "voice text");
+    assert_eq!(args[13], "--append-system-prompt");
+    assert_eq!(args[14], "voice text");
 }
 
 #[test]
@@ -232,8 +246,8 @@ fn args_builder_appends_resume_flag_with_the_exact_id_when_one_is_held() {
         Some("c18eb67f-6873-45a4-aa7a-8755cecb4361"),
         Effort::None,
     );
-    assert_eq!(args[11], "--resume");
-    assert_eq!(args[12], "c18eb67f-6873-45a4-aa7a-8755cecb4361");
+    assert_eq!(args[13], "--resume");
+    assert_eq!(args[14], "c18eb67f-6873-45a4-aa7a-8755cecb4361");
 }
 
 #[test]
@@ -245,10 +259,10 @@ fn args_builder_includes_both_system_prompt_and_resume_when_both_are_given() {
         Some("some-id"),
         Effort::None,
     );
-    assert_eq!(args[11], "--append-system-prompt");
-    assert_eq!(args[12], "voice text");
-    assert_eq!(args[13], "--resume");
-    assert_eq!(args[14], "some-id");
+    assert_eq!(args[13], "--append-system-prompt");
+    assert_eq!(args[14], "voice text");
+    assert_eq!(args[15], "--resume");
+    assert_eq!(args[16], "some-id");
 }
 
 #[test]
@@ -267,8 +281,8 @@ fn args_builder_appends_effort_flag_for_every_other_level() {
     ];
     for (level, expected) in cases {
         let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, level);
-        assert_eq!(args[11], "--effort", "level {level:?}");
-        assert_eq!(args[12], expected, "level {level:?}");
+        assert_eq!(args[13], "--effort", "level {level:?}");
+        assert_eq!(args[14], expected, "level {level:?}");
     }
 }
 
@@ -281,12 +295,12 @@ fn args_builder_puts_effort_before_system_prompt_and_resume() {
         Some("some-id"),
         Effort::Max,
     );
-    assert_eq!(args[11], "--effort");
-    assert_eq!(args[12], "max");
-    assert_eq!(args[13], "--append-system-prompt");
-    assert_eq!(args[14], "voice text");
-    assert_eq!(args[15], "--resume");
-    assert_eq!(args[16], "some-id");
+    assert_eq!(args[13], "--effort");
+    assert_eq!(args[14], "max");
+    assert_eq!(args[15], "--append-system-prompt");
+    assert_eq!(args[16], "voice text");
+    assert_eq!(args[17], "--resume");
+    assert_eq!(args[18], "some-id");
 }
 
 #[test]

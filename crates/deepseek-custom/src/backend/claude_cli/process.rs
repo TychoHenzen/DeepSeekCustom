@@ -120,6 +120,14 @@ pub fn build_args(
         model.to_string(),
         "--permission-mode".to_string(),
         mode.to_string(),
+        // Without this, a non-interactive run asks the API for no thinking
+        // text at all: `thinking_delta` events still arrive, but every one
+        // carries an empty `thinking` field beside an encrypted signature.
+        // The gate is on the request, not on the renderer, so no amount of
+        // parsing on this side recovers the text. `summarized` and
+        // `omitted` are the only two values the flag takes.
+        "--thinking-display".to_string(),
+        "summarized".to_string(),
     ];
     if let Some(level) = effort.claude_cli_effort() {
         args.push("--effort".to_string());
