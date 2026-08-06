@@ -14,7 +14,7 @@ The repository is a Cargo workspace with two members.
 
 | Member | Holds |
 |---|---|
-| `crates/deepseek-custom` | The production package. Library target `deepseek_custom`, plus the `main.rs` binary. No test code at all. |
+| `crates/deepseek-custom` | The production package. Library target `deepseek_custom`, the `main.rs` binary, and the three voice examples. No test code at all. |
 | `crates/deepseek-custom-tests` | Every test, the `fake_claude` binary, and the three fixtures. |
 
 The root `Cargo.toml` holds only the `[workspace]` table and two profile blocks. `.cargo/config.toml` stayed at the repository root, where it already applied to everything.
@@ -22,6 +22,8 @@ The root `Cargo.toml` holds only the `[workspace]` table and two profile blocks.
 Every production source path this document names lives under `crates/deepseek-custom/src/...`, and is written out in full below. The Tests section is the one exception. It abbreviates a module path to `src/...` where the sentence has already said what that is relative to.
 
 The split keeps test code out of the crate that ships. A plain `cargo build` compiles the library and the binary alone. The split has one cost, and "The test-support feature" below describes it. A test outside the crate cannot reach a private item, so a few seams had to open up.
+
+`crates/deepseek-custom/examples/` holds `stt_smoke`, `tts_smoke`, and `tts_min_repro`. They moved with the crate, because the workspace root is not a package and `cargo run --example` there has nothing to resolve against. Name the package to run one: `cargo run -p deepseek-custom --example tts_smoke`.
 
 The package used to be named `DeepSeekCustom`. It is `deepseek-custom` now, so the library imports as `deepseek_custom`. That rename also cleared the standing non-snake-case crate name warning. The built executable is `deepseek-custom.exe`, and `run.ps1` points at it.
 

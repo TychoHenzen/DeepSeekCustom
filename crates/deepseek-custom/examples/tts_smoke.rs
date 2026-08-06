@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use DeepSeekCustom::voice::tts::TtsHandle;
+use deepseek_custom::voice::tts::TtsHandle;
 
 /// Used when no argument and no environment variable is given, so the example
 /// can be launched straight from an IDE with no run configuration.
