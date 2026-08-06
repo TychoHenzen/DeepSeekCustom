@@ -3,6 +3,16 @@ name = "deepseek-custom-tests"
 version = "0.1.0"
 edition = "2024"
 publish = false
+# Off so no stray file under `tests/` can quietly become a target of its
+# own again. The one target below is declared by hand. See the module docs
+# in `tests/it/main.rs` for what 71 auto-discovered targets cost.
+autotests = false
+
+# The single integration-test target. Every test file lives in `tests/it/`
+# and is a module of this one, instead of a linked binary of its own.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
 
 [[bin]]
 name = "fake_claude"
@@ -15,6 +25,14 @@ path = "src/bin/fake_claude.rs"
 [[bin]]
 name = "orphan_probe"
 path = "src/bin/orphan_probe.rs"
+
+# A fake MCP server, so the client and manager tests can drive a real child
+# process without needing `node`, `npx`, or a network. Same reason
+# `fake_claude` lives here: `env!("CARGO_BIN_EXE_...")` only resolves for a
+# test in the package that declares the binary.
+[[bin]]
+name = "fake_mcp_server"
+path = "src/bin/fake_mcp_server.rs"
 
 [dependencies]
 deepseek-custom = { path = "../deepseek-custom", features = ["test-support"] }

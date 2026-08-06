@@ -1,10 +1,24 @@
 #!/bin/sh
 # Prune the workspace crates' build artifacts after every commit.
 #
-# Cargo never garbage-collects target/debug/deps/. Every rebuild whose
-# fingerprint changed leaves the old hashed binaries behind. This workspace
-# links one test binary per test file, 60 of them, so that directory grows
-# without bound. A recent clean freed 17 GB. Pruning here keeps it in check.
+# Two separate things pile up in target/debug/deps/, and this handles both.
+#
+# First, cargo never garbage-collects that directory. Every rebuild whose
+# fingerprint changed leaves the old hashed binary behind. A recent clean
+# freed 17 GB. `cargo clean -p` below prunes what the two workspace members
+# currently produce.
+#
+# Second, `cargo clean -p` prunes by package, so it cannot reach an artifact
+# whose target no longer exists at all. Rename or move a test file and its
+# old binary is stranded forever. Collapsing 71 per-file test targets into
+# one stranded 75 binaries at 4.8 GB, and nothing in cargo would ever have
+# removed them. The sweep below handles that case.
+#
+# The sweep reads target names from `cargo metadata`, not from a build.
+# `cargo metadata` parses the manifests and returns at once. Asking cargo to
+# link every target instead would mean a full rebuild inside this hook on
+# every commit, because the clean below is what leaves the tree unbuilt in
+# the first place.
 #
 # This cleans the two workspace members only. The whisper.cpp cmake tree under
 # target/debug/build/ and the ONNX Runtime bundle ort-sys downloads both
@@ -22,6 +36,89 @@ fi
 
 repo_root=$(git rev-parse --show-toplevel) || exit 0
 cd "$repo_root" || exit 0
+
+if [ ! -d target/debug/deps ]; then
+    exit 0
+fi
+
+if command -v python >/dev/null 2>&1; then
+    python - <<'SWEEP'
+"""Delete every executable in target/debug/deps whose target no longer exists.
+
+A file there is named `<target>-<hash>.exe`. The target name is what cargo
+still knows about. The hash is not, and a stale hash for a target that does
+still exist is `cargo clean -p`'s job, not this one.
+
+The scan reads `.exe` files and nothing else, then removes each one's own
+`.pdb` and `.d` beside it. Scanning those two extensions directly would be a
+bug: 781 of the `.d` files in that directory belong to dependencies, not to
+any workspace target, so every one of them would look orphaned.
+"""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+DEPS = Path("target/debug/deps")
+# `<name>-<16 hex>.exe`, the shape cargo gives a linked binary.
+EXECUTABLE = re.compile(r"^(?P<name>.+)-[0-9a-f]{16}\.exe$")
+
+
+def current_target_names():
+    """Every target name the workspace declares, as cargo spells the file."""
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    meta = json.loads(result.stdout)
+    names = set()
+    for package in meta["packages"]:
+        for target in package["targets"]:
+            names.add(target["name"].replace("-", "_"))
+    return names
+
+
+def main():
+    names = current_target_names()
+    # No answer means no sweep. Deleting on a guess is how a hook eats a
+    # build the user is halfway through.
+    if not names:
+        print("post-commit: cargo metadata failed, skipping sweep")
+        return
+
+    freed = 0
+    removed = 0
+    for exe in sorted(DEPS.glob("*.exe")):
+        match = EXECUTABLE.match(exe.name)
+        if not match or match.group("name") in names:
+            continue
+        for path in (exe, exe.with_suffix(".pdb"), exe.with_suffix(".d")):
+            if not path.exists():
+                continue
+            size = path.stat().st_size
+            try:
+                path.unlink()
+            except OSError:
+                # A running build may hold it. Leave it for next time.
+                continue
+            freed += size
+            removed += 1
+
+    if removed:
+        print(f"post-commit: swept {removed} orphaned files, {freed // (1024 * 1024)} MB")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+SWEEP
+else
+    echo "post-commit: python not found, skipping orphan sweep"
+fi
 
 echo "post-commit: pruning workspace build artifacts"
 if ! cargo clean -p deepseek-custom -p deepseek-custom-tests; then

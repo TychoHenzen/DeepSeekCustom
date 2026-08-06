@@ -6,11 +6,12 @@ pub mod read;
 pub mod read_image;
 pub mod reset;
 pub mod send_message;
+pub mod skill;
 pub mod task;
 pub mod write;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
@@ -58,31 +59,44 @@ pub struct ToolOutput {
 }
 
 /// Registry of all available tools, keyed by name.
+///
+/// The map sits behind an `Arc<RwLock<_>>` rather than being owned
+/// outright, so a clone of this registry shares one map with the original.
+/// That is what lets an MCP server register its tools after the agent that
+/// will call them was already built: an MCP server is a child process that
+/// can take tens of seconds to answer `tools/list`, and blocking startup on
+/// the slowest one would leave the window closed that whole time. The agent
+/// re-reads `to_api_definitions` when it builds each request, so a tool that
+/// lands mid-session is offered on the next turn with no prompt rebuild.
+#[derive(Clone)]
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: HashMap::new(),
+            tools: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+    /// Takes `&self`, not `&mut self`: registration goes through the shared
+    /// lock, so a late registration from an MCP server holding a clone
+    /// reaches the same map the agent reads.
+    pub fn register(&self, tool: Arc<dyn Tool>) {
+        self.write().insert(tool.name().to_string(), tool);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        self.read().get(name).cloned()
     }
 
-    pub fn list(&self) -> Vec<&Arc<dyn Tool>> {
-        self.tools.values().collect()
+    pub fn list(&self) -> Vec<Arc<dyn Tool>> {
+        self.read().values().cloned().collect()
     }
 
     pub fn to_api_definitions(&self) -> Vec<ToolDef> {
-        self.tools
+        self.read()
             .values()
             .map(|t| ToolDef {
                 tool_type: "function".to_string(),
@@ -93,6 +107,31 @@ impl ToolRegistry {
                 },
             })
             .collect()
+    }
+
+    /// A handle that does not keep this registry alive.
+    ///
+    /// The MCP manager holds one per registry it feeds, and a subagent
+    /// builds a registry per dispatch. Holding those strongly would pile up
+    /// one dead registry per subagent for the life of the process, so the
+    /// manager holds weak handles and drops the ones that no longer
+    /// upgrade.
+    pub fn downgrade(&self) -> WeakToolRegistry {
+        WeakToolRegistry {
+            tools: Arc::downgrade(&self.tools),
+        }
+    }
+
+    /// Read guard that survives a poisoned lock. A panic while holding this
+    /// lock leaves the map itself intact, since every write is a single
+    /// `insert`, so recovering beats taking the whole session down.
+    fn read(&self) -> RwLockReadGuard<'_, HashMap<String, Arc<dyn Tool>>> {
+        self.tools.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Write guard, poison-recovering for the same reason as `read`.
+    fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, Arc<dyn Tool>>> {
+        self.tools.write().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Check whether a tool is permitted based on allow/deny lists.
@@ -122,6 +161,20 @@ impl ToolRegistry {
         }
 
         false
+    }
+}
+
+/// A `ToolRegistry` handle that does not keep the registry alive. See
+/// `ToolRegistry::downgrade`.
+#[derive(Clone)]
+pub struct WeakToolRegistry {
+    tools: Weak<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+}
+
+impl WeakToolRegistry {
+    /// The registry, if anything still holds it.
+    pub fn upgrade(&self) -> Option<ToolRegistry> {
+        self.tools.upgrade().map(|tools| ToolRegistry { tools })
     }
 }
 

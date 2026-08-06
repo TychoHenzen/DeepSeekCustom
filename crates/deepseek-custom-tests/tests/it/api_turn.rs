@@ -228,7 +228,7 @@ async fn tool_call_round_trip_feeds_result_back_and_reaches_turn_end() {
         Some("deepseek-v4-flash".into()),
     );
 
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(ReadTool::new(Arc::new(Mutex::new(
         std::env::current_dir().unwrap(),
     )))));
@@ -867,7 +867,7 @@ async fn run_tool_returned_image_turn(provider: Provider) -> (serde_json::Value,
     .unwrap();
     std::fs::write(dir.join("pixel.png"), &image_bytes).unwrap();
 
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(ReadImageTool::new(Arc::new(Mutex::new(dir.clone())))));
 
     let mut agent = AgentLoop::new(

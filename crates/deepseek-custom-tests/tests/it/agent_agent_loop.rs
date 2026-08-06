@@ -68,7 +68,7 @@ fn agent_loop_creates_with_history() {
 #[test]
 fn session_reset_clears_history() {
     let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let mut agent = AgentLoop::new(
         client,
@@ -506,7 +506,7 @@ fn apply_prune_with_none_scores_does_not_panic() {
 #[test]
 fn rebuild_system_prompt_clears_messages() {
     let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let mut agent = AgentLoop::new(
         client,
@@ -524,7 +524,7 @@ fn rebuild_system_prompt_clears_messages() {
 #[tokio::test]
 async fn execute_tool_returns_output() {
     let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let agent = AgentLoop::new(
         client,
@@ -825,7 +825,7 @@ async fn no_session_survives_a_parent_turn_end() {
 #[tokio::test]
 async fn no_session_survives_a_reset() {
     let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(ResetTool));
     let mut agent = AgentLoop::new(
         client,

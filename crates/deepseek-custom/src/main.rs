@@ -16,12 +16,36 @@ use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
+use deepseek_custom::mcp::McpManager;
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
 use deepseek_custom::voice::stt::WhisperEngine;
 use deepseek_custom::voice::tts::TtsHandle;
 use deepseek_custom::voice::{resolve_kokoro_paths, resolve_whisper_model_path};
+
+/// Start the MCP servers Claude Code's own config files name, in the
+/// background.
+///
+/// Returns at once, with a manager that may still have every server
+/// starting. That is deliberate: a stdio server is a child process, and one
+/// launched through `npx` can take minutes to answer its first message,
+/// which would be minutes of a window that has not opened. A server's tools
+/// reach the model on the first turn after it finishes starting.
+fn start_mcp_servers(settings: &Settings, project_root: &Path) -> Arc<McpManager> {
+    let manager = McpManager::new();
+    if !settings.mcp_enabled() {
+        info!("mcp: disabled by settings");
+        return manager;
+    }
+    let disabled = settings.mcp_disabled_servers();
+    let servers: Vec<_> = deepseek_custom::mcp::discover_servers(project_root)
+        .into_iter()
+        .filter(|s| !disabled.contains(&s.name))
+        .collect();
+    manager.start(servers);
+    manager
+}
 
 /// Walk up from current directory looking for CLAUDE.md.
 /// Falls back to current dir if not found.
@@ -93,10 +117,12 @@ async fn main() {
     // be replaced at runtime and the controls must keep driving whichever
     // one is current. See `SharedFlags`.
     let flags = SharedFlags::new(String::new());
+    let mcp = start_mcp_servers(&settings, &project_root);
     let factory = Arc::new(
         BackendFactory::new(settings.clone(), project_root.clone())
             .with_interrupt_flag(Arc::clone(&flags.interrupt))
-            .with_session_flags(flags.clone()),
+            .with_session_flags(flags.clone())
+            .with_mcp(Arc::clone(&mcp)),
     );
 
     // The starting backend's own model, so the shared handle names the
@@ -290,6 +316,13 @@ async fn main() {
     if let Some(forwarder) = voice_forwarder {
         let _ = forwarder.await;
     }
+
+    // Kill the MCP servers on the way out. The job object in
+    // `src/process_group.rs` would reap them regardless, and does when this
+    // process is killed rather than closed. Doing it here as well makes a
+    // normal exit deterministic instead of leaving seven child processes to
+    // the kernel's timing.
+    mcp.shutdown().await;
 
     info!("DeepSeekCustom harness shutting down");
 }

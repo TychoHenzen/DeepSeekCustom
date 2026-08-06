@@ -24,12 +24,13 @@ use crate::backend::{Backend, SharedFlags};
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::effort::Effort;
 use crate::memory::MemoryStore;
+use crate::mcp::McpManager;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
     ask::AskUserQuestionTool, bash::BashTool, cd::CdTool, close_session::CloseSessionTool,
     read::ReadTool, read_image::ReadImageTool, reset::ResetTool, send_message::SendMessageTool,
-    task::TaskTool, write::WriteTool,
+    skill::SkillTool, task::TaskTool, write::WriteTool,
 };
 
 /// The pieces needed to build either kind of backend, resolved from a
@@ -217,17 +218,8 @@ fn build_api_backend(
     );
 
     let memory = MemoryStore::load(project_root);
-    let project_skills = SkillLoader::load_all(project_root).unwrap_or_default();
-    let global_skills = SkillLoader::load_global().unwrap_or_default();
-    let global_count = global_skills.len();
-    let skills = SkillLoader::merge(project_skills, global_skills);
-    let project_count = skills.len().saturating_sub(global_count);
-    info!(
-        "loaded {} skills ({} project, {} global)",
-        skills.len(),
-        project_count,
-        global_count,
-    );
+    let skills = Arc::new(SkillLoader::load(project_root));
+    info!("loaded {} skills", skills.len());
 
     // The answerer needs its own client, since `client` above is moved
     // into the agent. Both come from the same resolved backend. An Ollama
@@ -268,11 +260,15 @@ fn build_api_backend(
         None => Arc::new(AtomicU8::new(Effort::None.to_u8())),
     };
 
-    let mut tools = ToolRegistry::new();
+    let tools = ToolRegistry::new();
     tools.register(Arc::new(BashTool::new(factory.working_dir())));
     tools.register(Arc::new(ReadTool::new(factory.working_dir())));
     tools.register(Arc::new(ReadImageTool::new(factory.working_dir())));
     tools.register(Arc::new(WriteTool::new(factory.working_dir())));
+    // The system prompt lists every skill's name and a one-line summary.
+    // This is how the model reaches the rest of one. See `src/skills/mod.rs`
+    // for why the bodies cannot simply go in the prompt.
+    tools.register(Arc::new(SkillTool::new(Arc::clone(&skills))));
     // Not depth-gated, unlike `Task`, `SendMessage`, and `CloseSession`
     // below: a subagent may change its own working directory regardless
     // of how deep the dispatch chain has gone.
@@ -305,6 +301,11 @@ fn build_api_backend(
         // closing at this depth either.
         tools.register(Arc::new(CloseSessionTool::new(subagent_registry.clone())));
     }
+    // Every MCP tool known so far lands in this registry now, and any that
+    // arrive later land in it too. A server may still be starting: this
+    // does not wait for one, which is why the count logged below is the
+    // built-in tools alone on a cold start. See `src/mcp/manager.rs`.
+    factory.attach_mcp(&tools);
     info!("registered {} tools", tools.list().len());
 
     let memory_fragment = memory.to_system_prompt_fragment();
@@ -386,6 +387,11 @@ pub struct BackendFactory {
     /// its own. See `SharedFlags` for why the GUI's cannot simply be read
     /// back off whichever backend happens to be running.
     session_flags: Option<SharedFlags>,
+    /// The MCP servers this process started, shared by every backend the
+    /// factory builds. One set of servers per process, not one per
+    /// backend: a server is a child process, and building a subagent must
+    /// not spawn a second copy of every one of them.
+    mcp: Option<Arc<McpManager>>,
     /// Named scripts for `StubBackend`, checked by `resolve` before it ever
     /// looks at `settings.backends`. Always empty outside a test build or
     /// the `test-support` feature: only `with_stub` inserts into it, and
@@ -405,9 +411,36 @@ impl BackendFactory {
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             working_dir,
             session_flags: None,
+            mcp: None,
             #[cfg(feature = "test-support")]
             stubs: HashMap::new(),
         }
+    }
+
+    /// Hand the factory the process's MCP servers. Every `Api` backend it
+    /// builds from then on gets their tools, including a subagent's.
+    pub fn with_mcp(mut self, mcp: Arc<McpManager>) -> Self {
+        self.mcp = Some(mcp);
+        self
+    }
+
+    /// Register the MCP tools known so far into this registry, and sign it
+    /// up for the ones still to arrive.
+    ///
+    /// Attaching is async, since the manager's state sits behind an async
+    /// lock, while building a backend is not. So this hands the work to a
+    /// task rather than blocking. Outside a tokio runtime, which is where a
+    /// test that builds a backend directly sits, there is nothing to spawn
+    /// onto and no MCP server running either, so this does nothing.
+    fn attach_mcp(&self, tools: &ToolRegistry) {
+        let Some(mcp) = self.mcp.clone() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let registry = tools.clone();
+        tokio::spawn(async move { mcp.attach(&registry).await });
     }
 
     /// Hand the factory the handles the GUI holds. Every backend it builds
@@ -542,6 +575,10 @@ impl BackendFactory {
             // Deliberately dropped: this clone only ever builds subagents,
             // and a subagent must never adopt the session's handles.
             session_flags: None,
+            // Carried, unlike `session_flags`: these are the process's own
+            // MCP servers, and a subagent should reach the same ones its
+            // parent does rather than none at all.
+            mcp: self.mcp.clone(),
             #[cfg(feature = "test-support")]
             stubs: self.stubs.clone(),
         })

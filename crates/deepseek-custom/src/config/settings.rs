@@ -61,6 +61,9 @@ pub struct Settings {
     /// the phase 4 section of `docs/plans/2026-08-04-long-term-roadmap.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// MCP servers for the `Api` backend. See `Settings::mcp_enabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSettings>,
 }
 
 impl Default for Settings {
@@ -80,6 +83,7 @@ impl Default for Settings {
             session_turn_cap: None,
             send_message_call_cap: None,
             working_dir: None,
+            mcp: None,
         }
     }
 }
@@ -333,6 +337,23 @@ impl Settings {
         self.send_message_call_cap.unwrap_or(10)
     }
 
+    /// Whether to start the MCP servers Claude Code's own config files
+    /// name. On by default: without them the `Api` backend has no way to
+    /// reach a tool the user has already installed and expects to work.
+    pub fn mcp_enabled(&self) -> bool {
+        self.mcp.as_ref().and_then(|m| m.enabled).unwrap_or(true)
+    }
+
+    /// Servers named here are never started, even when they appear in a
+    /// config file. This is the escape hatch for one server that is slow,
+    /// broken, or simply not wanted on this machine.
+    pub fn mcp_disabled_servers(&self) -> Vec<String> {
+        self.mcp
+            .as_ref()
+            .and_then(|m| m.disabled_servers.clone())
+            .unwrap_or_default()
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -403,6 +424,9 @@ impl Settings {
         if other.working_dir.is_some() {
             self.working_dir = other.working_dir;
         }
+        if other.mcp.is_some() {
+            self.mcp = other.mcp;
+        }
     }
 }
 
@@ -450,6 +474,17 @@ pub struct HookDef {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct McpSettings {
+    /// Whether to start MCP servers at all. Defaults to true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Server names to skip, by the key they appear under in the
+    /// `mcpServers` block of whichever file defines them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_servers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AutopilotConfig {
     /// Number of times to repeat the task. Defaults to 5.
     #[serde(default, skip_serializing_if = "Option::is_none")]

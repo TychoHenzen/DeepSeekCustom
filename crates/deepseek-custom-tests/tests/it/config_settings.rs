@@ -147,6 +147,7 @@ fn save_then_load_round_trips_values() {
         send_message_call_cap: None,
         subagent_max_depth: Some(3),
         working_dir: None,
+        mcp: None,
     };
 
     original.save(&dir).unwrap();
@@ -252,6 +253,7 @@ fn save_omits_none_fields() {
         session_turn_cap: None,
         send_message_call_cap: None,
         working_dir: None,
+        mcp: None,
     };
     s.save(&dir).unwrap();
     let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
