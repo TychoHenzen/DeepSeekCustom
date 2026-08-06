@@ -396,6 +396,14 @@ impl DeepSeekGui {
     /// the widget its kind calls for: a bubble for a message, a folding
     /// summary for a tool call, a single styled line for a notice.
     fn render_chat_output(&mut self, ui: &mut egui::Ui) {
+        self.render_output_heading(ui);
+        ui.separator();
+        self.render_transcript_blocks(ui);
+    }
+
+    /// Draw the "Output" heading row shared by the Chat and Autopilot tabs:
+    /// the heading itself plus a right-aligned grey block count.
+    fn render_output_heading(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Output");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -406,7 +414,11 @@ impl DeepSeekGui {
                 );
             });
         });
-        ui.separator();
+    }
+
+    /// Draw the scroll area of transcript blocks. Both the Chat tab and the
+    /// Autopilot tab call this to show the same transcript.
+    fn render_transcript_blocks(&mut self, ui: &mut egui::Ui) {
         // Move the transcript out of `self` for the duration of the draw.
         // A block renderer needs the blocks by shared reference and the
         // markdown cache by mutable reference at the same moment, which
@@ -722,6 +734,10 @@ impl App for DeepSeekGui {
                     if self.autopilot.render(ui, &mut self.settings) {
                         self.persist_settings();
                     }
+                    ui.separator();
+                    self.render_output_heading(ui);
+                    ui.separator();
+                    self.render_transcript_blocks(ui);
                 }
                 ActiveTab::Sessions => self.render_sessions_tab(ui),
             }

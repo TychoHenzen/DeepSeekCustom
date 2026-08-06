@@ -933,3 +933,56 @@ fn a_transcript_with_a_nested_subagent_block_round_trips_through_json() {
     assert_eq!(inner_depth, 2);
     assert_eq!(inner_state, SubagentState::Done);
 }
+
+#[test]
+fn repeat_iteration_start_closes_open_assistant_and_pushes_notice() {
+    let mut transcript = Transcript::new();
+    transcript.apply_stream_event(StreamEvent::Text {
+        turn: 1,
+        text: "first iteration text".into(),
+    });
+    transcript.apply_stream_event(StreamEvent::RepeatIterationStart { index: 2, total: 5 });
+    transcript.apply_stream_event(StreamEvent::Text {
+        turn: 2,
+        text: "second iteration text".into(),
+    });
+    let blocks = transcript.blocks();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(
+        blocks[1].kind,
+        BlockKind::Notice {
+            text: "Iteration 2 of 5".into(),
+            severity: Severity::Info,
+        }
+    );
+    assert_eq!(
+        blocks[0].kind,
+        BlockKind::Assistant {
+            spans: vec![Span::Text("first iteration text".into())],
+        }
+    );
+    assert_eq!(
+        blocks[2].kind,
+        BlockKind::Assistant {
+            spans: vec![Span::Text("second iteration text".into())],
+        }
+    );
+}
+
+#[test]
+fn repeat_finished_pushes_notice() {
+    let mut transcript = Transcript::new();
+    transcript.apply_stream_event(StreamEvent::RepeatFinished {
+        completed: 3,
+        total: 5,
+    });
+    let blocks = transcript.blocks();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(
+        blocks[0].kind,
+        BlockKind::Notice {
+            text: "Autopilot finished: 3 of 5 iterations".into(),
+            severity: Severity::Info,
+        }
+    );
+}

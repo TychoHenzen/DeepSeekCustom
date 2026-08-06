@@ -5,6 +5,11 @@
 //! including the two channels `with_repeat` attaches. Both are `None`
 //! until then, and the Run button stays disabled while they are, so a
 //! GUI built without a repeat channel simply cannot start a run.
+//!
+//! The GUI draws the live transcript below these controls, so `render`
+//! folds the task box, the iterations slider, and the two captions into
+//! a collapsible "Setup" header, keeping the Run button and the progress
+//! label visible on their own row whether that header is open or closed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,6 +57,11 @@ pub struct AutopilotTab {
     /// Resolved policy file path, shown read-only next to the Run button.
     /// Computed once at construction.
     policy_path: PathBuf,
+    /// Set by `set_running` when a run starts from a non-`Running` state.
+    /// `render` reads this once, forces the Setup header closed, and clears
+    /// it, so the fold closes exactly once per run rather than fighting a
+    /// user who reopens it mid-run.
+    close_setup_fold: bool,
 }
 
 impl AutopilotTab {
@@ -70,6 +80,7 @@ impl AutopilotTab {
             iterations: settings.autopilot_iterations(),
             progress: AutopilotProgress::default(),
             policy_path,
+            close_setup_fold: false,
         }
     }
 
@@ -132,8 +143,16 @@ impl AutopilotTab {
         self.interrupt_flag.is_some()
     }
 
-    /// Move the progress readout to a newly started iteration.
+    /// Move the progress readout to a newly started iteration. When the
+    /// previous state was not already `Running`, this also requests a
+    /// one-frame forced close of the Setup header, so a run that starts
+    /// folds the controls away once. A later iteration of the same run
+    /// leaves the header alone, so a user who reopens it mid-run is not
+    /// fought every frame.
     pub fn set_running(&mut self, index: u32, total: u32) {
+        if !matches!(self.progress, AutopilotProgress::Running { .. }) {
+            self.close_setup_fold = true;
+        }
         self.progress = AutopilotProgress::Running { index, total };
     }
 
@@ -149,51 +168,58 @@ impl AutopilotTab {
         ui.heading("Autopilot");
         ui.separator();
 
-        ui.label("Task");
-        let task_response = ui.add(
-            TextEdit::multiline(&mut self.task)
-                .desired_rows(6)
-                .hint_text("Describe the task to repeat"),
-        );
-        // Save on focus loss, not on every keystroke, matching the wake
-        // phrase field in the settings panel.
-        if task_response.lost_focus() {
-            apply_autopilot_task(settings, &self.task.clone());
-            dirty = true;
+        let mut header = egui::CollapsingHeader::new("Setup").default_open(true);
+        if self.close_setup_fold {
+            header = header.open(Some(false));
+            self.close_setup_fold = false;
         }
+        header.show(ui, |ui| {
+            ui.label("Task");
+            let task_response = ui.add(
+                TextEdit::multiline(&mut self.task)
+                    .desired_rows(6)
+                    .hint_text("Describe the task to repeat"),
+            );
+            // Save on focus loss, not on every keystroke, matching the wake
+            // phrase field in the settings panel.
+            if task_response.lost_focus() {
+                apply_autopilot_task(settings, &self.task.clone());
+                dirty = true;
+            }
 
-        ui.add_space(8.0);
+            ui.add_space(8.0);
 
-        let iter_response =
-            ui.add(egui::Slider::new(&mut self.iterations, 1..=100).text("Iterations"));
-        // Save when the drag ends, matching the other sliders.
-        if iter_response.drag_stopped() {
-            apply_autopilot_iterations(settings, self.iterations);
-            dirty = true;
-        }
+            let iter_response =
+                ui.add(egui::Slider::new(&mut self.iterations, 1..=100).text("Iterations"));
+            // Save when the drag ends, matching the other sliders.
+            if iter_response.drag_stopped() {
+                apply_autopilot_iterations(settings, self.iterations);
+                dirty = true;
+            }
 
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("Policy file: {}", self.policy_path.display()))
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("Policy file: {}", self.policy_path.display()))
+                    .color(Color32::GRAY)
+                    .small(),
+            );
+            ui.label(
+                RichText::new(
+                    "Questions during a run are answered from that file by a separate model. \
+                     A human never answers them.",
+                )
                 .color(Color32::GRAY)
                 .small(),
-        );
-        ui.label(
-            RichText::new(
-                "Questions during a run are answered from that file by a separate model. \
-                 A human never answers them.",
-            )
-            .color(Color32::GRAY)
-            .small(),
-        );
+            );
+        });
 
         ui.add_space(8.0);
-        self.render_run_button(ui);
-
-        ui.add_space(8.0);
-        if let Some(text) = progress_label(self.progress) {
-            ui.label(text);
-        }
+        ui.horizontal(|ui| {
+            self.render_run_button(ui);
+            if let Some(text) = progress_label(self.progress) {
+                ui.label(text);
+            }
+        });
 
         dirty
     }

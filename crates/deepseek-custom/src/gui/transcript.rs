@@ -373,10 +373,29 @@ impl Transcript {
             // not routed through this method, so there is no block for
             // this variant to produce.
             StreamEvent::SessionReset => {}
-            // Repeat iteration boundaries drive the Autopilot tab's own
-            // progress readout, not the Chat transcript.
-            StreamEvent::RepeatIterationStart { .. } => {}
-            StreamEvent::RepeatFinished { .. } => {}
+            // A new iteration closes whatever `Assistant` block is still
+            // open, so the first text delta of the new iteration starts a
+            // fresh block instead of joining the one before it, then marks
+            // the boundary with an `Info` notice. The Autopilot tab's own
+            // progress readout is still driven separately, from
+            // `apply_event_side_effects` in `src/gui/mod.rs`.
+            StreamEvent::RepeatIterationStart { index, total } => {
+                self.close_open_assistant();
+                self.push(BlockKind::Notice {
+                    text: format!("Iteration {index} of {total}"),
+                    severity: Severity::Info,
+                });
+            }
+            // Marks where a repeat run ended with an `Info` notice. The
+            // Autopilot tab's own progress readout is still driven
+            // separately, from `apply_event_side_effects` in
+            // `src/gui/mod.rs`.
+            StreamEvent::RepeatFinished { completed, total } => {
+                self.push(BlockKind::Notice {
+                    text: format!("Autopilot finished: {completed} of {total} iterations"),
+                    severity: Severity::Info,
+                });
+            }
             // Consumed by the GUI's session-state layer before this event
             // reaches the transcript (see `apply_event_side_effects` in
             // `src/gui/mod.rs`). It carries no block to draw.

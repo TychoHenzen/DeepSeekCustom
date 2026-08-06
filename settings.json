@@ -1,23 +1,20 @@
 {
-  "thinking": {
-    "enabled": true
-  },
+  "effort": "medium",
   "voice": {
     "enabled": true,
     "stt_enabled": false,
     "tts_enabled": true,
     "trigger_mode": "push_to_talk",
     "wake_phrase": "hey deepseek",
-    "tts_voice": "am_puck",
+    "tts_voice": "bf_emma",
     "tts_speed": 1.0
+  },
+  "autopilot": {
+    "iterations": 1,
+    "task": "/dod-guard:tighten, use deepseek subagents"
   },
   "context_budget": 150000,
   "backends": {
-    "ollama": {
-      "kind": "api",
-      "provider": "ollama",
-      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
-    },
     "claude": {
       "kind": "claude_cli",
       "model": "opus"
@@ -26,7 +23,12 @@
       "kind": "api",
       "provider": "deepseek",
       "model": "deepseek-v4-pro"
+    },
+    "ollama": {
+      "kind": "api",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
     }
   },
-  "default_backend": "deepseek"
+  "default_backend": "claude"
 }

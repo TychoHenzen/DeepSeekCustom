@@ -23,3 +23,11 @@ deepseek_custom.log
 # cargo-mutants scratch output
 mutants.out/
 mutants.out.old/
+
+# Prose linter waiver sentinel, consumed by the next turn's check.
+.prose-skip
+
+# Other workflow session state, local to one run.
+.solve-session/
+.refactor-session/
+.tdd-session/
