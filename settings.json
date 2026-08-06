@@ -11,7 +11,7 @@
   },
   "autopilot": {
     "iterations": 1,
-    "task": "/dod-guard:tighten, use deepseek subagents"
+    "task": "/dod-guard:tighten, use claude subagents for planning, and ollama for simple tasks (do review their work before accepting)"
   },
   "context_budget": 150000,
   "backends": {
@@ -30,5 +30,5 @@
       "model": "opus"
     }
   },
-  "default_backend": "claude"
+  "default_backend": "deepseek"
 }
