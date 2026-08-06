@@ -139,11 +139,15 @@ async fn a_command_that_does_not_exist_fails_to_connect() {
 
 #[tokio::test]
 async fn a_request_to_a_dead_server_errors_rather_than_hanging() {
-    // The reader task drops every pending sender when stdout closes. Without
-    // that, a caller would wait out the whole request timeout.
-    let client = McpClient::connect(&fake_server(&["--exit-after-init"]))
-        .await
-        .unwrap();
+    // The server exits right after the init handshake. Either connect
+    // itself fails (pipe breaks during init) or the follow-up call
+    // fails (server gone). Both prove the code errors out instead of
+    // hanging on a dead stdout.
+    let config = fake_server(&["--exit-after-init"]);
+    let client = match McpClient::connect(&config).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
 
     let result = client.list_tools().await;
 

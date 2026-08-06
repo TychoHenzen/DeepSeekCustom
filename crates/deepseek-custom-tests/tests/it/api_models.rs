@@ -4,7 +4,8 @@
 use std::collections::HashMap;
 
 use deepseek_custom::api::models::{
-    apply_fallback, entry_models_override, list_models, ollama_tags_url, parse_ollama_tags,
+    apply_fallback, claude_cli_aliases, entry_models_override, list_models, ollama_tags_url,
+    parse_models_response, parse_ollama_tags,
 };
 use deepseek_custom::config::settings::{ApiProvider, BackendConfig};
 
@@ -80,27 +81,28 @@ async fn explicit_override_wins_for_claude_cli_variant() {
 }
 
 #[tokio::test]
-async fn deepseek_entry_with_no_override_returns_known_models() {
+async fn deepseek_entry_with_no_override_returns_models() {
     let entry = deepseek_entry(None);
     let models = list_models(&entry).await;
-    assert_eq!(
-        models,
-        vec!["deepseek-v4-flash".to_string(), "deepseek-v4-pro".to_string()]
+    assert!(
+        !models.is_empty(),
+        "must return at least the declared model as fallback"
     );
 }
 
 #[tokio::test]
-async fn claude_cli_entry_with_no_override_returns_known_aliases() {
+async fn claude_cli_entry_with_no_override_always_starts_with_aliases() {
     let entry = claude_cli_entry(None);
     let models = list_models(&entry).await;
+    let aliases = claude_cli_aliases();
+    assert!(
+        models.len() >= aliases.len(),
+        "result must contain at least the aliases"
+    );
     assert_eq!(
-        models,
-        vec![
-            "opus".to_string(),
-            "sonnet".to_string(),
-            "haiku".to_string(),
-            "fable".to_string()
-        ]
+        &models[..aliases.len()],
+        &aliases[..],
+        "aliases must come first"
     );
 }
 
@@ -135,6 +137,37 @@ fn host_derivation_preserves_custom_host() {
 #[test]
 fn host_derivation_falls_back_to_default_when_absent() {
     assert_eq!(ollama_tags_url(None), "http://localhost:11434/api/tags");
+}
+
+#[test]
+fn parse_models_response_returns_ids_in_order() {
+    let body = r#"{"data":[{"id":"claude-opus-4-6","type":"model"},{"id":"claude-sonnet-4-5-20250929","type":"model"}]}"#;
+    let ids = parse_models_response(body);
+    assert_eq!(ids, vec!["claude-opus-4-6", "claude-sonnet-4-5-20250929"]);
+}
+
+#[test]
+fn parse_models_response_malformed_json_yields_empty() {
+    assert!(parse_models_response("not json").is_empty());
+}
+
+#[test]
+fn parse_models_response_missing_data_key_yields_empty() {
+    assert!(parse_models_response(r#"{"models":[]}"#).is_empty());
+}
+
+#[test]
+fn parse_models_response_empty_data_array_yields_empty() {
+    assert!(parse_models_response(r#"{"data":[]}"#).is_empty());
+}
+
+#[test]
+fn claude_cli_aliases_returns_known_set() {
+    let aliases = claude_cli_aliases();
+    assert!(aliases.contains(&"opus".to_string()));
+    assert!(aliases.contains(&"sonnet".to_string()));
+    assert!(aliases.contains(&"haiku".to_string()));
+    assert!(aliases.contains(&"fable".to_string()));
 }
 
 #[test]

@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 962 tests
-cargo test -p deepseek-custom-tests                  # The same 851, named directly
+cargo test --workspace                               # All 967 tests
+cargo test -p deepseek-custom-tests                  # The same 856, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -397,9 +397,9 @@ The `settings.json` subagent block, with defaults:
 
 **Subagent blocks:** `RoutedEvent` replaced the bare `StreamEvent` on the event channel crate-wide, including `main.rs`, the GUI, `ClaudeCliDriver`, and `BackendFactory`. `StreamEvent` itself gained no new variants; only the wrapper is new. The GUI's pump calls `handle_routed_event` for every event it receives. An empty route runs the main session's usual side effects (status bar counters, the speech buffer, the Autopilot progress readout, the session autosave) and then applies to the transcript, exactly as the old direct `StreamEvent` handling did. A non-empty route skips every one of those side effects and touches the transcript only, so a subagent's own `TurnEnd` cannot save the session, overwrite the API history, or move the prompt cache counters that belong to the main conversation. `handle_stream_event` still exists but is test-only now, a thin wrapper that calls `handle_routed_event` with an empty route, gated behind the `test-support` feature. A one-shot `claude_cli` dispatch, which has no token stream to forward, still produces a block that reaches its badge, through the single terminal event described above. Whether a running subagent's block auto-expands was an open question through phase 2; it is now settled as no: collapsed by default, a live one-line state in the header, and the user pins one open explicitly. The reason is that a fanout of five subagents must not push the main conversation off screen.
 
-**Model picker:** the settings sidebar now has a model dropdown under the backend picker. `list_models` in `crates/deepseek-custom/src/api/models.rs` fills it. An explicit `models` array on the backend entry always wins. Otherwise discovery runs by kind and provider. Ollama is queried live at `/api/tags`. DeepSeek returns the known pair `deepseek-v4-flash` and `deepseek-v4-pro`. `claude_cli` returns the known aliases `opus`, `sonnet`, `haiku`, and `fable`. When discovery yields nothing, the result falls back to the model the entry declares. That way the dropdown is never empty and always holds the current selection.
+**Model picker:** the settings sidebar now has a model dropdown under the backend picker. `list_models` in `crates/deepseek-custom/src/api/models.rs` fills it. An explicit `models` array on the backend entry always wins. Otherwise discovery runs by kind and provider. Ollama is queried live at `/api/tags`. DeepSeek returns the known pair `deepseek-v4-flash` and `deepseek-v4-pro`. `claude_cli` queries the Anthropic `/v1/models` endpoint using the OAuth token from `~/.claude/.credentials.json` and prepends the short aliases (`opus`, `sonnet`, `haiku`, `fable`), so the picker shows both aliases and full model IDs like `claude-opus-4-6`. Missing credentials, a network failure, or a bad response all fall back to the aliases alone. DeepSeek queries its own `/models` endpoint using the resolved API key (config `api_key`, then `DEEPSEEK_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`). Both Anthropic and DeepSeek responses use the same OpenAI-compatible `{"data":[{"id":"..."}]}` shape, parsed by `parse_models_response`. When discovery yields nothing, the result falls back to the model the entry declares. That way the dropdown is never empty and always holds the current selection.
 
-Ollama being down must never stop the GUI from opening. `query_ollama_models` turns every failure into an empty list instead of an error: a connection error, a timeout, a bad status, or malformed JSON. `apply_fallback` covers an empty list from there.
+No provider being down must stop the GUI from opening. All three discovery functions (`query_ollama_models`, `query_anthropic_models`, `query_deepseek_models`) turn every failure into a fallback instead of an error. `apply_fallback` covers an empty list from there.
 
 The list resolves on a background task, `spawn_model_list_fetch`, and arrives over a channel the paint loop polls each frame. No network call happens on the paint loop itself. A result tagged with a backend name the user has since switched away from gets dropped as stale.
 
@@ -430,7 +430,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - Subagent blocks: `RoutedEvent` and `RouteHop` in `crates/deepseek-custom/src/agent/agent_loop.rs`, `spawn_event_forwarder` in `crates/deepseek-custom/src/backend/subagent.rs`, `BlockKind::Subagent`, `SubagentState`, and `Transcript::apply_routed_event` in `crates/deepseek-custom/src/gui/transcript.rs`, and `render_subagent_block` in `crates/deepseek-custom/src/gui/mod.rs`. See "Subagent blocks" above for the full mechanism.
 - Multi-turn subagent sessions: `crates/deepseek-custom/src/backend/registry.rs` (`SubagentRegistry`, the lifetime rule, and both runaway-cost caps), `crates/deepseek-custom/src/backend/stub.rs` (`StubBackend`, the scripted backend subagent tests run against), `crates/deepseek-custom/src/tools/send_message.rs` (`SendMessageTool`), `crates/deepseek-custom/src/tools/close_session.rs` (`CloseSessionTool`), and the long-lived-driver branch of `run_subagent` in `crates/deepseek-custom/src/backend/subagent.rs` for a `keep_open` `claude_cli` dispatch. See "Multi-turn subagent sessions" above for the full mechanism.
 - Working directory: `crates/deepseek-custom/src/tools/cd.rs` (`CdTool`), the `working_dir` field on `BackendFactory` and `BackendFactory::with_working_dir`, `MessageHistory::set_working_dir` in `crates/deepseek-custom/src/agent/history.rs`, the directory-change respawn branch of `ClaudeCliDriver::ensure_ready` in `crates/deepseek-custom/src/backend/claude_cli/process.rs`, the `working_dir` override on `Task`, and the sidebar field and status bar reading in `crates/deepseek-custom/src/gui/mod.rs`. See "Working directory" above for the full mechanism.
-- Model picker: `crates/deepseek-custom/src/api/models.rs` (`list_models`, live Ollama discovery, static DeepSeek and claude_cli lists, fallback to the declared model). See "Model picker" above.
+- Model picker: `crates/deepseek-custom/src/api/models.rs` (`list_models`, live discovery for all three providers: Ollama via `/api/tags`, Anthropic via OAuth and `/v1/models`, DeepSeek via `/models`, fallback to the declared model). See "Model picker" above.
 - Session management: `crates/deepseek-custom/src/session/mod.rs` (`SessionId`, `SessionMeta`, `SessionRecord`, `derive_title`), `crates/deepseek-custom/src/session/store.rs` (`SessionStore`, the disk layer), `crates/deepseek-custom/src/gui/session_state.rs` (`SessionState`, the save/switch/load/reset state), `crates/deepseek-custom/src/gui/sessions_tab.rs` (the Sessions tab). `AgentCommand` in `crates/deepseek-custom/src/agent/agent_loop.rs` replaced the old bare `String` input channel. `--resume` was verified against the real `claude` binary. See "Session persistence" above for the full mechanism. The Sessions tab UI still needs a human's visual confirmation.
 - Config: Settings loading from project/global JSON, saving back to the project `settings.json`, PermissionsConfig, HooksConfig, the `backends` map and `default_backend` (see "Config" above)
 - Context: `crates/deepseek-custom/src/agent/pruning.rs` (three-tier prune over the message vector) and `crates/deepseek-custom/src/context/relevance.rs` (relevance scoring call), both `Api`-only. `crates/deepseek-custom/src/context/mod.rs` now holds only the `relevance` module declaration. `ContextPruner`, `ThinkingStore`, and `parse_thinking_tags` were all dead code and have been deleted from it
@@ -455,7 +455,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 962 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 967 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
 **One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 71 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
@@ -471,7 +471,7 @@ Test files are named by one rule. Take the module path under `crates/deepseek-cu
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 853.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 858.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -491,7 +491,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 831 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 836 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -501,7 +501,7 @@ These are the 831 tests that cover one production module each, counted per modul
 | `agent/pruning.rs` | 13 |
 | `agent/repeat.rs` | 6 |
 | `api/client.rs` | 12 |
-| `api/models.rs` | 14 |
+| `api/models.rs` | 19 |
 | `api/types.rs` | 17 |
 | `autopilot/answerer.rs` | 9 |
 | `autopilot/policy.rs` | 10 |
