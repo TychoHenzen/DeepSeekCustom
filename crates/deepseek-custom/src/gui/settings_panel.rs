@@ -34,8 +34,12 @@ impl DeepSeekGui {
 
                 // Both pickers live on `BackendPicker`, which owns every
                 // field they read and write.
-                if self.backends.render(ui, &mut self.settings) {
+                let picked = self.backends.render(ui, &mut self.settings);
+                if picked.dirty {
                     self.persist_settings();
+                }
+                if let Some(command) = picked.switch {
+                    self.apply_backend_switch(command);
                 }
 
                 ui.add_space(8.0);

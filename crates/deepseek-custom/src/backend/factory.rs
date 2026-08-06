@@ -17,12 +17,12 @@ use crate::agent::prompt::SystemPromptBuilder;
 use crate::api::client::{ApiClient, Provider, resolve_api_key};
 use crate::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
 use crate::autopilot::policy::PolicyStore;
-use crate::backend::Backend;
-use crate::effort::Effort;
 use crate::backend::registry::SubagentRegistry;
 #[cfg(feature = "test-support")]
 use crate::backend::stub::{StubBackend, StubTurn};
+use crate::backend::{Backend, SharedFlags};
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
+use crate::effort::Effort;
 use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
@@ -109,7 +109,9 @@ fn resolve_named_backend(
             let runtime_provider = map_provider(provider);
             let key = match api_key {
                 Some(k) => k.clone(),
-                None => resolve_api_key(runtime_provider, project_root).map_err(|e| e.to_string())?,
+                None => {
+                    resolve_api_key(runtime_provider, project_root).map_err(|e| e.to_string())?
+                }
             };
             Ok(ResolvedBackend::Api {
                 name: name.to_string(),
@@ -147,7 +149,10 @@ fn resolve_named_backend(
 /// now, so both the gate and the visibility must reach across the crate
 /// boundary.
 #[cfg(feature = "test-support")]
-pub fn resolve_active_backend(settings: &Settings, project_root: &Path) -> Result<ResolvedBackend, String> {
+pub fn resolve_active_backend(
+    settings: &Settings,
+    project_root: &Path,
+) -> Result<ResolvedBackend, String> {
     let name = settings.default_backend().unwrap_or("deepseek").to_string();
     resolve_named_backend(settings, project_root, &name, None)
 }
@@ -204,7 +209,12 @@ fn build_api_backend(
 ) -> Backend {
     let settings = &factory.settings;
     let project_root = &factory.project_root;
-    let client = ApiClient::new(provider, api_key.clone(), base_url.clone(), Some(model.clone()));
+    let client = ApiClient::new(
+        provider,
+        api_key.clone(),
+        base_url.clone(),
+        Some(model.clone()),
+    );
 
     let memory = MemoryStore::load(project_root);
     let project_skills = SkillLoader::load_all(project_root).unwrap_or_default();
@@ -224,7 +234,8 @@ fn build_api_backend(
     // selection then sends the answerer's questions to Ollama too, so it
     // never demands a DeepSeek key the user does not have.
     let answerer_client = ApiClient::new(provider, api_key, base_url, None);
-    let policy_store = PolicyStore::new(project_root.to_path_buf(), settings.autopilot_policy_path());
+    let policy_store =
+        PolicyStore::new(project_root.to_path_buf(), settings.autopilot_policy_path());
     let answerer: Arc<dyn QuestionAnswerer> = Arc::new(PolicyAnswerer::new(
         answerer_client,
         policy_store,
@@ -247,7 +258,15 @@ fn build_api_backend(
     // own `effort_flag()` reports" are provably the same object, the same
     // way `subagent_registry` above is shared between the tool and the
     // agent that closes it.
-    let effort_flag: Arc<AtomicU8> = Arc::new(AtomicU8::new(Effort::None.to_u8()));
+    //
+    // On a depth-0 build the GUI's own effort handle stands in for that
+    // fresh one, so the control on screen and this agent's `Task` tool read
+    // the same object from the first turn. Adopting it afterwards would be
+    // too late: the tool below has already been handed a clone.
+    let effort_flag: Arc<AtomicU8> = match factory.session_flags_for(depth) {
+        Some(flags) => Arc::clone(&flags.effort),
+        None => Arc::new(AtomicU8::new(Effort::None.to_u8())),
+    };
 
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(BashTool::new(factory.working_dir())));
@@ -314,7 +333,13 @@ fn build_api_backend(
         model,
         ..Default::default()
     };
-    let mut agent = AgentLoop::new(client, tools, system_prompt, config, factory.interrupt_flag.clone());
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        system_prompt,
+        config,
+        factory.interrupt_flag.clone(),
+    );
     agent.set_event_sender(tx_events);
     agent.set_working_dir(factory.working_dir());
     // A fresh registry per agent, not one shared across the whole dispatch
@@ -355,6 +380,12 @@ pub struct BackendFactory {
     /// purpose: see the phase 4 section of
     /// `docs/plans/2026-08-04-long-term-roadmap.md`.
     working_dir: Arc<Mutex<PathBuf>>,
+    /// The handles the GUI holds, adopted by every backend this factory
+    /// builds at depth 0. `None` outside the GUI, which is why every other
+    /// caller (a subagent dispatch, a test) gets a backend with handles of
+    /// its own. See `SharedFlags` for why the GUI's cannot simply be read
+    /// back off whichever backend happens to be running.
+    session_flags: Option<SharedFlags>,
     /// Named scripts for `StubBackend`, checked by `resolve` before it ever
     /// looks at `settings.backends`. Always empty outside a test build or
     /// the `test-support` feature: only `with_stub` inserts into it, and
@@ -373,8 +404,28 @@ impl BackendFactory {
             project_root,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             working_dir,
+            session_flags: None,
             #[cfg(feature = "test-support")]
             stubs: HashMap::new(),
+        }
+    }
+
+    /// Hand the factory the handles the GUI holds. Every backend it builds
+    /// at depth 0 from then on adopts them, so a backend built to replace
+    /// another answers to the controls already on screen. A subagent build
+    /// is unaffected: it sits at depth 1 or deeper and keeps its own.
+    pub fn with_session_flags(mut self, flags: SharedFlags) -> Self {
+        self.session_flags = Some(flags);
+        self
+    }
+
+    /// The session flags a depth-0 build should adopt, if this factory was
+    /// given any.
+    fn session_flags_for(&self, depth: u32) -> Option<&SharedFlags> {
+        if depth == 0 {
+            self.session_flags.as_ref()
+        } else {
+            None
         }
     }
 
@@ -488,6 +539,9 @@ impl BackendFactory {
             project_root: self.project_root.clone(),
             interrupt_flag: Arc::clone(&self.interrupt_flag),
             working_dir,
+            // Deliberately dropped: this clone only ever builds subagents,
+            // and a subagent must never adopt the session's handles.
+            session_flags: None,
             #[cfg(feature = "test-support")]
             stubs: self.stubs.clone(),
         })
@@ -535,7 +589,7 @@ impl BackendFactory {
     ) -> Result<Backend, String> {
         let resolved = self.resolve(name, model_override)?;
 
-        Ok(match resolved {
+        let mut backend = match resolved {
             ResolvedBackend::Api {
                 name,
                 provider,
@@ -575,7 +629,11 @@ impl BackendFactory {
                 Backend::new_claude_cli(model, permission_mode, env, self.working_dir(), tx_events)
             }
             #[cfg(feature = "test-support")]
-            ResolvedBackend::Stub { name, script, model } => {
+            ResolvedBackend::Stub {
+                name,
+                script,
+                model,
+            } => {
                 info!(
                     "resolved backend: name={} kind=stub turns={}",
                     name,
@@ -585,6 +643,17 @@ impl BackendFactory {
                 stub.set_event_sender(tx_events);
                 Backend::Stub(Box::new(stub))
             }
-        })
+        };
+
+        // Depth 0 is the GUI's own session. Whatever kind of backend just
+        // came out of the match, the controls on screen must drive it, so
+        // it gives up the handles it made for itself. A subagent build
+        // (depth 1 and deeper) keeps its own, which is what stops a
+        // subagent's effort level or model from moving the session's.
+        if let Some(flags) = self.session_flags_for(depth) {
+            backend.adopt_flags(flags);
+        }
+
+        Ok(backend)
     }
 }

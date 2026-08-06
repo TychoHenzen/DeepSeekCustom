@@ -65,6 +65,16 @@ pub enum AgentCommand {
         messages: Vec<Message>,
         claude_session_id: Option<String>,
     },
+    /// Replace the running backend with the entry `name` selects, keeping
+    /// the shared handles the GUI already holds. `model` overrides the
+    /// model that entry declares, which is what the model dropdown holds
+    /// for the incoming backend at the moment of the switch.
+    ///
+    /// The new backend starts with no conversation of its own. There is no
+    /// way to carry one across: an `Api` history is a message vector this
+    /// harness owns, while a `claude_cli` conversation lives inside a child
+    /// process and is reachable only by its own session id.
+    SwitchBackend { name: String, model: Option<String> },
 }
 
 /// Events sent from the agent loop to the TUI (or caller) during streaming.
@@ -353,6 +363,22 @@ impl AgentLoop {
     /// sync step needed.
     pub fn set_effort_flag(&mut self, effort_flag: Arc<AtomicU8>) {
         self.effort_flag = effort_flag;
+    }
+
+    /// Replace all six shared handles with the GUI's own, so this agent
+    /// answers to the controls the user already has on screen. Called by
+    /// `BackendFactory::build` on a depth-0 backend only.
+    ///
+    /// `effort` is deliberately not set here. The factory hands the same
+    /// `Arc` to this agent's `Task` tool at construction, and replacing it
+    /// afterwards would leave that tool reading a flag nothing writes. See
+    /// `set_effort_flag`.
+    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+        self.interrupt_flag = Arc::clone(&flags.interrupt);
+        self.model_name = Arc::clone(&flags.model);
+        self.voice_mode_flag = Arc::clone(&flags.voice_mode);
+        self.context_budget = Arc::clone(&flags.context_budget);
+        self.repeat_interrupt_flag = Arc::clone(&flags.repeat_interrupt);
     }
 
     /// The subagent registry this agent owns, if any. Test-only: used by

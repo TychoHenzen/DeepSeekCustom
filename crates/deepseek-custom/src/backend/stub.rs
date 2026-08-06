@@ -146,6 +146,18 @@ impl StubBackend {
         }
     }
 
+    /// Replace all six shared handles with the ones a caller already
+    /// holds, matching what the two real backends do. See
+    /// `Backend::adopt_flags`.
+    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+        self.interrupt_flag = Arc::clone(&flags.interrupt);
+        self.effort_flag = Arc::clone(&flags.effort);
+        self.voice_mode_flag = Arc::clone(&flags.voice_mode);
+        self.context_budget_flag = Arc::clone(&flags.context_budget);
+        self.model_flag = Arc::clone(&flags.model);
+        self.repeat_interrupt_flag = Arc::clone(&flags.repeat_interrupt);
+    }
+
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
     }
@@ -197,4 +209,3 @@ impl RepeatTarget for StubBackend {
         StubBackend::emit(self, event)
     }
 }
-

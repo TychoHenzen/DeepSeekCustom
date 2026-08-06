@@ -4,13 +4,17 @@
 //! This owns the eight fields `DeepSeekGui` used to hold for the two
 //! dropdowns, including the shared model handle the agent reads each turn.
 //!
-//! One distinction runs through the whole file and is easy to lose. The
-//! picker's selection and the running session's backend are two different
-//! things. A backend switch only takes effect on the next start, so the
-//! picker can point at an entry the session is not on. A model change
-//! writes the shared handle only while the two still agree. Sending
-//! another entry's model name to the running backend would break every
-//! following turn.
+//! Picking a backend here replaces the running one. The picker asks for
+//! the switch and the agent task performs it, so `active` moves in the
+//! same frame the user picks and the status bar never names a backend that
+//! is not the one answering turns.
+//!
+//! It did not always work that way. The dropdown used to write
+//! `default_backend` into `settings.json` and stop there, leaving the
+//! session on whatever backend it started with until the next launch. That
+//! was not a documented limitation worth keeping. It meant a user could
+//! select deepseek, watch the sidebar and the status bar both say deepseek,
+//! and have every turn go to `claude -p` regardless.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,8 +22,34 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use super::session_state::SessionOrigin;
+use crate::agent::agent_loop::AgentCommand;
 use crate::api::models::list_models;
 use crate::config::settings::{BackendConfig, Settings};
+
+/// What one frame of the two dropdowns asks the caller to do. `dirty` says
+/// the settings file needs saving. `switch` carries the command the agent
+/// task needs to replace the running backend, and is `None` on every frame
+/// that did not change the backend.
+///
+/// The picker returns the command rather than sending it. Every type under
+/// `src/gui/` follows that rule, so one place still talks to the agent.
+#[derive(Default)]
+pub struct PickerOutcome {
+    pub dirty: bool,
+    pub switch: Option<BackendSwitch>,
+}
+
+/// One backend switch, ready for the GUI to act on.
+///
+/// `outgoing` names the backend and model the conversation being replaced
+/// actually ran on, captured before the picker moved. Without it the
+/// outgoing conversation would be filed under the backend that is about to
+/// take over, which is the one backend it never ran a single turn on.
+pub struct BackendSwitch {
+    pub command: AgentCommand,
+    pub outgoing: SessionOrigin,
+}
 
 /// The two dropdowns and the discovery channel behind them.
 pub struct BackendPicker {
@@ -27,8 +57,9 @@ pub struct BackendPicker {
     options: Vec<String>,
     /// Which of `options` the picker points at.
     selected_idx: usize,
-    /// The backend the running session was actually built on, fixed at
-    /// startup. `None` when the settings named no backend at all.
+    /// The backend the running session is actually built on. Seeded at
+    /// startup and moved by `switch_backend`, which is what makes it the
+    /// running one. `None` when the settings named no backend at all.
     active: Option<String>,
     /// The model name the status bar shows and a save records.
     model: String,
@@ -86,8 +117,9 @@ impl BackendPicker {
         &self.model
     }
 
-    /// The name the picker points at, which may differ from the running
-    /// backend until the next start.
+    /// The name the dropdown points at. This tracks `active` for every
+    /// name the `backends` map declares, since picking one switches the
+    /// running backend in the same call.
     pub fn selected_name(&self) -> Option<&str> {
         self.options.get(self.selected_idx).map(String::as_str)
     }
@@ -159,10 +191,11 @@ impl BackendPicker {
         }
     }
 
-    /// Both dropdowns and the two captions under them. Returns true when a
-    /// change needs saving to the settings file.
-    pub(crate) fn render(&mut self, ui: &mut egui::Ui, settings: &mut Settings) -> bool {
-        let mut dirty = false;
+    /// Both dropdowns and the two captions under them. Returns what the
+    /// caller has to do about this frame: save the settings file, send a
+    /// backend switch, or neither.
+    pub(crate) fn render(&mut self, ui: &mut egui::Ui, settings: &mut Settings) -> PickerOutcome {
+        let mut outcome = PickerOutcome::default();
 
         let prev_idx = self.selected_idx;
         let selected_text = self
@@ -178,7 +211,8 @@ impl BackendPicker {
             });
         if self.selected_idx != prev_idx {
             let new_backend = self.options[self.selected_idx].clone();
-            dirty |= self.switch_backend(new_backend, settings);
+            outcome.switch = self.switch_backend(new_backend, settings);
+            outcome.dirty = true;
         }
 
         let prev_model = self.model.clone();
@@ -191,13 +225,15 @@ impl BackendPicker {
                 }
             });
         if picked != prev_model {
-            dirty |= self.switch_model(picked, settings);
+            outcome.dirty |= self.switch_model(picked, settings);
         }
 
         ui.label(
-            RichText::new("Switching backends takes effect on the next app start.")
-                .color(Color32::GRAY)
-                .small(),
+            RichText::new(
+                "Switching backends replaces the running one and starts a new conversation.",
+            )
+            .color(Color32::GRAY)
+            .small(),
         );
         ui.label(
             RichText::new(
@@ -207,43 +243,68 @@ impl BackendPicker {
             .small(),
         );
 
-        dirty
+        outcome
     }
 
-    /// Switch the picker to `new_backend`: adopt that entry's declared
-    /// model, reseed the model dropdown, and start discovering its models.
-    /// Returns true when the settings file needs saving.
+    /// Switch to `new_backend`: adopt that entry's declared model, reseed
+    /// the model dropdown, start discovering its models, and return the
+    /// command that replaces the running backend with it.
     ///
-    /// The shared model handle only moves while the picker still points at
-    /// the running backend.
-    pub fn switch_backend(&mut self, new_backend: String, settings: &mut Settings) -> bool {
+    /// `active` moves here, not on the next app start. The switch is what
+    /// the returned command performs, and the agent task applies it before
+    /// the next turn can run, so there is no window in which the sidebar
+    /// names one backend and turns go to another.
+    ///
+    /// A name that resolves to no entry returns `None`: nothing is worth
+    /// sending, since the agent could not build it either. The name is
+    /// still written to settings, matching how the dropdown can only ever
+    /// offer names that came out of that same map.
+    pub fn switch_backend(
+        &mut self,
+        new_backend: String,
+        settings: &mut Settings,
+    ) -> Option<BackendSwitch> {
+        let outgoing = SessionOrigin {
+            backend: self.active_backend().to_string(),
+            model: self.model.clone(),
+        };
+        let mut switch = None;
         if let Some(cfg) = settings.resolve_backend(&new_backend) {
             let new_model = cfg.model().to_string();
             self.model = new_model.clone();
             self.model_options = vec![new_model.clone()];
-            if self.active.as_deref() == Some(new_backend.as_str()) {
-                self.write_model_flag(new_model);
-            }
+            self.active = Some(new_backend.clone());
+            self.write_model_flag(new_model.clone());
             spawn_model_list_fetch(self.list_tx.clone(), new_backend.clone(), cfg.clone());
+            switch = Some(BackendSwitch {
+                command: AgentCommand::SwitchBackend {
+                    name: new_backend.clone(),
+                    model: Some(new_model),
+                },
+                outgoing,
+            });
         }
         info!(backend = %new_backend, "backend changed via settings panel");
         apply_default_backend(settings, &new_backend);
-        true
+        switch
     }
 
     /// Switch the selected backend's model. Returns true when the settings
     /// file needs saving, and false when the picker points at nothing.
     ///
-    /// The shared model handle only moves while the picker still points at
-    /// the running backend.
+    /// The shared model handle always moves with it. This used to be
+    /// guarded on the picker still pointing at the running backend, back
+    /// when a backend switch took effect only on the next start and the two
+    /// could disagree for a whole session. A switch is applied immediately
+    /// now, and the dropdown can only offer names that came out of the
+    /// `backends` map, so the model picked here is always the running
+    /// backend's.
     pub fn switch_model(&mut self, new_model: String, settings: &mut Settings) -> bool {
         let Some(backend_name) = self.selected_name().map(str::to_string) else {
             return false;
         };
         self.model = new_model.clone();
-        if self.active.as_deref() == Some(backend_name.as_str()) {
-            self.write_model_flag(new_model.clone());
-        }
+        self.write_model_flag(new_model.clone());
         info!(backend = %backend_name, model = %new_model, "model changed via settings panel");
         apply_backend_model(settings, &backend_name, &new_model);
         true
@@ -309,4 +370,3 @@ pub fn apply_backend_model(settings: &mut Settings, backend_name: &str, model: &
         BackendConfig::ClaudeCli { model: m, .. } => *m = model.to_string(),
     }
 }
-

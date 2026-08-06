@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 
 use eframe::egui;
@@ -11,6 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 use deepseek_custom::agent::agent_loop::{AgentCommand, RoutedEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
+use deepseek_custom::backend::SharedFlags;
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::DeepSeekGui;
@@ -87,11 +88,23 @@ async fn main() {
     // subagent it builds, main session or `Task`-tool dispatch, shares
     // this one flag. Escape then reaches a running subagent too, not
     // just the turn in front of the user.
-    let shared_interrupt_flag = Arc::new(AtomicBool::new(false));
+    // The handles the GUI keeps for the life of the process. Created here
+    // rather than read back off the first backend, because the backend can
+    // be replaced at runtime and the controls must keep driving whichever
+    // one is current. See `SharedFlags`.
+    let flags = SharedFlags::new(String::new());
     let factory = Arc::new(
         BackendFactory::new(settings.clone(), project_root.clone())
-            .with_interrupt_flag(shared_interrupt_flag),
+            .with_interrupt_flag(Arc::clone(&flags.interrupt))
+            .with_session_flags(flags.clone()),
     );
+
+    // The starting backend's own model, so the shared handle names the
+    // model the first turn actually runs on rather than an empty string.
+    let default_name = factory.default_backend_name();
+    if let Some(cfg) = settings.resolve_backend(&default_name) {
+        flags.set_model(cfg.model().to_string());
+    }
 
     // The working directory the `Bash`, `Read`, `Write`, and `Cd` tools act
     // against. Starts equal to `project_root`. Seeded here from a saved
@@ -119,8 +132,7 @@ async fn main() {
 
     // ── Backend construction ─────────────────────────────────
 
-    let default_name = factory.default_backend_name();
-    let mut backend = match factory.build(&default_name, None, tx_events, 0) {
+    let mut backend = match factory.build(&default_name, None, tx_events.clone(), 0) {
         Ok(b) => b,
         Err(e) => {
             error!("{e}");
@@ -133,25 +145,23 @@ async fn main() {
 
     let voice = setup_voice(&settings, &project_root);
 
-    // Share interrupt flag between GUI and agent
-    let interrupt_flag = backend.interrupt_flag();
-    let effort_flag = backend.effort_flag();
-    // Seeded below from the same settings value a future effort control
-    // (P5S03) will also read.
-    let voice_mode_flag = backend.voice_mode_flag();
-    let context_budget_flag = backend.context_budget_flag();
-    let model_flag = backend.model_flag();
-    let repeat_interrupt_flag = backend.repeat_interrupt_flag();
-
     // ── Seed agent flags from settings ──────────────────────
 
     let effort = settings.effort();
     let context_budget = settings.context_budget();
-    effort.store(&effort_flag);
-    context_budget_flag.store(context_budget, Ordering::SeqCst);
+    effort.store(&flags.effort);
+    flags.context_budget.store(context_budget, Ordering::SeqCst);
     info!("seeded from settings: effort={effort:?} context_budget={context_budget}");
 
     // ── Spawn agent task ────────────────────────────────────
+
+    // Moved into the agent task so a `SwitchBackend` command can build a
+    // replacement backend without going back to the GUI thread. The event
+    // sender is cloned rather than moved for the same reason: every
+    // backend this process ever builds streams onto the one channel the
+    // GUI reads.
+    let switch_factory = Arc::clone(&factory);
+    let switch_tx_events = tx_events;
 
     tokio::spawn(async move {
         info!("agent task started");
@@ -184,6 +194,26 @@ async fn main() {
                             );
                             backend.load_session(messages, claude_session_id).await;
                         }
+                        Some(AgentCommand::SwitchBackend { name, model }) => {
+                            info!(backend = %name, model = ?model, "backend switch requested");
+                            match switch_factory.build(&name, model.as_deref(), switch_tx_events.clone(), 0) {
+                                Ok(replacement) => {
+                                    // The outgoing backend goes first, so a
+                                    // `claude -p` child is killed rather
+                                    // than left running with nothing
+                                    // reading its output.
+                                    backend.shutdown().await;
+                                    backend = replacement;
+                                    info!(backend = %name, "backend switched");
+                                }
+                                Err(e) => {
+                                    // The running backend is untouched, so
+                                    // the session keeps working on the one
+                                    // it already had.
+                                    error!("backend switch failed: {e}");
+                                }
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -208,17 +238,17 @@ async fn main() {
         rx_events,
         tx_input,
         AgentHandles {
-            interrupt: interrupt_flag,
-            effort: effort_flag,
-            voice_mode: voice_mode_flag,
-            context_budget: context_budget_flag,
-            model: model_flag,
+            interrupt: Arc::clone(&flags.interrupt),
+            effort: Arc::clone(&flags.effort),
+            voice_mode: Arc::clone(&flags.voice_mode),
+            context_budget: Arc::clone(&flags.context_budget),
+            model: Arc::clone(&flags.model),
             working_dir: working_dir_flag,
         },
         settings.clone(),
         project_root.clone(),
     )
-    .with_repeat(tx_repeat, repeat_interrupt_flag);
+    .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt));
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

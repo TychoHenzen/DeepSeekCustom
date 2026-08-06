@@ -310,6 +310,23 @@ impl ClaudeCliDriver {
         self.claude_session_id = id;
     }
 
+    /// Replace all six shared handles with the GUI's own, so this driver
+    /// answers to the controls the user already has on screen. Called by
+    /// `BackendFactory::build` on a depth-0 backend only.
+    ///
+    /// `effort` is adopted here, unlike on the `Api` path, because nothing
+    /// else holds this driver's effort flag. `ensure_ready` reads it before
+    /// every turn and respawns the child on a change, so a level the user
+    /// picked before the switch takes effect on this driver's first spawn.
+    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+        self.interrupt_flag = Arc::clone(&flags.interrupt);
+        self.effort_flag = Arc::clone(&flags.effort);
+        self.voice_mode_flag = Arc::clone(&flags.voice_mode);
+        self.context_budget_flag = Arc::clone(&flags.context_budget);
+        self.model_flag = Arc::clone(&flags.model);
+        self.repeat_interrupt_flag = Arc::clone(&flags.repeat_interrupt);
+    }
+
     /// The claude session id currently held, if any.
     pub fn claude_session_id(&self) -> Option<&str> {
         self.claude_session_id.as_deref()

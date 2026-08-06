@@ -4,17 +4,18 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use deepseek_custom::agent::agent_loop::SubagentId;
 use deepseek_custom::api::client::Provider;
-use deepseek_custom::backend::Backend;
 use deepseek_custom::backend::factory::{
     BackendFactory, ResolvedBackend, may_dispatch_for_test, resolve_active_backend,
 };
 use deepseek_custom::backend::stub::StubBackend;
+use deepseek_custom::backend::{Backend, SharedFlags};
 use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};
+use deepseek_custom::effort::Effort;
 
 use tokio::sync::mpsc;
 
@@ -113,7 +114,10 @@ fn unknown_default_backend_is_an_error() {
 fn resolves_valid_claude_cli_entry() {
     let mut backends = HashMap::new();
     let mut env = HashMap::new();
-    env.insert("CLAUDE_CLI_PATH".to_string(), "C:/tools/claude.exe".to_string());
+    env.insert(
+        "CLAUDE_CLI_PATH".to_string(),
+        "C:/tools/claude.exe".to_string(),
+    );
     backends.insert(
         "claude".to_string(),
         BackendConfig::ClaudeCli {
@@ -166,7 +170,9 @@ fn claude_cli_entry_permission_mode_passes_through_none_when_omitted() {
     let resolved = resolve_active_backend(&settings, Path::new(".")).expect("should resolve");
 
     match resolved {
-        ResolvedBackend::ClaudeCli { permission_mode, .. } => {
+        ResolvedBackend::ClaudeCli {
+            permission_mode, ..
+        } => {
             assert_eq!(permission_mode, None);
         }
         ResolvedBackend::Api { .. } => panic!("expected ClaudeCli variant"),
@@ -305,10 +311,15 @@ fn api_backend_settings() -> Settings {
 #[test]
 fn task_tool_registered_below_the_depth_limit() {
     // Default max depth is 2. Depth 0, the main session, is below it.
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "Task")),
@@ -321,10 +332,15 @@ fn task_tool_registered_below_the_depth_limit() {
 fn task_tool_absent_at_the_depth_limit() {
     // Default max depth is 2. Depth 2 sits at the limit, so no Task tool
     // goes in and the dispatch chain stops there.
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 2).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 2)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "Task")),
@@ -338,10 +354,15 @@ fn task_tool_absent_at_the_depth_limit() {
 /// `Task` is never reachable through `SendMessage` either.
 #[test]
 fn send_message_tool_registered_below_the_depth_limit() {
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "SendMessage")),
@@ -354,10 +375,15 @@ fn send_message_tool_registered_below_the_depth_limit() {
 /// `SendMessage`.
 #[test]
 fn send_message_tool_absent_at_the_depth_limit() {
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 2).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 2)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "SendMessage")),
@@ -370,10 +396,15 @@ fn send_message_tool_absent_at_the_depth_limit() {
 /// `SendMessage`: all three appear together below the limit.
 #[test]
 fn close_session_tool_registered_below_the_depth_limit() {
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "CloseSession")),
@@ -386,10 +417,15 @@ fn close_session_tool_registered_below_the_depth_limit() {
 /// `SendMessage`, or `CloseSession`: all three disappear together.
 #[test]
 fn close_session_tool_absent_at_the_depth_limit() {
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 2).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 2)
+        .expect("should build");
 
     match backend {
         Backend::Api(agent) => {
@@ -412,12 +448,19 @@ fn close_session_tool_absent_at_the_depth_limit() {
 /// This test fails on that build and passes once each agent owns its own.
 #[tokio::test]
 async fn one_agents_reset_does_not_close_another_agents_session() {
-    let factory = Arc::new(BackendFactory::new(api_backend_settings(), PathBuf::from(".")));
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        PathBuf::from("."),
+    ));
     let (tx_a, _rx_a) = mpsc::unbounded_channel();
     let (tx_b, _rx_b) = mpsc::unbounded_channel();
 
-    let backend_a = factory.build("deepseek", None, tx_a, 0).expect("should build");
-    let backend_b = factory.build("deepseek", None, tx_b, 0).expect("should build");
+    let backend_a = factory
+        .build("deepseek", None, tx_a, 0)
+        .expect("should build");
+    let backend_b = factory
+        .build("deepseek", None, tx_b, 0)
+        .expect("should build");
 
     let Backend::Api(agent_a) = backend_a else {
         panic!("expected Api variant");
@@ -470,7 +513,9 @@ fn built_backend_carries_the_factorys_injected_interrupt_flag() {
     );
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    let backend = factory.build("deepseek", None, tx, 0).expect("should build");
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
 
     // Set the flag through the handle the factory was given, not through
     // the backend's own getter, then check the backend reads it as true.
@@ -490,7 +535,10 @@ fn with_working_dir_reports_the_given_arc_independent_of_the_original() {
     let replacement = Arc::new(std::sync::Mutex::new(PathBuf::from("C:/subagent-only")));
     let sub_factory = factory.with_working_dir_for_test(Arc::clone(&replacement));
 
-    assert_eq!(*sub_factory.working_dir().lock().unwrap(), PathBuf::from("C:/subagent-only"));
+    assert_eq!(
+        *sub_factory.working_dir().lock().unwrap(),
+        PathBuf::from("C:/subagent-only")
+    );
 
     *sub_factory.working_dir().lock().unwrap() = PathBuf::from("C:/moved-by-subagent");
     assert_eq!(
@@ -504,5 +552,122 @@ fn with_working_dir_reports_the_given_arc_independent_of_the_original() {
         *sub_factory.working_dir().lock().unwrap(),
         PathBuf::from("C:/moved-by-subagent"),
         "writing through the original must never move the split-off factory"
+    );
+}
+
+// â”€â”€ Session flag adoption â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// The GUI holds one set of handles for the life of the process, and every
+// backend built for its session adopts them. That is what makes a backend
+// switch at runtime possible: Escape, the effort control, the model picker,
+// and the voice-mode toggle all keep driving whichever backend is current.
+// A subagent must not adopt them, or its own effort level and model would
+// move the session's.
+
+fn flags_for_test() -> SharedFlags {
+    SharedFlags::new("seeded-model".to_string())
+}
+
+#[test]
+fn a_main_session_backend_adopts_the_guis_handles() {
+    let flags = flags_for_test();
+    let factory = Arc::new(
+        BackendFactory::new(api_backend_settings(), PathBuf::from("."))
+            .with_session_flags(flags.clone()),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
+
+    assert!(Arc::ptr_eq(&backend.effort_flag(), &flags.effort));
+    assert!(Arc::ptr_eq(&backend.model_flag(), &flags.model));
+    assert!(Arc::ptr_eq(&backend.voice_mode_flag(), &flags.voice_mode));
+    assert!(Arc::ptr_eq(
+        &backend.context_budget_flag(),
+        &flags.context_budget
+    ));
+    assert!(Arc::ptr_eq(&backend.interrupt_flag(), &flags.interrupt));
+    assert!(Arc::ptr_eq(
+        &backend.repeat_interrupt_flag(),
+        &flags.repeat_interrupt
+    ));
+}
+
+#[test]
+fn a_subagent_backend_keeps_its_own_handles() {
+    let flags = flags_for_test();
+    let factory = Arc::new(
+        BackendFactory::new(api_backend_settings(), PathBuf::from("."))
+            .with_session_flags(flags.clone()),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build("deepseek", None, tx, 1)
+        .expect("should build");
+
+    assert!(
+        !Arc::ptr_eq(&backend.effort_flag(), &flags.effort),
+        "a subagent's effort level must never move the session's"
+    );
+    assert!(
+        !Arc::ptr_eq(&backend.model_flag(), &flags.model),
+        "a subagent's model must never move the session's"
+    );
+}
+
+/// Two backends built one after the other, as a runtime switch does, answer
+/// to the same handles. This is the invariant the switch rests on: the GUI
+/// keeps writing the handles it was given at startup, and the replacement
+/// reads them.
+#[test]
+fn a_replacement_backend_answers_to_the_same_handles_as_the_one_before_it() {
+    let flags = flags_for_test();
+    let factory = Arc::new(
+        BackendFactory::new(api_backend_settings(), PathBuf::from("."))
+            .with_session_flags(flags.clone()),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let first = factory
+        .build("deepseek", None, tx.clone(), 0)
+        .expect("should build");
+    let second = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
+
+    assert!(Arc::ptr_eq(&first.effort_flag(), &second.effort_flag()));
+    assert!(Arc::ptr_eq(&first.model_flag(), &second.model_flag()));
+    assert!(Arc::ptr_eq(
+        &first.interrupt_flag(),
+        &second.interrupt_flag()
+    ));
+}
+
+/// The `Api` path hands its own effort handle to the `Task` tool it builds,
+/// so adopting a different one afterwards would leave that tool reading a
+/// flag nothing writes. The factory therefore seeds the tool from the
+/// session handle at construction instead. Proven through the tool: a write
+/// to the GUI's handle is what a dispatch reads as the inherited level.
+#[test]
+fn the_task_tool_reads_the_same_effort_handle_the_gui_writes() {
+    let flags = flags_for_test();
+    let factory = Arc::new(
+        BackendFactory::new(api_backend_settings(), PathBuf::from("."))
+            .with_session_flags(flags.clone()),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("should build");
+
+    Effort::Max.store(&flags.effort);
+    assert_eq!(
+        Effort::load(&backend.effort_flag()),
+        Effort::Max,
+        "the level the sidebar set is the level a dispatch inherits"
     );
 }

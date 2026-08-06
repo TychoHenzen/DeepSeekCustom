@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use deepseek_custom::agent::agent_loop::AgentCommand;
 use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};
 use deepseek_custom::gui::backend_picker::{BackendPicker, apply_backend_model};
 
@@ -79,7 +80,11 @@ fn new_seeds_the_model_dropdown_with_the_running_model() {
 fn switching_backend_adopts_that_entrys_declared_model() {
     let mut settings = settings_with_two_backends();
     let mut picker = picker_on(&settings, "deepseek-v4-flash");
-    assert!(picker.switch_backend("claude".to_string(), &mut settings));
+    assert!(
+        picker
+            .switch_backend("claude".to_string(), &mut settings)
+            .is_some()
+    );
     assert_eq!(picker.model(), "opus");
     assert_eq!(
         picker.model_options(),
@@ -90,7 +95,7 @@ fn switching_backend_adopts_that_entrys_declared_model() {
 }
 
 #[test]
-fn switching_to_another_backend_leaves_the_running_model_alone() {
+fn switching_backend_moves_the_shared_model_handle_to_the_new_entry() {
     let mut settings = settings_with_two_backends();
     let flag = Arc::new(Mutex::new("deepseek-v4-flash".to_string()));
     let mut picker = BackendPicker::new(&settings, Arc::clone(&flag));
@@ -99,8 +104,62 @@ fn switching_to_another_backend_leaves_the_running_model_alone() {
 
     assert_eq!(
         flag.lock().unwrap().as_str(),
-        "deepseek-v4-flash",
-        "the running backend must not be sent another entry's model"
+        "opus",
+        "the switch is live, so the incoming entry's model is the running one"
+    );
+    assert_eq!(
+        picker.active_backend(),
+        "claude",
+        "the running backend moves in the same call, not on the next start"
+    );
+}
+
+#[test]
+fn switching_backend_reports_the_outgoing_backend_for_the_session_save() {
+    let mut settings = settings_with_two_backends();
+    let mut picker = picker_on(&settings, "deepseek-v4-flash");
+
+    let switch = picker
+        .switch_backend("claude".to_string(), &mut settings)
+        .expect("a known backend produces a switch");
+
+    assert_eq!(switch.outgoing.backend, "deepseek");
+    assert_eq!(switch.outgoing.model, "deepseek-v4-flash");
+}
+
+#[test]
+fn switching_backend_asks_the_agent_for_the_named_entry_and_its_model() {
+    let mut settings = settings_with_two_backends();
+    let mut picker = picker_on(&settings, "deepseek-v4-flash");
+
+    let switch = picker
+        .switch_backend("claude".to_string(), &mut settings)
+        .expect("a known backend produces a switch");
+
+    match switch.command {
+        AgentCommand::SwitchBackend { name, model } => {
+            assert_eq!(name, "claude");
+            assert_eq!(model.as_deref(), Some("opus"));
+        }
+        other => panic!("expected a SwitchBackend command, got {other:?}"),
+    }
+}
+
+#[test]
+fn switching_to_an_unknown_backend_asks_the_agent_for_nothing() {
+    let mut settings = settings_with_two_backends();
+    let mut picker = picker_on(&settings, "deepseek-v4-flash");
+
+    let switch = picker.switch_backend("not_a_backend".to_string(), &mut settings);
+
+    assert!(
+        switch.is_none(),
+        "a name the factory could not build must not reach the agent"
+    );
+    assert_eq!(
+        picker.active_backend(),
+        "deepseek",
+        "the running backend stays where it was"
     );
 }
 
@@ -116,8 +175,11 @@ fn switching_model_on_the_running_backend_writes_the_shared_handle() {
     assert_eq!(picker.model(), "deepseek-v4-pro");
 }
 
+/// After a backend switch, the model dropdown drives the backend that is
+/// now running. Picking a model that belongs to the newly selected entry
+/// reaches the agent, because that entry is the running one.
 #[test]
-fn switching_model_on_another_backend_does_not_write_the_shared_handle() {
+fn switching_model_after_a_backend_switch_writes_the_shared_handle() {
     let mut settings = settings_with_two_backends();
     let flag = Arc::new(Mutex::new("deepseek-v4-flash".to_string()));
     let mut picker = BackendPicker::new(&settings, Arc::clone(&flag));
@@ -128,8 +190,8 @@ fn switching_model_on_another_backend_does_not_write_the_shared_handle() {
 
     assert_eq!(
         flag.lock().unwrap().as_str(),
-        "deepseek-v4-flash",
-        "only the running backend's model reaches the agent"
+        "sonnet",
+        "the switch already made claude the running backend"
     );
 }
 

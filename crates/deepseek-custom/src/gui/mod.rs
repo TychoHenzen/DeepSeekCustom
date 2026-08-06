@@ -22,7 +22,7 @@ use tracing::{debug, error, info, warn};
 use self::agent_handles::AgentHandles;
 use self::attachment::{AttachmentSlot, decode_image_bytes};
 use self::autopilot_tab::AutopilotTab;
-use self::backend_picker::BackendPicker;
+use self::backend_picker::{BackendPicker, BackendSwitch};
 use self::session_state::{SessionOrigin, SessionState};
 use self::transcript::{Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript};
 use self::voice_ui::{PttKeys, VoiceUi, voice_state_color, voice_state_label};
@@ -340,6 +340,20 @@ impl DeepSeekGui {
         self.sessions
             .save_outgoing_and_start_new(&mut self.transcript, origin);
         self.session_dirty = false;
+    }
+
+    /// Replace the running backend with the one the sidebar just picked.
+    ///
+    /// The outgoing conversation is saved under the backend and model it
+    /// actually ran on, then closed, and a fresh one opens. That is not
+    /// housekeeping: the replacement backend starts empty, since neither
+    /// kind's history can be handed to the other, so carrying the record on
+    /// would leave one session file describing two conversations.
+    fn apply_backend_switch(&mut self, switch: BackendSwitch) {
+        self.sessions
+            .save_outgoing_and_start_new(&mut self.transcript, switch.outgoing);
+        self.session_dirty = false;
+        let _ = self.tx_input.send(switch.command);
     }
 
     /// Start a fresh conversation and tell the agent to start over.
