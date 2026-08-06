@@ -730,6 +730,107 @@ impl DeepSeekGui {
             }
         }
     }
+
+    /// Draw the Chat tab's input bar as a bottom panel: the pending
+    /// attachment strip above one line of text entry.
+    fn render_input_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("input_panel")
+            .min_height(32.0)
+            .show(ctx, |ui| {
+                self.attachment.render_strip(ui);
+                ui.horizontal(|ui| {
+                    ui.label(">");
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                    let response = ui.add(
+                        TextEdit::singleline(&mut self.input_buffer)
+                            .hint_text("Type your message...")
+                            .desired_width(f32::INFINITY),
+                    );
+                    // Auto-focus the input only when nothing else holds
+                    // focus, instead of every frame. Forcing focus every
+                    // frame would make `response.has_focus()` always
+                    // true, and space-bar push-to-talk above would
+                    // never be able to tell "typing" from "not typing".
+                    if ctx.memory(|mem| mem.focused().is_none()) {
+                        response.request_focus();
+                    }
+
+                    if enter {
+                        self.submit_current_input();
+                    }
+                });
+            });
+    }
+
+    /// Draw the status bar as a bottom panel: backend, model, working
+    /// directory, token and cache counts, session status, effort, and
+    /// voice state, with the key bindings right-aligned.
+    fn render_status_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status_bar")
+            .min_height(24.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let backend_name = self.backends.selected_name().unwrap_or("unknown");
+                    ui.label(
+                        RichText::new(format!(
+                            "Backend: {backend_name} ({})",
+                            self.backends.model()
+                        ))
+                        .color(Color32::from_rgb(0, 255, 255)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!(
+                            "Dir: {}",
+                            self.handles.working_dir.lock().unwrap().display()
+                        ))
+                        .color(Color32::from_rgb(160, 160, 160)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("Tokens: {}", self.token_count))
+                            .color(Color32::from_rgb(160, 160, 160)),
+                    );
+                    if self.total_cache_hit_tokens > 0 || self.total_cache_miss_tokens > 0 {
+                        ui.separator();
+                        let cache_info = format!(
+                            "Cache hit: {} | miss: {}",
+                            self.total_cache_hit_tokens, self.total_cache_miss_tokens
+                        );
+                        ui.label(
+                            RichText::new(cache_info)
+                                .color(Color32::from_rgb(100, 200, 100))
+                                .small(),
+                        );
+                    }
+                    ui.separator();
+                    ui.label(
+                        RichText::new(&self.session_status).color(Color32::from_rgb(0, 200, 0)),
+                    );
+                    ui.separator();
+                    let effort_label = format!("Effort: {:?}", Effort::load(&self.handles.effort));
+                    ui.label(
+                        RichText::new(effort_label)
+                            .color(Color32::from_rgb(200, 200, 100))
+                            .small(),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(voice_state_label(self.voice.state()))
+                            .color(voice_state_color(self.voice.state()))
+                            .small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new("Tab: settings | Esc: interrupt | Ctrl+Q: quit")
+                                .color(Color32::from_rgb(128, 128, 128))
+                                .small(),
+                        );
+                    });
+                });
+            });
+    }
 }
 
 impl App for DeepSeekGui {
@@ -827,6 +928,23 @@ impl App for DeepSeekGui {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        // ── Bottom panels, declared before the central panel ──
+        //
+        // egui hands each panel a slice of the space still free at the
+        // moment it is shown, and the central panel claims everything
+        // left over. A bottom panel declared after it therefore draws on
+        // top of the central panel's last rows rather than beside them,
+        // and the scroll area, sized to a rect that runs to the bottom of
+        // the window, has nothing further to scroll to. That is what hid
+        // the final transcript blocks behind the input bar in both the
+        // Chat and the Autopilot tab. The order of the two bottom panels
+        // relative to each other is unchanged: the input bar sits lowest,
+        // with the status bar directly above it.
+        if self.active_tab == ActiveTab::Chat {
+            self.render_input_panel(ctx);
+        }
+        self.render_status_bar(ctx);
+
         // ── Tab bar and content (central panel) ──
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -850,102 +968,6 @@ impl App for DeepSeekGui {
             }
         });
         self.auto_scroll = false;
-
-        // ── Input bar (Chat tab only) ──
-        if self.active_tab == ActiveTab::Chat {
-            egui::TopBottomPanel::bottom("input_panel")
-                .min_height(32.0)
-                .show(ctx, |ui| {
-                    self.attachment.render_strip(ui);
-                    ui.horizontal(|ui| {
-                        ui.label(">");
-                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                        let response = ui.add(
-                            TextEdit::singleline(&mut self.input_buffer)
-                                .hint_text("Type your message...")
-                                .desired_width(f32::INFINITY),
-                        );
-                        // Auto-focus the input only when nothing else holds
-                        // focus, instead of every frame. Forcing focus every
-                        // frame would make `response.has_focus()` always
-                        // true, and space-bar push-to-talk above would
-                        // never be able to tell "typing" from "not typing".
-                        if ctx.memory(|mem| mem.focused().is_none()) {
-                            response.request_focus();
-                        }
-
-                        if enter {
-                            self.submit_current_input();
-                        }
-                    });
-                });
-        }
-
-        // ── Status bar ──
-        egui::TopBottomPanel::bottom("status_bar")
-            .min_height(24.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let backend_name = self.backends.selected_name().unwrap_or("unknown");
-                    ui.label(
-                        RichText::new(format!(
-                            "Backend: {backend_name} ({})",
-                            self.backends.model()
-                        ))
-                        .color(Color32::from_rgb(0, 255, 255)),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!(
-                            "Dir: {}",
-                            self.handles.working_dir.lock().unwrap().display()
-                        ))
-                        .color(Color32::from_rgb(160, 160, 160)),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("Tokens: {}", self.token_count))
-                            .color(Color32::from_rgb(160, 160, 160)),
-                    );
-                    if self.total_cache_hit_tokens > 0 || self.total_cache_miss_tokens > 0 {
-                        ui.separator();
-                        let cache_info = format!(
-                            "Cache hit: {} | miss: {}",
-                            self.total_cache_hit_tokens, self.total_cache_miss_tokens
-                        );
-                        ui.label(
-                            RichText::new(cache_info)
-                                .color(Color32::from_rgb(100, 200, 100))
-                                .small(),
-                        );
-                    }
-                    ui.separator();
-                    ui.label(
-                        RichText::new(&self.session_status).color(Color32::from_rgb(0, 200, 0)),
-                    );
-                    ui.separator();
-                    let effort_label = format!("Effort: {:?}", Effort::load(&self.handles.effort));
-                    ui.label(
-                        RichText::new(effort_label)
-                            .color(Color32::from_rgb(200, 200, 100))
-                            .small(),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(voice_state_label(self.voice.state()))
-                            .color(voice_state_color(self.voice.state()))
-                            .small(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new("Tab: settings | Esc: interrupt | Ctrl+Q: quit")
-                                .color(Color32::from_rgb(128, 128, 128))
-                                .small(),
-                        );
-                    });
-                });
-            });
     }
 }
 
