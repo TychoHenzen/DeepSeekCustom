@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$exe = "$projectRoot\target\debug\DeepSeekCustom.exe"
+$exe = "$projectRoot\target\debug\deepseek-custom.exe"
 if (-not (Test-Path $exe)) {
     Write-Host "Binary not found: $exe" -ForegroundColor Red
     Read-Host "Press Enter to exit"

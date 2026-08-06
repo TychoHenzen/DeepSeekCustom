@@ -1,0 +1,31 @@
+#!/bin/sh
+# Prune the workspace crates' build artifacts after every commit.
+#
+# Cargo never garbage-collects target/debug/deps/. Every rebuild whose
+# fingerprint changed leaves the old hashed binaries behind. This workspace
+# links one test binary per test file, 60 of them, so that directory grows
+# without bound. A recent clean freed 17 GB. Pruning here keeps it in check.
+#
+# This cleans the two workspace members only. The whisper.cpp cmake tree under
+# target/debug/build/ and the ONNX Runtime bundle ort-sys downloads both
+# survive, so the next build recompiles Rust code without redoing the native
+# builds.
+#
+# Set DEEPSEEK_SKIP_CLEAN=1 to skip it for one commit.
+#
+# Install with scripts/install-hooks.ps1. This file is the checked-in copy.
+# Edit it here, not in .git/hooks/, then run the installer again.
+
+if [ "$DEEPSEEK_SKIP_CLEAN" = "1" ]; then
+    exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel) || exit 0
+cd "$repo_root" || exit 0
+
+echo "post-commit: pruning workspace build artifacts"
+if ! cargo clean -p deepseek-custom -p deepseek-custom-tests; then
+    echo "post-commit: cargo clean failed. A running build may hold the files."
+fi
+
+exit 0

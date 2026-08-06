@@ -1,0 +1,42 @@
+[package]
+name = "deepseek-custom-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "fake_claude"
+path = "src/bin/fake_claude.rs"
+
+[dependencies]
+deepseek-custom = { path = "../deepseek-custom", features = ["test-support"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["full"] }
+base64 = "0.22"
+async-trait = "0.1"
+# Same version and feature set as deepseek-custom's own dependency, so this
+# resolves to the one already-locked copy instead of a second one. Needed
+# for gui_attachment.rs, which builds and decodes real PNG/JPEG bytes the
+# same way src/gui/attachment.rs does.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Same version and feature set as deepseek-custom's own dependency. Needed
+# for gui_attachment.rs to construct an `arboard::ImageData` directly, the
+# same way the moved clipboard-paste tests already did.
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+# Same version as deepseek-custom's own dependency, so this resolves to the
+# one already-locked copy. Needed for gui.rs, which asserts a block's colour
+# against `egui::Color32::WHITE`, the same way the moved inline test did.
+eframe = "0.31"
+
+[features]
+# Forwards to deepseek-custom's own voice-models feature. Off by default,
+# same as there, so `cargo test --workspace` skips the two tests in
+# voice_stt.rs and voice_tts.rs that need the real Whisper and Kokoro
+# model files on disk. Run with
+# `cargo test --workspace --features deepseek-custom-tests/voice-models`
+# once those files are in place; see docs/voice-setup.md.
+voice-models = ["deepseek-custom/voice-models"]

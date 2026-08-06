@@ -3,37 +3,6 @@
 version = 4
 
 [[package]]
-name = "DeepSeekCustom"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "async-trait",
- "base64",
- "bytes",
- "color-eyre",
- "cpal",
- "eframe",
- "egui_commonmark",
- "egui_extras",
- "futures",
- "image",
- "kokoro-en",
- "ort",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whisper-rs",
- "windows 0.58.0",
- "wiremock",
-]
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,6 +1036,52 @@ name = "deadpool-runtime"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
+
+[[package]]
+name = "deepseek-custom"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "async-trait",
+ "base64",
+ "bytes",
+ "color-eyre",
+ "cpal",
+ "eframe",
+ "egui_commonmark",
+ "egui_extras",
+ "futures",
+ "image",
+ "kokoro-en",
+ "ort",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whisper-rs",
+ "windows 0.58.0",
+]
+
+[[package]]
+name = "deepseek-custom-tests"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "async-trait",
+ "base64",
+ "deepseek-custom",
+ "eframe",
+ "image",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "der"

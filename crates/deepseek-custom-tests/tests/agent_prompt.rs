@@ -1,0 +1,49 @@
+//! Unit tests for `deepseek_custom::agent::prompt`, moved out of the
+//! production module as part of the two-crate workspace split.
+
+use deepseek_custom::agent::prompt::{SystemPromptBuilder, voice_mode_instructions};
+use deepseek_custom::api::types::{FunctionDef, ToolDef};
+
+#[test]
+fn builder_includes_all_sections() {
+    let builder = SystemPromptBuilder::new();
+    let tools = vec![ToolDef {
+        tool_type: "function".into(),
+        function: FunctionDef {
+            name: "read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({}),
+        },
+    }];
+    let prompt = builder.build(Some("memory content"), Some("skill list"), &tools);
+
+    assert!(prompt.contains("memory content"));
+    assert!(prompt.contains("skill list"));
+    assert!(prompt.contains("\"name\": \"read\""));
+}
+
+#[test]
+fn builder_handles_empty_optionals() {
+    let builder = SystemPromptBuilder::new();
+    let prompt = builder.build(None, None, &[]);
+
+    assert!(prompt.contains("DeepSeekCustom"));
+    assert!(!prompt.contains("## Project Context"));
+    assert!(!prompt.contains("## Available Skills"));
+    assert!(!prompt.contains("## Available Tools"));
+}
+
+#[test]
+fn voice_mode_instructions_is_non_empty() {
+    assert!(!voice_mode_instructions().is_empty());
+}
+
+#[test]
+fn voice_mode_instructions_has_heading() {
+    assert!(voice_mode_instructions().contains("## Voice reply mode"));
+}
+
+#[test]
+fn voice_mode_instructions_mentions_sentence_cap() {
+    assert!(voice_mode_instructions().contains("two sentences"));
+}

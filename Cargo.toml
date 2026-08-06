@@ -1,89 +1,6 @@
-[package]
-name = "DeepSeekCustom"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-eframe = "0.31"
-color-eyre = "0.6"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1"
-async-trait = "0.1"
-futures = "0.3"
-bytes = "1"
-egui_commonmark = "0.20"
-# Already in the dependency tree transitively, pulled in by
-# egui_commonmark's own default "load-images" feature (which needs
-# egui_extras/image to render markdown images). Declared directly here so
-# `src/gui/mod.rs` can call `install_image_loaders` and build
-# `egui::Image::from_bytes` for the transcript's own `Image` block, without
-# adding a new library to the tree.
-egui_extras = { version = "0.31", features = ["image"] }
-# Already in the dependency tree transitively (pulled in by reqwest and
-# others). Declared directly so `src/gui/mod.rs` can base64-decode a
-# transcript `Image` block's stored payload before handing it to egui,
-# without adding a new library to the tree.
-base64 = "0.22"
-# Already in the dependency tree transitively: egui-winit's own "clipboard"
-# feature (on by default) pulls this in for its text clipboard and its
-# copy-only `set_image`. Declared directly because egui-winit's own
-# clipboard wrapper exposes no way to read an *image* back off the
-# clipboard, only text: `egui::Event::Paste` never carries image bytes, and
-# a plain `Ctrl+V` with an image-only clipboard produces no egui event at
-# all (confirmed by reading `egui-winit-0.31.1/src/lib.rs`'s
-# `on_keyboard_input`: `is_paste_command` swallows the key event into a
-# text-only paste, or into nothing, before egui ever sees it). `src/gui/mod.rs`
-# uses `arboard::Clipboard::get_image` directly instead, driven off a raw
-# `GetAsyncKeyState` poll for Ctrl+V (see the `windows` dependency below),
-# without adding a new library to the tree.
-arboard = { version = "3.6", default-features = false, features = ["image-data"] }
-# Already in the dependency tree transitively, pulled in by `egui_extras`'s
-# "image" feature and by `arboard`'s "image-data" feature. Declared directly
-# with the "jpeg" feature on so a pasted or dropped JPEG decodes: the
-# decoders enabled elsewhere in the tree (`eframe`, `egui_commonmark`,
-# `arboard`) only turn on "png" and "bmp", not "jpeg". Cargo unifies feature
-# flags for one resolved version of a crate across the whole build, so this
-# also makes JPEG decoding available to egui_extras's own image loader,
-# used by `render_image_block` for the transcript's `Image` block.
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-cpal = "0.15"
-# GPU build attempted 2026-08-03 and reverted, both backends blocked at the
-# machine level rather than in this crate:
-# - features = ["cuda"] builds via a Visual Studio CMake generator, which
-#   needs the CUDA Toolkit's "CUDA 13.0.props/.targets" MSBuild integration
-#   files copied into VS's own
-#   "MSBuild/Microsoft/VC/v170/BuildCustomizations" directory. The Toolkit
-#   ships them under its own "extras/visual_studio_integration" folder but
-#   they were never installed into VS, so CMake fails at the enable_language
-#   (CUDA) step with "No CUDA toolset found". Fixing this means writing into
-#   the system-wide VS install, outside this repo.
-# - features = ["vulkan"] needs the Vulkan SDK (VULKAN_SDK env var and its
-#   headers/libs), not just the GPU driver's runtime loader. Only the
-#   runtime (vulkaninfo.exe) is present here; the SDK is not installed.
-# Either is a real fix once the SDK/integration is installed, and
-# WhisperContext Parameters already asks for the GPU unconditionally
-# (see src/voice/stt.rs), so re-adding one of these features later is the
-# whole change needed.
-uuid = { version = "1", features = ["v4", "serde"] }
-whisper-rs = "0.16"
-kokoro-en = "0.1.4"
-# kokoro-en 0.1.4 asks for ort "2.0.0-rc.11", which lets the resolver pick
-# rc.13. Its source uses ort::execution_providers::CUDAExecutionProvider, gone
-# in rc.13, and rc.11 moved ort::value::TensorElementType. rc.12 is the only
-# release it compiles against, per its own vendored lockfile. Exact pin so a
-# plain `cargo update` cannot break the build.
-ort = "=2.0.0-rc.12"
-# Windows loader API (SetDefaultDllDirectories, AddDllDirectory,
-# LoadLibraryExW) so CUDA runtime DLL discovery in src/voice/cuda_dlls.rs
-# does not depend on PATH. Version pinned to match what was already resolved
-# transitively (see Cargo.lock) so this does not pull a second copy.
-windows = { version = "=0.58.0", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse"] }
+[workspace]
+resolver = "3"
+members = ["crates/deepseek-custom", "crates/deepseek-custom-tests"]
 
 # whisper-rs-sys's build.rs picks its native CMake config from
 # `cfg!(debug_assertions)` as seen by the build SCRIPT itself: true means it
@@ -99,15 +16,19 @@ windows = { version = "=0.58.0", features = ["Win32_Foundation", "Win32_System_L
 # Forcing debug-assertions off for build scripts makes whisper-rs-sys take
 # its `else` branch (CMAKE_BUILD_TYPE=Release, no WHISPER_DEBUG), matching
 # the release profile's native build exactly. See src/voice/stt.rs tests.
+# Cargo only honours profile tables in the workspace root manifest, so this
+# block lives here rather than in the member crate's own Cargo.toml.
 [profile.dev.build-override]
 debug-assertions = false
 
-[dev-dependencies]
-wiremock = "0.6"
-
-[features]
-# Gates tests that need the real Whisper and Kokoro model files on disk.
-# Off by default so `cargo test` passes on a fresh checkout with no models
-# downloaded. See docs/voice-setup.md for how to get the files, and run
-# `cargo test --features voice-models` once they are in place.
-voice-models = []
+# Full debug info is what filled the disk, not incremental compilation, which
+# `.cargo/config.toml` already turns off. Measured on this tree: 3.81 GB of
+# .pdb files, plus most of the bulk in every linked test binary. The test
+# crate links one binary per test file, so that cost is paid once per file.
+#
+# "line-tables-only" keeps what a failing test actually needs, which is a
+# backtrace naming the file and line. It drops the variable and type records a
+# step debugger uses. Set this back to `true` to step through the GUI in a
+# debugger, and expect the disk cost to come back with it.
+[profile.dev]
+debug = "line-tables-only"
