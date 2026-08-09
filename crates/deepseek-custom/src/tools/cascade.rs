@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use crate::agent::agent_loop::RoutedEvent;
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
+use crate::backend::subagent::{SubagentRequest, run_subagent};
 use crate::effort::Effort;
 use crate::error::Result;
 use crate::tools::{Tool, ToolOutput};
@@ -63,7 +64,6 @@ pub fn default_diversity_hints() -> Vec<String> {
 /// by voting (exact text match) after an optional `check_cmd` filters out
 /// candidates that fail it. Registered on every backend below the dispatch
 /// depth limit, depth-gated by `may_dispatch` exactly like `Task`.
-#[allow(dead_code)]
 pub struct CascadeTool {
     factory: Arc<BackendFactory>,
     /// Depth of the subagents this tool dispatches.
@@ -167,19 +167,64 @@ impl Tool for CascadeTool {
             }
         };
 
-        let _hints = parsed
+        let hints = parsed
             .diversity_hints
             .unwrap_or_else(default_diversity_hints);
+        let default_effort = Effort::load(&self.parent_effort_flag);
+        let effort = parsed.effort.unwrap_or(default_effort);
+        // Cap at 16: each attempt is a full subagent dispatch. More than that
+        // against one backend risks saturating it for little diversity gain.
+        let n = parsed.n.clamp(1, 16);
 
-        let _default_effort = Effort::load(&self.parent_effort_flag);
+        // Dispatch every attempt at once. Each one is an ordinary
+        // `keep_open: false` call through `run_subagent`, the same path
+        // `Task` already uses, so every attempt gets its own `SubagentId`
+        // and its own `Subagent` block in the transcript.
+        let mut handles = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let hint = &hints[i as usize % hints.len()];
+            let prompt = format!("{}\n\nDiversity hint: {hint}", parsed.prompt);
+            let request = SubagentRequest {
+                backend: parsed.backend.clone(),
+                model: None,
+                prompt,
+                depth: self.dispatch_depth,
+                keep_open: false,
+                working_dir_override: None,
+                effort,
+            };
+            let factory = Arc::clone(&self.factory);
+            let parent_tx = self.parent_tx.clone();
+            let registry = Arc::clone(&self.registry);
 
-        // Placeholder: the real dispatch, voting, and escalation logic lands
-        // in B2 through B6 and C1. For now this tool compiles, registers,
-        // and is gated the same way Task is.
+            handles.push(tokio::spawn(async move {
+                run_subagent(&factory, request, parent_tx, registry).await
+            }));
+        }
+
+        let results = futures::future::join_all(handles).await;
+
+        let mut parts: Vec<String> = Vec::with_capacity(results.len());
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(Ok(outcome)) => {
+                    parts.push(format!("Attempt {}: {}", i + 1, outcome.text));
+                }
+                Ok(Err(e)) => {
+                    parts.push(format!("Attempt {}: FAILED - {e}", i + 1));
+                }
+                Err(join_err) => {
+                    parts.push(format!("Attempt {}: PANICKED - {join_err}", i + 1));
+                }
+            }
+        }
+
         Ok(ToolOutput {
             content: format!(
-                "Cascade: {} attempt(s) on backend \"{}\" (dispatch logic not yet wired)",
-                parsed.n, parsed.backend
+                "Cascade results ({} attempt(s) on backend \"{}\"):\n\n{}",
+                n,
+                parsed.backend,
+                parts.join("\n\n")
             ),
             is_error: false,
             image: None,

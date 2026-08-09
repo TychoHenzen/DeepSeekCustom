@@ -19,7 +19,7 @@ built. This one holds the work items, in build order.
       `backend`, `n`, `vote_k`, `check_cmd`, `diversity_hints`,
       `escalate_backend`, `effort`). Register it. Depth-gate it with
       `may_dispatch`, like `Task`.
-- [ ] `B2` Dispatch `n` attempts at once through `run_subagent`. Give each
+- [x] `B2` Dispatch `n` attempts at once through `run_subagent`. Give each
       its own `SubagentId`. Round-robin the diversity hints into each
       attempt's prompt.
 - [ ] `B3` `check_cmd` red-flag step: run it once per candidate against
