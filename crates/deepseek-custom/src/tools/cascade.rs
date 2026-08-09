@@ -50,6 +50,36 @@ const fn default_vote_k() -> u32 {
     1
 }
 
+/// The outcome of voting across candidates.
+enum VoteOutcome {
+    /// A single answer reached the `vote_k` lead margin.
+    Winner {
+        /// The winning text (trimmed).
+        text: String,
+        /// How many candidates voted for this answer.
+        count: usize,
+    },
+    /// No answer reached the required lead margin, or there were no candidates
+    /// at all to vote on.
+    NoConsensus {
+        /// Vote tallies, sorted by count descending.
+        tallies: Vec<VoteTally>,
+    },
+}
+
+/// One vote group: candidates that produced the same trimmed text.
+struct VoteTally {
+    text: String,
+    count: usize,
+}
+
+/// A candidate answer from one subagent attempt.
+struct Candidate {
+    /// 1-based attempt index.
+    index: usize,
+    text: String,
+}
+
 /// The default diversity hints, used when `diversity_hints` is absent from the
 /// input. One is appended to each attempt's prompt, repeating in order once
 /// the list runs out.
@@ -214,11 +244,6 @@ impl Tool for CascadeTool {
         let results = futures::future::join_all(handles).await;
 
         // Collect candidates, separating dispatch successes from failures.
-        struct Candidate {
-            index: usize,
-            text: String,
-        }
-
         let mut candidates: Vec<Candidate> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
@@ -270,14 +295,37 @@ impl Tool for CascadeTool {
             candidates = passed;
         }
 
-        // Build output: passing candidates first, then failures.
+        // B4: Vote among candidates that passed check_cmd (or all candidates
+        // when no check_cmd was given). Group by exact match on trimmed text.
+        // The top group must beat the runner-up by at least `vote_k` to win.
+        let vote_outcome = vote(&candidates, parsed.vote_k);
+
+        // Build output: passing candidates grouped by vote tally, then failures.
         let mut parts: Vec<String> = Vec::new();
-        for c in &candidates {
-            parts.push(format!("Attempt {}: {}", c.index, c.text));
+
+        match &vote_outcome {
+            VoteOutcome::Winner { text, count, .. } => {
+                parts.push(format!(
+                    "Winner ({} vote(s), lead by at least {}-vote margin): {}",
+                    count, parsed.vote_k, text
+                ));
+            }
+            VoteOutcome::NoConsensus { tallies } => {
+                if !tallies.is_empty() {
+                    parts.push(format!(
+                        "No consensus: no answer reached the required {}-vote lead margin.",
+                        parsed.vote_k
+                    ));
+                    for t in tallies {
+                        parts.push(format!("{} vote(s): {}", t.count, t.text));
+                    }
+                }
+            }
         }
+
         parts.extend(failures);
 
-        let is_error = candidates.is_empty();
+        let is_error = candidates.is_empty() || matches!(&vote_outcome, VoteOutcome::NoConsensus { .. });
         let pass_note = parsed.check_cmd.as_ref().map(|_| {
             format!(
                 " ({} of {} passed check_cmd)",
@@ -318,5 +366,46 @@ async fn run_check_cmd(
         Ok(Ok(output)) => Ok(output.exit_code == 0),
         Ok(Err(e)) => Err(format!("failed to run check_cmd: {e}")),
         Err(_elapsed) => Err("check_cmd timed out after 120s".to_string()),
+    }
+}
+
+/// Group candidates by exact match on trimmed text and check whether the top
+/// group's vote count beats the runner-up's by at least `vote_k`.
+///
+/// When `candidates` is empty, returns `NoConsensus` with an empty tally.
+fn vote(candidates: &[Candidate], vote_k: u32) -> VoteOutcome {
+    if candidates.is_empty() {
+        return VoteOutcome::NoConsensus {
+            tallies: Vec::new(),
+        };
+    }
+
+    // Group by trimmed text.
+    let mut tallies: Vec<VoteTally> = Vec::new();
+    for c in candidates {
+        let trimmed = c.text.trim();
+        if let Some(tally) = tallies.iter_mut().find(|t| t.text == trimmed) {
+            tally.count += 1;
+        } else {
+            tallies.push(VoteTally {
+                text: trimmed.to_string(),
+                count: 1,
+            });
+        }
+    }
+
+    // Sort descending by count, then by text for determinism.
+    tallies.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.text.cmp(&b.text)));
+
+    let top = &tallies[0];
+    let runner_up = tallies.get(1).map(|t| t.count).unwrap_or(0);
+
+    if top.count.saturating_sub(runner_up) >= vote_k as usize {
+        VoteOutcome::Winner {
+            text: top.text.clone(),
+            count: top.count,
+        }
+    } else {
+        VoteOutcome::NoConsensus { tallies }
     }
 }

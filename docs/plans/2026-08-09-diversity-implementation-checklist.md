@@ -25,7 +25,7 @@ built. This one holds the work items, in build order.
 - [x] `B3` `check_cmd` red-flag step: run it once per candidate against
       `working_dir`, through the same path `BashTool` uses. Drop any
       candidate whose command exits non-zero, before voting.
-- [ ] `B4` Voting: group by exact text match by default. When `check_cmd`
+- [x] `B4` Voting: group by exact text match by default. When `check_cmd`
       is set, vote only among candidates that passed it. Require the
       `vote_k` lead margin to accept a winner.
 - [ ] `B5` Tool result names the winning attempt id and the vote count. A
