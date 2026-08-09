@@ -174,6 +174,30 @@ impl Island {
         }
     }
 
+    /// Select a parent candidate deterministically by round-robining
+    /// through occupied cells.  `round` is a generation counter or any
+    /// monotonic integer; successive calls with successive values cycle
+    /// through different cells rather than always returning the single
+    /// best.
+    ///
+    /// Prefers archive cells when the archive is non-empty, otherwise
+    /// falls back to the elite list.  Cells are visited in a fixed
+    /// order (sorted by key for determinism), so the same `round`
+    /// always picks the same candidate from the same island state.
+    ///
+    /// Returns `None` when the island is empty.
+    pub fn select_parent(&self, round: usize) -> Option<&Candidate> {
+        if !self.archive.is_empty() {
+            let mut cells: Vec<(&[isize], &Candidate)> = self.archive.iter().collect();
+            cells.sort_by(|(key_a, _), (key_b, _)| key_a.cmp(key_b));
+            Some(cells[round % cells.len()].1)
+        } else if !self.elites.is_empty() {
+            Some(&self.elites[round % self.elites.len()])
+        } else {
+            None
+        }
+    }
+
     /// `true` when the island has no candidates at all.
     pub fn is_empty(&self) -> bool {
         self.archive.is_empty() && self.elites.is_empty()

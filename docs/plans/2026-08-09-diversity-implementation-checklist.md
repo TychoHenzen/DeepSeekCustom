@@ -83,7 +83,7 @@ built. This one holds the work items, in build order.
       vector into a grid cell, keep the higher-fitness `Candidate` per
       cell. Without a feature vector, fall back to plain top-`k` fitness
       elitism.
-- [ ] `E3` `select_parent(&Island) -> &Candidate`: deterministic,
+- [x] `E3` `select_parent(&Island) -> &Candidate`: deterministic,
       round-robins across occupied cells rather than always picking the
       single best.
 - [ ] `E4` `migrate(&mut [Island])`: rank islands by best fitness, reset

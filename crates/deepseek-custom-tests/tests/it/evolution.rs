@@ -165,3 +165,61 @@ fn island_is_empty_and_len() {
     assert!(!island.is_empty());
     assert_eq!(island.len(), 2);
 }
+
+// --- select_parent ---
+
+#[test]
+fn select_parent_empty_island_returns_none() {
+    let island = Island::new(1.0, 3);
+    assert!(island.select_parent(0).is_none());
+}
+
+#[test]
+fn select_parent_round_robins_archive() {
+    let mut island = Island::new(1.0, 3);
+    // Three cells, different bucket keys.
+    island.insert(Candidate { text: "cell0".into(), fitness: 1.0, features: vec![0.2] }); // bucket 0
+    island.insert(Candidate { text: "cell1".into(), fitness: 2.0, features: vec![1.2] }); // bucket 1
+    island.insert(Candidate { text: "cell2".into(), fitness: 3.0, features: vec![2.2] }); // bucket 2
+    // Sorted keys: [0], [1], [2] -> cell0, cell1, cell2.
+    assert_eq!(island.select_parent(0).unwrap().text, "cell0");
+    assert_eq!(island.select_parent(1).unwrap().text, "cell1");
+    assert_eq!(island.select_parent(2).unwrap().text, "cell2");
+    // Wraps around.
+    assert_eq!(island.select_parent(3).unwrap().text, "cell0");
+}
+
+#[test]
+fn select_parent_round_robins_elites() {
+    let mut island = Island::new(1.0, 3);
+    island.insert(Candidate { text: "a".into(), fitness: 3.0, features: vec![] });
+    island.insert(Candidate { text: "b".into(), fitness: 2.0, features: vec![] });
+    island.insert(Candidate { text: "c".into(), fitness: 1.0, features: vec![] });
+    // elites is sorted descending by fitness: a(3), b(2), c(1).
+    assert_eq!(island.select_parent(0).unwrap().text, "a");
+    assert_eq!(island.select_parent(1).unwrap().text, "b");
+    assert_eq!(island.select_parent(2).unwrap().text, "c");
+    assert_eq!(island.select_parent(3).unwrap().text, "a");
+}
+
+#[test]
+fn select_parent_prefers_archive_over_elites() {
+    let mut island = Island::new(1.0, 3);
+    // Both archive and elites populated.
+    island.insert(Candidate { text: "arch".into(), fitness: 1.0, features: vec![0.5] });
+    island.insert(Candidate { text: "elite_best".into(), fitness: 99.0, features: vec![] });
+    // Should pick from archive even though elite has higher fitness.
+    assert_eq!(island.select_parent(0).unwrap().text, "arch");
+}
+
+#[test]
+fn select_parent_deterministic() {
+    let mut island = Island::new(1.0, 3);
+    island.insert(Candidate { text: "x".into(), fitness: 1.0, features: vec![0.5] });
+    island.insert(Candidate { text: "y".into(), fitness: 2.0, features: vec![1.5] });
+    // Same state, same round -> same result every time.
+    let first = island.select_parent(7).unwrap().text.clone();
+    for _ in 0..10 {
+        assert_eq!(island.select_parent(7).unwrap().text, first);
+    }
+}
