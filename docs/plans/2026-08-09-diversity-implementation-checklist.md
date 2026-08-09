@@ -79,7 +79,7 @@ built. This one holds the work items, in build order.
 - [x] `E1` `crates/deepseek-custom/src/evolution/mod.rs`: `Candidate`,
       `MapElitesArchive`, `Island`. Plain data, no tool-trait code, no
       model call anywhere in this file.
-- [ ] `E2` `MapElitesArchive::insert`: fixed-width bucketing of a feature
+- [x] `E2` `MapElitesArchive::insert`: fixed-width bucketing of a feature
       vector into a grid cell, keep the higher-fitness `Candidate` per
       cell. Without a feature vector, fall back to plain top-`k` fitness
       elitism.
