@@ -58,7 +58,7 @@ built. This one holds the work items, in build order.
 
 - [x] `D1` `crates/deepseek-custom/src/style/mod.rs`: pure
       `flesch_kincaid_grade(text: &str) -> f32`. No new dependency.
-- [ ] `D2` `style` block in `settings.json`
+- [x] `D2` `style` block in `settings.json`
       (`plain_language_enabled`, `target_grade`, `grade_tolerance`,
       `max_revise_attempts`, `critic_backend`). Default
       `plain_language_enabled` to `false`.

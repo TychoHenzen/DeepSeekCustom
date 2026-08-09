@@ -64,6 +64,10 @@ pub struct Settings {
     /// MCP servers for the `Api` backend. See `Settings::mcp_enabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpSettings>,
+    /// Plain-language gate, the readability check from Diversity.md #9-10.
+    /// Defaults to off. See `Settings::style_plain_language_enabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<StyleConfig>,
 }
 
 impl Settings {
@@ -332,6 +336,56 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Whether the plain-language gate is on. Defaults to `false`.
+    pub fn style_plain_language_enabled(&self) -> bool {
+        self.style
+            .as_ref()
+            .map(|s| s.plain_language_enabled)
+            .unwrap_or(false)
+    }
+
+    /// Target Flesch-Kincaid grade level. Defaults to 8.0.
+    pub fn style_target_grade(&self) -> f32 {
+        self.style
+            .as_ref()
+            .and_then(|s| s.target_grade)
+            .unwrap_or(8.0)
+    }
+
+    /// How far above `target_grade` a reply may sit before the gate
+    /// triggers a rewrite. Defaults to 2.0.
+    pub fn style_grade_tolerance(&self) -> f32 {
+        self.style
+            .as_ref()
+            .and_then(|s| s.grade_tolerance)
+            .unwrap_or(2.0)
+    }
+
+    /// How many times the critique-and-revise loop may try to lower the
+    /// grade before giving up. Defaults to 2.
+    pub fn style_max_revise_attempts(&self) -> u32 {
+        self.style
+            .as_ref()
+            .and_then(|s| s.max_revise_attempts)
+            .unwrap_or(2)
+    }
+
+    /// Backend name for the critique step, when it should differ from the
+    /// backend that wrote the reply. `None` means revise with the same
+    /// backend.
+    pub fn style_critic_backend(&self) -> Option<String> {
+        self.style
+            .as_ref()
+            .and_then(|s| s.critic_backend.clone())
+    }
+
+    /// The style block, created with defaults if it is not there yet.
+    /// A panel control changing a style field must not silently drop the
+    /// write just because `settings.json` had no style block.
+    pub fn style_mut(&mut self) -> &mut StyleConfig {
+        self.style.get_or_insert_with(StyleConfig::default)
+    }
+
     // ── private helpers ──
 
     fn load_file(path: &Path) -> Option<Settings> {
@@ -404,6 +458,9 @@ impl Settings {
         }
         if other.mcp.is_some() {
             self.mcp = other.mcp;
+        }
+        if other.style.is_some() {
+            self.style = other.style;
         }
     }
 }
@@ -553,6 +610,32 @@ pub struct VoiceConfig {
     /// Speaking speed, clamped 0.5-2.0. Defaults to 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_speed: Option<f32>,
+}
+
+/// Plain-language gate, one block under `style` in settings.json.
+///
+/// All fields are optional so a `style: {}` entry inherits every default.
+/// Default `plain_language_enabled: false` keeps the gate off for existing
+/// sessions. See the Diversity.md implementation plan, Phase D.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StyleConfig {
+    /// Whether the plain-language gate is active. Defaults to `false`.
+    #[serde(default)]
+    pub plain_language_enabled: bool,
+    /// Target Flesch-Kincaid grade level. Defaults to 8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_grade: Option<f32>,
+    /// How far above `target_grade` a reply may sit before the gate triggers.
+    /// Defaults to 2.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade_tolerance: Option<f32>,
+    /// How many critique-and-revise attempts to allow. Defaults to 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_revise_attempts: Option<u32>,
+    /// Backend name for the critique step. `None` means use the replying
+    /// backend itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub critic_backend: Option<String>,
 }
 
 /// A named provider for an `api`-kind backend.
