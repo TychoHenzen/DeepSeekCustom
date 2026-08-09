@@ -405,6 +405,12 @@ impl Transcript {
             // reaches the transcript (see `apply_event_side_effects` in
             // `src/gui/mod.rs`). It carries no block to draw.
             StreamEvent::ConversationSnapshot { .. } => {}
+            StreamEvent::Info { message } => {
+                self.push(BlockKind::Notice {
+                    text: message,
+                    severity: Severity::Info,
+                });
+            }
         }
     }
 

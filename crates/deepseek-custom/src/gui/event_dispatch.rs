@@ -110,7 +110,7 @@ impl DeepSeekGui {
                     debug!(tool=%tool, "tool call ok");
                 }
             }
-            StreamEvent::Reasoning { .. } | StreamEvent::Error { .. } => {}
+            StreamEvent::Reasoning { .. } | StreamEvent::Error { .. } | StreamEvent::Info { .. } => {}
         }
     }
 

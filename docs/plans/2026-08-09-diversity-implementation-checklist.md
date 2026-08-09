@@ -68,7 +68,7 @@ built. This one holds the work items, in build order.
 - [x] `D4` Critique-and-revise loop against `critic_backend` (falls back
       to the replying backend). Cap it at `max_revise_attempts`. Stop early
       once the grade is within `grade_tolerance`.
-- [ ] `D5` `Notice` block (`Info`) recording that a reply was revised, and
+- [x] `D5` `Notice` block (`Info`) recording that a reply was revised, and
       how many tries it took. No notice when the original already passed.
 - [ ] `D6` `style.rs` in `crates/deepseek-custom-tests/tests/it/`: unit
       tests for `flesch_kincaid_grade` against sentences with a known

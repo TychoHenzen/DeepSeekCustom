@@ -140,6 +140,8 @@ pub enum StreamEvent {
     /// A repeat run finished, whether by completing every iteration or by
     /// being interrupted partway through.
     RepeatFinished { completed: u32, total: u32 },
+    /// An informational notice, such as a plain-language revision marker.
+    Info { message: String },
 }
 
 /// Identifies one subagent dispatch, for event routing. Cheap to copy and
@@ -900,13 +902,14 @@ impl AgentLoop {
                             revised_grade = crate::style::flesch_kincaid_grade(&revised),
                             "plain-language gate: reply revised"
                         );
-                        // Send a notice that the text was revised, then the
-                        // revised text itself, so the transcript shows both
-                        // the notice and the new reply.
-                        self.send_event(StreamEvent::Text {
-                            turn: turn + 1,
-                            text: format!(
-                                "\n\n[Revised for plain language, attempt(s): {attempts}]\n\n"
+                        // Send an Info notice that the reply was revised,
+                        // then the revised text itself. The transcript
+                        // renders the Info as a Notice block (Severity::Info)
+                        // rather than inline text, so the reader sees a
+                        // labelled record of the revision.
+                        self.send_event(StreamEvent::Info {
+                            message: format!(
+                                "Reply revised for plain language ({attempts} attempt(s))"
                             ),
                         });
                         self.send_event(StreamEvent::Text {
