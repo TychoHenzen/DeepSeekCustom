@@ -474,31 +474,64 @@ struct CmdOutput {
     exit_code: i32,
 }
 
-/// Build a compact archive summary table for the tool result (E9). One row
-/// per island, with cell count, best fitness, and best candidate text (trimmed
-/// to a short preview).
+/// Build a compact archive table for the tool result (E9). One per-island
+/// section listing every occupied cell and/or elite, so a curious user can
+/// see the runner-up candidates too, not just the single best.
 fn archive_table(islands: &[Island], _use_features: bool) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("Archive summary:".to_string());
     for (i, island) in islands.iter().enumerate() {
-        let best = island.best();
-        let best_preview = best
-            .map(|c| {
-                let t = c.text.trim();
-                if t.len() > 80 {
-                    format!("{}...", &t[..80])
-                } else {
-                    t.to_string()
-                }
-            })
-            .unwrap_or_else(|| "(empty)".to_string());
-        let best_fitness = best
-            .map(|c| format!("{:.6}", c.fitness))
-            .unwrap_or_else(|| "-".to_string());
-        lines.push(format!(
-            "  Island {i}: {} cell(s), best fitness={best_fitness}, best: {best_preview}",
-            island.len(),
-        ));
+        let total = island.len();
+        if total == 0 {
+            lines.push(format!("  Island {i}: (empty)"));
+            continue;
+        }
+
+        // Show grid cells when the archive is non-empty.
+        if !island.archive.is_empty() {
+            lines.push(format!("  Island {i} ({} total):", total));
+            let mut cells: Vec<(&[isize], &Candidate)> = island.archive.iter().collect();
+            cells.sort_by(|(key_a, _), (key_b, _)| key_a.cmp(key_b));
+            for (key, c) in &cells {
+                let key_str = key
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let preview = preview_text(&c.text, 60);
+                lines.push(format!(
+                    "    cell [{key_str}]  fitness={:.6}  {preview}",
+                    c.fitness,
+                ));
+            }
+        }
+
+        // Show elites when present (fallback mode, or alongside archive).
+        if !island.elites.is_empty() {
+            let label = if island.archive.is_empty() {
+                format!("  Island {i} ({} total):", total)
+            } else {
+                format!("  Island {i} elites:")
+            };
+            lines.push(label);
+            for (rank, c) in island.elites.iter().enumerate() {
+                let preview = preview_text(&c.text, 60);
+                lines.push(format!(
+                    "    #{rank}  fitness={:.6}  {preview}",
+                    c.fitness,
+                ));
+            }
+        }
     }
     lines.join("\n")
+}
+
+/// Trim `text` to at most `max_len` characters, appending "..." when cut.
+fn preview_text(text: &str, max_len: usize) -> String {
+    let t = text.trim();
+    if t.len() > max_len {
+        format!("{}...", &t[..max_len])
+    } else {
+        t.to_string()
+    }
 }

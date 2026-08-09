@@ -103,7 +103,7 @@ built. This one holds the work items, in build order.
 - [x] `E8` Errors: a failed generation drops that candidate for the round
       without stopping the run. A `fitness_cmd` or `feature_cmd` that does
       not print a parseable number is a tool error naming the command.
-- [ ] `E9` Tool result: the best candidate across every island, its
+- [x] `E9` Tool result: the best candidate across every island, its
       fitness, its feature coordinates if any, and a small table of the
       full archive.
 - [ ] `E10` `tools_evolve.rs` in `crates/deepseek-custom-tests/tests/it/`:
