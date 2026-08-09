@@ -4,6 +4,7 @@ pub mod cascade;
 pub mod cd;
 pub mod close_session;
 pub mod edit;
+pub mod evolve;
 pub mod glob;
 pub mod grep;
 pub mod read;

@@ -92,7 +92,7 @@ built. This one holds the work items, in build order.
 - [x] `E5` `evolution.rs` in `crates/deepseek-custom-tests/tests/it/`:
       direct unit tests for `insert`, `select_parent`, and `migrate`
       against hand-built fitness numbers. No `StubBackend` needed here.
-- [ ] `E6` `crates/deepseek-custom/src/tools/evolve.rs`: schema (`prompt`,
+- [x] `E6` `crates/deepseek-custom/src/tools/evolve.rs`: schema (`prompt`,
       `backend`, `generations`, `population`, `fitness_cmd`,
       `feature_cmd`, `islands`, `migration_interval`, `mutation_hints`,
       `effort`). Register it. Depth-gate it with `may_dispatch`.

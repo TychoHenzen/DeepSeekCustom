@@ -29,8 +29,8 @@ use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
     ask::AskUserQuestionTool, bash::BashTool, cascade::CascadeTool, cd::CdTool,
-    close_session::CloseSessionTool, edit::EditTool, glob::GlobTool, grep::GrepTool,
-    read::ReadTool, read_image::ReadImageTool, reset::ResetTool,
+    close_session::CloseSessionTool, edit::EditTool, evolve::EvolveTool, glob::GlobTool,
+    grep::GrepTool, read::ReadTool, read_image::ReadImageTool, reset::ResetTool,
     send_message::SendMessageTool, skill::SkillTool, task::TaskTool, write::WriteTool,
 };
 
@@ -321,6 +321,14 @@ fn build_api_backend(
             factory.working_dir(),
             cascade_total_for_tool(factory, depth),
             cascade_escalated_for_tool(factory, depth),
+        )));
+        tools.register(Arc::new(EvolveTool::new(
+            factory.clone(),
+            depth + 1,
+            tx_events.clone(),
+            subagent_registry.clone(),
+            effort_flag.clone(),
+            factory.working_dir(),
         )));
         // Gated the same way as `Task`, not separately: a session this
         // backend cannot open in the first place is never reachable
