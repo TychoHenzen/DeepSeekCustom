@@ -69,10 +69,17 @@ impl StubBackend {
     /// `interrupt_flag` is shared with the factory that builds this, the
     /// same way a real backend shares it, so Escape reaches a stub-backed
     /// subagent too.
-    pub fn new(script: Vec<StubTurn>, model: String, interrupt_flag: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        script: Vec<StubTurn>,
+        model: String,
+        interrupt_flag: Arc<AtomicBool>,
+        shared_cursor: Arc<AtomicUsize>,
+    ) -> Self {
+        let cursor = shared_cursor.fetch_add(1, Ordering::SeqCst);
+        let cursor = cursor.min(script.len().saturating_sub(1));
         Self {
             script,
-            cursor: 0,
+            cursor,
             turn: 0,
             tx_events: None,
             interrupt_flag,

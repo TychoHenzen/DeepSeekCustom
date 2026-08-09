@@ -67,6 +67,11 @@ pub enum ResolvedBackend {
         name: String,
         script: Vec<StubTurn>,
         model: String,
+        /// Shared across every `StubBackend` built from this named entry.
+        /// Each call to `StubBackend::new` calls `fetch_add(1)` on this
+        /// to consume the next script entry, so different dispatches of
+        /// the same stub return different answers.
+        cursor: Arc<AtomicUsize>,
     },
 }
 
@@ -429,8 +434,12 @@ pub struct BackendFactory {
     /// that method carries the same gate. This, together with the gate on
     /// `Backend::Stub` and `ResolvedBackend::Stub` themselves, is what keeps
     /// a stub unreachable from a normal run.
+    /// Each stub holds a script and a shared cursor. The cursor is an
+    /// `Arc<AtomicUsize>` so every `StubBackend` built from the same named
+    /// script advances the cursor, letting each dispatch through
+    /// `run_subagent` consume a different entry from the script.
     #[cfg(feature = "test-support")]
-    stubs: HashMap<String, Vec<StubTurn>>,
+    stubs: HashMap<String, (Vec<StubTurn>, Arc<AtomicUsize>)>,
 }
 
 impl BackendFactory {
@@ -510,7 +519,8 @@ impl BackendFactory {
     /// feature on.
     #[cfg(feature = "test-support")]
     pub fn with_stub(mut self, name: impl Into<String>, script: Vec<StubTurn>) -> Self {
-        self.stubs.insert(name.into(), script);
+        self.stubs
+            .insert(name.into(), (script, Arc::new(AtomicUsize::new(0))));
         self
     }
 
@@ -533,13 +543,14 @@ impl BackendFactory {
         model_override: Option<&str>,
     ) -> Result<ResolvedBackend, String> {
         #[cfg(feature = "test-support")]
-        if let Some(script) = self.stubs.get(name) {
+        if let Some((script, cursor)) = self.stubs.get(name) {
             return Ok(ResolvedBackend::Stub {
                 name: name.to_string(),
                 script: script.clone(),
                 model: model_override
                     .map(|m| m.to_string())
                     .unwrap_or_else(|| "stub-model".to_string()),
+                cursor: Arc::clone(cursor),
             });
         }
         resolve_named_backend(&self.settings, &self.project_root, name, model_override)
@@ -701,13 +712,14 @@ impl BackendFactory {
                 name,
                 script,
                 model,
+                cursor,
             } => {
                 info!(
                     "resolved backend: name={} kind=stub turns={}",
                     name,
                     script.len(),
                 );
-                let mut stub = StubBackend::new(script, model, self.interrupt_flag.clone());
+                let mut stub = StubBackend::new(script, model, self.interrupt_flag.clone(), cursor);
                 stub.set_event_sender(tx_events);
                 Backend::Stub(Box::new(stub))
             }

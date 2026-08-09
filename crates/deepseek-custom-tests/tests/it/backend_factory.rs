@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use deepseek_custom::agent::agent_loop::SubagentId;
 use deepseek_custom::api::client::Provider;
@@ -482,6 +482,7 @@ async fn one_agents_reset_does_not_close_another_agents_session() {
             Vec::new(),
             "stub-model".to_string(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(0)),
         )))
     };
     let id_a = SubagentId::next();

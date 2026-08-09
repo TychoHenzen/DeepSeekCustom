@@ -2,7 +2,7 @@
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::atomic::Ordering;
 
 use deepseek_custom::agent::agent_loop::StreamEvent;
@@ -16,6 +16,7 @@ fn new_stub(script: Vec<StubTurn>) -> StubBackend {
         script,
         "stub-model".to_string(),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
     )
 }
 
@@ -68,6 +69,7 @@ async fn interrupt_flag_set_before_run_short_circuits_with_no_script_consumed() 
         vec![StubTurn::Text("never seen".to_string())],
         "stub-model".to_string(),
         interrupt_flag,
+        Arc::new(AtomicUsize::new(0)),
     );
 
     let err = stub.run("hello").await.expect_err("should be interrupted");

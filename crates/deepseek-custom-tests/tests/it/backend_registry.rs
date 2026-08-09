@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use deepseek_custom::agent::agent_loop::SubagentId;
 use deepseek_custom::backend::Backend;
@@ -15,6 +15,7 @@ fn stub_backend() -> Backend {
         Vec::new(),
         "stub-model".to_string(),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
     )))
 }
 
@@ -23,6 +24,7 @@ fn stub_backend_with_script(script: Vec<StubTurn>) -> Backend {
         script,
         "stub-model".to_string(),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
     )))
 }
 

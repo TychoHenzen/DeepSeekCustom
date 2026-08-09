@@ -50,7 +50,7 @@ built. This one holds the work items, in build order.
       second on every escalation.
 - [x] `C4` Status bar readout: the escalated share, shown once
       `cascade_total` is above zero.
-- [ ] `C5` Extend `tools_cascade.rs`: an all-disagree `StubBackend` case
+- [x] `C5` Extend `tools_cascade.rs`: an all-disagree `StubBackend` case
       with `escalate_backend` set returns the escalated answer. Check the
       counters update too.
 

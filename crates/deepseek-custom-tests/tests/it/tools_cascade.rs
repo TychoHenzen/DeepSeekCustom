@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
@@ -123,4 +123,85 @@ async fn check_cmd_rejects_some_candidates_and_the_correct_winner_returns() {
         "expected rejected candidates to be reported, got: {}",
         output.content
     );
+}
+
+/// An all-disagree `StubBackend` case with `escalate_backend` set returns the
+/// escalated backend's answer, not an error. Also checks that both
+/// `cascade_total` and `cascade_escalated` counters update (C5).
+#[tokio::test]
+async fn all_disagree_with_escalate_backend_returns_escalated_answer_and_bumps_counters() {
+    let work_dir =
+        std::env::temp_dir().join("dsc-cascade-test-escalate");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).expect("should create temp dir");
+
+    // Two stubs on one factory: the generation backend returns 5 different
+    // texts so none reaches vote_k=1. The escalation backend returns the
+    // answer that should become the final tool output.
+    let factory = Arc::new(
+        BackendFactory::new(Settings::default(), PathBuf::from("."))
+            .with_stub(
+                "stub-cascade",
+                vec![
+                    StubTurn::Text("answer alpha".to_string()),
+                    StubTurn::Text("answer beta".to_string()),
+                    StubTurn::Text("answer gamma".to_string()),
+                    StubTurn::Text("answer delta".to_string()),
+                    StubTurn::Text("answer epsilon".to_string()),
+                ],
+            )
+            .with_stub(
+                "stub-escalate",
+                vec![StubTurn::Text("chosen escalated answer".to_string())],
+            ),
+    );
+    let work_dir_flag = Arc::new(std::sync::Mutex::new(work_dir));
+
+    let cascade_total = Arc::new(AtomicUsize::new(0));
+    let cascade_escalated = Arc::new(AtomicUsize::new(0));
+
+    let tool = CascadeTool::new(
+        factory,
+        1, // dispatch_depth
+        test_parent_tx(),
+        empty_registry(),
+        effort_flag_at(Effort::None),
+        work_dir_flag,
+        Arc::clone(&cascade_total),
+        Arc::clone(&cascade_escalated),
+    );
+
+    let input = serde_json::json!({
+        "prompt": "what is the answer",
+        "backend": "stub-cascade",
+        "n": 5,
+        "escalate_backend": "stub-escalate",
+    });
+
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
+
+    // The cascade should not be an error: escalation returns a real answer.
+    assert!(!output.is_error);
+    assert!(
+        output.content.contains("[escalated]"),
+        "expected escalation marker in output, got: {}",
+        output.content
+    );
+    assert!(
+        output.content.contains("chosen escalated answer"),
+        "expected escalated answer text in output, got: {}",
+        output.content
+    );
+    assert!(
+        output.content.contains("stub-escalate"),
+        "expected escalation backend name in output, got: {}",
+        output.content
+    );
+
+    // Counters: one cascade call, one escalation.
+    assert_eq!(cascade_total.load(Ordering::SeqCst), 1);
+    assert_eq!(cascade_escalated.load(Ordering::SeqCst), 1);
 }

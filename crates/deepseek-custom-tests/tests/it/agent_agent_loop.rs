@@ -2,7 +2,7 @@
 //! production module as part of the two-crate workspace split.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::agent_loop::{
@@ -737,6 +737,7 @@ fn stub_session() -> Backend {
         Vec::new(),
         "stub-model".to_string(),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
     )))
 }
 
