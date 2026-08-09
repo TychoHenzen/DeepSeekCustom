@@ -89,7 +89,7 @@ built. This one holds the work items, in build order.
 - [x] `E4` `migrate(&mut [Island])`: rank islands by best fitness, reset
       the bottom half, reseed from the single best candidate across every
       island. Runs every `migration_interval` rounds.
-- [ ] `E5` `evolution.rs` in `crates/deepseek-custom-tests/tests/it/`:
+- [x] `E5` `evolution.rs` in `crates/deepseek-custom-tests/tests/it/`:
       direct unit tests for `insert`, `select_parent`, and `migrate`
       against hand-built fitness numbers. No `StubBackend` needed here.
 - [ ] `E6` `crates/deepseek-custom/src/tools/evolve.rs`: schema (`prompt`,

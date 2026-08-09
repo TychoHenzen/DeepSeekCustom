@@ -223,3 +223,165 @@ fn select_parent_deterministic() {
         assert_eq!(island.select_parent(7).unwrap().text, first);
     }
 }
+
+// --- migrate ---
+
+#[test]
+fn migrate_noop_with_fewer_than_two_islands() {
+    let mut islands = vec![Island::new(1.0, 3)];
+    islands[0].insert(Candidate { text: "a".into(), fitness: 5.0, features: vec![0.5] });
+    let before = islands[0].len();
+    migrate(&mut islands);
+    // Nothing changes: fewer than 2 islands.
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].len(), before);
+    assert_eq!(islands[0].best().unwrap().text, "a");
+}
+
+#[test]
+fn migrate_noop_when_no_candidates() {
+    let mut islands = vec![
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+    ];
+    let snapshot: Vec<usize> = islands.iter().map(|i| i.len()).collect();
+    migrate(&mut islands);
+    // No candidate anywhere: every island untouched.
+    for (idx, isle) in islands.iter().enumerate() {
+        assert_eq!(isle.len(), snapshot[idx]);
+    }
+}
+
+#[test]
+fn migrate_resets_bottom_half() {
+    // 4 islands: ranked by best fitness, bottom 2 reset.
+    let mut islands = vec![
+        Island::new(1.0, 3), // idx 0: best fitness 1.0 (bottom half)
+        Island::new(1.0, 3), // idx 1: best fitness 3.0 (top half)
+        Island::new(1.0, 3), // idx 2: best fitness 2.0 (bottom half)
+        Island::new(1.0, 3), // idx 3: best fitness 5.0 (top half, global best)
+    ];
+    islands[0].insert(Candidate { text: "lo".into(), fitness: 1.0, features: vec![0.5] });
+    islands[1].insert(Candidate { text: "mid".into(), fitness: 3.0, features: vec![0.5] });
+    islands[2].insert(Candidate { text: "mid2".into(), fitness: 2.0, features: vec![0.5] });
+    islands[3].insert(Candidate { text: "hi".into(), fitness: 5.0, features: vec![0.5] });
+
+    migrate(&mut islands);
+
+    // Top half (indices 1 and 3, best 3.0 and 5.0) untouched.
+    assert_eq!(islands[1].best().unwrap().text, "mid");
+    assert_eq!(islands[3].best().unwrap().text, "hi");
+
+    // Bottom half (indices 0 and 2) reset and reseeded with global best.
+    assert_eq!(islands[0].best().unwrap().text, "hi");
+    assert_eq!(islands[2].best().unwrap().text, "hi");
+}
+
+#[test]
+fn migrate_reseeds_with_global_best_clone() {
+    let mut islands = vec![
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+    ];
+    islands[0].insert(Candidate { text: "champ".into(), fitness: 10.0, features: vec![0.5] });
+    islands[1].insert(Candidate { text: "loser".into(), fitness: 1.0, features: vec![0.5] });
+
+    migrate(&mut islands);
+
+    // Top half (idx 0, best 10.0) untouched.
+    assert_eq!(islands[0].len(), 1);
+    assert_eq!(islands[0].best().unwrap().text, "champ");
+
+    // Bottom half (idx 1) reset, holds one clone of the global best.
+    assert_eq!(islands[1].len(), 1);
+    assert_eq!(islands[1].best().unwrap().text, "champ");
+    // Verify clone independence: inserting into a different cell of
+    // island[1] leaves island[0] unchanged.
+    islands[1].insert(Candidate { text: "newcomer".into(), fitness: 0.5, features: vec![9.0] });
+    assert_eq!(islands[0].len(), 1); // idx 0 unchanged.
+    assert_eq!(islands[1].len(), 2); // idx 1 now has two cells.
+}
+
+#[test]
+fn migrate_handles_empty_islands_in_ranking() {
+    // One empty island (no candidate) and one populated island.
+    let mut islands = vec![
+        Island::new(1.0, 3), // empty
+        Island::new(1.0, 3), // populated
+    ];
+    islands[1].insert(Candidate { text: "sole".into(), fitness: 3.0, features: vec![0.5] });
+
+    migrate(&mut islands);
+
+    // Top half: idx 1 (populated, best 3.0) untouched.
+    assert_eq!(islands[1].best().unwrap().text, "sole");
+    // Bottom half: idx 0 (empty, ranked last) reset and reseeded.
+    assert_eq!(islands[0].best().unwrap().text, "sole");
+}
+
+#[test]
+fn migrate_with_elite_fallback_islands() {
+    // Two islands with no features (elite fallback).
+    let mut islands = vec![
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+    ];
+    islands[0].insert(Candidate { text: "alpha".into(), fitness: 5.0, features: vec![] });
+    islands[1].insert(Candidate { text: "beta".into(), fitness: 2.0, features: vec![] });
+
+    migrate(&mut islands);
+
+    // Top half (idx 0, best 5.0) untouched.
+    assert_eq!(islands[0].best().unwrap().text, "alpha");
+    // Bottom half (idx 1) reset, holds global best.
+    assert_eq!(islands[1].best().unwrap().text, "alpha");
+}
+
+#[test]
+fn migrate_odd_island_count_resets_floor_half() {
+    // 5 islands: bottom 2 reset (5 / 2 = 2).
+    let mut islands = vec![
+        Island::new(1.0, 3), // fitness 1.0
+        Island::new(1.0, 3), // fitness 2.0
+        Island::new(1.0, 3), // fitness 3.0
+        Island::new(1.0, 3), // fitness 4.0
+        Island::new(1.0, 3), // fitness 5.0 (global best)
+    ];
+    for (i, isle) in islands.iter_mut().enumerate() {
+        isle.insert(Candidate { text: format!("c{}", i), fitness: (i + 1) as f64, features: vec![0.5] });
+    }
+
+    migrate(&mut islands);
+
+    // Top 3 islands (best 3.0, 4.0, 5.0) untouched.
+    assert_eq!(islands[2].best().unwrap().text, "c2");
+    assert_eq!(islands[3].best().unwrap().text, "c3");
+    assert_eq!(islands[4].best().unwrap().text, "c4");
+
+    // Bottom 2 (best 1.0, 2.0) reset and reseeded with global best "c4".
+    assert_eq!(islands[0].best().unwrap().text, "c4");
+    assert_eq!(islands[1].best().unwrap().text, "c4");
+}
+
+#[test]
+fn migrate_global_best_determines_reseed() {
+    // The global best candidate should win regardless of island index.
+    let mut islands = vec![
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+        Island::new(1.0, 3),
+    ];
+    // idx 0: low, idx 1: highest, idx 2: medium.
+    islands[0].insert(Candidate { text: "low".into(), fitness: 1.0, features: vec![0.5] });
+    islands[1].insert(Candidate { text: "best_overall".into(), fitness: 9.0, features: vec![0.5] });
+    islands[2].insert(Candidate { text: "mid".into(), fitness: 5.0, features: vec![0.5] });
+
+    migrate(&mut islands);
+    // 3 islands: bottom 1 resets (3 / 2 = 1). Bottom is idx 0 (best 1.0).
+    // Reseeded with global best "best_overall".
+    assert_eq!(islands[0].best().unwrap().text, "best_overall");
+    assert_eq!(islands[1].best().unwrap().text, "best_overall");
+    assert_eq!(islands[2].best().unwrap().text, "mid");
+}
