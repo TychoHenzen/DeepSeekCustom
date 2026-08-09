@@ -53,21 +53,25 @@ impl SystemPromptBuilder {
         // 2. Base instructions
         parts.push(self.base_instructions.clone());
 
-        // 3. Memory files (CLAUDE.md, MEMORY.md)
+        // 3. Tool-first arithmetic (unconditional, see Phase A of the
+        // diversity implementation plan)
+        parts.push(tool_first_arithmetic_instructions().to_string());
+
+        // 4. Memory files (CLAUDE.md, MEMORY.md)
         if let Some(mem) = memory_fragment
             && !mem.is_empty()
         {
             parts.push(format!("\n## Project Context\n\n{mem}"));
         }
 
-        // 4. Skills
+        // 5. Skills
         if let Some(skills) = skills_fragment
             && !skills.is_empty()
         {
             parts.push(format!("\n## Available Skills\n\n{skills}"));
         }
 
-        // 5. Tool definitions
+        // 6. Tool definitions
         if !tools.is_empty() {
             let tool_json = serde_json::to_string_pretty(tools).unwrap_or_default();
             parts.push(format!(
@@ -107,6 +111,17 @@ No code blocks and no code. Describe what the code does instead.
 Do not read file paths, URLs, or long identifiers aloud. Name the file plainly, for example "the agent loop file".
 Use short everyday words and a conversational cadence, the way a person answers a question out loud.
 Tool use is unchanged. Only the text spoken back to the user is constrained."#
+}
+
+/// Instruction block appended to the system prompt unconditionally. Tells
+/// the model to run arithmetic through a tool rather than from memory, since
+/// an exact count or sum that is wrong costs real time and money.
+pub fn tool_first_arithmetic_instructions() -> &'static str {
+    r#"## Tool-first arithmetic
+
+When you need an exact calculation -- counts, date math, sums that matter --
+run it through `Bash` with a one-line command (Python or shell), not from
+memory. Skip this only for the simplest mental math."#
 }
 
 fn chrono_now_or_empty() -> String {

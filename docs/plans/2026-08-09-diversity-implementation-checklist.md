@@ -6,7 +6,7 @@ built. This one holds the work items, in build order.
 
 ## Phase A: reliability-floor prompt work
 
-- [ ] `A1` Add a tool-first-arithmetic instruction to the system prompt
+- [x] `A1` Add a tool-first-arithmetic instruction to the system prompt
       (`crates/deepseek-custom/src/agent/prompt.rs`). Unconditional, not
       gated on a flag.
 - [ ] `A2` Write one line per autopilot step (task text plus final reply,
