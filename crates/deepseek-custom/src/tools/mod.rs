@@ -1,5 +1,6 @@
 pub mod ask;
 pub mod bash;
+pub mod cascade;
 pub mod cd;
 pub mod close_session;
 pub mod edit;

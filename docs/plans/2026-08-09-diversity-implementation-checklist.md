@@ -15,7 +15,7 @@ built. This one holds the work items, in build order.
 
 ## Phase B: the Cascade tool
 
-- [ ] `B1` `crates/deepseek-custom/src/tools/cascade.rs`: schema (`prompt`,
+- [x] `B1` `crates/deepseek-custom/src/tools/cascade.rs`: schema (`prompt`,
       `backend`, `n`, `vote_k`, `check_cmd`, `diversity_hints`,
       `escalate_backend`, `effort`). Register it. Depth-gate it with
       `may_dispatch`, like `Task`.

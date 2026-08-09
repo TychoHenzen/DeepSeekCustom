@@ -28,10 +28,10 @@ use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
-    ask::AskUserQuestionTool, bash::BashTool, cd::CdTool, close_session::CloseSessionTool,
-    edit::EditTool, glob::GlobTool, grep::GrepTool, read::ReadTool, read_image::ReadImageTool,
-    reset::ResetTool, send_message::SendMessageTool, skill::SkillTool, task::TaskTool,
-    write::WriteTool,
+    ask::AskUserQuestionTool, bash::BashTool, cascade::CascadeTool, cd::CdTool,
+    close_session::CloseSessionTool, edit::EditTool, glob::GlobTool, grep::GrepTool,
+    read::ReadTool, read_image::ReadImageTool, reset::ResetTool,
+    send_message::SendMessageTool, skill::SkillTool, task::TaskTool, write::WriteTool,
 };
 
 /// The pieces needed to build either kind of backend, resolved from a
@@ -283,6 +283,13 @@ fn build_api_backend(
     // 1`. At the limit, no `Task` tool goes in and the chain stops.
     if may_dispatch(depth, settings.subagent_max_depth()) {
         tools.register(Arc::new(TaskTool::new(
+            factory.clone(),
+            depth + 1,
+            tx_events.clone(),
+            subagent_registry.clone(),
+            effort_flag.clone(),
+        )));
+        tools.register(Arc::new(CascadeTool::new(
             factory.clone(),
             depth + 1,
             tx_events.clone(),
