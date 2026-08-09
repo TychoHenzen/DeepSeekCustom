@@ -10,19 +10,19 @@
     "tts_speed": 1.01
   },
   "autopilot": {
-    "iterations": 32,
+    "iterations": 30,
     "task": "Work through docs/plans/2026-08-09-diversity-implementation-checklist.md, one item per run.\n\nYou have no memory of any earlier run. The checklist file on disk is the only record of what is already done. Read it before you do anything else.\n\n1. Read the checklist. Find the first item whose box is unchecked, reading top to bottom. The phases are in build order, so never skip ahead to a later item.\n2. If every box is checked, reply with the exact words ALL ITEMS DONE and stop. Change no file.\n3. Read docs/plans/2026-08-09-diversity-implementation-plan.md for the reasoning behind that one item, and CLAUDE.md for the architecture it lands in. Read the source files the item names before you edit them.\n4. Implement that one item and nothing else. Do not start the next item, even when it looks small. Do not refactor code the item does not name.\n5. Verify, in this order:\n   cargo check -p deepseek-custom\n   cargo test -p deepseek-custom-tests --test it <filter>\n   cargo clippy --workspace -- -D warnings\n   Never run cargo build, cargo run, or a bare cargo test. You are running inside target/debug/deepseek-custom.exe right now, and Windows holds a lock on that file while it runs. Any command that links the binary fails with a linker error naming the exe, and it is not a fault in your change. The three commands above never link it: cargo check and cargo clippy do not link at all, and the --test it target builds only the test binary and the library beside it.\n   The test filter is the test file that covers the module you changed. The naming rule is in the Tests section of CLAUDE.md: take the module path under crates/deepseek-custom/src/, drop a trailing /mod.rs or .rs, join the segments with an underscore. So agent/prompt.rs is covered by agent_prompt. Name the target first, as --test it, then the filter.\n6. If any of those three commands fails, fix it in this same run. Do not check the box. Do not leave the build broken.\n7. Only once all three pass, edit the checklist and change that one item's [ ] to [x]. Change no other box.\n8. Append one line to .autopilot/step-log.md, creating the file if it is not there: the item id, one sentence on what changed, and the passing test count. Keep it to one line.\n9. Reply with the item id, the files you changed, and the last line of the test output.\n10. Commit the work with the bash tool: run `git add -A` for the files this item changed, then `git commit` with a one-line message naming the item id. Do not push.\n\nRules that hold for every run:\n- One checklist item per run. The checkbox is the handoff to the next run.\n- Never ask a question. Decide, act, and say in your reply what you decided and why.\n- Never write an em dash or any other non-ASCII punctuation. Plain ASCII only.\n- Never mark an item done on a broken build or a failing test.\n- Tests live in crates/deepseek-custom-tests. The production crate crates/deepseek-custom holds no test code at all. A test that needs a private item turns the test-support feature on rather than making the item public.\n- A new test file must be declared with a mod line in crates/deepseek-custom-tests/tests/it/main.rs, or it will not run and will not be compiled.\n- Use the edit tool to change part of a file. Use write only to create a file or to replace one outright. Never write a script that edits a file for you.\n- A change to the GUI paint path cannot be seen until the app is rebuilt, and the app cannot be rebuilt while it is running. Make the change, verify it with cargo check and the tests, check the box, and say in your reply that the change needs a restart to be visible."
   },
   "context_budget": 150000,
   "backends": {
-    "claude": {
-      "kind": "claude_cli",
-      "model": "opus"
-    },
     "deepseek": {
       "kind": "api",
       "provider": "deepseek",
       "model": "deepseek-v4-pro"
+    },
+    "claude": {
+      "kind": "claude_cli",
+      "model": "opus"
     },
     "ollama": {
       "kind": "api",

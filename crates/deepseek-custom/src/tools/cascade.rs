@@ -321,6 +321,25 @@ impl Tool for CascadeTool {
                 ));
             }
             VoteOutcome::NoConsensus { tallies } => {
+                // C1: when `escalate_backend` is set, make one more call instead
+                // of returning an error. The escalation prompt carries the
+                // original task, every candidate and why it was cut, and an
+                // instruction to pick the best or write a fresh answer.
+                if let Some(escalate_backend) = &parsed.escalate_backend {
+                    return escalate(
+                        escalate_backend,
+                        &parsed.prompt,
+                        tallies,
+                        &failures,
+                        effort,
+                        &self.factory,
+                        self.dispatch_depth,
+                        &self.parent_tx,
+                        &self.registry,
+                    )
+                    .await;
+                }
+
                 // B6: distinguish "every attempt failed" from "no candidate passed
                 // check_cmd" from "candidates existed but no consensus". All three
                 // are tool errors (#1 and #2 never panic either).
@@ -393,6 +412,85 @@ async fn run_check_cmd(
         Ok(Ok(output)) => Ok(output.exit_code == 0),
         Ok(Err(e)) => Err(format!("failed to run check_cmd: {e}")),
         Err(_elapsed) => Err("check_cmd timed out after 120s".to_string()),
+    }
+}
+
+/// C1: when no candidate reaches `vote_k` but `escalate_backend` was given,
+/// dispatch one more subagent with the original prompt plus every rejected
+/// candidate and why it was cut. Its answer becomes the tool output, marked
+/// as escalated.
+#[allow(clippy::too_many_arguments)]
+async fn escalate(
+    escalate_backend: &str,
+    original_prompt: &str,
+    tallies: &[VoteTally],
+    failures: &[String],
+    effort: Effort,
+    factory: &Arc<BackendFactory>,
+    dispatch_depth: u32,
+    parent_tx: &mpsc::UnboundedSender<RoutedEvent>,
+    registry: &Arc<SubagentRegistry>,
+) -> Result<ToolOutput> {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("Original task:\n{original_prompt}"));
+
+    if !tallies.is_empty() {
+        parts.push(
+            "\nCandidates that survived but failed to reach the required vote margin:".to_string(),
+        );
+        for t in tallies {
+            parts.push(format!(
+                "- {} vote(s): {}",
+                t.count, t.text
+            ));
+        }
+    }
+
+    if !failures.is_empty() {
+        parts.push("\nCandidates that were rejected before voting:".to_string());
+        for f in failures {
+            parts.push(format!("- {f}"));
+        }
+    }
+
+    parts.push(
+        "\nPick the best answer above, or write your own if none of them is right. \
+         Return only the final answer, with no commentary.".to_string(),
+    );
+
+    let escalation_prompt = parts.join("\n");
+
+    let request = SubagentRequest {
+        backend: escalate_backend.to_string(),
+        model: None,
+        prompt: escalation_prompt,
+        depth: dispatch_depth,
+        keep_open: false,
+        working_dir_override: None,
+        effort,
+    };
+
+    match run_subagent(factory, request, parent_tx.clone(), Arc::clone(registry)).await {
+        Ok(outcome) => {
+            Ok(ToolOutput {
+                content: format!(
+                    "Cascade escalated to backend \"{}\":\n\n[escalated] {}",
+                    escalate_backend, outcome.text
+                ),
+                is_error: false,
+                image: None,
+            })
+        }
+        Err(e) => {
+            Ok(ToolOutput {
+                content: format!(
+                    "Cascade escalation to backend \"{}\" failed: {e}",
+                    escalate_backend
+                ),
+                is_error: true,
+                image: None,
+            })
+        }
     }
 }
 

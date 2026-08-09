@@ -39,7 +39,7 @@ built. This one holds the work items, in build order.
 
 ## Phase C: escalation and visibility
 
-- [ ] `C1` `escalate_backend`: on no `vote_k` win, make one more call to
+- [x] `C1` `escalate_backend`: on no `vote_k` win, make one more call to
       `escalate_backend`. Send it the original prompt plus every rejected
       candidate and why it was cut. Its answer becomes the tool output,
       marked as escalated.

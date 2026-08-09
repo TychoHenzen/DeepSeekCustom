@@ -96,6 +96,25 @@ fn paint_block(
     pins: &mut Toggles,
 ) {
     let path = extend_path(prefix, block.id);
+    // Every widget id inside a block hangs off this scope. Without it a
+    // block's inner ids come from egui's auto-id counter, which is a
+    // position in the paint order: two sibling blocks then produce the
+    // same ids ("ID clash"), and inserting a block shifts every later
+    // block's ids. A `BlockId` is stable and, joined with the enclosing
+    // subagent path, unique across the whole transcript tree.
+    ui.push_id(&path, |ui| {
+        paint_block_inner(ui, block, &path, cache, toggles, pins);
+    });
+}
+
+fn paint_block_inner(
+    ui: &mut egui::Ui,
+    block: &Block,
+    path: &[BlockId],
+    cache: &mut egui_commonmark::CommonMarkCache,
+    toggles: &mut Toggles,
+    pins: &mut Toggles,
+) {
     match &block.kind {
         BlockKind::User { text } => paint_user(ui, text),
         BlockKind::Assistant { spans } => {
@@ -113,14 +132,14 @@ fn paint_block(
             args,
             output.as_deref(),
             *is_error,
-            &path,
+            path,
             toggles,
         ),
         BlockKind::Notice { text, severity } => {
             let c = severity_color(*severity);
             ui.label(RichText::new(text).color(c));
         }
-        BlockKind::Image { image } => paint_img(ui, block.id, image),
+        BlockKind::Image { image } => paint_img(ui, path, image),
         BlockKind::Subagent {
             backend,
             model,
@@ -148,7 +167,7 @@ fn paint_block(
             *session_turn_cap,
             *send_message_calls,
             *send_message_call_cap,
-            &path,
+            path,
             cache,
             toggles,
             pins,
@@ -184,13 +203,17 @@ fn paint_assistant(
         .corner_radius(4.0)
         .show(ui, |ui| {
             ui.label(RichText::new("Assistant").color(ASSIST_LABEL).strong());
-            for span in spans {
+            for (i, span) in spans.iter().enumerate() {
                 match span {
                     Span::Text(t) => {
                         CommonMarkViewer::new().show(ui, cache, t);
                     }
                     Span::Reasoning(t) => {
+                        // A `CollapsingHeader` takes its id from its label
+                        // unless told otherwise, so two reasoning spans in
+                        // one block would both be "Reasoning" and clash.
                         egui::CollapsingHeader::new(RichText::new("Reasoning").color(THINK_DIM))
+                            .id_salt(i)
                             .default_open(false)
                             .show(ui, |ui| {
                                 ui.label(RichText::new(t).color(THINK_DIM));
@@ -219,7 +242,7 @@ fn paint_tool(
         toggles.push((path.to_vec(), !collapsed));
     }
     if !collapsed {
-        ui.indent("tool-body", |ui| {
+        ui.indent(("tool-body", path), |ui| {
             ui.label(RichText::new(args).color(Color32::GRAY));
             match output {
                 Some(o) => {
@@ -234,13 +257,17 @@ fn paint_tool(
     }
 }
 
-fn paint_img(ui: &mut egui::Ui, block_id: BlockId, image: &ImageAttachment) {
+fn paint_img(ui: &mut egui::Ui, path: &[BlockId], image: &ImageAttachment) {
     let Some(bytes) = crate::gui::attachment::decode_image_bytes(image) else {
         ui.label(RichText::new(format!("[image: {}]", image.media_type)).color(IMAGE_LABEL_COLOR));
         return;
     };
-    let uri = format!("bytes://image-block-{block_id:?}");
-    let open_id = egui::Id::new(("image-block-open", block_id));
+    // Keyed on the whole path, not the block id alone. A `BlockId` is only
+    // unique within its own transcript, so an image inside a subagent block
+    // could otherwise share a loader uri, and a window id, with an image in
+    // the main conversation and show the wrong picture.
+    let uri = format!("bytes://image-block-{path:?}");
+    let open_id = egui::Id::new(("image-block-open", path));
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
     let thumb = egui::Image::from_bytes(uri.clone(), bytes.clone())
         .max_size(egui::vec2(IMG_THUMB_CAP, IMG_THUMB_CAP))
@@ -254,7 +281,7 @@ fn paint_img(ui: &mut egui::Ui, block_id: BlockId, image: &ImageAttachment) {
     }
     if open {
         egui::Window::new(format!("Image ({})", image.media_type))
-            .id(egui::Id::new(("image-block-window", block_id)))
+            .id(egui::Id::new(("image-block-window", path)))
             .open(&mut open)
             .show(ui.ctx(), |ui| {
                 ui.add(egui::Image::from_bytes(uri, bytes));
