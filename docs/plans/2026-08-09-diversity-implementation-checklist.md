@@ -96,7 +96,7 @@ built. This one holds the work items, in build order.
       `backend`, `generations`, `population`, `fitness_cmd`,
       `feature_cmd`, `islands`, `migration_interval`, `mutation_hints`,
       `effort`). Register it. Depth-gate it with `may_dispatch`.
-- [ ] `E7` One round: `select_parent` picks a parent, build a prompt from
+- [x] `E7` One round: `select_parent` picks a parent, build a prompt from
       the seed task plus the parent plus the next mutation hint, dispatch
       through `run_subagent`. Score the result with `fitness_cmd` and, if
       set, `feature_cmd`. Insert into the archive.
