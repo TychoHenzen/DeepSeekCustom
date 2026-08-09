@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -116,9 +117,14 @@ pub struct CascadeTool {
     /// The working directory `check_cmd` runs against, shared with every
     /// other tool this harness registers. Read fresh on every call.
     work_dir: Arc<Mutex<PathBuf>>,
+    /// Bumped once per Cascade call, resolved or not (C3).
+    cascade_total: Arc<AtomicUsize>,
+    /// Bumped per escalation: Cascade vote did not reach `vote_k` (C3).
+    cascade_escalated: Arc<AtomicUsize>,
 }
 
 impl CascadeTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         factory: Arc<BackendFactory>,
         dispatch_depth: u32,
@@ -126,6 +132,8 @@ impl CascadeTool {
         registry: Arc<SubagentRegistry>,
         parent_effort_flag: Arc<AtomicU8>,
         work_dir: Arc<Mutex<PathBuf>>,
+        cascade_total: Arc<AtomicUsize>,
+        cascade_escalated: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             factory,
@@ -134,6 +142,8 @@ impl CascadeTool {
             registry,
             parent_effort_flag,
             work_dir,
+            cascade_total,
+            cascade_escalated,
         }
     }
 }
@@ -199,6 +209,8 @@ impl Tool for CascadeTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput> {
+        self.cascade_total.fetch_add(1, Ordering::SeqCst);
+
         let parsed: CascadeInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => {
@@ -336,6 +348,7 @@ impl Tool for CascadeTool {
                         self.dispatch_depth,
                         &self.parent_tx,
                         &self.registry,
+                        &self.cascade_escalated,
                     )
                     .await;
                 }
@@ -430,7 +443,9 @@ async fn escalate(
     dispatch_depth: u32,
     parent_tx: &mpsc::UnboundedSender<RoutedEvent>,
     registry: &Arc<SubagentRegistry>,
+    cascade_escalated: &AtomicUsize,
 ) -> Result<ToolOutput> {
+    cascade_escalated.fetch_add(1, Ordering::SeqCst);
     let mut parts: Vec<String> = Vec::new();
     parts.push(format!("Original task:\n{original_prompt}"));
 

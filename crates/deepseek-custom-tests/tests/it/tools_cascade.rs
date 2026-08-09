@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
@@ -79,6 +79,8 @@ async fn check_cmd_rejects_some_candidates_and_the_correct_winner_returns() {
         empty_registry(),
         effort_flag_at(Effort::None),
         work_dir_flag,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
     );
 
     let input = serde_json::json!({

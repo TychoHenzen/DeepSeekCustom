@@ -50,6 +50,10 @@ pub struct SharedFlags {
     pub context_budget: Arc<AtomicUsize>,
     pub model: Arc<Mutex<String>>,
     pub repeat_interrupt: Arc<AtomicBool>,
+    /// Bumped once per Cascade call, resolved or not.
+    pub cascade_total: Arc<AtomicUsize>,
+    /// Bumped per escalation (Cascade vote did not reach `vote_k`).
+    pub cascade_escalated: Arc<AtomicUsize>,
 }
 
 impl SharedFlags {
@@ -64,6 +68,8 @@ impl SharedFlags {
             context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model: Arc::new(Mutex::new(model)),
             repeat_interrupt: Arc::new(AtomicBool::new(false)),
+            cascade_total: Arc::new(AtomicUsize::new(0)),
+            cascade_escalated: Arc::new(AtomicUsize::new(0)),
         }
     }
 

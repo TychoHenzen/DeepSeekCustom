@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -191,6 +191,24 @@ pub fn may_dispatch_for_test(depth: u32, max_depth: u32) -> bool {
     may_dispatch(depth, max_depth)
 }
 
+/// The `cascade_total` counter for a `CascadeTool` built at `depth`. At
+/// depth 0 with session flags available, returns the session's own counter
+/// so the GUI can read it. Otherwise returns a fresh zeroed counter.
+fn cascade_total_for_tool(factory: &Arc<BackendFactory>, depth: u32) -> Arc<AtomicUsize> {
+    match factory.session_flags_for(depth) {
+        Some(flags) => Arc::clone(&flags.cascade_total),
+        None => Arc::new(AtomicUsize::new(0)),
+    }
+}
+
+/// Same as `cascade_total_for_tool`, for the `cascade_escalated` counter.
+fn cascade_escalated_for_tool(factory: &Arc<BackendFactory>, depth: u32) -> Arc<AtomicUsize> {
+    match factory.session_flags_for(depth) {
+        Some(flags) => Arc::clone(&flags.cascade_escalated),
+        None => Arc::new(AtomicUsize::new(0)),
+    }
+}
+
 /// Build the `Api` backend: an `AgentLoop` wired up with the tool
 /// registry, memory, skills, and system prompt. The claude_cli path
 /// skips it, see the comment at that branch in `BackendFactory::build`.
@@ -296,6 +314,8 @@ fn build_api_backend(
             subagent_registry.clone(),
             effort_flag.clone(),
             factory.working_dir(),
+            cascade_total_for_tool(factory, depth),
+            cascade_escalated_for_tool(factory, depth),
         )));
         // Gated the same way as `Task`, not separately: a session this
         // backend cannot open in the first place is never reachable
