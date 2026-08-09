@@ -1,4 +1,5 @@
 use eframe::egui;
+use std::sync::atomic::Ordering;
 
 use super::{ActiveTab, DeepSeekGui};
 
@@ -41,6 +42,16 @@ impl DeepSeekGui {
             ui.label(format!("Dir: {}", self.working_dir_buffer));
             ui.separator();
             ui.label(format!("Effort: {:?}", self.effort));
+            let cascade_total = self.handles.cascade_total.load(Ordering::SeqCst);
+            if cascade_total > 0 {
+                let cascade_escalated = self.handles.cascade_escalated.load(Ordering::SeqCst);
+                let pct = (cascade_escalated as f64) / (cascade_total as f64) * 100.0;
+                ui.separator();
+                ui.label(format!(
+                    "Cascade: {}/{} escalated ({:.0}%)",
+                    cascade_escalated, cascade_total, pct
+                ));
+            }
             ui.separator();
             ui.label(&self.session_status);
             if !self.token_count.is_empty() {

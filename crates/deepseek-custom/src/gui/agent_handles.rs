@@ -30,4 +30,8 @@ pub struct AgentHandles {
     /// Where the Bash, Read, Write, and Cd tools act. Distinct from the
     /// project root, which never moves.
     pub working_dir: Arc<Mutex<PathBuf>>,
+    /// Bumped once per Cascade call, resolved or not.
+    pub cascade_total: Arc<AtomicUsize>,
+    /// Bumped per escalation (Cascade vote did not reach `vote_k`).
+    pub cascade_escalated: Arc<AtomicUsize>,
 }

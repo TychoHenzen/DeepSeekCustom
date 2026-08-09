@@ -48,7 +48,7 @@ built. This one holds the work items, in build order.
 - [x] `C3` `SharedFlags` gains `cascade_total` and `cascade_escalated`
       (`Arc<AtomicUsize>`). Bump the first on every Cascade call. Bump the
       second on every escalation.
-- [ ] `C4` Status bar readout: the escalated share, shown once
+- [x] `C4` Status bar readout: the escalated share, shown once
       `cascade_total` is above zero.
 - [ ] `C5` Extend `tools_cascade.rs`: an all-disagree `StubBackend` case
       with `escalate_backend` set returns the escalated answer. Check the

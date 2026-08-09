@@ -278,6 +278,8 @@ async fn main() {
             context_budget: Arc::clone(&flags.context_budget),
             model: Arc::clone(&flags.model),
             working_dir: working_dir_flag,
+            cascade_total: Arc::clone(&flags.cascade_total),
+            cascade_escalated: Arc::clone(&flags.cascade_escalated),
         },
         settings.clone(),
         project_root.clone(),
