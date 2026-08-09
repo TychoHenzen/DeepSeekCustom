@@ -321,7 +321,24 @@ impl Tool for CascadeTool {
                 ));
             }
             VoteOutcome::NoConsensus { tallies } => {
-                if !tallies.is_empty() {
+                // B6: distinguish "every attempt failed" from "no candidate passed
+                // check_cmd" from "candidates existed but no consensus". All three
+                // are tool errors (#1 and #2 never panic either).
+                if candidates.is_empty() && !failures.is_empty() {
+                    if parsed.check_cmd.is_some() {
+                        parts.push(format!(
+                            "No candidate passed check_cmd on backend \"{}\" (0 of {} passed).",
+                            parsed.backend,
+                            parsed.n
+                        ));
+                    } else {
+                        parts.push(format!(
+                            "All {} attempts failed on backend \"{}\".",
+                            parsed.n,
+                            parsed.backend
+                        ));
+                    }
+                } else if !tallies.is_empty() {
                     parts.push(format!(
                         "No consensus: no answer reached the required {}-vote lead margin.",
                         parsed.vote_k
