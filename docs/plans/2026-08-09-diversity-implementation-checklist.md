@@ -65,7 +65,7 @@ built. This one holds the work items, in build order.
 - [x] `D3` Gate in `AgentLoop::run`, right before `TurnEnd`: compute the
       grade on replies past a minimum length. Skip the check entirely when
       the setting is off.
-- [ ] `D4` Critique-and-revise loop against `critic_backend` (falls back
+- [x] `D4` Critique-and-revise loop against `critic_backend` (falls back
       to the replying backend). Cap it at `max_revise_attempts`. Stop early
       once the grade is within `grade_tolerance`.
 - [ ] `D5` `Notice` block (`Info`) recording that a reply was revised, and

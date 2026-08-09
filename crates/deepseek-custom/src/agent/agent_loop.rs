@@ -311,6 +311,12 @@ pub struct AgentLoop {
     /// How far above `target_grade` a reply may sit before the gate
     /// triggers a rewrite. Defaults to 2.0.
     style_grade_tolerance: f32,
+    /// How many critique-and-revise attempts to allow. Defaults to 2.
+    style_max_revise_attempts: u32,
+    /// Backend name for the critique step. `None` means use the replying
+    /// backend itself. Stored for future cross-backend criticism; today the
+    /// revise call always uses `self.client`.
+    style_critic_backend: Option<String>,
 }
 
 impl AgentLoop {
@@ -343,6 +349,8 @@ impl AgentLoop {
             style_plain_language_enabled: false,
             style_target_grade: 8.0,
             style_grade_tolerance: 2.0,
+            style_max_revise_attempts: 2,
+            style_critic_backend: None,
         }
     }
 
@@ -380,10 +388,14 @@ impl AgentLoop {
         plain_language_enabled: bool,
         target_grade: f32,
         grade_tolerance: f32,
+        max_revise_attempts: u32,
+        critic_backend: Option<String>,
     ) {
         self.style_plain_language_enabled = plain_language_enabled;
         self.style_target_grade = target_grade;
         self.style_grade_tolerance = grade_tolerance;
+        self.style_max_revise_attempts = max_revise_attempts;
+        self.style_critic_backend = critic_backend;
     }
 
     /// Replace this agent's own effort flag with one the caller already
@@ -744,24 +756,6 @@ impl AgentLoop {
                 finish_reason,
             );
 
-            self.send_event(StreamEvent::ConversationSnapshot {
-                messages: self.history.iter().cloned().collect(),
-                claude_session_id: None,
-            });
-            self.send_event(StreamEvent::TurnEnd {
-                turn: turn + 1,
-                finish_reason: finish_reason.clone(),
-                total_tokens: self.history.estimated_tokens(),
-                prompt_cache_hit_tokens: stream_usage
-                    .as_ref()
-                    .map(|u| u.prompt_cache_hit_tokens)
-                    .unwrap_or(0),
-                prompt_cache_miss_tokens: stream_usage
-                    .as_ref()
-                    .map(|u| u.prompt_cache_miss_tokens)
-                    .unwrap_or(0),
-            });
-
             // Filter out tool calls lacking a function name (can appear as
             // empty deltas in V4 thinking mode during reasoning phase).
             let valid_tool_calls: Vec<ToolCall> = stream_tool_calls
@@ -864,6 +858,25 @@ impl AgentLoop {
                         });
                     }
                 }
+                // TurnEnd for a tool-call iteration: the turn continues into
+                // the next loop iteration after tools are done.
+                self.send_event(StreamEvent::ConversationSnapshot {
+                    messages: self.history.iter().cloned().collect(),
+                    claude_session_id: None,
+                });
+                self.send_event(StreamEvent::TurnEnd {
+                    turn: turn + 1,
+                    finish_reason: finish_reason.clone(),
+                    total_tokens: self.history.estimated_tokens(),
+                    prompt_cache_hit_tokens: stream_usage
+                        .as_ref()
+                        .map(|u| u.prompt_cache_hit_tokens)
+                        .unwrap_or(0),
+                    prompt_cache_miss_tokens: stream_usage
+                        .as_ref()
+                        .map(|u| u.prompt_cache_miss_tokens)
+                        .unwrap_or(0),
+                });
             } else {
                 // Text-only response - done
                 info!(
@@ -872,18 +885,63 @@ impl AgentLoop {
                     reasoning_len = stream_reasoning.len(),
                     "text-only response, completing turn"
                 );
-                if !stream_text.is_empty() {
-                    assistant_texts.push(stream_text.clone());
+
+                // Plain-language gate (D3/D4): check the grade, and when
+                // it is too high, run the critique-and-revise loop (D4)
+                // before TurnEnd fires, so the revised text reaches the
+                // transcript.
+                let mut final_text = stream_text;
+                if self.maybe_check_plain_language(&final_text) {
+                    let (revised, attempts) = self.revise_for_plain_language(&final_text).await;
+                    if revised != final_text {
+                        info!(
+                            attempts,
+                            original_grade = crate::style::flesch_kincaid_grade(&final_text),
+                            revised_grade = crate::style::flesch_kincaid_grade(&revised),
+                            "plain-language gate: reply revised"
+                        );
+                        // Send a notice that the text was revised, then the
+                        // revised text itself, so the transcript shows both
+                        // the notice and the new reply.
+                        self.send_event(StreamEvent::Text {
+                            turn: turn + 1,
+                            text: format!(
+                                "\n\n[Revised for plain language, attempt(s): {attempts}]\n\n"
+                            ),
+                        });
+                        self.send_event(StreamEvent::Text {
+                            turn: turn + 1,
+                            text: revised.clone(),
+                        });
+                        final_text = revised;
+                    }
                 }
 
-                // Plain-language gate (D3): compute the Flesch-Kincaid grade
-                // on the final reply. D4 adds the critique-and-revise loop
-                // right here when the grade is too high.
-                let _needs_revision = self.maybe_check_plain_language(&stream_text);
+                if !final_text.is_empty() {
+                    assistant_texts.push(final_text.clone());
+                }
+
+                self.send_event(StreamEvent::ConversationSnapshot {
+                    messages: self.history.iter().cloned().collect(),
+                    claude_session_id: None,
+                });
+                self.send_event(StreamEvent::TurnEnd {
+                    turn: turn + 1,
+                    finish_reason: finish_reason.clone(),
+                    total_tokens: self.history.estimated_tokens(),
+                    prompt_cache_hit_tokens: stream_usage
+                        .as_ref()
+                        .map(|u| u.prompt_cache_hit_tokens)
+                        .unwrap_or(0),
+                    prompt_cache_miss_tokens: stream_usage
+                        .as_ref()
+                        .map(|u| u.prompt_cache_miss_tokens)
+                        .unwrap_or(0),
+                });
 
                 self.history.push(Message {
                     role: Role::Assistant,
-                    content: Some(Content::text(stream_text.clone())),
+                    content: Some(Content::text(final_text)),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: if stream_reasoning.is_empty() {
@@ -1063,6 +1121,103 @@ impl AgentLoop {
             "plain-language gate: grade {grade} vs threshold {threshold}"
         );
         grade > threshold
+    }
+
+    /// Critique-and-revise loop for plain language. Sends `text` to the API
+    /// with a rubric asking for a plain-language rewrite, then recomputes the
+    /// grade on the result. Loops up to `max_revise_attempts` times, stopping
+    /// early once the grade is within tolerance. Returns the final text
+    /// (revised or original if every attempt failed to lower the grade) and
+    /// the number of attempts it took (0 if the original already passed).
+    ///
+    /// A network or API error mid-loop logs at `warn` and returns the best
+    /// text so far rather than losing the reply entirely.
+    async fn revise_for_plain_language(&self, text: &str) -> (String, u32) {
+        let max_attempts = self.style_max_revise_attempts;
+        let mut current = text.to_string();
+        let mut attempts = 0u32;
+
+        let rubric = "Rewrite the following reply in plain language. \
+            Use short sentences, common words, and active voice. \
+            Cut padding, jargon, and passive constructions. \
+            Preserve every technical fact, name, path, and code reference exactly. \
+            Return only the rewritten reply, no preamble or commentary.";
+
+        let target_grade = self.style_target_grade;
+        let tolerance = self.style_grade_tolerance;
+
+        while attempts < max_attempts {
+            let grade = crate::style::flesch_kincaid_grade(&current);
+            let threshold = target_grade + tolerance;
+            if grade <= threshold {
+                debug!(
+                    grade,
+                    attempts,
+                    "plain-language revise: grade {grade} within tolerance {threshold}, stopping"
+                );
+                break;
+            }
+
+            debug!(
+                grade,
+                attempt = attempts + 1,
+                max_attempts,
+                "plain-language revise: grade {grade} above threshold {threshold}, revising"
+            );
+
+            let request = ChatRequest {
+                model: self.config.model.clone(),
+                messages: vec![
+                    Message {
+                        role: Role::System,
+                        content: Some(Content::text(rubric)),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some(Content::text(current.clone())),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    },
+                ],
+                tools: None,
+                tool_choice: None,
+                stream: false,
+                temperature: Some(0.3),
+                max_tokens: Some(4096),
+                thinking: None,
+                thinking_mode: None,
+                reasoning_effort: None,
+                effort: Some(Effort::None),
+            };
+
+            match self.client.chat(&request).await {
+                Ok(response) => {
+                    let revised = response
+                        .choices
+                        .first()
+                        .and_then(|c| c.message.content.as_ref())
+                        .and_then(|content| content.as_text())
+                        .unwrap_or_default()
+                        .to_string();
+                    if revised.is_empty() {
+                        warn!("plain-language revise: empty response from critic, stopping");
+                        break;
+                    }
+                    current = revised;
+                }
+                Err(e) => {
+                    warn!("plain-language revise: API error on attempt {}: {e}", attempts + 1);
+                    break;
+                }
+            }
+            attempts += 1;
+        }
+
+        (current, attempts)
     }
 
     /// Clear history and reload system prompt (called after session reset).
