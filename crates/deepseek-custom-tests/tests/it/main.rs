@@ -46,6 +46,7 @@ mod claude_cli_lifecycle;
 mod config_settings;
 mod context_relevance;
 mod effort;
+mod evolution;
 mod gui;
 mod gui_attachment;
 mod gui_autopilot_tab;

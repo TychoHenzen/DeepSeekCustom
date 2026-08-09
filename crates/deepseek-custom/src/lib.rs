@@ -5,6 +5,7 @@ pub mod backend;
 pub mod config;
 pub mod context;
 pub mod effort;
+pub mod evolution;
 pub mod error;
 pub mod gui;
 pub mod hemisphere;

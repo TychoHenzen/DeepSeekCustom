@@ -76,7 +76,7 @@ built. This one holds the work items, in build order.
 
 ## Phase E: programmatic evolutionary search
 
-- [ ] `E1` `crates/deepseek-custom/src/evolution/mod.rs`: `Candidate`,
+- [x] `E1` `crates/deepseek-custom/src/evolution/mod.rs`: `Candidate`,
       `MapElitesArchive`, `Island`. Plain data, no tool-trait code, no
       model call anywhere in this file.
 - [ ] `E2` `MapElitesArchive::insert`: fixed-width bucketing of a feature
