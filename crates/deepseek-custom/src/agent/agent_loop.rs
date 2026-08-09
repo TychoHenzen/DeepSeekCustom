@@ -1223,6 +1223,22 @@ impl AgentLoop {
         (current, attempts)
     }
 
+    /// Test-support seam for `maybe_check_plain_language`: returns whether
+    /// a given reply text exceeds the plain-language grade threshold.
+    /// Gated so the production API surface does not grow.
+    #[cfg(feature = "test-support")]
+    pub fn maybe_check_plain_language_for_test(&self, text: &str) -> bool {
+        self.maybe_check_plain_language(text)
+    }
+
+    /// Test-support seam for `revise_for_plain_language`: runs the
+    /// critique-and-revise loop against `self.client` and returns the
+    /// revised text plus the number of attempts it took.
+    #[cfg(feature = "test-support")]
+    pub async fn revise_for_plain_language_for_test(&self, text: &str) -> (String, u32) {
+        self.revise_for_plain_language(text).await
+    }
+
     /// Clear history and reload system prompt (called after session reset).
     pub fn reset(&mut self, new_system_prompt: String, new_user_prompt: String) {
         info!("agent: session reset");

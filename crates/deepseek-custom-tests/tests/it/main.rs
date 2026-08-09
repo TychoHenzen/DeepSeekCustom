@@ -67,6 +67,7 @@ mod plugins;
 mod process_group;
 mod session;
 mod session_store;
+mod style;
 mod skills;
 mod skills_discovery;
 mod skills_loader;

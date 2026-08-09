@@ -70,7 +70,7 @@ built. This one holds the work items, in build order.
       once the grade is within `grade_tolerance`.
 - [x] `D5` `Notice` block (`Info`) recording that a reply was revised, and
       how many tries it took. No notice when the original already passed.
-- [ ] `D6` `style.rs` in `crates/deepseek-custom-tests/tests/it/`: unit
+- [x] `D6` `style.rs` in `crates/deepseek-custom-tests/tests/it/`: unit
       tests for `flesch_kincaid_grade` against sentences with a known
       grade. Add a `StubBackend` test for the revise loop too.
 
