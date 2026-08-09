@@ -86,7 +86,7 @@ built. This one holds the work items, in build order.
 - [x] `E3` `select_parent(&Island) -> &Candidate`: deterministic,
       round-robins across occupied cells rather than always picking the
       single best.
-- [ ] `E4` `migrate(&mut [Island])`: rank islands by best fitness, reset
+- [x] `E4` `migrate(&mut [Island])`: rank islands by best fitness, reset
       the bottom half, reseed from the single best candidate across every
       island. Runs every `migration_interval` rounds.
 - [ ] `E5` `evolution.rs` in `crates/deepseek-custom-tests/tests/it/`:

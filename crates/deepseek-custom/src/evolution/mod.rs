@@ -230,4 +230,62 @@ fn insert_elite(elites: &mut Vec<Candidate>, k: usize, candidate: Candidate) -> 
     true
 }
 
+/// Run every `migration_interval` rounds.
+///
+/// Ranks islands by their best candidate's fitness (descending).  Resets the
+/// bottom half: clears their archive and elite list, then reseeds each with a
+/// clone of the single best candidate found across every island.  This is
+/// FunSearch's own rule, reimplemented here in Rust instead of left to a tool
+/// call.
+///
+/// A no-op when there are fewer than 2 islands, or when no island has a
+/// candidate.
+pub fn migrate(islands: &mut [Island]) {
+    let n = islands.len();
+    if n < 2 {
+        return;
+    }
 
+    // Find the single best candidate across every island by index so no
+    // reference into `islands` outlives this block.
+    let mut best_fitness: Option<f64> = None;
+    let mut best_idx: Option<usize> = None;
+    for (idx, isle) in islands.iter().enumerate() {
+        if let Some(c) = isle.best()
+            && best_fitness.is_none_or(|bf| c.fitness > bf)
+        {
+            best_fitness = Some(c.fitness);
+            best_idx = Some(idx);
+        }
+    }
+    let Some(best_idx) = best_idx else {
+        return; // No candidate anywhere.
+    };
+    let global_best = islands[best_idx].best().unwrap().clone();
+
+    // Rank islands by their best fitness, descending.  Islands with no
+    // candidate sort to the end.
+    let mut ranked: Vec<(usize, Option<f64>)> = islands
+        .iter()
+        .enumerate()
+        .map(|(idx, isle)| (idx, isle.best().map(|c| c.fitness)))
+        .collect();
+    ranked.sort_by(|(_, fa), (_, fb)| {
+        // None sorts after Some (descending: Some first, None last).
+        match (fa, fb) {
+            (Some(a), Some(b)) => b.total_cmp(a), // descending
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+
+    // Reset the bottom half.
+    let bottom_count = n / 2;
+    for &(idx, _) in &ranked[n - bottom_count..] {
+        let island = &mut islands[idx];
+        island.archive = MapElitesArchive::new(island.archive.bucket_width);
+        island.elites.clear();
+        island.insert(global_best.clone());
+    }
+}
