@@ -28,7 +28,7 @@ built. This one holds the work items, in build order.
 - [x] `B4` Voting: group by exact text match by default. When `check_cmd`
       is set, vote only among candidates that passed it. Require the
       `vote_k` lead margin to accept a winner.
-- [ ] `B5` Tool result names the winning attempt id and the vote count. A
+- [x] `B5` Tool result names the winning attempt id and the vote count. A
       losing attempt still shows up in the transcript as its own
       `Subagent` block.
 - [ ] `B6` Every-attempt-failed and no-candidate-passed cases both come

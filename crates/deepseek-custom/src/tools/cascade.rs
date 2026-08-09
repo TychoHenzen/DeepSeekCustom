@@ -58,6 +58,8 @@ enum VoteOutcome {
         text: String,
         /// How many candidates voted for this answer.
         count: usize,
+        /// 1-based attempt indices of the candidates that produced this answer.
+        winning_indices: Vec<usize>,
     },
     /// No answer reached the required lead margin, or there were no candidates
     /// at all to vote on.
@@ -67,10 +69,12 @@ enum VoteOutcome {
     },
 }
 
-/// One vote group: candidates that produced the same trimmed text.
+/// One vote group: candidates that produced the same trimmed text, with
+/// their 1-based attempt indices.
 struct VoteTally {
     text: String,
     count: usize,
+    indices: Vec<usize>,
 }
 
 /// A candidate answer from one subagent attempt.
@@ -304,10 +308,16 @@ impl Tool for CascadeTool {
         let mut parts: Vec<String> = Vec::new();
 
         match &vote_outcome {
-            VoteOutcome::Winner { text, count, .. } => {
+            VoteOutcome::Winner { text, count, winning_indices } => {
+                let id_label: String = if winning_indices.len() == 1 {
+                    format!("Attempt {}", winning_indices[0])
+                } else {
+                    let ids: Vec<String> = winning_indices.iter().map(|i| i.to_string()).collect();
+                    format!("Attempts {}", ids.join(", "))
+                };
                 parts.push(format!(
-                    "Winner ({} vote(s), lead by at least {}-vote margin): {}",
-                    count, parsed.vote_k, text
+                    "{} won ({} vote(s), lead by at least {}-vote margin): {}",
+                    id_label, count, parsed.vote_k, text
                 ));
             }
             VoteOutcome::NoConsensus { tallies } => {
@@ -386,10 +396,12 @@ fn vote(candidates: &[Candidate], vote_k: u32) -> VoteOutcome {
         let trimmed = c.text.trim();
         if let Some(tally) = tallies.iter_mut().find(|t| t.text == trimmed) {
             tally.count += 1;
+            tally.indices.push(c.index);
         } else {
             tallies.push(VoteTally {
                 text: trimmed.to_string(),
                 count: 1,
+                indices: vec![c.index],
             });
         }
     }
@@ -404,6 +416,7 @@ fn vote(candidates: &[Candidate], vote_k: u32) -> VoteOutcome {
         VoteOutcome::Winner {
             text: top.text.clone(),
             count: top.count,
+            winning_indices: top.indices.clone(),
         }
     } else {
         VoteOutcome::NoConsensus { tallies }
