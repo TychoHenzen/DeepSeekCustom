@@ -71,12 +71,28 @@ pub fn now_timestamp() -> Timestamp {
         .unwrap_or(0)
 }
 
+/// A conversation's display number: 1 for the first session ever opened in
+/// a project, counting up from there. Assigned once, when the conversation
+/// opens, and never changed again.
+///
+/// The Sessions tab used to be ordered by `updated_at` alone, which meant
+/// the list reshuffled under the reader every time a running turn autosaved
+/// and moved its own row to the top. A number that never moves gives a row
+/// a name that survives the next save.
+pub type SessionSeq = u64;
+
 /// The summary row the Sessions tab renders without loading the whole
-/// conversation: title, timestamps, and which backend and model it ran
-/// on.
+/// conversation: number, title, timestamps, and which backend and model it
+/// ran on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: SessionId,
+    /// This conversation's display number. `serde(default)` gives 0 to a
+    /// record written before numbering existed. `SessionStore::number_old_sessions`
+    /// replaces every such 0 once, at startup, so a 0 never reaches the
+    /// Sessions tab.
+    #[serde(default)]
+    pub seq: SessionSeq,
     pub title: String,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

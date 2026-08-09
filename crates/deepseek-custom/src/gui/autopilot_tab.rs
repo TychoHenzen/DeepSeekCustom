@@ -103,6 +103,14 @@ impl AutopilotTab {
         }
     }
 
+    /// Whether an autopilot run is between its first iteration and its
+    /// last. The event pump asks, because one iteration's `TurnEnd` does
+    /// not end a run: a session switch held during a run has to wait for
+    /// `RepeatFinished` instead. See `DeepSeekGui::event_ends_turn`.
+    pub fn is_running(&self) -> bool {
+        matches!(self.progress, AutopilotProgress::Running { .. })
+    }
+
     /// The progress readout's current state. `render` only draws
     /// `self.progress` into a label, it never hands the value back, so
     /// there is no other way to read it back out. Test-only.

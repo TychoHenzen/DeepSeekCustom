@@ -9,7 +9,7 @@ built. This one holds the work items, in build order.
 - [x] `A1` Add a tool-first-arithmetic instruction to the system prompt
       (`crates/deepseek-custom/src/agent/prompt.rs`). Unconditional, not
       gated on a flag.
-- [ ] `A2` Write one line per autopilot step (task text plus final reply,
+- [x] `A2` Write one line per autopilot step (task text plus final reply,
       newlines flattened) to `.autopilot/decisions.log`. Do this at the end
       of `run_repeat`'s step loop.
 

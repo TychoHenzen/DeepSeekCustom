@@ -69,6 +69,7 @@ impl SystemPromptBuilder {
             && !skills.is_empty()
         {
             parts.push(format!("\n## Available Skills\n\n{skills}"));
+            parts.push(slash_command_instructions().to_string());
         }
 
         // 6. Tool definitions
@@ -111,6 +112,25 @@ No code blocks and no code. Describe what the code does instead.
 Do not read file paths, URLs, or long identifiers aloud. Name the file plainly, for example "the agent loop file".
 Use short everyday words and a conversational cadence, the way a person answers a question out loud.
 Tool use is unchanged. Only the text spoken back to the user is constrained."#
+}
+
+/// Instruction block appended right after the skill index. Says what a
+/// leading slash means, because nothing else does.
+///
+/// This harness has no slash commands of its own. A task written for Claude
+/// Code says things like "/commit your work", and a real autopilot run read
+/// that line, had no way to act on it, and finished every item without ever
+/// committing. The name after the slash is a skill name, and the `skill`
+/// tool is how a skill body gets read, so saying that once turns a dead
+/// instruction into a live one.
+pub fn slash_command_instructions() -> &'static str {
+    r#"## Slash commands are skills
+
+A word written with a leading slash, such as `/commit` or `/review`, names a
+skill in the index above. It is not a command this harness runs for you.
+Call the `skill` tool with that name to read its instructions, then follow
+them yourself with your own tools. A slash name missing from the index above
+is not available: say so plainly rather than pretending the step happened."#
 }
 
 /// Instruction block appended to the system prompt unconditionally. Tells

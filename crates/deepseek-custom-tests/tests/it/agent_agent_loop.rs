@@ -956,7 +956,7 @@ async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     agent.set_event_sender(tx);
 
-    run_repeat(&mut agent, "do the thing", 0).await;
+    run_repeat(&mut agent, "do the thing", 0, &std::env::temp_dir()).await;
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -987,7 +987,7 @@ async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
     agent.set_event_sender(tx);
     agent.repeat_interrupt_flag().store(true, Ordering::SeqCst);
 
-    run_repeat(&mut agent, "do the thing", 3).await;
+    run_repeat(&mut agent, "do the thing", 3, &std::env::temp_dir()).await;
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -1071,7 +1071,7 @@ async fn run_repeat_two_iterations_against_mock_server() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     agent.set_event_sender(tx);
 
-    run_repeat(&mut agent, "do the task", 2).await;
+    run_repeat(&mut agent, "do the task", 2, &std::env::temp_dir()).await;
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {

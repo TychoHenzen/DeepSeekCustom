@@ -197,8 +197,10 @@ impl RepeatTarget for StubBackend {
         self.reset();
     }
 
-    async fn run_turn(&mut self, task: &str) -> Result<()> {
-        self.run(task).await.map(|_| ())
+    async fn run_turn(&mut self, task: &str) -> Result<String> {
+        self.run(task)
+            .await
+            .map(|replies| replies.into_iter().last().unwrap_or_default())
     }
 
     fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {

@@ -1,7 +1,8 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::agent_loop::{AgentLoop, StreamEvent};
 use crate::error::Result;
@@ -26,8 +27,8 @@ pub trait RepeatTarget {
     /// the next iteration's turn runs.
     fn reset_for_iteration(&mut self) -> impl std::future::Future<Output = ()> + Send;
 
-    /// Run one turn of `task` to completion.
-    fn run_turn(&mut self, task: &str) -> impl std::future::Future<Output = Result<()>> + Send;
+    /// Run one turn of `task` to completion, returning the final reply text.
+    fn run_turn(&mut self, task: &str) -> impl std::future::Future<Output = Result<String>> + Send;
 
     /// The flag that stops the whole repeat run, not just the iteration in
     /// flight. Checked before every iteration.
@@ -49,8 +50,10 @@ impl RepeatTarget for AgentLoop {
         self.clear_history();
     }
 
-    async fn run_turn(&mut self, task: &str) -> Result<()> {
-        self.run(task).await.map(|_| ())
+    async fn run_turn(&mut self, task: &str) -> Result<String> {
+        self.run(task)
+            .await
+            .map(|replies| replies.into_iter().last().unwrap_or_default())
     }
 
     fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {
@@ -66,6 +69,45 @@ impl RepeatTarget for AgentLoop {
     }
 }
 
+/// Flatten newlines out of a string so it stays on one line in the log.
+fn single_line(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+}
+
+/// Write one line to `.autopilot/decisions.log` recording a completed
+/// autopilot step, the same file `PolicyStore::append_decision` already
+/// writes to. A failure logs at `warn` and is otherwise ignored, the same
+/// rule `append_decision` follows: losing a log line must never take a run
+/// down.
+fn append_step_log(project_root: &Path, task: &str, reply: &str) {
+    let dir = project_root.join(".autopilot");
+    let path = dir.join("decisions.log");
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!(
+            "autopilot: could not create decision log directory {}: {e}",
+            dir.display()
+        );
+        return;
+    }
+
+    let line = format!("step={} reply={}\n", single_line(task), single_line(reply));
+
+    use std::io::Write as _;
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(line.as_bytes()));
+
+    if let Err(e) = result {
+        warn!(
+            "autopilot: could not append step to {}: {e}",
+            path.display()
+        );
+    }
+}
+
 /// Run `task` against `target` `iterations` times, resetting the target's
 /// conversation state before each run so no iteration sees any earlier one.
 ///
@@ -77,9 +119,19 @@ impl RepeatTarget for AgentLoop {
 /// next iteration. A single Escape press that sets the repeat flag instead
 /// stops the whole run.
 ///
+/// Writes one line per completed step to `<project_root>/.autopilot/decisions.log`,
+/// with the task text and the final reply, newlines flattened. This gives a
+/// long autopilot run a compaction note, matching Diversity.md's account of
+/// the progress file Anthropic pairs with compaction.
+///
 /// An `Err` from `target.run_turn` logs at `error` and stops the loop.
 /// Iterations already finished still count toward `completed`.
-pub async fn run_repeat<T: RepeatTarget>(target: &mut T, task: &str, iterations: u32) {
+pub async fn run_repeat<T: RepeatTarget>(
+    target: &mut T,
+    task: &str,
+    iterations: u32,
+    project_root: &Path,
+) {
     if iterations == 0 {
         target.finish(0, 0);
         return;
@@ -102,9 +154,10 @@ pub async fn run_repeat<T: RepeatTarget>(target: &mut T, task: &str, iterations:
         });
 
         match target.run_turn(task).await {
-            Ok(_) => {
+            Ok(reply) => {
                 completed += 1;
                 info!(index, total = iterations, "repeat run: iteration finished");
+                append_step_log(project_root, task, &reply);
             }
             Err(e) => {
                 error!(

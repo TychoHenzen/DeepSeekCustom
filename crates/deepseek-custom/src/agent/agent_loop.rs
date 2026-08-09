@@ -907,12 +907,35 @@ impl AgentLoop {
                     image: None,
                 },
             },
+            // Name every tool that does exist. A bare "Unknown tool: edit"
+            // tells the model nothing it can act on, and a real run proved
+            // that: it called `edit` five times in a row against a registry
+            // that had no such tool, then gave up and wrote PowerShell
+            // scripts to do the replacement through `bash` instead.
             None => ToolOutput {
-                content: format!("Unknown tool: {name}"),
+                content: format!(
+                    "Unknown tool: {name}. Available tools: {}",
+                    self.tool_name_list()
+                ),
                 is_error: true,
                 image: None,
             },
         }
+    }
+
+    /// Every registered tool name, sorted, comma separated. Read off the
+    /// registry rather than a fixed list: an MCP server registers its tools
+    /// after this agent was built, so a fixed list would go stale mid
+    /// session.
+    fn tool_name_list(&self) -> String {
+        let mut names: Vec<String> = self
+            .tools
+            .list()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        names.sort();
+        names.join(", ")
     }
 
     /// Test-only entry onto `execute_tool` for the workspace-split test

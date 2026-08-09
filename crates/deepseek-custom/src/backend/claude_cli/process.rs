@@ -265,6 +265,9 @@ pub struct ClaudeCliDriver {
     /// `Backend::load_session`. `spawn_child` passes it to `build_args`
     /// as `--resume <id>`.
     claude_session_id: Option<String>,
+    /// Accumulated reply text from the most recent turn, updated by the
+    /// stdout reader and cleared at the start of each turn.
+    last_reply: Arc<Mutex<String>>,
 }
 
 impl ClaudeCliDriver {
@@ -299,6 +302,7 @@ impl ClaudeCliDriver {
             model_flag,
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             claude_session_id: None,
+            last_reply: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -401,6 +405,9 @@ impl ClaudeCliDriver {
         image: Option<&ImageAttachment>,
     ) -> Result<()> {
         self.interrupt_flag.store(false, Ordering::SeqCst);
+        if let Ok(mut reply) = self.last_reply.lock() {
+            reply.clear();
+        }
         self.ensure_ready().await?;
         let line = build_user_turn_line(text, image);
         let stdin = self
@@ -589,7 +596,13 @@ impl ClaudeCliDriver {
 
         let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
         let (session_id_tx, session_id_rx) = mpsc::unbounded_channel();
-        spawn_stdout_reader(stdout, self.tx_events.clone(), turn_done_tx, session_id_tx);
+        spawn_stdout_reader(
+            stdout,
+            self.tx_events.clone(),
+            turn_done_tx,
+            session_id_tx,
+            self.last_reply.clone(),
+        );
         spawn_stderr_drain(stderr);
 
         self.child = Some(child);
@@ -726,8 +739,14 @@ impl crate::agent::repeat::RepeatTarget for ClaudeCliDriver {
         self.shutdown().await;
     }
 
-    async fn run_turn(&mut self, task: &str) -> Result<()> {
-        self.send(task).await
+    async fn run_turn(&mut self, task: &str) -> Result<String> {
+        self.send(task).await?;
+        let reply = self
+            .last_reply
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or_default();
+        Ok(reply)
     }
 
     fn repeat_interrupt_flag(&self) -> Arc<AtomicBool> {
@@ -751,6 +770,7 @@ fn spawn_stdout_reader(
     tx_events: mpsc::UnboundedSender<RoutedEvent>,
     turn_done: mpsc::UnboundedSender<()>,
     session_id: mpsc::UnboundedSender<String>,
+    last_reply: Arc<Mutex<String>>,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
@@ -773,6 +793,11 @@ fn spawn_stdout_reader(
             };
             let ends_turn = matches!(event, ClaudeEvent::Result(_));
             for stream_event in mapper.map(event) {
+                if let StreamEvent::Text { text, .. } = &stream_event
+                    && let Ok(mut reply) = last_reply.lock()
+                {
+                    reply.push_str(text.as_str());
+                }
                 if tx_events.send(RoutedEvent::own(stream_event)).is_err() {
                     return;
                 }

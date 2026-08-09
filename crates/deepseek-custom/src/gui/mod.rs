@@ -51,6 +51,25 @@ use session_state::{SessionOrigin, SessionState};
 use transcript::{BlockKind, Transcript};
 use voice_ui::VoiceUi;
 
+/// A session change asked for while a turn was still running, held until
+/// that turn ends.
+///
+/// Switching straight away corrupted both conversations. The transcript and
+/// the session id moved at once, while the turn kept streaming: its
+/// remaining text, tool calls, `ConversationSnapshot`, and `TurnEnd` all
+/// landed in the conversation the user had just opened, and the `TurnEnd`
+/// autosave then wrote the old turn's API history under the new
+/// conversation's id. The agent side made it worse rather than better,
+/// since it reads one command at a time and only reaches `LoadSession`
+/// after the running turn returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSwitch {
+    /// Open a fresh conversation, as the New Chat button asks for.
+    New,
+    /// Open a saved conversation by id.
+    Load(crate::session::SessionId),
+}
+
 /// Which tab the central panel shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActiveTab {
@@ -87,6 +106,12 @@ pub struct DeepSeekGui {
     pub(super) total_cache_hit_tokens: u32,
     pub(super) total_cache_miss_tokens: u32,
     pub(super) session_status: String,
+    /// Whether a turn is in flight. Set when a turn is sent, cleared by the
+    /// event that ends it. A session switch asked for while this is true is
+    /// held in `pending_switch` instead of applied.
+    pub(super) turn_active: bool,
+    /// A session switch waiting for the running turn to end.
+    pub(super) pending_switch: Option<PendingSwitch>,
     pub(super) follow_output: bool,
     pub(super) unsaved_changes: bool,
     pub(super) saved_at: Instant,
@@ -134,6 +159,8 @@ impl DeepSeekGui {
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,
             session_status: "Ready".into(),
+            turn_active: false,
+            pending_switch: None,
             follow_output: false,
             unsaved_changes: false,
             saved_at: Instant::now(),
@@ -183,15 +210,55 @@ impl DeepSeekGui {
     }
 
     pub(super) fn start_new_session(&mut self) {
+        if self.defer_switch(PendingSwitch::New) {
+            return;
+        }
         let origin = self.current_origin();
         let cmd = self.sessions.start_new(&mut self.transcript, origin);
         let _ = self.tx_input.send(cmd);
     }
 
     pub(super) fn load_session(&mut self, id: crate::session::SessionId) {
+        if self.defer_switch(PendingSwitch::Load(id)) {
+            return;
+        }
         let origin = self.current_origin();
         if let Some(cmd) = self.sessions.load(id, &mut self.transcript, origin) {
             let _ = self.tx_input.send(cmd);
+        }
+    }
+
+    /// Hold a session switch until the running turn ends, and say so in the
+    /// transcript. Reports whether the switch was held.
+    ///
+    /// A switch applied mid-turn splits one turn across two conversations,
+    /// so the running turn wins and the switch waits. See `PendingSwitch`
+    /// for what the old behavior actually did to a record. Escape ends the
+    /// turn now, and the held switch applies on the interrupt.
+    fn defer_switch(&mut self, switch: PendingSwitch) -> bool {
+        if !self.turn_active {
+            return false;
+        }
+        self.pending_switch = Some(switch);
+        self.transcript.push(BlockKind::Notice {
+            text: "[Session switch waiting for this turn to end. Escape to stop the turn now.]"
+                .into(),
+            severity: transcript::Severity::Warning,
+        });
+        true
+    }
+
+    /// Apply a held session switch, once the turn that blocked it has
+    /// ended. Called from the event pump, after the terminal event has been
+    /// applied to the transcript, so the outgoing conversation is saved
+    /// whole.
+    pub(super) fn apply_pending_switch(&mut self) {
+        let Some(switch) = self.pending_switch.take() else {
+            return;
+        };
+        match switch {
+            PendingSwitch::New => self.start_new_session(),
+            PendingSwitch::Load(id) => self.load_session(id),
         }
     }
 
@@ -209,6 +276,7 @@ impl DeepSeekGui {
                 .push(BlockKind::Image { image: img.clone() });
         }
         let _ = self.tx_input.send(AgentCommand::UserTurn { text, image });
+        self.turn_active = true;
         self.session_status = "Running...".into();
     }
 }

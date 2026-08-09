@@ -71,6 +71,14 @@ cpal = "0.15"
 # (see src/voice/stt.rs), so re-adding one of these features later is the
 # whole change needed.
 uuid = { version = "1", features = ["v4", "serde"] }
+# All three were already in the dependency tree transitively. Declared
+# directly for the `glob` and `grep` tools in `src/tools/`, which give the
+# model the file search Claude Code's own harness offers. Without them a run
+# reaches for `powershell Get-ChildItem` and `Select-String` through the
+# bash tool, paying process startup and shell quoting per lookup.
+glob = "0.3"
+walkdir = "2"
+regex = "1"
 whisper-rs = "0.16"
 kokoro-en = "0.1.4"
 # kokoro-en 0.1.4 asks for ort "2.0.0-rc.11", which lets the resolver pick

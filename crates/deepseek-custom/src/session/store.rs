@@ -80,8 +80,17 @@ impl SessionStore {
         })
     }
 
-    /// List the metadata for every session in the directory, sorted by
-    /// `updated_at`, newest first.
+    /// List the metadata for every session in the directory, highest
+    /// number first.
+    ///
+    /// The order is by `seq`, not by `updated_at`. A saved conversation
+    /// gets its number when it opens and keeps it, so a row holds its place
+    /// in the list no matter how many times a running turn saves it. Sorting
+    /// by `updated_at` moved the running conversation to the top on every
+    /// autosave, which is once a turn and once every 15 seconds inside a
+    /// long turn. `created_at` breaks a tie between two records that share a
+    /// number, which only happens for records written before numbering
+    /// existed and not yet renumbered.
     ///
     /// Guarantees: a file that cannot be read or parsed is skipped with a
     /// `warn!` log rather than failing the whole listing. A missing
@@ -122,8 +131,53 @@ impl SessionStore {
             }
         }
 
-        metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        metas.sort_by(|a, b| {
+            b.seq
+                .cmp(&a.seq)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        });
         metas
+    }
+
+    /// Give a number to every saved conversation that has none, oldest
+    /// first, and write each one back. Returns how many were numbered.
+    ///
+    /// Numbering shipped after these files were written, so they carry
+    /// `seq: 0` from `serde`'s default. This runs once at startup, before
+    /// the first `list()`, so the Sessions tab never shows a 0. Oldest first
+    /// by `created_at`, so the numbers agree with the order the
+    /// conversations actually happened in.
+    ///
+    /// A record that will not load or will not save is skipped with a
+    /// `warn!`: a numbering problem must not stop the app from opening.
+    pub fn number_old_sessions(&self) -> usize {
+        let mut metas = self.list();
+        let mut next = metas.iter().map(|meta| meta.seq).max().unwrap_or(0) + 1;
+        metas.retain(|meta| meta.seq == 0);
+        metas.sort_by_key(|meta| meta.created_at);
+
+        let mut numbered = 0;
+        for meta in metas {
+            let Ok(mut record) = self.load(&meta.id) else {
+                warn!(
+                    "session store: could not number {}: record will not load",
+                    meta.id.as_str()
+                );
+                continue;
+            };
+            record.meta.seq = next;
+            match self.save(&record) {
+                Ok(()) => {
+                    next += 1;
+                    numbered += 1;
+                }
+                Err(e) => warn!("session store: could not number {}: {e}", meta.id.as_str()),
+            }
+        }
+        if numbered > 0 {
+            debug!("session store: numbered {numbered} older session(s)");
+        }
+        numbered
     }
 
     /// Remove a session's file. Deleting a session that is not there is

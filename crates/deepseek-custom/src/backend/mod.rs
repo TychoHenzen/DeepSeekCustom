@@ -147,12 +147,19 @@ impl Backend {
     /// Both variants drive the same `run_repeat` loop in
     /// `src/agent/repeat.rs`, through the `RepeatTarget` trait each
     /// implements its own way.
-    pub async fn run_repeat(&mut self, task: &str, iterations: u32) {
+    pub async fn run_repeat(
+        &mut self,
+        task: &str,
+        iterations: u32,
+        project_root: &std::path::Path,
+    ) {
         match self {
-            Backend::Api(agent) => run_repeat(agent.as_mut(), task, iterations).await,
-            Backend::ClaudeCli(driver) => run_repeat(driver.as_mut(), task, iterations).await,
+            Backend::Api(agent) => run_repeat(agent.as_mut(), task, iterations, project_root).await,
+            Backend::ClaudeCli(driver) => {
+                run_repeat(driver.as_mut(), task, iterations, project_root).await
+            }
             #[cfg(feature = "test-support")]
-            Backend::Stub(stub) => run_repeat(stub.as_mut(), task, iterations).await,
+            Backend::Stub(stub) => run_repeat(stub.as_mut(), task, iterations, project_root).await,
         }
     }
 

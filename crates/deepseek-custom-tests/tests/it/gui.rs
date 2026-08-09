@@ -32,10 +32,10 @@ use deepseek_custom::gui::voice_ui::{
     apply_voice_enabled, apply_wake_phrase, voice_mode_flag_for_tts,
 };
 use deepseek_custom::gui::{
-    ActiveTab, BLOCK_GAP, DeepSeekGui, IMAGE_LABEL_COLOR, TOOL_ERROR_COLOR, TURN_GAP, block_color,
-    format_elapsed_ms, gap_before, raw_block_text, raw_span_text, role_label, severity_color,
-    subagent_elapsed_ms, subagent_header_summary, subagent_state_color, tool_color,
-    tool_output_color, tool_summary, truncate_args,
+    ActiveTab, BLOCK_GAP, DeepSeekGui, IMAGE_LABEL_COLOR, PendingSwitch, TOOL_ERROR_COLOR,
+    TURN_GAP, block_color, format_elapsed_ms, gap_before, raw_block_text, raw_span_text,
+    role_label, severity_color, subagent_elapsed_ms, subagent_header_summary, subagent_state_color,
+    tool_color, tool_output_color, tool_summary, truncate_args,
 };
 use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent};
 
@@ -1930,4 +1930,131 @@ fn an_autopilot_session_takes_its_title_from_the_task() {
         .load(&id)
         .expect("expected the iteration's session to load back");
     assert_eq!(loaded.meta.title, "tighten the codebase");
+}
+
+// â”€â”€ Session switching under a running turn â”€â”€
+//
+// The bug these pin: clicking a session while a turn was still streaming
+// moved the transcript and the session id at once, so the rest of that
+// turn landed in the conversation just opened, and its `TurnEnd` autosave
+// wrote the old turn's history under the new conversation's id.
+
+fn turn_end_event() -> StreamEvent {
+    StreamEvent::TurnEnd {
+        turn: 1,
+        finish_reason: "stop".into(),
+        total_tokens: 10,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 0,
+    }
+}
+
+#[test]
+fn a_new_session_asked_for_mid_turn_waits_for_the_turn_to_end() {
+    let mut gui = make_gui_in(&Settings::default(), unique_temp_dir("defer-new"));
+    gui.send_input_for_test("hello");
+    assert!(gui.turn_active_for_test());
+    let running_id = gui.sessions_for_test().current_id();
+
+    gui.start_new_session_for_test();
+
+    assert_eq!(
+        gui.sessions_for_test().current_id(),
+        running_id,
+        "the switch must not move the conversation while the turn streams"
+    );
+    assert_eq!(gui.pending_switch_for_test(), Some(PendingSwitch::New));
+
+    gui.handle_stream_event(turn_end_event());
+
+    assert_eq!(gui.pending_switch_for_test(), None);
+    assert_ne!(
+        gui.sessions_for_test().current_id(),
+        running_id,
+        "the held switch must apply once the turn ends"
+    );
+    assert!(!gui.turn_active_for_test());
+}
+
+#[test]
+fn a_session_switch_with_no_turn_running_applies_at_once() {
+    let mut gui = make_gui_in(&Settings::default(), unique_temp_dir("defer-idle"));
+    let before = gui.sessions_for_test().current_id();
+
+    gui.start_new_session_for_test();
+
+    assert_eq!(gui.pending_switch_for_test(), None);
+    assert_ne!(gui.sessions_for_test().current_id(), before);
+}
+
+#[test]
+fn a_held_switch_tells_the_user_it_is_waiting() {
+    let mut gui = make_gui_in(&Settings::default(), unique_temp_dir("defer-notice"));
+    gui.send_input_for_test("hello");
+
+    gui.start_new_session_for_test();
+
+    let notices: Vec<&str> = gui
+        .transcript_for_test()
+        .blocks()
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Notice { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|text| text.contains("waiting for this turn")),
+        "expected a notice about the held switch, got {notices:?}"
+    );
+}
+
+#[test]
+fn an_interrupt_releases_a_held_switch() {
+    let mut gui = make_gui_in(&Settings::default(), unique_temp_dir("defer-interrupt"));
+    gui.send_input_for_test("hello");
+    let running_id = gui.sessions_for_test().current_id();
+    gui.start_new_session_for_test();
+
+    gui.handle_stream_event(StreamEvent::Interrupted {
+        message: "stopped".into(),
+    });
+
+    assert_eq!(gui.pending_switch_for_test(), None);
+    assert_ne!(gui.sessions_for_test().current_id(), running_id);
+}
+
+#[test]
+fn one_autopilot_iteration_ending_does_not_release_a_held_switch() {
+    // A run rotates to a fresh conversation on every iteration, so a
+    // switch released at an iteration boundary would be thrown away a
+    // moment later. It waits for the run itself to finish.
+    let mut gui = make_gui_in(&Settings::default(), unique_temp_dir("defer-repeat"));
+    gui.handle_stream_event(StreamEvent::RepeatIterationStart {
+        index: 1,
+        total: 3,
+        task: "work the checklist".into(),
+    });
+    assert!(gui.turn_active_for_test());
+
+    gui.start_new_session_for_test();
+    let iteration_id = gui.sessions_for_test().current_id();
+    assert_eq!(gui.pending_switch_for_test(), Some(PendingSwitch::New));
+
+    gui.handle_stream_event(turn_end_event());
+    assert_eq!(
+        gui.pending_switch_for_test(),
+        Some(PendingSwitch::New),
+        "an iteration's TurnEnd must not release the switch mid-run"
+    );
+    assert_eq!(gui.sessions_for_test().current_id(), iteration_id);
+
+    gui.handle_stream_event(StreamEvent::RepeatFinished {
+        completed: 3,
+        total: 3,
+    });
+    assert_eq!(gui.pending_switch_for_test(), None);
+    assert_ne!(gui.sessions_for_test().current_id(), iteration_id);
 }

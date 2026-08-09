@@ -21,14 +21,45 @@ use super::voice_ui::PttKeys;
 const TIMED_SAVE_INTERVAL: Duration = Duration::from_secs(15);
 
 impl DeepSeekGui {
+    /// Whether this event ends the running turn, so a held session switch
+    /// may apply.
+    ///
+    /// `Error` is deliberately not on the list. It fires mid-turn as well:
+    /// a turn that carries an image onto a backend that cannot take one
+    /// reports the dropped attachment this way, before the request even
+    /// goes out. See `build_user_content` in `src/agent/agent_loop.rs`.
+    /// Treating it as terminal would end the turn on a notice.
+    ///
+    /// One iteration's `TurnEnd` does not end an autopilot run. The next
+    /// iteration starts immediately and rotates to a fresh conversation of
+    /// its own, so a switch released there would be thrown away a moment
+    /// later. A run ends on `RepeatFinished`, which fires whether the run
+    /// finished its iterations or Escape stopped it.
+    fn event_ends_turn(&self, event: &StreamEvent) -> bool {
+        match event {
+            StreamEvent::Interrupted { .. } | StreamEvent::RepeatFinished { .. } => true,
+            StreamEvent::TurnEnd { .. } => !self.autopilot.is_running(),
+            _ => false,
+        }
+    }
+
     /// Route one event. Empty route triggers side effects.
     pub(super) fn dispatch_event(&mut self, routed: RoutedEvent) {
+        let ends_turn = routed.route.is_empty() && self.event_ends_turn(&routed.event);
         if routed.route.is_empty() {
             self.process_main_event(&routed.event);
         }
         self.transcript.apply_routed_event(routed);
         self.unsaved_changes = true;
         self.follow_output = true;
+        // A held session switch applies here, after the terminal event has
+        // reached the transcript and after `on_turn_end` has saved it, so
+        // the outgoing conversation is written whole before the switch
+        // replaces it.
+        if ends_turn {
+            self.turn_active = false;
+            self.apply_pending_switch();
+        }
     }
 
     /// Side effects for a main-session event only.
@@ -109,6 +140,10 @@ impl DeepSeekGui {
         self.sessions
             .save_outgoing_and_start_new(&mut self.transcript, origin);
         self.autopilot.set_running(index, total);
+        // An autopilot iteration is a turn the GUI never sent, so nothing
+        // else would mark one as running. Without this, a session switch
+        // during a run would apply mid-iteration.
+        self.turn_active = true;
     }
 
     /// Write a dirty session once per interval while a turn runs.

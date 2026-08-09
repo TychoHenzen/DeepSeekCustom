@@ -21,7 +21,7 @@ use super::backend_picker::BackendPicker;
 use super::session_state::SessionState;
 use super::transcript::Transcript;
 use super::voice_ui::VoiceUi;
-use super::{ActiveTab, DeepSeekGui};
+use super::{ActiveTab, DeepSeekGui, PendingSwitch};
 
 impl DeepSeekGui {
     pub fn transcript_for_test(&self) -> &Transcript {
@@ -170,5 +170,25 @@ impl DeepSeekGui {
 
     pub fn backends_mut_for_test(&mut self) -> &mut BackendPicker {
         &mut self.backends
+    }
+
+    /// Whether a turn is in flight. Nothing production reads this back:
+    /// the event pump writes it and `defer_switch` consumes it in the same
+    /// type, so there is no side-effect-free seam a test could use instead.
+    pub fn turn_active_for_test(&self) -> bool {
+        self.turn_active
+    }
+
+    /// The session switch waiting for the running turn, if any. Test-only
+    /// for the same reason as `turn_active_for_test`.
+    pub fn pending_switch_for_test(&self) -> Option<PendingSwitch> {
+        self.pending_switch.clone()
+    }
+
+    /// Send a user turn without a window, so a test can put the GUI into
+    /// the turn-running state the deferral depends on.
+    pub fn send_input_for_test(&mut self, text: &str) {
+        self.input_buffer = text.to_string();
+        self.send_input();
     }
 }

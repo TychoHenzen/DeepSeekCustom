@@ -64,10 +64,13 @@ impl DeepSeekGui {
         for meta in self.sessions.saved() {
             ui.horizontal(|ui| {
                 let is_current = meta.id == self.sessions.current_id();
+                // The number leads the row. It is assigned once and never
+                // changes, so it names a conversation across sessions in a
+                // way a title derived from the first message cannot.
                 let label = if is_current {
-                    format!("* {}", meta.title)
+                    format!("* #{} {}", meta.seq, meta.title)
                 } else {
-                    meta.title.clone()
+                    format!("#{} {}", meta.seq, meta.title)
                 };
                 if ui.link(label).clicked() {
                     to_open = Some(meta.id);

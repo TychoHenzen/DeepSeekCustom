@@ -29,8 +29,9 @@ use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
     ask::AskUserQuestionTool, bash::BashTool, cd::CdTool, close_session::CloseSessionTool,
-    read::ReadTool, read_image::ReadImageTool, reset::ResetTool, send_message::SendMessageTool,
-    skill::SkillTool, task::TaskTool, write::WriteTool,
+    edit::EditTool, glob::GlobTool, grep::GrepTool, read::ReadTool, read_image::ReadImageTool,
+    reset::ResetTool, send_message::SendMessageTool, skill::SkillTool, task::TaskTool,
+    write::WriteTool,
 };
 
 /// The pieces needed to build either kind of backend, resolved from a
@@ -260,6 +261,13 @@ fn build_api_backend(
     tools.register(Arc::new(ReadTool::new(factory.working_dir())));
     tools.register(Arc::new(ReadImageTool::new(factory.working_dir())));
     tools.register(Arc::new(WriteTool::new(factory.working_dir())));
+    // The three file tools Claude Code has and this harness did not. A run
+    // without them echoes a whole file back through `write` to change three
+    // lines, and shells out to `Get-ChildItem` and `Select-String` to find
+    // anything. See the module docs on each for the real run that showed it.
+    tools.register(Arc::new(EditTool::new(factory.working_dir())));
+    tools.register(Arc::new(GlobTool::new(factory.working_dir())));
+    tools.register(Arc::new(GrepTool::new(factory.working_dir())));
     // The system prompt lists every skill's name and a one-line summary.
     // This is how the model reaches the rest of one. See `src/skills/mod.rs`
     // for why the bodies cannot simply go in the prompt.

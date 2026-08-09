@@ -154,7 +154,9 @@ async fn claude_cli_backend_run_repeat_zero_iterations_emits_only_finished() {
     let mut backend =
         Backend::new_claude_cli("opus".to_string(), None, None, test_working_dir(), tx);
 
-    backend.run_repeat("do the thing", 0).await;
+    backend
+        .run_repeat("do the thing", 0, std::path::Path::new("."))
+        .await;
 
     let event = rx.try_recv().expect("expected a RepeatFinished event");
     match event.event {
@@ -176,7 +178,9 @@ async fn claude_cli_backend_run_repeat_stops_immediately_when_interrupt_flag_alr
         .repeat_interrupt_flag()
         .store(true, Ordering::SeqCst);
 
-    backend.run_repeat("do the thing", 3).await;
+    backend
+        .run_repeat("do the thing", 3, std::path::Path::new("."))
+        .await;
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {

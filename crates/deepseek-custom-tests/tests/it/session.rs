@@ -141,6 +141,7 @@ fn session_record_round_trips_through_json() {
     let record = SessionRecord {
         meta: SessionMeta {
             id: SessionId::new(),
+            seq: 1,
             title: "hello".into(),
             created_at: 1000,
             updated_at: 2000,

@@ -20,7 +20,9 @@ use tracing::{info, warn};
 use super::transcript::Transcript;
 use crate::agent::agent_loop::AgentCommand;
 use crate::api::types::Message;
-use crate::session::{SessionId, SessionMeta, SessionRecord, SessionStore, now_timestamp};
+use crate::session::{
+    SessionId, SessionMeta, SessionRecord, SessionSeq, SessionStore, now_timestamp,
+};
 
 /// The title a conversation carries until its first user message names it.
 pub const PLACEHOLDER_TITLE: &str = "New conversation";
@@ -61,13 +63,19 @@ pub struct SessionState {
 
 impl SessionState {
     /// Open a fresh, empty conversation and read the saved list off disk.
+    ///
+    /// Numbers any older record that predates numbering first, so the list
+    /// this reads is already complete and the fresh conversation's own
+    /// number lands above every one of them.
     pub fn new(store: SessionStore, origin: SessionOrigin) -> Self {
+        store.number_old_sessions();
         let saved = store.list();
         let current_id = SessionId::new();
+        let seq = next_seq(&saved);
         Self {
             store,
             current_id,
-            current_meta: fresh_meta(current_id, &origin),
+            current_meta: fresh_meta(current_id, seq, &origin),
             saved,
             messages: Vec::new(),
             claude_session_id: None,
@@ -211,10 +219,15 @@ impl SessionState {
         self.claude_session_id = None;
         let id = SessionId::new();
         self.current_id = id;
-        self.current_meta = fresh_meta(id, &origin);
+        // Read the number after the outgoing save, not before: that save
+        // refreshed the saved list, and the outgoing conversation's own
+        // number has to be in hand or this one would reuse it.
+        let seq = next_seq(&self.saved);
+        self.current_meta = fresh_meta(id, seq, &origin);
         self.refresh_saved();
         info!(
             session_id = id.as_str(),
+            seq = self.current_meta.seq,
             "session: opened a fresh conversation"
         );
     }
@@ -268,13 +281,21 @@ impl SessionState {
     }
 }
 
-/// A fresh, empty conversation's metadata: placeholder title, message
-/// count zero, timestamps set to now, backend and model from the running
-/// session.
-fn fresh_meta(id: SessionId, origin: &SessionOrigin) -> SessionMeta {
+/// The number a newly opened conversation takes: one past the highest
+/// number on disk. Never reuses a number, so deleting a conversation leaves
+/// a gap rather than moving another row's name onto it.
+fn next_seq(saved: &[SessionMeta]) -> SessionSeq {
+    saved.iter().map(|meta| meta.seq).max().unwrap_or(0) + 1
+}
+
+/// A fresh, empty conversation's metadata: its number, placeholder title,
+/// message count zero, timestamps set to now, backend and model from the
+/// running session.
+fn fresh_meta(id: SessionId, seq: SessionSeq, origin: &SessionOrigin) -> SessionMeta {
     let now = now_timestamp();
     SessionMeta {
         id,
+        seq,
         title: PLACEHOLDER_TITLE.to_string(),
         created_at: now,
         updated_at: now,

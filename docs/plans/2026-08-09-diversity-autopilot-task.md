@@ -29,6 +29,9 @@ You have no memory of any earlier run. The checklist file on disk is the only re
 7. Only once all three pass, edit the checklist and change that one item's [ ] to [x]. Change no other box.
 8. Append one line to .autopilot/step-log.md, creating the file if it is not there: the item id, one sentence on what changed, and the passing test count. Keep it to one line.
 9. Reply with the item id, the files you changed, and the last line of the test output.
+10. Commit the work with the bash tool: `git add -A` for the files this item
+    changed, then `git commit` with a one-line message naming the item id.
+    Do not push.
 
 Rules that hold for every run:
 - One checklist item per run. The checkbox is the handoff to the next run.
@@ -38,7 +41,20 @@ Rules that hold for every run:
 - Tests live in crates/deepseek-custom-tests. The production crate crates/deepseek-custom holds no test code at all. A test that needs a private item turns the test-support feature on rather than making the item public.
 - A new test file must be declared with a mod line in crates/deepseek-custom-tests/tests/it/main.rs, or it will not run and will not be compiled.
 - A change to the GUI paint path cannot be seen until the app is rebuilt, and the app cannot be rebuilt while it is running. Make the change, verify it with cargo check and the tests, check the box, and say in your reply that the change needs a restart to be visible.
+- Use the edit tool to change part of a file. Use write only to create a file or to replace one outright. Never write a script that edits a file for you.
 ```
+
+## What this harness does not have
+
+This task text runs on the harness's own agent, not on Claude Code, and the
+two do not offer the same things.
+
+There are no slash commands here. Step 10 used to read `/commit your work`,
+and a real run read that line, had no way to act on it, and finished both
+items it completed without ever committing. A leading slash names a skill,
+and the system prompt now says so, but a skill still has to be read with the
+`skill` tool and carried out by hand. A step that must happen is written out
+as the commands it consists of, as step 10 now is.
 
 ## The policy file
 

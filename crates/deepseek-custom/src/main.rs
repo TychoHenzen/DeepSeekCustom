@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use deepseek_custom::agent::agent_loop::{AgentCommand, RoutedEvent};
+use deepseek_custom::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::backend::SharedFlags;
 use deepseek_custom::backend::factory::BackendFactory;
@@ -188,6 +188,7 @@ async fn main() {
     // GUI reads.
     let switch_factory = Arc::clone(&factory);
     let switch_tx_events = tx_events;
+    let repeat_project_root = project_root.clone();
 
     tokio::spawn(async move {
         info!("agent task started");
@@ -206,6 +207,13 @@ async fn main() {
                                 }
                                 Err(e) => {
                                     error!("agent error: {e}");
+                                    // A failed turn sends no TurnEnd of its
+                                    // own, so nothing told the GUI the turn
+                                    // was over: the status bar sat on
+                                    // "Running..." and a held session switch
+                                    // would have waited forever. Report the
+                                    // failure, then close the turn.
+                                    report_failed_turn(&switch_tx_events, &e.to_string());
                                 }
                             }
                         }
@@ -247,7 +255,7 @@ async fn main() {
                     match repeat {
                         Some(RepeatCommand { task, iterations }) => {
                             info!(iterations, "repeat command received");
-                            backend.run_repeat(&task, iterations).await;
+                            backend.run_repeat(&task, iterations, &repeat_project_root).await;
                         }
                         None => break,
                     }
@@ -325,6 +333,27 @@ async fn main() {
     mcp.shutdown().await;
 
     info!("DeepSeekCustom harness shutting down");
+}
+
+/// Tell the GUI that a turn failed and is over.
+///
+/// Two events, because neither one alone says both things. `Error` puts the
+/// failure in the transcript, and it is not terminal on its own: it also
+/// fires mid-turn for a dropped image attachment. `TurnEnd` is what closes
+/// the turn, clears the status bar, and releases a session switch that was
+/// waiting on it. The token counts are zero because a turn that failed
+/// reported none.
+fn report_failed_turn(tx_events: &mpsc::UnboundedSender<RoutedEvent>, message: &str) {
+    let _ = tx_events.send(RoutedEvent::own(StreamEvent::Error {
+        message: format!("Turn failed: {message}"),
+    }));
+    let _ = tx_events.send(RoutedEvent::own(StreamEvent::TurnEnd {
+        turn: 0,
+        finish_reason: "error".to_string(),
+        total_tokens: 0,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 0,
+    }));
 }
 
 fn debug_agent_input(input: &str) {
