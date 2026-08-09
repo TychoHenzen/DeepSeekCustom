@@ -33,7 +33,7 @@ built. This one holds the work items, in build order.
       `Subagent` block.
 - [x] `B6` Every-attempt-failed and no-candidate-passed cases both come
       back as a tool error. Neither should ever panic.
-- [ ] `B7` `tools_cascade.rs` in `crates/deepseek-custom-tests/tests/it/`:
+- [x] `B7` `tools_cascade.rs` in `crates/deepseek-custom-tests/tests/it/`:
       a `StubBackend` case with a `check_cmd` that rejects some candidates.
       Assert the correct winner comes back.
 

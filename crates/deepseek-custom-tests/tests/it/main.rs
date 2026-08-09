@@ -73,6 +73,7 @@ mod skills_loader;
 mod tools;
 mod tools_ask;
 mod tools_bash;
+mod tools_cascade;
 mod tools_cd;
 mod tools_close_session;
 mod tools_edit;
