@@ -43,7 +43,7 @@ built. This one holds the work items, in build order.
       `escalate_backend`. Send it the original prompt plus every rejected
       candidate and why it was cut. Its answer becomes the tool output,
       marked as escalated.
-- [ ] `C2` Without `escalate_backend`, the no-consensus case stays a tool
+- [x] `C2` Without `escalate_backend`, the no-consensus case stays a tool
       error. No change from Phase B here.
 - [ ] `C3` `SharedFlags` gains `cascade_total` and `cascade_escalated`
       (`Arc<AtomicUsize>`). Bump the first on every Cascade call. Bump the
