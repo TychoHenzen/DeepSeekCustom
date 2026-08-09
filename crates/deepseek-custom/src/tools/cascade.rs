@@ -8,12 +8,15 @@
 //! `run_subagent`, the same mechanism `Task` already uses. The tool result
 //! names the winning attempt and the vote count behind it.
 
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::agent::agent_loop::RoutedEvent;
 use crate::backend::factory::BackendFactory;
@@ -21,6 +24,7 @@ use crate::backend::registry::SubagentRegistry;
 use crate::backend::subagent::{SubagentRequest, run_subagent};
 use crate::effort::Effort;
 use crate::error::Result;
+use crate::tools::bash::{self, Shell};
 use crate::tools::{Tool, ToolOutput};
 
 /// Raw, deserialized `Cascade` input.
@@ -75,6 +79,9 @@ pub struct CascadeTool {
     /// The dispatching session's own effort flag, read at dispatch time as
     /// the default for a call that carries no explicit `effort`.
     parent_effort_flag: Arc<AtomicU8>,
+    /// The working directory `check_cmd` runs against, shared with every
+    /// other tool this harness registers. Read fresh on every call.
+    work_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl CascadeTool {
@@ -84,6 +91,7 @@ impl CascadeTool {
         parent_tx: mpsc::UnboundedSender<RoutedEvent>,
         registry: Arc<SubagentRegistry>,
         parent_effort_flag: Arc<AtomicU8>,
+        work_dir: Arc<Mutex<PathBuf>>,
     ) -> Self {
         Self {
             factory,
@@ -91,6 +99,7 @@ impl CascadeTool {
             parent_tx,
             registry,
             parent_effort_flag,
+            work_dir,
         }
     }
 }
@@ -204,30 +213,110 @@ impl Tool for CascadeTool {
 
         let results = futures::future::join_all(handles).await;
 
-        let mut parts: Vec<String> = Vec::with_capacity(results.len());
+        // Collect candidates, separating dispatch successes from failures.
+        struct Candidate {
+            index: usize,
+            text: String,
+        }
+
+        let mut candidates: Vec<Candidate> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
         for (i, result) in results.into_iter().enumerate() {
             match result {
                 Ok(Ok(outcome)) => {
-                    parts.push(format!("Attempt {}: {}", i + 1, outcome.text));
+                    candidates.push(Candidate {
+                        index: i + 1,
+                        text: outcome.text,
+                    });
                 }
                 Ok(Err(e)) => {
-                    parts.push(format!("Attempt {}: FAILED - {e}", i + 1));
+                    failures.push(format!("Attempt {}: FAILED - {e}", i + 1));
                 }
                 Err(join_err) => {
-                    parts.push(format!("Attempt {}: PANICKED - {join_err}", i + 1));
+                    failures.push(format!("Attempt {}: PANICKED - {join_err}", i + 1));
                 }
             }
         }
 
+        // When `check_cmd` is set, run it once per candidate against the
+        // current working directory. A candidate whose command exits non-zero
+        // is dropped before voting (B4). This is Diversity.md's red-flag step.
+        if let Some(ref check_cmd) = parsed.check_cmd {
+            let work_dir = self
+                .work_dir
+                .lock()
+                .expect("work_dir mutex poisoned")
+                .clone();
+            let mut passed: Vec<Candidate> = Vec::new();
+
+            for candidate in candidates {
+                match run_check_cmd(check_cmd, &work_dir).await {
+                    Ok(true) => passed.push(candidate),
+                    Ok(false) => {
+                        failures.push(format!(
+                            "Attempt {}: rejected by check_cmd (exited non-zero)",
+                            candidate.index
+                        ));
+                    }
+                    Err(e) => {
+                        failures.push(format!(
+                            "Attempt {}: check_cmd error - {e}",
+                            candidate.index
+                        ));
+                    }
+                }
+            }
+            candidates = passed;
+        }
+
+        // Build output: passing candidates first, then failures.
+        let mut parts: Vec<String> = Vec::new();
+        for c in &candidates {
+            parts.push(format!("Attempt {}: {}", c.index, c.text));
+        }
+        parts.extend(failures);
+
+        let is_error = candidates.is_empty();
+        let pass_note = parsed.check_cmd.as_ref().map(|_| {
+            format!(
+                " ({} of {} passed check_cmd)",
+                candidates.len(),
+                parsed.n
+            )
+        }).unwrap_or_default();
+
         Ok(ToolOutput {
             content: format!(
-                "Cascade results ({} attempt(s) on backend \"{}\"):\n\n{}",
+                "Cascade results ({} attempt(s) on backend \"{}\"{}):\n\n{}",
                 n,
                 parsed.backend,
+                pass_note,
                 parts.join("\n\n")
             ),
-            is_error: false,
+            is_error,
             image: None,
         })
+    }
+}
+
+/// Run a single check command against the working directory and report
+/// whether it passed (exited zero). A spawn failure or timeout becomes an
+/// `Err`, so the caller can distinguish "the command failed" from "we could
+/// not run it at all".
+async fn run_check_cmd(
+    cmd_str: &str,
+    work_dir: &Path,
+) -> std::result::Result<bool, String> {
+    let result = timeout(
+        Duration::from_millis(120_000),
+        bash::run_command(cmd_str, work_dir, Shell::Auto),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => Ok(output.exit_code == 0),
+        Ok(Err(e)) => Err(format!("failed to run check_cmd: {e}")),
+        Err(_elapsed) => Err("check_cmd timed out after 120s".to_string()),
     }
 }

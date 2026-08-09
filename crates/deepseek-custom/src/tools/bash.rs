@@ -155,10 +155,10 @@ impl Tool for BashTool {
     }
 }
 
-struct CommandOutput {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
+pub(crate) struct CommandOutput {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) exit_code: i32,
 }
 
 fn format_output(out: &CommandOutput) -> String {
@@ -177,7 +177,7 @@ fn format_output(out: &CommandOutput) -> String {
     s
 }
 
-async fn run_command(
+pub(crate) async fn run_command(
     cmd_str: &str,
     work_dir: &std::path::Path,
     shell: Shell,

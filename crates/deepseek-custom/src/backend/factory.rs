@@ -295,6 +295,7 @@ fn build_api_backend(
             tx_events.clone(),
             subagent_registry.clone(),
             effort_flag.clone(),
+            factory.working_dir(),
         )));
         // Gated the same way as `Task`, not separately: a session this
         // backend cannot open in the first place is never reachable

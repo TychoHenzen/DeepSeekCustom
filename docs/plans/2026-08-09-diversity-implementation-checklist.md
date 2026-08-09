@@ -22,7 +22,7 @@ built. This one holds the work items, in build order.
 - [x] `B2` Dispatch `n` attempts at once through `run_subagent`. Give each
       its own `SubagentId`. Round-robin the diversity hints into each
       attempt's prompt.
-- [ ] `B3` `check_cmd` red-flag step: run it once per candidate against
+- [x] `B3` `check_cmd` red-flag step: run it once per candidate against
       `working_dir`, through the same path `BashTool` uses. Drop any
       candidate whose command exits non-zero, before voting.
 - [ ] `B4` Voting: group by exact text match by default. When `check_cmd`
