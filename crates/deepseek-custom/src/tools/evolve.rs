@@ -263,9 +263,15 @@ impl Tool for EvolveTool {
                     .await
                     {
                         Ok(f) => f,
-                        Err(_e) => {
-                            // E8: unparseable fitness drops this candidate.
-                            continue;
+                        Err(e) => {
+                            // E8: unparseable fitness is a tool error naming
+                            // the command.  A silent zero-fitness value would
+                            // corrupt the archive without saying so.
+                            return Ok(ToolOutput {
+                                content: format!("fitness_cmd error: {e}"),
+                                is_error: true,
+                                image: None,
+                            });
                         }
                     };
 
@@ -273,9 +279,14 @@ impl Tool for EvolveTool {
                     let features = if let Some(ref feature_cmd) = parsed.feature_cmd {
                         match run_feature_cmd(feature_cmd, &outcome.text, &work_dir).await {
                             Ok(f) => f,
-                            Err(_e) => {
-                                // E8: unparseable feature drops this candidate.
-                                continue;
+                            Err(e) => {
+                                // E8: unparseable feature is a tool error
+                                // naming the command.
+                                return Ok(ToolOutput {
+                                    content: format!("feature_cmd error: {e}"),
+                                    is_error: true,
+                                    image: None,
+                                });
                             }
                         }
                     } else {

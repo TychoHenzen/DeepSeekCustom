@@ -100,7 +100,7 @@ built. This one holds the work items, in build order.
       the seed task plus the parent plus the next mutation hint, dispatch
       through `run_subagent`. Score the result with `fitness_cmd` and, if
       set, `feature_cmd`. Insert into the archive.
-- [ ] `E8` Errors: a failed generation drops that candidate for the round
+- [x] `E8` Errors: a failed generation drops that candidate for the round
       without stopping the run. A `fitness_cmd` or `feature_cmd` that does
       not print a parseable number is a tool error naming the command.
 - [ ] `E9` Tool result: the best candidate across every island, its
