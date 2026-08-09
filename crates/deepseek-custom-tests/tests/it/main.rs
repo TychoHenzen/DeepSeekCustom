@@ -79,6 +79,7 @@ mod tools_cascade;
 mod tools_cd;
 mod tools_close_session;
 mod tools_edit;
+mod tools_evolve;
 mod tools_glob;
 mod tools_grep;
 mod tools_read;

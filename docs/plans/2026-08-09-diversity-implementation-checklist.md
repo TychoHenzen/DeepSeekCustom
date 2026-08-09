@@ -106,7 +106,7 @@ built. This one holds the work items, in build order.
 - [x] `E9` Tool result: the best candidate across every island, its
       fitness, its feature coordinates if any, and a small table of the
       full archive.
-- [ ] `E10` `tools_evolve.rs` in `crates/deepseek-custom-tests/tests/it/`:
+- [x] `E10` `tools_evolve.rs` in `crates/deepseek-custom-tests/tests/it/`:
       a `StubBackend` generator run through several rounds against
       synthetic `fitness_cmd`/`feature_cmd` scripts. Assert the final best
       candidate is the one the synthetic fitness function actually favors.
