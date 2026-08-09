@@ -15,5 +15,6 @@ pub mod plugins;
 pub mod process_group;
 pub mod session;
 pub mod skills;
+pub mod style;
 pub mod tools;
 pub mod voice;
