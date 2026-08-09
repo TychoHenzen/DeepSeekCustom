@@ -40,7 +40,8 @@ fn claude_cli_entry(models: Option<Vec<String>>) -> BackendConfig {
 
 #[test]
 fn parse_ollama_tags_returns_names_in_order() {
-    let body = r#"{"models":[{"name":"qwen2.5:1.5b"},{"name":"qwen2.5-coder:7b-instruct-q4_K_M"}]}"#;
+    let body =
+        r#"{"models":[{"name":"qwen2.5:1.5b"},{"name":"qwen2.5-coder:7b-instruct-q4_K_M"}]}"#;
     let names = parse_ollama_tags(body);
     assert_eq!(
         names,

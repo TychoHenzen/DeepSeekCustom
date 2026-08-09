@@ -323,4 +323,3 @@ pub struct ToolResult {
     pub role: String,
     pub content: String,
 }
-

@@ -67,7 +67,10 @@ fn claude_cli_effort_omits_the_flag_only_for_none() {
 fn wire_form_is_lowercase() {
     assert_eq!(serde_json::to_string(&Effort::None).unwrap(), "\"none\"");
     assert_eq!(serde_json::to_string(&Effort::Low).unwrap(), "\"low\"");
-    assert_eq!(serde_json::to_string(&Effort::Medium).unwrap(), "\"medium\"");
+    assert_eq!(
+        serde_json::to_string(&Effort::Medium).unwrap(),
+        "\"medium\""
+    );
     assert_eq!(serde_json::to_string(&Effort::High).unwrap(), "\"high\"");
     assert_eq!(serde_json::to_string(&Effort::Max).unwrap(), "\"max\"");
 }

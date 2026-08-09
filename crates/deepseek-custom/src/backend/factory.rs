@@ -23,8 +23,8 @@ use crate::backend::stub::{StubBackend, StubTurn};
 use crate::backend::{Backend, SharedFlags};
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::effort::Effort;
-use crate::memory::MemoryStore;
 use crate::mcp::McpManager;
+use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
@@ -210,12 +210,7 @@ fn build_api_backend(
 ) -> Backend {
     let settings = &factory.settings;
     let project_root = &factory.project_root;
-    let client = ApiClient::new(
-        provider,
-        api_key.clone(),
-        base_url.clone(),
-        Some(model.clone()),
-    );
+    let client = ApiClient::new(provider, api_key.clone(), base_url.clone());
 
     let memory = MemoryStore::load(project_root);
     let skills = Arc::new(SkillLoader::load(project_root));
@@ -225,7 +220,7 @@ fn build_api_backend(
     // into the agent. Both come from the same resolved backend. An Ollama
     // selection then sends the answerer's questions to Ollama too, so it
     // never demands a DeepSeek key the user does not have.
-    let answerer_client = ApiClient::new(provider, api_key, base_url, None);
+    let answerer_client = ApiClient::new(provider, api_key, base_url);
     let policy_store =
         PolicyStore::new(project_root.to_path_buf(), settings.autopilot_policy_path());
     let answerer: Arc<dyn QuestionAnswerer> = Arc::new(PolicyAnswerer::new(

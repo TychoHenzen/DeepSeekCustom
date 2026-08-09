@@ -26,7 +26,6 @@ pub struct ApiClient {
     provider: Provider,
     base_url: String,
     api_key: String,
-    default_model: String,
     max_retries: u32,
     base_delay_ms: u64,
 }
@@ -36,23 +35,19 @@ impl ApiClient {
     ///
     /// `api_key` is required. `base_url` defaults per provider when `None`:
     /// `https://api.deepseek.com` for `Provider::DeepSeek`, and
-    /// `http://localhost:11434/v1` for `Provider::Ollama`. `default_model`
-    /// defaults to `"deepseek-v4-flash"`.
-    pub fn new(
-        provider: Provider,
-        api_key: String,
-        base_url: Option<String>,
-        default_model: Option<String>,
-    ) -> Self {
+    /// `http://localhost:11434/v1` for `Provider::Ollama`.
+    ///
+    /// There is no default model here. Every `ChatRequest` carries its own
+    /// `model`, filled from the shared `model_flag` each turn, so a default
+    /// held on the client would never be consulted.
+    pub fn new(provider: Provider, api_key: String, base_url: Option<String>) -> Self {
         let base_url = base_url.unwrap_or_else(|| default_base_url(provider).to_string());
-        let default_model = default_model.unwrap_or_else(|| "deepseek-v4-flash".to_string());
 
         Self {
             client: reqwest::Client::new(),
             provider,
             base_url,
             api_key,
-            default_model,
             max_retries: 3,
             base_delay_ms: 1000,
         }
@@ -298,7 +293,7 @@ impl ApiClient {
                         let body = response.text().await.unwrap_or_default();
                         return Err(HarnessError::Api(format!("API error {status}: {body}")));
                     }
-                    let delay_ms = base_delay_ms * 2u64.pow(attempt as u32);
+                    let delay_ms = base_delay_ms * 2u64.pow(attempt);
                     warn!(
                         "stream connect: retry {}/{}, status={}, delay={}ms",
                         attempt + 1,
@@ -312,7 +307,7 @@ impl ApiClient {
                     if attempt + 1 >= max_retries {
                         return Err(HarnessError::Api(format!("HTTP request failed: {e}")));
                     }
-                    let delay_ms = base_delay_ms * 2u64.pow(attempt as u32);
+                    let delay_ms = base_delay_ms * 2u64.pow(attempt);
                     warn!(
                         "stream connect: retry {}/{}, error={}, delay={}ms",
                         attempt + 1,
@@ -367,32 +362,30 @@ pub fn resolve_api_key(provider: Provider, project_root: &std::path::Path) -> Re
     }
 
     // 1. DEEPSEEK_API_KEY env var
-    if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
-        if !key.is_empty() {
-            debug!("api_key resolved from DEEPSEEK_API_KEY env var");
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("DEEPSEEK_API_KEY")
+        && !key.is_empty()
+    {
+        debug!("api_key resolved from DEEPSEEK_API_KEY env var");
+        return Ok(key);
     }
 
     // 2. ANTHROPIC_AUTH_TOKEN env var (set by CustomClaude launcher)
-    if let Ok(key) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
-        if !key.is_empty() {
-            debug!("api_key resolved from ANTHROPIC_AUTH_TOKEN env var");
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("ANTHROPIC_AUTH_TOKEN")
+        && !key.is_empty()
+    {
+        debug!("api_key resolved from ANTHROPIC_AUTH_TOKEN env var");
+        return Ok(key);
     }
 
     // 3. settings.json in project root
     let settings_path = project_root.join("settings.json");
-    if let Ok(contents) = std::fs::read_to_string(&settings_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-            if let Some(key) = json.get("api_key").and_then(|v| v.as_str()) {
-                if !key.is_empty() {
-                    debug!("api_key resolved from project settings.json");
-                    return Ok(key.to_string());
-                }
-            }
-        }
+    if let Ok(contents) = std::fs::read_to_string(&settings_path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(key) = json.get("api_key").and_then(|v| v.as_str())
+        && !key.is_empty()
+    {
+        debug!("api_key resolved from project settings.json");
+        return Ok(key.to_string());
     }
 
     // 4. ~/.claude/settings.json
@@ -400,15 +393,13 @@ pub fn resolve_api_key(provider: Provider, project_root: &std::path::Path) -> Re
         let global_settings = std::path::Path::new(&home)
             .join(".claude")
             .join("settings.json");
-        if let Ok(contents) = std::fs::read_to_string(&global_settings) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-                if let Some(key) = json.get("api_key").and_then(|v| v.as_str()) {
-                    if !key.is_empty() {
-                        debug!("api_key resolved from ~/.claude/settings.json");
-                        return Ok(key.to_string());
-                    }
-                }
-            }
+        if let Ok(contents) = std::fs::read_to_string(&global_settings)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+            && let Some(key) = json.get("api_key").and_then(|v| v.as_str())
+            && !key.is_empty()
+        {
+            debug!("api_key resolved from ~/.claude/settings.json");
+            return Ok(key.to_string());
         }
     }
 

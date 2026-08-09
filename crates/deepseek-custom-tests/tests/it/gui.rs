@@ -319,7 +319,10 @@ fn the_first_block_and_non_user_blocks_get_the_plain_gap() {
         gap_before(2, &BlockKind::Assistant { spans: Vec::new() }),
         BLOCK_GAP
     );
-    assert!(TURN_GAP > BLOCK_GAP, "a turn boundary must read as wider");
+    // Both operands are constants, so this holds at compile time rather
+    // than at run time. A const item states that; a runtime assert would
+    // only claim to check something that can never vary.
+    const _: () = assert!(TURN_GAP > BLOCK_GAP);
 }
 
 #[test]

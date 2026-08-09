@@ -285,4 +285,3 @@ pub fn split_shell_words(input: &str) -> Vec<String> {
     }
     words
 }
-

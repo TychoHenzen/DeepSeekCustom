@@ -86,7 +86,7 @@ impl SharedFlags {
 /// `src/backend/stub.rs` for why the gate exists.
 pub enum Backend {
     Api(Box<AgentLoop>),
-    ClaudeCli(ClaudeCliDriver),
+    ClaudeCli(Box<ClaudeCliDriver>),
     #[cfg(feature = "test-support")]
     Stub(Box<StubBackend>),
 }
@@ -102,13 +102,13 @@ impl Backend {
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: mpsc::UnboundedSender<RoutedEvent>,
     ) -> Self {
-        Backend::ClaudeCli(ClaudeCliDriver::new(
+        Backend::ClaudeCli(Box::new(ClaudeCliDriver::new(
             model,
             permission_mode,
             env,
             working_dir,
             tx_events,
-        ))
+        )))
     }
 
     /// Run one user turn against whichever backend is active. The `Api`
@@ -150,7 +150,7 @@ impl Backend {
     pub async fn run_repeat(&mut self, task: &str, iterations: u32) {
         match self {
             Backend::Api(agent) => run_repeat(agent.as_mut(), task, iterations).await,
-            Backend::ClaudeCli(driver) => run_repeat(driver, task, iterations).await,
+            Backend::ClaudeCli(driver) => run_repeat(driver.as_mut(), task, iterations).await,
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => run_repeat(stub.as_mut(), task, iterations).await,
         }

@@ -49,9 +49,7 @@ pub fn parse_line(line: &str) -> Option<ClaudeEvent> {
             .ok()
             .map(ClaudeEvent::Assistant),
         "user" => serde_json::from_value(value).ok().map(ClaudeEvent::User),
-        "result" => serde_json::from_value(value)
-            .ok()
-            .map(ClaudeEvent::Result),
+        "result" => serde_json::from_value(value).ok().map(ClaudeEvent::Result),
         other => Some(ClaudeEvent::Unknown(other.to_string())),
     }
 }
@@ -59,7 +57,9 @@ pub fn parse_line(line: &str) -> Option<ClaudeEvent> {
 fn parse_system(value: &serde_json::Value) -> Option<SystemEvent> {
     let subtype = value.get("subtype")?.as_str()?;
     match subtype {
-        "init" => serde_json::from_value(value.clone()).ok().map(SystemEvent::Init),
+        "init" => serde_json::from_value(value.clone())
+            .ok()
+            .map(SystemEvent::Init),
         "status" => serde_json::from_value(value.clone())
             .ok()
             .map(SystemEvent::Status),

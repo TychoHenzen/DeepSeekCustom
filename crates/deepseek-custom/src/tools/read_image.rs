@@ -133,7 +133,8 @@ impl Tool for ReadImageTool {
 /// which does the same job for a pasted or dropped image; kept as its own
 /// copy here since a tool must not depend on the GUI crate module.
 fn attachment_from_image_bytes(bytes: &[u8]) -> std::result::Result<ImageAttachment, String> {
-    let format = image::guess_format(bytes).map_err(|_| "not a recognized image format".to_string())?;
+    let format =
+        image::guess_format(bytes).map_err(|_| "not a recognized image format".to_string())?;
     image::load_from_memory_with_format(bytes, format)
         .map_err(|e| format!("could not be decoded: {e}"))?;
     Ok(ImageAttachment {
@@ -155,4 +156,3 @@ fn mime_for_image_format(format: ImageFormat) -> &'static str {
         _ => "application/octet-stream",
     }
 }
-

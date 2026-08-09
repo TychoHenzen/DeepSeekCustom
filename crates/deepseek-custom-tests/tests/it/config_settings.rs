@@ -209,10 +209,7 @@ fn autopilot_reads_set_values() {
     }"#;
     let s: Settings = serde_json::from_str(json).unwrap();
     assert_eq!(s.autopilot_iterations(), 3);
-    assert_eq!(
-        s.autopilot_policy_path().unwrap(),
-        "policies/autopilot.md"
-    );
+    assert_eq!(s.autopilot_policy_path().unwrap(), "policies/autopilot.md");
     assert_eq!(s.autopilot_answerer_model(), "deepseek-v4-pro");
     assert_eq!(s.autopilot_task().unwrap(), "fix the build");
 }
@@ -466,7 +463,10 @@ fn models_override_round_trips_on_api_backend() {
         BackendConfig::Api { models, .. } => {
             assert_eq!(
                 models,
-                Some(vec!["deepseek-v4-pro".to_string(), "deepseek-v4-flash".to_string()])
+                Some(vec![
+                    "deepseek-v4-pro".to_string(),
+                    "deepseek-v4-flash".to_string()
+                ])
             );
         }
         BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
@@ -485,10 +485,7 @@ fn models_override_round_trips_on_claude_cli_backend() {
     let loaded: BackendConfig = serde_json::from_str(&json).unwrap();
     match loaded {
         BackendConfig::ClaudeCli { models, .. } => {
-            assert_eq!(
-                models,
-                Some(vec!["opus".to_string(), "sonnet".to_string()])
-            );
+            assert_eq!(models, Some(vec!["opus".to_string(), "sonnet".to_string()]));
         }
         BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
     }

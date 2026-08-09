@@ -115,4 +115,3 @@ impl Tool for CloseSessionTool {
         }
     }
 }
-

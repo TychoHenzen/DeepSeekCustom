@@ -2,8 +2,8 @@
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use deepseek_custom::agent::agent_loop::{RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
 use deepseek_custom::backend::factory::BackendFactory;
@@ -185,12 +185,20 @@ fn factory_with_stub(name: &str, script: Vec<StubTurn>) -> Arc<BackendFactory> {
 /// no child process, the answer comes straight from the script.
 #[tokio::test]
 async fn run_subagent_against_a_stub_backend_returns_the_scripted_text() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let (parent_tx, _parent_rx) = mpsc::unbounded_channel();
 
-    let outcome = run_subagent(&factory, stub_request("stub-agent", 1), parent_tx, empty_registry())
-        .await
-        .expect("stub dispatch should succeed");
+    let outcome = run_subagent(
+        &factory,
+        stub_request("stub-agent", 1),
+        parent_tx,
+        empty_registry(),
+    )
+    .await
+    .expect("stub dispatch should succeed");
 
     assert_eq!(outcome.text, "scripted reply");
     assert_eq!(outcome.backend, "stub-agent");
@@ -203,9 +211,14 @@ async fn run_subagent_against_a_stub_backend_propagates_a_scripted_error() {
     let factory = factory_with_stub("stub-agent", vec![StubTurn::Error("boom".to_string())]);
     let (parent_tx, _parent_rx) = mpsc::unbounded_channel();
 
-    let err = run_subagent(&factory, stub_request("stub-agent", 1), parent_tx, empty_registry())
-        .await
-        .expect_err("scripted error should surface as an Err");
+    let err = run_subagent(
+        &factory,
+        stub_request("stub-agent", 1),
+        parent_tx,
+        empty_registry(),
+    )
+    .await
+    .expect_err("scripted error should surface as an Err");
 
     assert!(err.contains("boom"));
 }
@@ -218,9 +231,14 @@ async fn run_subagent_against_a_stub_backend_routes_events_to_the_parent() {
     let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("hi".to_string())]);
     let (parent_tx, mut parent_rx) = mpsc::unbounded_channel();
 
-    run_subagent(&factory, stub_request("stub-agent", 1), parent_tx, empty_registry())
-        .await
-        .expect("stub dispatch should succeed");
+    run_subagent(
+        &factory,
+        stub_request("stub-agent", 1),
+        parent_tx,
+        empty_registry(),
+    )
+    .await
+    .expect("stub dispatch should succeed");
 
     // The forwarder relays on its own spawned task, so the event may
     // not have crossed yet the instant `run_subagent` returns. `.await`
@@ -246,9 +264,14 @@ async fn run_subagent_at_the_depth_limit_still_succeeds_against_a_stub() {
     // `task_tool_absent_at_the_depth_limit` in `backend_factory.rs`). A
     // stub has no tool registry at all, so depth has no bearing on
     // whether the dispatch itself succeeds.
-    let outcome = run_subagent(&factory, stub_request("stub-agent", 2), parent_tx, empty_registry())
-        .await
-        .expect("stub dispatch should succeed regardless of depth");
+    let outcome = run_subagent(
+        &factory,
+        stub_request("stub-agent", 2),
+        parent_tx,
+        empty_registry(),
+    )
+    .await
+    .expect("stub dispatch should succeed regardless of depth");
 
     assert_eq!(outcome.text, "done");
 }
@@ -283,11 +306,18 @@ async fn keep_open_dispatch_registers_exactly_one_reachable_session() {
     let (parent_tx, _parent_rx) = mpsc::unbounded_channel();
     let registry = empty_registry();
 
-    let outcome = run_subagent(&factory, keep_open_stub_request("stub-agent", 1), parent_tx, registry.clone())
-        .await
-        .expect("stub dispatch should succeed");
+    let outcome = run_subagent(
+        &factory,
+        keep_open_stub_request("stub-agent", 1),
+        parent_tx,
+        registry.clone(),
+    )
+    .await
+    .expect("stub dispatch should succeed");
 
-    let id = outcome.session_id.expect("keep_open dispatch should report a session id");
+    let id = outcome
+        .session_id
+        .expect("keep_open dispatch should report a session id");
     assert_eq!(registry.len().await, 1);
     assert!(registry.contains(id).await);
 }
@@ -300,9 +330,14 @@ async fn normal_dispatch_leaves_the_registry_empty() {
     let (parent_tx, _parent_rx) = mpsc::unbounded_channel();
     let registry = empty_registry();
 
-    let outcome = run_subagent(&factory, stub_request("stub-agent", 1), parent_tx, registry.clone())
-        .await
-        .expect("stub dispatch should succeed");
+    let outcome = run_subagent(
+        &factory,
+        stub_request("stub-agent", 1),
+        parent_tx,
+        registry.clone(),
+    )
+    .await
+    .expect("stub dispatch should succeed");
 
     assert!(outcome.session_id.is_none());
     assert_eq!(registry.len().await, 0);
@@ -318,10 +353,17 @@ async fn kept_open_session_id_matches_the_route_id_events_carried() {
     let (parent_tx, mut parent_rx) = mpsc::unbounded_channel();
     let registry = empty_registry();
 
-    let outcome = run_subagent(&factory, keep_open_stub_request("stub-agent", 1), parent_tx, registry)
-        .await
-        .expect("stub dispatch should succeed");
-    let session_id = outcome.session_id.expect("keep_open dispatch should report a session id");
+    let outcome = run_subagent(
+        &factory,
+        keep_open_stub_request("stub-agent", 1),
+        parent_tx,
+        registry,
+    )
+    .await
+    .expect("stub dispatch should succeed");
+    let session_id = outcome
+        .session_id
+        .expect("keep_open dispatch should report a session id");
 
     let routed = parent_rx.recv().await.expect("expected a routed event");
     assert_eq!(routed.route.len(), 1);
@@ -368,9 +410,14 @@ async fn failing_keep_open_dispatch_leaves_no_stale_session() {
     let (parent_tx, _parent_rx) = mpsc::unbounded_channel();
     let registry = empty_registry();
 
-    let err = run_subagent(&factory, keep_open_stub_request("stub-agent", 1), parent_tx, registry.clone())
-        .await
-        .expect_err("scripted error should surface as an Err");
+    let err = run_subagent(
+        &factory,
+        keep_open_stub_request("stub-agent", 1),
+        parent_tx,
+        registry.clone(),
+    )
+    .await
+    .expect_err("scripted error should surface as an Err");
 
     assert!(err.contains("boom"));
     assert_eq!(registry.len().await, 0);
@@ -589,10 +636,8 @@ fn unique_temp_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "dsc-subagent-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("dsc-subagent-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

@@ -157,7 +157,9 @@ fn a_session_file_saved_before_content_was_an_enum_still_loads() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{}.json", id.as_str())), old_shape_json).unwrap();
 
-    let loaded = store.load(&id).expect("old-shape session file should still load");
+    let loaded = store
+        .load(&id)
+        .expect("old-shape session file should still load");
 
     assert_eq!(loaded.messages.len(), 1);
     assert_eq!(

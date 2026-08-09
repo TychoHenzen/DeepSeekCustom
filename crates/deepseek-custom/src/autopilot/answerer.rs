@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::api::client::ApiClient;
 use crate::api::types::{ChatRequest, Content, Message};
-use crate::autopilot::policy::{format_policy_prompt_section, PolicyStore};
+use crate::autopilot::policy::{PolicyStore, format_policy_prompt_section};
 use crate::autopilot::question::{Answer, AskInput};
 use crate::error::Result;
 
@@ -59,7 +59,10 @@ impl QuestionAnswerer for PolicyAnswerer {
 
         let req = ChatRequest {
             model: self.model.clone(),
-            messages: vec![Message::system(SYSTEM_PROMPT.to_string()), Message::user(prompt)],
+            messages: vec![
+                Message::system(SYSTEM_PROMPT.to_string()),
+                Message::user(prompt),
+            ],
             tools: None,
             tool_choice: None,
             stream: false,
@@ -132,12 +135,7 @@ pub fn build_prompt(policy_section: &str, input: &AskInput) -> String {
 
     let mut questions_text = String::from("## Questions\n");
     for (i, q) in input.questions.iter().enumerate() {
-        questions_text.push_str(&format!(
-            "\n{}. {} ({})\n",
-            i + 1,
-            q.question,
-            q.header
-        ));
+        questions_text.push_str(&format!("\n{}. {} ({})\n", i + 1, q.question, q.header));
         for opt in &q.options {
             questions_text.push_str(&format!("- {}: {}\n", opt.label, opt.description));
         }
@@ -217,7 +215,9 @@ pub fn resolve_answers(parsed: Option<Vec<Answer>>, input: &AskInput) -> Vec<Ans
             return fallback_all(input);
         }
         None => {
-            warn!("autopilot answerer: no parsed reply, falling back to first option for every question");
+            warn!(
+                "autopilot answerer: no parsed reply, falling back to first option for every question"
+            );
             return fallback_all(input);
         }
     };
@@ -232,10 +232,7 @@ pub fn resolve_answers(parsed: Option<Vec<Answer>>, input: &AskInput) -> Vec<Ans
 
 /// Validate one parsed answer against its question and fall back to the
 /// first option when the answer is invalid.
-fn resolve_one(
-    question: &crate::autopilot::question::Question,
-    answer: &Answer,
-) -> Answer {
+fn resolve_one(question: &crate::autopilot::question::Question, answer: &Answer) -> Answer {
     if answer.labels.is_empty() {
         warn!(
             "autopilot answerer: question '{}' got no labels, falling back to first option",

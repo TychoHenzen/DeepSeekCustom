@@ -32,7 +32,10 @@ async fn tool_named(remote: &str) -> (Arc<McpClient>, McpTool) {
 fn a_name_is_prefixed_with_its_server() {
     // The prefix is what keeps a server's `read` from colliding with this
     // harness's own `read`.
-    assert_eq!(qualified_name("dod-guard", "dod_check"), "mcp__dod-guard__dod_check");
+    assert_eq!(
+        qualified_name("dod-guard", "dod_check"),
+        "mcp__dod-guard__dod_check"
+    );
 }
 
 #[test]

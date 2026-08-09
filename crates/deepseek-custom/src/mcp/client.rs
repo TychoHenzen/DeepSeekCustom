@@ -131,7 +131,9 @@ impl McpClient {
 
     /// Ask the server what tools it has.
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let value = self.request("tools/list", Value::Object(Default::default())).await?;
+        let value = self
+            .request("tools/list", Value::Object(Default::default()))
+            .await?;
         let listed: ToolsListResult = serde_json::from_value(value)
             .map_err(|e| HarnessError::Parse(format!("mcp: {}: bad tools/list: {e}", self.name)))?;
         Ok(listed.tools)

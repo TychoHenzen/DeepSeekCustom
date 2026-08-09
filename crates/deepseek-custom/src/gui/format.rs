@@ -6,17 +6,13 @@ use std::time::Instant;
 
 use eframe::egui::Color32;
 
-use super::transcript::{
-    Block, BlockKind, Severity, Span, SubagentState,
-};
+use super::transcript::{Block, BlockKind, Severity, Span, SubagentState};
 
 /// Tool calls and notices that carry an error use this colour.
-pub const TOOL_ERROR_COLOR: Color32 =
-    Color32::from_rgb(255, 80, 80);
+pub const TOOL_ERROR_COLOR: Color32 = Color32::from_rgb(255, 80, 80);
 
 /// Image label colour in the transcript.
-pub const IMAGE_LABEL_COLOR: Color32 =
-    Color32::from_rgb(180, 220, 255);
+pub const IMAGE_LABEL_COLOR: Color32 = Color32::from_rgb(180, 220, 255);
 
 /// Vertical space before a turn boundary (a User block after
 /// the first).
@@ -60,8 +56,7 @@ pub fn gap_before(index: usize, kind: &BlockKind) -> f32 {
 
 /// Flatten whitespace and cut to `max_chars`, appending "...".
 pub fn truncate_args(args: &str, max_chars: usize) -> String {
-    let flat: String =
-        args.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat: String = args.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max_chars {
         return flat;
     }
@@ -70,12 +65,7 @@ pub fn truncate_args(args: &str, max_chars: usize) -> String {
 }
 
 /// One-line tool call summary with a collapse marker.
-pub fn tool_summary(
-    collapsed: bool,
-    tool: &str,
-    args: &str,
-    is_error: bool,
-) -> String {
+pub fn tool_summary(collapsed: bool, tool: &str, args: &str, is_error: bool) -> String {
     let marker = if collapsed { "\u{25b6}" } else { "\u{25bc}" };
     let err = if is_error { " [error]" } else { "" };
     let short = truncate_args(args, 60);
@@ -125,41 +115,50 @@ pub fn raw_block_text(block: &Block) -> String {
     match &block.kind {
         BlockKind::User { text } => format!("You: {text}"),
         BlockKind::Assistant { spans } => {
-            let lines: Vec<String> =
-                spans.iter().map(raw_span_text).collect();
+            let lines: Vec<String> = spans.iter().map(raw_span_text).collect();
             format!("Assistant:\n{}", lines.join("\n"))
         }
         BlockKind::ToolCall {
-            tool, args, output, is_error,
+            tool,
+            args,
+            output,
+            is_error,
         } => raw_tool(tool, args, output.as_deref(), *is_error),
         BlockKind::Notice { text, .. } => text.clone(),
         BlockKind::Image { image } => {
             let len = image.data.len();
-            format!(
-                "[image: {}, {len} bytes base64]",
-                image.media_type,
-            )
+            format!("[image: {}, {len} bytes base64]", image.media_type,)
         }
         BlockKind::Subagent {
-            backend, model, depth, state, elapsed_ms,
-            started_at, transcript, session_turns,
-            session_turn_cap, send_message_calls,
-            send_message_call_cap, ..
+            backend,
+            model,
+            depth,
+            state,
+            elapsed_ms,
+            started_at,
+            transcript,
+            session_turns,
+            session_turn_cap,
+            send_message_calls,
+            send_message_call_cap,
+            ..
         } => raw_subagent(
-            backend, model, *depth, *state, *started_at,
-            *elapsed_ms, transcript.blocks(),
-            *session_turns, *session_turn_cap,
-            *send_message_calls, *send_message_call_cap,
+            backend,
+            model,
+            *depth,
+            *state,
+            *started_at,
+            *elapsed_ms,
+            transcript.blocks(),
+            *session_turns,
+            *session_turn_cap,
+            *send_message_calls,
+            *send_message_call_cap,
         ),
     }
 }
 
-fn raw_tool(
-    tool: &str,
-    args: &str,
-    output: Option<&str>,
-    is_error: bool,
-) -> String {
+fn raw_tool(tool: &str, args: &str, output: Option<&str>, is_error: bool) -> String {
     let err = if is_error { " [error]" } else { "" };
     let out = output.unwrap_or("(running)");
     format!("\u{2699} {tool} {args}{err} \u{2192} {out}")
@@ -181,16 +180,18 @@ fn raw_subagent(
 ) -> String {
     let ms = subagent_elapsed_ms(started_at, stored_ms);
     let header = subagent_header_summary(
-        backend, model, depth, state, ms, turns, turn_cap,
-        calls, call_cap,
+        backend, model, depth, state, ms, turns, turn_cap, calls, call_cap,
     );
-    let body: Vec<String> = blocks.iter().map(|b| {
-        raw_block_text(b)
-            .lines()
-            .map(|l| format!("  {l}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }).collect();
+    let body: Vec<String> = blocks
+        .iter()
+        .map(|b| {
+            raw_block_text(b)
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
     if body.is_empty() {
         return header;
     }
@@ -198,10 +199,7 @@ fn raw_subagent(
 }
 
 /// Live or stored elapsed time for a subagent block.
-pub fn subagent_elapsed_ms(
-    started_at: Option<Instant>,
-    stored_ms: u64,
-) -> u64 {
+pub fn subagent_elapsed_ms(started_at: Option<Instant>, stored_ms: u64) -> u64 {
     match started_at {
         Some(start) => start.elapsed().as_millis() as u64,
         None => stored_ms,

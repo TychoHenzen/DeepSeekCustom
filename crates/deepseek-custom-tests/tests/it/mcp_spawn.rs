@@ -35,7 +35,7 @@ fn a_batch_command_is_run_through_cmd() {
     let dir = temp_dir("batch");
     touch(&dir, "npx.CMD");
 
-    let resolved = resolve_windows("npx", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("npx", std::slice::from_ref(&dir), &extensions());
 
     assert_eq!(resolved.program, "cmd");
     assert_eq!(resolved.prefix_args[0], "/c");
@@ -48,7 +48,7 @@ fn a_bat_file_is_run_through_cmd_too() {
     let dir = temp_dir("bat");
     touch(&dir, "thing.BAT");
 
-    let resolved = resolve_windows("thing", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("thing", std::slice::from_ref(&dir), &extensions());
 
     assert_eq!(resolved.program, "cmd");
     let _ = std::fs::remove_dir_all(&dir);
@@ -59,7 +59,7 @@ fn an_executable_is_run_directly_by_its_full_path() {
     let dir = temp_dir("exe");
     touch(&dir, "uvx.EXE");
 
-    let resolved = resolve_windows("uvx", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("uvx", std::slice::from_ref(&dir), &extensions());
 
     assert!(resolved.prefix_args.is_empty());
     assert!(resolved.program.to_lowercase().ends_with("uvx.exe"));
@@ -74,7 +74,7 @@ fn extensions_are_tried_in_order() {
     touch(&dir, "tool.EXE");
     touch(&dir, "tool.CMD");
 
-    let resolved = resolve_windows("tool", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("tool", std::slice::from_ref(&dir), &extensions());
 
     assert!(resolved.prefix_args.is_empty(), "the .EXE should win");
     let _ = std::fs::remove_dir_all(&dir);
@@ -99,7 +99,7 @@ fn a_command_with_an_explicit_extension_is_taken_as_given() {
     let dir = temp_dir("explicit");
     touch(&dir, "node.exe");
 
-    let resolved = resolve_windows("node.exe", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("node.exe", std::slice::from_ref(&dir), &extensions());
 
     assert_eq!(resolved.program, "node.exe");
     assert!(resolved.prefix_args.is_empty());
@@ -141,7 +141,7 @@ fn a_directory_is_not_mistaken_for_a_command() {
     let dir = temp_dir("dir-match");
     std::fs::create_dir_all(dir.join("tool.EXE")).unwrap();
 
-    let resolved = resolve_windows("tool", &[dir.clone()], &extensions());
+    let resolved = resolve_windows("tool", std::slice::from_ref(&dir), &extensions());
 
     assert_eq!(resolved.program, "tool");
     let _ = std::fs::remove_dir_all(&dir);

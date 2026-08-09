@@ -19,13 +19,7 @@ fn test_working_dir() -> Arc<Mutex<PathBuf>> {
 
 fn new_test_claude_cli_backend() -> Backend {
     let (tx, _rx) = mpsc::unbounded_channel();
-    Backend::new_claude_cli(
-        "opus".to_string(),
-        None,
-        None,
-        test_working_dir(),
-        tx,
-    )
+    Backend::new_claude_cli("opus".to_string(), None, None, test_working_dir(), tx)
 }
 
 #[test]
@@ -41,23 +35,22 @@ fn claude_cli_backend_exposes_all_six_flags_and_round_trips_writes() {
     backend.voice_mode_flag().store(true, Ordering::SeqCst);
     assert!(backend.voice_mode_flag().load(Ordering::SeqCst));
 
-    backend.context_budget_flag().store(64_000, Ordering::SeqCst);
+    backend
+        .context_budget_flag()
+        .store(64_000, Ordering::SeqCst);
     assert_eq!(backend.context_budget_flag().load(Ordering::SeqCst), 64_000);
 
     *backend.model_flag().lock().unwrap() = "sonnet".to_string();
     assert_eq!(*backend.model_flag().lock().unwrap(), "sonnet");
 
-    backend.repeat_interrupt_flag().store(true, Ordering::SeqCst);
+    backend
+        .repeat_interrupt_flag()
+        .store(true, Ordering::SeqCst);
     assert!(backend.repeat_interrupt_flag().load(Ordering::SeqCst));
 }
 
 fn new_test_api_backend() -> Backend {
-    let client = ApiClient::new(
-        Provider::DeepSeek,
-        "sk-test".into(),
-        None,
-        None,
-    );
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -158,13 +151,8 @@ async fn claude_cli_backend_load_session_stores_id_without_spawning() {
 #[tokio::test]
 async fn claude_cli_backend_run_repeat_zero_iterations_emits_only_finished() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut backend = Backend::new_claude_cli(
-        "opus".to_string(),
-        None,
-        None,
-        test_working_dir(),
-        tx,
-    );
+    let mut backend =
+        Backend::new_claude_cli("opus".to_string(), None, None, test_working_dir(), tx);
 
     backend.run_repeat("do the thing", 0).await;
 
@@ -182,14 +170,11 @@ async fn claude_cli_backend_run_repeat_zero_iterations_emits_only_finished() {
 #[tokio::test]
 async fn claude_cli_backend_run_repeat_stops_immediately_when_interrupt_flag_already_set() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut backend = Backend::new_claude_cli(
-        "opus".to_string(),
-        None,
-        None,
-        test_working_dir(),
-        tx,
-    );
-    backend.repeat_interrupt_flag().store(true, Ordering::SeqCst);
+    let mut backend =
+        Backend::new_claude_cli("opus".to_string(), None, None, test_working_dir(), tx);
+    backend
+        .repeat_interrupt_flag()
+        .store(true, Ordering::SeqCst);
 
     backend.run_repeat("do the thing", 3).await;
 

@@ -2,8 +2,8 @@
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use deepseek_custom::agent::agent_loop::SubagentId;
 use deepseek_custom::backend::Backend;

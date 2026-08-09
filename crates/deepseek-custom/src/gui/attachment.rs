@@ -43,6 +43,12 @@ pub struct AttachmentSlot {
     ctrl_v_prev_down: bool,
 }
 
+impl Default for AttachmentSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AttachmentSlot {
     /// An empty slot, with the clipboard opened if the OS allows it.
     /// A clipboard that will not open disables image paste and nothing

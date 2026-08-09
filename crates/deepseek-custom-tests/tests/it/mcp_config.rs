@@ -115,7 +115,15 @@ fn expands_the_plugin_root_placeholder() {
     assert_eq!(servers.len(), 1);
     assert!(!servers[0].args[0].contains("${CLAUDE_PLUGIN_ROOT}"));
     assert!(servers[0].args[0].ends_with("dist/bundle.js"));
-    assert!(servers[0].args[0].contains(&plugin_root.file_name().unwrap().to_string_lossy().to_string()));
+    assert!(
+        servers[0].args[0].contains(
+            &plugin_root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        )
+    );
     let _ = std::fs::remove_dir_all(&project);
     let _ = std::fs::remove_dir_all(&plugin_root);
 }

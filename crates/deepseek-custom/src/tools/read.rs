@@ -143,4 +143,3 @@ pub fn format_with_line_numbers(lines: &[&str], start_num: usize) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-

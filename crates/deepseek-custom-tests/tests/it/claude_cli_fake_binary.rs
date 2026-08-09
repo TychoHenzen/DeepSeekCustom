@@ -44,7 +44,10 @@ async fn a_turn_against_the_fake_binary_yields_the_mapped_text_and_turn_end() {
     );
 
     let result = driver.send("hello there").await;
-    assert!(result.is_ok(), "turn against the fake binary should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "turn against the fake binary should succeed: {result:?}"
+    );
 
     let mut events = Vec::new();
     while let Ok(routed) = rx.try_recv() {

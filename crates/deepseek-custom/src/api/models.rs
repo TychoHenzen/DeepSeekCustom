@@ -142,16 +142,16 @@ async fn query_deepseek_models(
 /// Try the config's `api_key`, then `DEEPSEEK_API_KEY`, then
 /// `ANTHROPIC_AUTH_TOKEN`. Returns `None` when no key is found.
 fn resolve_deepseek_key(config_key: Option<&str>) -> Option<String> {
-    if let Some(k) = config_key {
-        if !k.is_empty() {
-            return Some(k.to_string());
-        }
+    if let Some(k) = config_key
+        && !k.is_empty()
+    {
+        return Some(k.to_string());
     }
     for var in ["DEEPSEEK_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
-        if let Ok(k) = std::env::var(var) {
-            if !k.is_empty() {
-                return Some(k);
-            }
+        if let Ok(k) = std::env::var(var)
+            && !k.is_empty()
+        {
+            return Some(k);
         }
     }
     None
@@ -198,10 +198,7 @@ async fn query_anthropic_models() -> Vec<String> {
     };
 
     if !response.status().is_success() {
-        debug!(
-            "anthropic model discovery: returned {}",
-            response.status()
-        );
+        debug!("anthropic model discovery: returned {}", response.status());
         return claude_cli_aliases();
     }
 
@@ -238,7 +235,11 @@ fn claude_credentials_path() -> Option<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()?;
-    Some(PathBuf::from(home).join(".claude").join(".credentials.json"))
+    Some(
+        PathBuf::from(home)
+            .join(".claude")
+            .join(".credentials.json"),
+    )
 }
 
 /// Parse an OpenAI-compatible `/models` response body into model
@@ -332,4 +333,3 @@ pub fn ollama_tags_url(base_url: Option<&str>) -> String {
         .unwrap_or(DEFAULT_OLLAMA_HOST);
     format!("{host}/api/tags")
 }
-

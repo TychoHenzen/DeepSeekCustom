@@ -66,9 +66,9 @@ impl EventMapper {
                 self.session_id = init.session_id;
                 Vec::new()
             }
-            ClaudeEvent::System(_)
-            | ClaudeEvent::RateLimitEvent(_)
-            | ClaudeEvent::Unknown(_) => Vec::new(),
+            ClaudeEvent::System(_) | ClaudeEvent::RateLimitEvent(_) | ClaudeEvent::Unknown(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -226,4 +226,3 @@ impl Default for EventMapper {
         Self::new()
     }
 }
-

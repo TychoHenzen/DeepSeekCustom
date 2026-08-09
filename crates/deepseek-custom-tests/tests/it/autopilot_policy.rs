@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use deepseek_custom::autopilot::policy::{format_policy_prompt_section, PolicyStore, DEFAULT_POLICY_FILE};
+use deepseek_custom::autopilot::policy::{
+    DEFAULT_POLICY_FILE, PolicyStore, format_policy_prompt_section,
+};
 
 /// Create a uniquely named directory under the system temp dir.
 fn unique_temp_dir(tag: &str) -> PathBuf {

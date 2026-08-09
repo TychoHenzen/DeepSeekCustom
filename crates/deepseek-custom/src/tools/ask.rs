@@ -71,4 +71,3 @@ impl Tool for AskUserQuestionTool {
         }
     }
 }
-

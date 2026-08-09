@@ -30,7 +30,11 @@ fn test_parent_tx() -> tokio::sync::mpsc::UnboundedSender<RoutedEvent> {
 /// Opens a `keep_open` session against a scripted stub backend and
 /// returns its session id, ready for a `CloseSessionTool` to be pointed
 /// at. Mirrors the identical helper in `send_message.rs`'s own tests.
-async fn open_session(factory: &Arc<BackendFactory>, registry: &Arc<SubagentRegistry>, backend: &str) -> String {
+async fn open_session(
+    factory: &Arc<BackendFactory>,
+    registry: &Arc<SubagentRegistry>,
+    backend: &str,
+) -> String {
     let outcome = run_subagent(
         factory,
         SubagentRequest {

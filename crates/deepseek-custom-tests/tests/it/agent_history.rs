@@ -34,7 +34,9 @@ fn to_api_messages_includes_system_first() {
 fn estimated_tokens_increases_with_content() {
     let mut h = MessageHistory::new("short".into());
     let before = h.estimated_tokens();
-    h.push(Message::user("a long message with many characters and more words".into()));
+    h.push(Message::user(
+        "a long message with many characters and more words".into(),
+    ));
     assert!(h.estimated_tokens() > before);
 }
 
@@ -42,7 +44,10 @@ fn estimated_tokens_increases_with_content() {
 fn no_suffix_leaves_system_message_unchanged() {
     let h = MessageHistory::new("You are helpful.".into());
     let api = h.to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 #[test]
@@ -62,7 +67,10 @@ fn set_suffix_none_removes_it() {
     h.set_system_suffix(Some("Reply briefly.".into()));
     h.set_system_suffix(None);
     let api = h.to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 #[test]
@@ -82,7 +90,10 @@ fn suffix_survives_clear() {
 fn no_working_dir_leaves_system_message_unchanged() {
     let h = MessageHistory::new("You are helpful.".into());
     let api = h.to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 #[test]
@@ -102,7 +113,10 @@ fn set_working_dir_none_removes_it() {
     h.set_working_dir(Some("C:\\proj".into()));
     h.set_working_dir(None);
     let api = h.to_api_messages();
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 #[test]
@@ -154,7 +168,9 @@ fn estimated_tokens_reflects_set_working_dir() {
 fn estimated_tokens_reflects_set_suffix() {
     let mut h = MessageHistory::new("short".into());
     let before = h.estimated_tokens();
-    h.set_system_suffix(Some("a long suffix with many characters and more words".into()));
+    h.set_system_suffix(Some(
+        "a long suffix with many characters and more words".into(),
+    ));
     assert!(h.estimated_tokens() > before);
 }
 
@@ -163,7 +179,10 @@ fn restore_replaces_rather_than_appends() {
     let mut h = MessageHistory::new("sys".into());
     h.push(Message::user("old1".into()));
     h.push(Message::user("old2".into()));
-    let restored = vec![Message::user("new1".into()), Message::assistant("new2".into())];
+    let restored = vec![
+        Message::user("new1".into()),
+        Message::assistant("new2".into()),
+    ];
     h.restore(restored.clone());
     assert_eq!(h.len(), restored.len());
     let got: Vec<&Message> = h.iter().collect();
@@ -197,7 +216,10 @@ fn restore_leaves_system_prompt_unchanged() {
     h.restore(vec![Message::user("hi".into())]);
     let api = h.to_api_messages();
     assert_eq!(api[0].role, Role::System);
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 #[test]
@@ -227,7 +249,10 @@ fn restore_empty_vector_leaves_history_empty_with_system_prompt() {
     assert_eq!(h.len(), 0);
     let api = h.to_api_messages();
     assert_eq!(api.len(), 1);
-    assert_eq!(api[0].content.as_ref().and_then(Content::as_text), Some("You are helpful."));
+    assert_eq!(
+        api[0].content.as_ref().and_then(Content::as_text),
+        Some("You are helpful.")
+    );
 }
 
 /// `recompute_token_count` itself stays private: it is bookkeeping, not a

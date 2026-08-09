@@ -9,15 +9,15 @@ use tokio::sync::mpsc;
 
 use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::api::types::ImageAttachment;
-use crate::effort::Effort;
 use crate::config::settings::Settings;
+use crate::effort::Effort;
 use crate::session::SessionId;
 use crate::voice::service::VoiceEvent;
 
-use super::autopilot_tab::AutopilotTab;
-use super::backend_picker::BackendPicker;
 use super::agent_handles::AgentHandles;
 use super::attachment::AttachmentSlot;
+use super::autopilot_tab::AutopilotTab;
+use super::backend_picker::BackendPicker;
 use super::session_state::SessionState;
 use super::transcript::Transcript;
 use super::voice_ui::VoiceUi;
@@ -52,10 +52,7 @@ impl DeepSeekGui {
         self.send_input();
     }
 
-    pub fn set_tx_input_for_test(
-        &mut self,
-        tx: mpsc::UnboundedSender<AgentCommand>,
-    ) {
+    pub fn set_tx_input_for_test(&mut self, tx: mpsc::UnboundedSender<AgentCommand>) {
         self.tx_input = tx;
     }
 
@@ -91,14 +88,8 @@ impl DeepSeekGui {
         self.show_raw_output
     }
 
-    pub fn handle_voice_event_for_test(
-        &mut self,
-        event: VoiceEvent,
-    ) {
-        let text = self.voice.handle_event(
-            event,
-            &mut self.transcript,
-        );
+    pub fn handle_voice_event_for_test(&mut self, event: VoiceEvent) {
+        let text = self.voice.handle_event(event, &mut self.transcript);
         if let Some(text) = text {
             self.input_buffer = text;
             self.send_input();
@@ -109,10 +100,7 @@ impl DeepSeekGui {
         self.dispatch_event(RoutedEvent::own(event));
     }
 
-    pub fn handle_routed_event_for_test(
-        &mut self,
-        routed: RoutedEvent,
-    ) {
+    pub fn handle_routed_event_for_test(&mut self, routed: RoutedEvent) {
         self.dispatch_event(routed);
     }
 
@@ -176,10 +164,7 @@ impl DeepSeekGui {
         self.load_session(id);
     }
 
-    pub fn delete_saved_session_for_test(
-        &mut self,
-        id: SessionId,
-    ) {
+    pub fn delete_saved_session_for_test(&mut self, id: SessionId) {
         self.delete_saved_session(id);
     }
 

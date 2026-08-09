@@ -134,4 +134,3 @@ impl CdTool {
         working_dir.join(target)
     }
 }
-

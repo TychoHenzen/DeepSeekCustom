@@ -30,7 +30,11 @@ fn test_parent_tx() -> tokio::sync::mpsc::UnboundedSender<RoutedEvent> {
 /// Opens a `keep_open` session against a scripted stub backend and
 /// returns its session id, ready for a `SendMessageTool` to be pointed
 /// at.
-async fn open_session(factory: &Arc<BackendFactory>, registry: &Arc<SubagentRegistry>, backend: &str) -> String {
+async fn open_session(
+    factory: &Arc<BackendFactory>,
+    registry: &Arc<SubagentRegistry>,
+    backend: &str,
+) -> String {
     let outcome = run_subagent(
         factory,
         SubagentRequest {
@@ -181,7 +185,10 @@ async fn the_per_session_turn_cap_comes_back_as_a_tool_error() {
 async fn the_per_parent_turn_call_cap_comes_back_as_a_tool_error() {
     let factory = factory_with_stub(
         "stub-agent",
-        vec![StubTurn::Text("a".to_string()), StubTurn::Text("b".to_string())],
+        vec![
+            StubTurn::Text("a".to_string()),
+            StubTurn::Text("b".to_string()),
+        ],
     );
     let registry = empty_registry();
     let session_id = open_session(&factory, &registry, "stub-agent").await;

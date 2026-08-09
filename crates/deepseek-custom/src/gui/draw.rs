@@ -2,9 +2,7 @@ use eframe::egui::{self, Color32, RichText, ScrollArea};
 use egui_commonmark::CommonMarkViewer;
 
 use super::format::*;
-use super::transcript::{
-    Block, BlockId, BlockKind, Span, SubagentState, Transcript,
-};
+use super::transcript::{Block, BlockId, BlockKind, Span, SubagentState, Transcript};
 use super::{ActiveTab, DeepSeekGui};
 use crate::api::types::ImageAttachment;
 
@@ -19,31 +17,18 @@ type Toggles = Vec<(Vec<BlockId>, bool)>;
 
 impl DeepSeekGui {
     /// Central panel: tab bar plus the selected tab's content.
-    pub(super) fn paint_central(
-        &mut self,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn paint_central(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for tab in [
-                    ActiveTab::Chat,
-                    ActiveTab::Autopilot,
-                    ActiveTab::Sessions,
-                ] {
-                    ui.selectable_value(
-                        &mut self.active_tab,
-                        tab,
-                        format!("{tab:?}"),
-                    );
+                for tab in [ActiveTab::Chat, ActiveTab::Autopilot, ActiveTab::Sessions] {
+                    ui.selectable_value(&mut self.active_tab, tab, format!("{tab:?}"));
                 }
             });
             ui.separator();
             match self.active_tab {
                 ActiveTab::Chat => self.paint_chat(ui),
                 ActiveTab::Autopilot => {
-                    let dirty = self.autopilot.render(
-                        ui, &mut self.settings,
-                    );
+                    let dirty = self.autopilot.render(ui, &mut self.settings);
                     if dirty {
                         self.persist_settings();
                     }
@@ -76,11 +61,7 @@ impl DeepSeekGui {
                 let blocks = self.transcript.blocks();
                 for (i, block) in blocks.iter().enumerate() {
                     ui.add_space(gap_before(i, &block.kind));
-                    paint_block(
-                        ui, block, &[],
-                        &mut self.md_cache,
-                        &mut toggles, &mut pins,
-                    );
+                    paint_block(ui, block, &[], &mut self.md_cache, &mut toggles, &mut pins);
                 }
             });
         for (path, val) in toggles {
@@ -121,11 +102,19 @@ fn paint_block(
             paint_assistant(ui, spans, cache);
         }
         BlockKind::ToolCall {
-            tool, args, output, is_error,
+            tool,
+            args,
+            output,
+            is_error,
         } => paint_tool(
-            ui, block.collapsed, tool, args,
-            output.as_deref(), *is_error,
-            &path, toggles,
+            ui,
+            block.collapsed,
+            tool,
+            args,
+            output.as_deref(),
+            *is_error,
+            &path,
+            toggles,
         ),
         BlockKind::Notice { text, severity } => {
             let c = severity_color(*severity);
@@ -133,53 +122,79 @@ fn paint_block(
         }
         BlockKind::Image { image } => paint_img(ui, block.id, image),
         BlockKind::Subagent {
-            backend, model, depth, state,
-            elapsed_ms, started_at, transcript,
-            session_turns, session_turn_cap,
-            send_message_calls, send_message_call_cap, ..
+            backend,
+            model,
+            depth,
+            state,
+            elapsed_ms,
+            started_at,
+            transcript,
+            session_turns,
+            session_turn_cap,
+            send_message_calls,
+            send_message_call_cap,
+            ..
         } => paint_sub(
-            ui, block, backend, model, *depth, *state,
-            *started_at, *elapsed_ms, transcript,
-            *session_turns, *session_turn_cap,
-            *send_message_calls, *send_message_call_cap,
-            &path, cache, toggles, pins,
+            ui,
+            block,
+            backend,
+            model,
+            *depth,
+            *state,
+            *started_at,
+            *elapsed_ms,
+            transcript,
+            *session_turns,
+            *session_turn_cap,
+            *send_message_calls,
+            *send_message_call_cap,
+            &path,
+            cache,
+            toggles,
+            pins,
         ),
     }
 }
 
 fn extend_path(prefix: &[BlockId], id: BlockId) -> Vec<BlockId> {
-    let mut p = prefix.to_vec(); p.push(id); p
+    let mut p = prefix.to_vec();
+    p.push(id);
+    p
 }
 
 fn paint_user(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::default().fill(USER_BG).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
-        ui.label(RichText::new("You").color(USER_LABEL).strong());
-        ui.label(text);
-    });
+    egui::Frame::default()
+        .fill(USER_BG)
+        .inner_margin(8.0)
+        .corner_radius(4.0)
+        .show(ui, |ui| {
+            ui.label(RichText::new("You").color(USER_LABEL).strong());
+            ui.label(text);
+        });
 }
 
 fn paint_assistant(
-    ui: &mut egui::Ui, spans: &[Span],
+    ui: &mut egui::Ui,
+    spans: &[Span],
     cache: &mut egui_commonmark::CommonMarkCache,
 ) {
-    egui::Frame::default().fill(ASSIST_BG).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
-        ui.label(RichText::new("Assistant").color(ASSIST_LABEL).strong());
+    egui::Frame::default()
+        .fill(ASSIST_BG)
+        .inner_margin(8.0)
+        .corner_radius(4.0)
+        .show(ui, |ui| {
+            ui.label(RichText::new("Assistant").color(ASSIST_LABEL).strong());
             for span in spans {
                 match span {
                     Span::Text(t) => {
                         CommonMarkViewer::new().show(ui, cache, t);
                     }
                     Span::Reasoning(t) => {
-                        egui::CollapsingHeader::new(
-                            RichText::new("Reasoning")
-                                .color(THINK_DIM),
-                        )
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(t).color(THINK_DIM),
-                            );
-                        });
+                        egui::CollapsingHeader::new(RichText::new("Reasoning").color(THINK_DIM))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(t).color(THINK_DIM));
+                            });
                     }
                 }
             }
@@ -199,10 +214,7 @@ fn paint_tool(
 ) {
     let header = tool_summary(collapsed, tool, args, is_error);
     let color = tool_color(is_error);
-    let resp = ui.selectable_label(
-        false,
-        RichText::new(&header).color(color),
-    );
+    let resp = ui.selectable_label(false, RichText::new(&header).color(color));
     if resp.clicked() {
         toggles.push((path.to_vec(), !collapsed));
     }
@@ -215,10 +227,7 @@ fn paint_tool(
                     ui.label(RichText::new(o).color(c));
                 }
                 None => {
-                    ui.label(
-                        RichText::new("(running)")
-                            .color(Color32::GRAY),
-                    );
+                    ui.label(RichText::new("(running)").color(Color32::GRAY));
                 }
             }
         });
@@ -236,7 +245,11 @@ fn paint_img(ui: &mut egui::Ui, block_id: BlockId, image: &ImageAttachment) {
     let thumb = egui::Image::from_bytes(uri.clone(), bytes.clone())
         .max_size(egui::vec2(IMG_THUMB_CAP, IMG_THUMB_CAP))
         .sense(egui::Sense::click());
-    if ui.add(thumb).on_hover_text("Click to view full size").clicked() {
+    if ui
+        .add(thumb)
+        .on_hover_text("Click to view full size")
+        .clicked()
+    {
         open = !open;
     }
     if open {
@@ -272,17 +285,14 @@ fn paint_sub(
 ) {
     let ms = subagent_elapsed_ms(started_at, stored_ms);
     let header = subagent_header_summary(
-        backend, model, depth, state, ms,
-        turns, turn_cap, calls, call_cap,
+        backend, model, depth, state, ms, turns, turn_cap, calls, call_cap,
     );
     let color = subagent_state_color(state);
     let open = block.pinned || !block.collapsed;
-    let ch = egui::CollapsingHeader::new(
-        RichText::new(&header).color(color),
-    )
-    .id_salt(path)
-    .default_open(false)
-    .open(Some(open));
+    let ch = egui::CollapsingHeader::new(RichText::new(&header).color(color))
+        .id_salt(path)
+        .default_open(false)
+        .open(Some(open));
     let resp = ch.show(ui, |ui| {
         for (i, b) in inner.blocks().iter().enumerate() {
             ui.add_space(gap_before(i, &b.kind));

@@ -200,7 +200,14 @@ impl Tool for TaskTool {
             }
         };
 
-        match run_subagent(&self.factory, request, self.parent_tx.clone(), self.registry.clone()).await {
+        match run_subagent(
+            &self.factory,
+            request,
+            self.parent_tx.clone(),
+            self.registry.clone(),
+        )
+        .await
+        {
             Ok(outcome) => {
                 let content = match outcome.session_id {
                     Some(id) => format!("{}\n\n[session kept open: {id}]", outcome.text),
@@ -220,4 +227,3 @@ impl Tool for TaskTool {
         }
     }
 }
-

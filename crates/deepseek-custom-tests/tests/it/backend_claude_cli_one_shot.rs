@@ -77,7 +77,12 @@ async fn spawn_one_shot_child_honors_the_given_working_dir() {
 
 #[test]
 fn one_shot_args_builder_produces_exact_flag_list_with_prompt_positional() {
-    let args = build_one_shot_args("claude-opus-x", Some("acceptEdits"), "hello there", Effort::None);
+    let args = build_one_shot_args(
+        "claude-opus-x",
+        Some("acceptEdits"),
+        "hello there",
+        Effort::None,
+    );
     assert_eq!(
         args,
         vec![
@@ -157,7 +162,10 @@ fn one_shot_result_folds_from_tools_fixture_result_event() {
     }
     let result = result.expect("expected a result event in the fixture");
 
-    assert!(!result.text.is_empty(), "expected non-empty accumulated text");
+    assert!(
+        !result.text.is_empty(),
+        "expected non-empty accumulated text"
+    );
     assert!(!result.is_error);
     assert_eq!(result.input_tokens, 20);
     assert_eq!(result.output_tokens, 260);

@@ -176,7 +176,11 @@ fn chat_response_deserializes_from_fixture() {
     assert_eq!(response.choices.len(), 1);
     assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
     assert_eq!(
-        response.choices[0].message.content.as_ref().and_then(Content::as_text),
+        response.choices[0]
+            .message
+            .content
+            .as_ref()
+            .and_then(Content::as_text),
         Some("Hello! I'm DeepSeek, an AI assistant. How can I help you today?")
     );
     let usage = response.usage.as_ref().unwrap();

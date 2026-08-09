@@ -47,8 +47,7 @@ async fn writes_via_absolute_path() {
     let file = dir.join("hello.txt");
 
     let tool = WriteTool::new(dir_arc(std::env::current_dir().unwrap()));
-    let input =
-        serde_json::json!({"file_path": file.to_string_lossy(), "content": "hello world"});
+    let input = serde_json::json!({"file_path": file.to_string_lossy(), "content": "hello world"});
     let output = tool.execute(input).await.expect("execute");
     assert!(!output.is_error);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world");

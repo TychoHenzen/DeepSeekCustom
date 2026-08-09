@@ -96,7 +96,10 @@ pub fn validate(input: &AskInput) -> Result<(), String> {
         let mut seen_labels: Vec<&str> = Vec::new();
         for opt in &q.options {
             if opt.label.trim().is_empty() {
-                return Err(format!("question '{}' has an empty option label", q.question));
+                return Err(format!(
+                    "question '{}' has an empty option label",
+                    q.question
+                ));
             }
             if seen_labels.contains(&opt.label.as_str()) {
                 return Err(format!(

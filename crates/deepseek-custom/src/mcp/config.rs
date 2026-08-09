@@ -117,11 +117,11 @@ fn insert_all(
 fn build_server(name: &str, raw: RawServer, plugin_root: Option<&Path>) -> Option<ServerConfig> {
     // An absent `type` means stdio: that is the default in Claude Code's
     // own files, and several real entries leave it out.
-    if let Some(transport) = &raw.transport {
-        if transport != "stdio" {
-            warn!("mcp: server {name} uses {transport} transport, which is not supported");
-            return None;
-        }
+    if let Some(transport) = &raw.transport
+        && transport != "stdio"
+    {
+        warn!("mcp: server {name} uses {transport} transport, which is not supported");
+        return None;
     }
     let command = raw.command?;
     Some(ServerConfig {

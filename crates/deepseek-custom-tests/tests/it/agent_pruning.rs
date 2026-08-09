@@ -2,7 +2,9 @@
 //! production module as part of the two-crate workspace split.
 
 use deepseek_custom::agent::history::MessageHistory;
-use deepseek_custom::agent::pruning::{ELIDED_IMAGE_MARKER, compute_groups, prune_to_budget, total_tokens};
+use deepseek_custom::agent::pruning::{
+    ELIDED_IMAGE_MARKER, compute_groups, prune_to_budget, total_tokens,
+};
 use deepseek_custom::api::types::{Content, ContentPart, FunctionCall, Message, Role, ToolCall};
 
 fn user(s: &str) -> Message {
@@ -48,7 +50,9 @@ fn user_with_image(text: &str, url: &str) -> Message {
 fn image_only(url: &str) -> Message {
     Message {
         role: Role::User,
-        content: Some(Content::Parts(vec![ContentPart::ImageUrl { url: url.into() }])),
+        content: Some(Content::Parts(vec![ContentPart::ImageUrl {
+            url: url.into(),
+        }])),
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
@@ -57,7 +61,13 @@ fn image_only(url: &str) -> Message {
 
 /// A turn like `tool_turn`, but the leading user message carries both
 /// text and an image part instead of plain text.
-fn image_turn(user_text: &str, image_url: &str, call_id: &str, tool_body: &str, reply: &str) -> Vec<Message> {
+fn image_turn(
+    user_text: &str,
+    image_url: &str,
+    call_id: &str,
+    tool_body: &str,
+    reply: &str,
+) -> Vec<Message> {
     vec![
         user_with_image(user_text, image_url),
         assistant_with_call(call_id),
@@ -83,7 +93,10 @@ fn message_snapshot(m: &Message) -> (Role, Option<Content>, Option<String>) {
     (m.role.clone(), m.content.clone(), m.tool_call_id.clone())
 }
 fn messages_eq(a: &[Message], b: &[Message]) -> bool {
-    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| message_snapshot(x) == message_snapshot(y))
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| message_snapshot(x) == message_snapshot(y))
 }
 
 fn many_turns(n: usize) -> Vec<Message> {
@@ -127,7 +140,14 @@ fn tier1_elides_tool_body_and_keeps_id_and_position() {
     let tool_msg = &messages[2];
     assert_eq!(tool_msg.role, Role::Tool);
     assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call0"));
-    assert!(tool_msg.content.as_ref().and_then(Content::as_text).unwrap().starts_with("[elided:"));
+    assert!(
+        tool_msg
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .starts_with("[elided:")
+    );
 }
 
 #[test]
@@ -141,7 +161,14 @@ fn eliding_is_idempotent() {
     // already-elided message again (no double [elided: [elided: ...).
     let report2 = prune_to_budget(&mut messages, 0, target, None);
     assert_eq!(messages[2].content, elided_content);
-    assert!(!messages[2].content.as_ref().and_then(Content::as_text).unwrap().contains("[elided: [elided:"));
+    assert!(
+        !messages[2]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .contains("[elided: [elided:")
+    );
     // Whatever tier1 touched this round, it did not re-wrap index 2.
     let _ = report2;
 }
@@ -149,7 +176,13 @@ fn eliding_is_idempotent() {
 #[test]
 fn tier1_elides_image_before_tool_body() {
     let image_url = format!("data:image/png;base64,{}", "A".repeat(4000));
-    let mut messages = image_turn("look at this", &image_url, "call0", &"x".repeat(200), "reply0");
+    let mut messages = image_turn(
+        "look at this",
+        &image_url,
+        "call0",
+        &"x".repeat(200),
+        "reply0",
+    );
     messages.extend(many_turns(2));
     let full = total_tokens(0, &messages);
 
@@ -179,13 +212,22 @@ fn tier1_elides_image_before_tool_body() {
         other => panic!("expected Parts content, got {other:?}"),
     }
     // The tool body is untouched: image elision alone met the budget.
-    assert_eq!(messages[2].content.as_ref().and_then(Content::as_text), Some("x".repeat(200)).as_deref());
+    assert_eq!(
+        messages[2].content.as_ref().and_then(Content::as_text),
+        Some("x".repeat(200)).as_deref()
+    );
 }
 
 #[test]
 fn image_eliding_is_idempotent_and_then_falls_through_to_tool_bodies() {
     let image_url = format!("data:image/png;base64,{}", "A".repeat(4000));
-    let mut messages = image_turn("look at this", &image_url, "call0", &"x".repeat(200), "reply0");
+    let mut messages = image_turn(
+        "look at this",
+        &image_url,
+        "call0",
+        &"x".repeat(200),
+        "reply0",
+    );
     messages.extend(many_turns(2));
 
     let mut only_image_elided = messages.clone();
@@ -197,8 +239,16 @@ fn image_eliding_is_idempotent_and_then_falls_through_to_tool_bodies() {
     let target = total_tokens(0, &only_image_elided);
 
     let mut both_elided = only_image_elided.clone();
-    let tool_chars = both_elided[2].content.as_ref().and_then(Content::as_text).unwrap().chars().count();
-    both_elided[2].content = Some(Content::text(format!("[elided: {tool_chars} chars of tool output]")));
+    let tool_chars = both_elided[2]
+        .content
+        .as_ref()
+        .and_then(Content::as_text)
+        .unwrap()
+        .chars()
+        .count();
+    both_elided[2].content = Some(Content::text(format!(
+        "[elided: {tool_chars} chars of tool output]"
+    )));
     let target2 = total_tokens(0, &both_elided);
     assert!(target2 < target);
 
@@ -271,9 +321,19 @@ fn scores_none_orders_oldest_first() {
     // Budget just under full: exactly one tool body gets elided.
     let report = prune_to_budget(&mut messages, 0, full - 10, None);
     assert_eq!(report.tool_bodies_elided, 1);
-    assert!(messages[2].content.as_ref().and_then(Content::as_text).unwrap().starts_with("[elided:"));
+    assert!(
+        messages[2]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .starts_with("[elided:")
+    );
     // Every later tool body is untouched.
-    assert_eq!(messages[6].content.as_ref().and_then(Content::as_text), Some("x".repeat(200)).as_deref());
+    assert_eq!(
+        messages[6].content.as_ref().and_then(Content::as_text),
+        Some("x".repeat(200)).as_deref()
+    );
 }
 
 #[test]
@@ -289,8 +349,22 @@ fn lower_scored_messages_elided_before_higher_scored() {
     let full = total_tokens(0, &messages);
     let report = prune_to_budget(&mut messages, 0, full - 10, Some(&scores));
     assert_eq!(report.tool_bodies_elided, 1);
-    assert!(messages[6].content.as_ref().and_then(Content::as_text).unwrap().starts_with("[elided:"));
-    assert!(!messages[2].content.as_ref().and_then(Content::as_text).unwrap().starts_with("[elided:"));
+    assert!(
+        messages[6]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .starts_with("[elided:")
+    );
+    assert!(
+        !messages[2]
+            .content
+            .as_ref()
+            .and_then(Content::as_text)
+            .unwrap()
+            .starts_with("[elided:")
+    );
 }
 
 #[test]
@@ -319,19 +393,29 @@ fn tool_call_pairing_holds_after_tier2() {
     for (i, m) in messages.iter().enumerate() {
         if m.role == Role::Tool {
             let id = m.tool_call_id.as_deref().expect("tool result has an id");
-            let has_pair = messages[..i]
-                .iter()
-                .rev()
-                .take(1)
-                .any(|prev| prev.tool_calls.as_ref().is_some_and(|tcs| tcs.iter().any(|tc| tc.id == id)));
-            assert!(has_pair, "tool result at {i} has no preceding matching call");
+            let has_pair = messages[..i].iter().rev().take(1).any(|prev| {
+                prev.tool_calls
+                    .as_ref()
+                    .is_some_and(|tcs| tcs.iter().any(|tc| tc.id == id))
+            });
+            assert!(
+                has_pair,
+                "tool result at {i} has no preceding matching call"
+            );
         }
     }
     for (i, m) in messages.iter().enumerate() {
         if let Some(tcs) = &m.tool_calls {
             for tc in tcs {
-                let has_result = messages[i + 1..].iter().take(1).any(|next| next.tool_call_id.as_deref() == Some(tc.id.as_str()));
-                assert!(has_result, "tool call {} at {i} has no matching result", tc.id);
+                let has_result = messages[i + 1..]
+                    .iter()
+                    .take(1)
+                    .any(|next| next.tool_call_id.as_deref() == Some(tc.id.as_str()));
+                assert!(
+                    has_result,
+                    "tool call {} at {i} has no matching result",
+                    tc.id
+                );
             }
         }
     }

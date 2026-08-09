@@ -2,7 +2,7 @@
 //! production module as part of the two-crate workspace split.
 
 use deepseek_custom::autopilot::question::{
-    format_answers, input_schema, validate, Answer, AskInput, Question, QuestionOption,
+    Answer, AskInput, Question, QuestionOption, format_answers, input_schema, validate,
 };
 
 fn option(label: &str, description: &str) -> QuestionOption {

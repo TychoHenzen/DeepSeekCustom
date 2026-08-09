@@ -100,7 +100,7 @@ fn sample_request(effort: Option<Effort>) -> ChatRequest {
 
 #[test]
 fn deepseek_sets_non_thinking_for_effort_none() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let req = sample_request(Some(Effort::None));
 
     let prepared = client.prepare_request_for_test(&req);
@@ -112,7 +112,7 @@ fn deepseek_sets_non_thinking_for_effort_none() {
 
 #[test]
 fn deepseek_collapses_low_medium_high_into_thinking() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     for level in [Effort::Low, Effort::Medium, Effort::High] {
         let req = sample_request(Some(level));
         let prepared = client.prepare_request_for_test(&req);
@@ -126,7 +126,7 @@ fn deepseek_collapses_low_medium_high_into_thinking() {
 
 #[test]
 fn deepseek_sets_thinking_max_for_effort_max() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let req = sample_request(Some(Effort::Max));
 
     let prepared = client.prepare_request_for_test(&req);
@@ -136,7 +136,7 @@ fn deepseek_sets_thinking_max_for_effort_max() {
 
 #[test]
 fn deepseek_with_no_effort_leaves_thinking_mode_untouched() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let mut req = sample_request(None);
     req.thinking_mode = Some("thinking".to_string());
 
@@ -147,7 +147,7 @@ fn deepseek_with_no_effort_leaves_thinking_mode_untouched() {
 
 #[test]
 fn ollama_clears_thinking_mode_and_tool_choice() {
-    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
     let req = sample_request(Some(Effort::High));
 
     let prepared = client.prepare_request_for_test(&req);
@@ -158,7 +158,7 @@ fn ollama_clears_thinking_mode_and_tool_choice() {
 
 #[test]
 fn ollama_maps_every_level_one_to_one() {
-    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
     let cases = [
         (Effort::None, "none"),
         (Effort::Low, "low"),
@@ -179,7 +179,7 @@ fn ollama_maps_every_level_one_to_one() {
 
 #[test]
 fn ollama_with_no_effort_leaves_reasoning_effort_alone() {
-    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
     let mut req = sample_request(None);
     req.reasoning_effort = Some("low".to_string());
 

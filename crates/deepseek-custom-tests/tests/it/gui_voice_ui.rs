@@ -18,12 +18,13 @@ use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use tokio::sync::mpsc;
 
 fn settings_with_voice(tts_voice: &str) -> Settings {
-    let mut settings = Settings::default();
-    settings.voice = Some(VoiceConfig {
-        tts_voice: Some(tts_voice.to_string()),
-        ..VoiceConfig::default()
-    });
-    settings
+    Settings {
+        voice: Some(VoiceConfig {
+            tts_voice: Some(tts_voice.to_string()),
+            ..VoiceConfig::default()
+        }),
+        ..Settings::default()
+    }
 }
 
 fn make_voice_ui() -> VoiceUi {
@@ -57,17 +58,19 @@ fn new_falls_back_to_the_first_voice_on_an_unknown_voice_id() {
 
 #[test]
 fn new_seeds_every_control_from_settings() {
-    let mut settings = Settings::default();
-    settings.voice = Some(VoiceConfig {
-        enabled: true,
-        stt_enabled: true,
-        tts_enabled: true,
-        trigger_mode: TriggerMode::WakeWord,
-        wake_phrase: Some("hey computer".into()),
-        tts_voice: Some("am_michael".into()),
-        tts_speed: Some(1.4),
-        ..VoiceConfig::default()
-    });
+    let settings = Settings {
+        voice: Some(VoiceConfig {
+            enabled: true,
+            stt_enabled: true,
+            tts_enabled: true,
+            trigger_mode: TriggerMode::WakeWord,
+            wake_phrase: Some("hey computer".into()),
+            tts_voice: Some("am_michael".into()),
+            tts_speed: Some(1.4),
+            ..VoiceConfig::default()
+        }),
+        ..Settings::default()
+    };
     let voice = VoiceUi::new(&settings, &Arc::new(AtomicBool::new(false)));
     assert!(voice.master_enabled_for_test());
     assert!(voice.stt_enabled_for_test());
@@ -95,14 +98,16 @@ fn new_selects_a_known_voice_id() {
 
 #[test]
 fn new_sets_the_voice_mode_flag_from_the_seeded_tts_value() {
-    let mut settings = Settings::default();
     // `voice_tts_enabled` is gated on the master switch too, so text to
     // speech alone does not turn voice reply mode on.
-    settings.voice = Some(VoiceConfig {
-        enabled: true,
-        tts_enabled: true,
-        ..VoiceConfig::default()
-    });
+    let settings = Settings {
+        voice: Some(VoiceConfig {
+            enabled: true,
+            tts_enabled: true,
+            ..VoiceConfig::default()
+        }),
+        ..Settings::default()
+    };
     let flag = Arc::new(AtomicBool::new(false));
     let _voice = VoiceUi::new(&settings, &flag);
     assert!(flag.load(Ordering::SeqCst));

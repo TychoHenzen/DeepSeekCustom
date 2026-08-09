@@ -43,9 +43,10 @@ fn a_result_response_parses() {
 
 #[test]
 fn an_error_response_parses() {
-    let response: Response =
-        serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#)
-            .unwrap();
+    let response: Response = serde_json::from_str(
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#,
+    )
+    .unwrap();
     let error = response.error.unwrap();
     assert_eq!(error.code, -32601);
     assert_eq!(error.message, "nope");

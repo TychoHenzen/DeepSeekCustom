@@ -104,7 +104,10 @@ async fn answerer_error_produces_error_tool_output() {
     let answerer = Arc::new(StubAnswerer::err("policy call failed"));
     let tool = AskUserQuestionTool::new(answerer);
 
-    let output = tool.execute(well_formed_input()).await.expect("execute returns Ok");
+    let output = tool
+        .execute(well_formed_input())
+        .await
+        .expect("execute returns Ok");
     assert!(output.is_error);
     assert!(output.content.contains("policy call failed"));
 }

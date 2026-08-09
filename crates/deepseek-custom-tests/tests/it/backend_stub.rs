@@ -1,9 +1,9 @@
 //! Unit tests for `deepseek_custom::backend::stub` (`src/backend/stub.rs`).
 //! Moved out of the production module as part of the two-crate workspace split.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use deepseek_custom::agent::agent_loop::StreamEvent;
 use deepseek_custom::agent::repeat::RepeatTarget;
@@ -12,7 +12,11 @@ use deepseek_custom::backend::stub::{StubBackend, StubTurn};
 use tokio::sync::mpsc;
 
 fn new_stub(script: Vec<StubTurn>) -> StubBackend {
-    StubBackend::new(script, "stub-model".to_string(), Arc::new(AtomicBool::new(false)))
+    StubBackend::new(
+        script,
+        "stub-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+    )
 }
 
 #[tokio::test]
@@ -106,7 +110,9 @@ async fn repeat_target_reset_for_iteration_rewinds_the_script() {
         StubTurn::Text("second".to_string()),
     ]);
 
-    RepeatTarget::run_turn(&mut stub, "one").await.expect("first turn");
+    RepeatTarget::run_turn(&mut stub, "one")
+        .await
+        .expect("first turn");
     RepeatTarget::reset_for_iteration(&mut stub).await;
     let after_reset = stub.run("two").await.expect("should replay from start");
 

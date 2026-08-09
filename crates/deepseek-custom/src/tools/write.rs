@@ -104,4 +104,3 @@ impl WriteTool {
         working_dir.join(path)
     }
 }
-

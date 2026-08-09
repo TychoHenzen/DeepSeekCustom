@@ -8,7 +8,7 @@ use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
 /// Top-level settings (deserialized from settings.json).
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -64,28 +64,6 @@ pub struct Settings {
     /// MCP servers for the `Api` backend. See `Settings::mcp_enabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpSettings>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            permissions: None,
-            hooks: None,
-            effort: None,
-            voice: None,
-            autopilot: None,
-            context_budget: None,
-            show_raw_output: None,
-            backends: None,
-            default_backend: None,
-            subagent_max_depth: None,
-            session_turn_cap: None,
-            send_message_call_cap: None,
-            working_dir: None,
-            mcp: None,
-        }
-    }
 }
 
 impl Settings {
@@ -505,15 +483,11 @@ pub struct AutopilotConfig {
 /// How voice input is triggered.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TriggerMode {
+    #[default]
     PushToTalk,
     WakeWord,
-}
-
-impl Default for TriggerMode {
-    fn default() -> Self {
-        TriggerMode::PushToTalk
-    }
 }
 
 fn deserialize_trigger_mode<'de, D>(deserializer: D) -> std::result::Result<TriggerMode, D::Error>

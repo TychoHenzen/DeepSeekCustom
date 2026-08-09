@@ -38,12 +38,11 @@ impl Tool for ResetTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput> {
-        let _parsed: ResetInput = serde_json::from_value(input)
+        let parsed: ResetInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid reset input: {e}")))?;
 
-        info!("reset: session reset triggered");
+        info!(prompt = %parsed.prompt, "reset: session reset triggered");
         // The agent loop catches this variant to perform the actual reset.
         Err(HarnessError::SessionReset)
     }
 }
-

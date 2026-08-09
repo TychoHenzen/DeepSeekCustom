@@ -21,17 +21,15 @@ pub mod transcript;
 pub mod voice_ui;
 
 pub use format::{
-    BLOCK_GAP, IMAGE_LABEL_COLOR, TOOL_ERROR_COLOR, TURN_GAP,
-    block_color, format_elapsed_ms, gap_before, raw_block_text,
-    raw_span_text, role_label, severity_color,
-    subagent_elapsed_ms, subagent_header_summary,
-    subagent_state_color, tool_color, tool_output_color,
-    tool_summary, truncate_args,
+    BLOCK_GAP, IMAGE_LABEL_COLOR, TOOL_ERROR_COLOR, TURN_GAP, block_color, format_elapsed_ms,
+    gap_before, raw_block_text, raw_span_text, role_label, severity_color, subagent_elapsed_ms,
+    subagent_header_summary, subagent_state_color, tool_color, tool_output_color, tool_summary,
+    truncate_args,
 };
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use egui_commonmark::CommonMarkCache;
@@ -54,27 +52,20 @@ use transcript::{BlockKind, Transcript};
 use voice_ui::VoiceUi;
 
 /// Which tab the central panel shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActiveTab {
+    #[default]
     Chat,
     Autopilot,
     Sessions,
-}
-
-impl Default for ActiveTab {
-    fn default() -> Self {
-        Self::Chat
-    }
 }
 
 /// The top-level GUI state. Fields are `pub(super)` so submodules
 /// (draw, event_dispatch, settings_panel, sessions_tab,
 /// test_access) can reach them without getters.
 pub struct DeepSeekGui {
-    pub(super) rx_events:
-        mpsc::UnboundedReceiver<RoutedEvent>,
-    pub(super) tx_input:
-        mpsc::UnboundedSender<AgentCommand>,
+    pub(super) rx_events: mpsc::UnboundedReceiver<RoutedEvent>,
+    pub(super) tx_input: mpsc::UnboundedSender<AgentCommand>,
     pub(super) handles: AgentHandles,
     pub(super) settings: Settings,
     pub(super) project_root: PathBuf,
@@ -111,38 +102,18 @@ impl DeepSeekGui {
         project_root: PathBuf,
     ) -> Self {
         let effort = Effort::load(&handles.effort);
-        let context_budget = handles.context_budget.load(
-            Ordering::SeqCst,
-        );
-        let working_dir_buffer = handles
-            .working_dir
-            .lock()
-            .unwrap()
-            .display()
-            .to_string();
+        let context_budget = handles.context_budget.load(Ordering::SeqCst);
+        let working_dir_buffer = handles.working_dir.lock().unwrap().display().to_string();
         let show_raw = settings.show_raw_output();
         let store = SessionStore::for_project(&project_root);
         let origin = SessionOrigin {
             backend: String::new(),
-            model: handles
-                .model
-                .lock()
-                .unwrap()
-                .clone(),
+            model: handles.model.lock().unwrap().clone(),
         };
         Self {
-            backends: BackendPicker::new(
-                &settings,
-                Arc::clone(&handles.model),
-            ),
-            voice: VoiceUi::new(
-                &settings,
-                &handles.voice_mode,
-            ),
-            autopilot: AutopilotTab::new(
-                &settings,
-                &project_root,
-            ),
+            backends: BackendPicker::new(&settings, Arc::clone(&handles.model)),
+            voice: VoiceUi::new(&settings, &handles.voice_mode),
+            autopilot: AutopilotTab::new(&settings, &project_root),
             sessions: SessionState::new(store, origin),
             rx_events,
             tx_input,
@@ -198,43 +169,28 @@ impl DeepSeekGui {
         }
     }
 
-    pub(super) fn apply_backend_switch(
-        &mut self,
-        switch: BackendSwitch,
-    ) {
-        self.sessions.save_outgoing_and_start_new(
-            &mut self.transcript,
-            switch.outgoing,
-        );
+    pub(super) fn apply_backend_switch(&mut self, switch: BackendSwitch) {
+        self.sessions
+            .save_outgoing_and_start_new(&mut self.transcript, switch.outgoing);
         let _ = self.tx_input.send(switch.command);
     }
 
     pub(super) fn current_origin(&self) -> SessionOrigin {
         SessionOrigin {
-            backend: self.backends
-                .active_backend()
-                .to_string(),
+            backend: self.backends.active_backend().to_string(),
             model: self.backends.model().to_string(),
         }
     }
 
     pub(super) fn start_new_session(&mut self) {
         let origin = self.current_origin();
-        let cmd = self.sessions.start_new(
-            &mut self.transcript,
-            origin,
-        );
+        let cmd = self.sessions.start_new(&mut self.transcript, origin);
         let _ = self.tx_input.send(cmd);
     }
 
-    pub(super) fn load_session(
-        &mut self,
-        id: crate::session::SessionId,
-    ) {
+    pub(super) fn load_session(&mut self, id: crate::session::SessionId) {
         let origin = self.current_origin();
-        if let Some(cmd) = self.sessions.load(
-            id, &mut self.transcript, origin,
-        ) {
+        if let Some(cmd) = self.sessions.load(id, &mut self.transcript, origin) {
             let _ = self.tx_input.send(cmd);
         }
     }
@@ -247,39 +203,26 @@ impl DeepSeekGui {
         }
         let text = std::mem::take(&mut self.input_buffer);
         let image = self.attachment.take();
-        self.transcript.push(BlockKind::User {
-            text: text.clone(),
-        });
+        self.transcript.push(BlockKind::User { text: text.clone() });
         if let Some(ref img) = image {
-            self.transcript.push(BlockKind::Image {
-                image: img.clone(),
-            });
+            self.transcript
+                .push(BlockKind::Image { image: img.clone() });
         }
-        let _ = self.tx_input.send(AgentCommand::UserTurn {
-            text,
-            image,
-        });
+        let _ = self.tx_input.send(AgentCommand::UserTurn { text, image });
         self.session_status = "Running...".into();
     }
 }
 
 impl eframe::App for DeepSeekGui {
-    fn update(
-        &mut self,
-        ctx: &eframe::egui::Context,
-        _frame: &mut eframe::Frame,
-    ) {
+    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.check_timed_save();
         self.drain_voice();
         self.drain_model_lists();
         self.handle_global_keys(ctx);
-        self.attachment.poll_ctrl_v_paste(
-            ctx, &mut self.transcript,
-        );
-        self.attachment.handle_dropped_files(
-            ctx, &mut self.transcript,
-        );
+        self.attachment.poll_ctrl_v_paste(ctx, &mut self.transcript);
+        self.attachment
+            .handle_dropped_files(ctx, &mut self.transcript);
         self.render_settings_panel(ctx);
         self.paint_bottom_panels(ctx);
         self.paint_central(ctx);

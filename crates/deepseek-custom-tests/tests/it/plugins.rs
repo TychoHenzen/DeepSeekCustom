@@ -10,7 +10,8 @@ fn temp_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-plugins-{tag}-{}-{nanos}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("dsc-plugins-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -46,7 +47,10 @@ fn resolves_an_enabled_plugin_to_its_install_path() {
     write_claude_dir(
         &claude,
         "{\"dod-guard@dod-guard\": true}",
-        &format!("{{\"dod-guard@dod-guard\": {}}}", install_path_json(&install)),
+        &format!(
+            "{{\"dod-guard@dod-guard\": {}}}",
+            install_path_json(&install)
+        ),
     );
 
     let roots = enabled_plugin_roots_in(&claude);
@@ -66,7 +70,10 @@ fn skips_a_disabled_plugin() {
     write_claude_dir(
         &claude,
         "{\"dod-guard@dod-guard\": false}",
-        &format!("{{\"dod-guard@dod-guard\": {}}}", install_path_json(&install)),
+        &format!(
+            "{{\"dod-guard@dod-guard\": {}}}",
+            install_path_json(&install)
+        ),
     );
 
     assert!(enabled_plugin_roots_in(&claude).is_empty());

@@ -23,10 +23,11 @@ fn settings_with_backends(
     default_backend: Option<&str>,
     backends: HashMap<String, BackendConfig>,
 ) -> Settings {
-    let mut settings = Settings::default();
-    settings.default_backend = default_backend.map(|s| s.to_string());
-    settings.backends = Some(backends);
-    settings
+    Settings {
+        default_backend: default_backend.map(|s| s.to_string()),
+        backends: Some(backends),
+        ..Settings::default()
+    }
 }
 
 #[test]

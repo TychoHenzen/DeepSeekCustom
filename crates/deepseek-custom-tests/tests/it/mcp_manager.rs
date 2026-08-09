@@ -42,7 +42,11 @@ async fn a_servers_tools_reach_an_attached_registry() {
     manager.start(vec![fake_server("fake", &[])]);
 
     assert_eq!(wait_for_tools(&registry, 2).await, 2);
-    let mut names: Vec<String> = registry.list().iter().map(|t| t.name().to_string()).collect();
+    let mut names: Vec<String> = registry
+        .list()
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect();
     names.sort();
     assert_eq!(names, vec!["mcp__fake__boom", "mcp__fake__echo"]);
     manager.shutdown().await;
@@ -74,7 +78,11 @@ async fn two_servers_both_contribute() {
     manager.start(vec![fake_server("one", &[]), fake_server("two", &[])]);
 
     assert_eq!(wait_for_tools(&registry, 4).await, 4);
-    let names: Vec<String> = registry.list().iter().map(|t| t.name().to_string()).collect();
+    let names: Vec<String> = registry
+        .list()
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect();
     assert!(names.iter().any(|n| n == "mcp__one__echo"));
     assert!(names.iter().any(|n| n == "mcp__two__echo"));
     manager.shutdown().await;

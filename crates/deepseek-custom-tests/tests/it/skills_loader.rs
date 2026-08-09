@@ -24,13 +24,18 @@ fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
 #[test]
 fn parses_every_discovered_file() {
     let dir = temp_dir("parse-all");
-    let a = write(&dir, "a.md", "---\nname: alpha\ndescription: A\n---\n\nbody a");
-    let b = write(&dir, "b.md", "---\nname: beta\ndescription: B\n---\n\nbody b");
+    let a = write(
+        &dir,
+        "a.md",
+        "---\nname: alpha\ndescription: A\n---\n\nbody a",
+    );
+    let b = write(
+        &dir,
+        "b.md",
+        "---\nname: beta\ndescription: B\n---\n\nbody b",
+    );
 
-    let skills = SkillLoader::parse_all(vec![
-        (a, SkillSource::Project),
-        (b, SkillSource::Project),
-    ]);
+    let skills = SkillLoader::parse_all(vec![(a, SkillSource::Project), (b, SkillSource::Project)]);
 
     let mut names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
     names.sort_unstable();
@@ -43,8 +48,16 @@ fn a_later_root_overrides_an_earlier_one_by_name() {
     // Discovery hands over plugins, then global, then project. A project
     // skill named the same as a plugin's must win.
     let dir = temp_dir("override");
-    let plugin = write(&dir, "p.md", "---\nname: shared\ndescription: from plugin\n---\n");
-    let project = write(&dir, "j.md", "---\nname: shared\ndescription: from project\n---\n");
+    let plugin = write(
+        &dir,
+        "p.md",
+        "---\nname: shared\ndescription: from plugin\n---\n",
+    );
+    let project = write(
+        &dir,
+        "j.md",
+        "---\nname: shared\ndescription: from project\n---\n",
+    );
 
     let skills = SkillLoader::parse_all(vec![
         (plugin, SkillSource::Plugin("p".into())),

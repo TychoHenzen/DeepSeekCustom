@@ -53,7 +53,7 @@ fn agent_config_defaults() {
 
 #[test]
 fn agent_loop_creates_with_history() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -67,7 +67,7 @@ fn agent_loop_creates_with_history() {
 
 #[test]
 fn session_reset_clears_history() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let mut agent = AgentLoop::new(
@@ -89,7 +89,7 @@ fn session_reset_clears_history() {
 
 #[test]
 fn interrupt_flag_is_the_injected_arc_not_a_fresh_one() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let gui_flag = Arc::new(AtomicBool::new(false));
     let agent = AgentLoop::new(
@@ -111,7 +111,7 @@ fn interrupt_flag_is_the_injected_arc_not_a_fresh_one() {
 
 #[test]
 fn voice_mode_flag_defaults_to_false() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -125,7 +125,7 @@ fn voice_mode_flag_defaults_to_false() {
 
 #[test]
 fn voice_mode_flag_handle_observes_writes() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -141,7 +141,7 @@ fn voice_mode_flag_handle_observes_writes() {
 
 #[test]
 fn effort_flag_defaults_to_none() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -155,7 +155,7 @@ fn effort_flag_defaults_to_none() {
 
 #[test]
 fn sync_dynamic_config_reads_the_effort_flag() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -173,7 +173,7 @@ fn sync_dynamic_config_reads_the_effort_flag() {
 
 #[test]
 fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -199,7 +199,7 @@ fn sync_dynamic_config_sets_voice_suffix_when_flag_true() {
 
 #[test]
 fn sync_dynamic_config_clears_voice_suffix_when_flag_false() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -227,7 +227,7 @@ fn sync_dynamic_config_clears_voice_suffix_when_flag_false() {
 
 #[test]
 fn sync_dynamic_config_reports_working_dir_when_set() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -254,7 +254,7 @@ fn sync_dynamic_config_reports_working_dir_when_set() {
 
 #[test]
 fn sync_dynamic_config_omits_working_dir_when_never_set() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -275,7 +275,7 @@ fn sync_dynamic_config_omits_working_dir_when_never_set() {
 
 #[test]
 fn changing_shared_working_dir_between_turns_changes_next_syncs_prompt() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -323,7 +323,7 @@ fn changing_shared_working_dir_between_turns_changes_next_syncs_prompt() {
 
 #[test]
 fn clear_history_then_sync_still_reports_the_current_directory() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -356,7 +356,7 @@ fn clear_history_then_sync_still_reports_the_current_directory() {
 
 #[test]
 fn working_dir_and_voice_suffix_both_survive_together() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -385,7 +385,7 @@ fn context_low_water_is_a_third_of_budget() {
 
 #[test]
 fn context_budget_flag_defaults_to_100000() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -402,7 +402,7 @@ fn context_budget_flag_defaults_to_100000() {
 
 #[test]
 fn context_budget_flag_handle_observes_writes() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -418,7 +418,7 @@ fn context_budget_flag_handle_observes_writes() {
 
 #[test]
 fn apply_prune_is_noop_under_budget() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -440,7 +440,7 @@ fn apply_prune_is_noop_under_budget() {
 
 #[test]
 fn apply_prune_reduces_oversized_history_to_low_water() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -482,7 +482,7 @@ fn apply_prune_reduces_oversized_history_to_low_water() {
 
 #[test]
 fn apply_prune_with_none_scores_does_not_panic() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -505,7 +505,7 @@ fn apply_prune_with_none_scores_does_not_panic() {
 
 #[test]
 fn rebuild_system_prompt_clears_messages() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let mut agent = AgentLoop::new(
@@ -523,7 +523,7 @@ fn rebuild_system_prompt_clears_messages() {
 
 #[tokio::test]
 async fn execute_tool_returns_output() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let agent = AgentLoop::new(
@@ -541,7 +541,7 @@ async fn execute_tool_returns_output() {
 
 #[tokio::test]
 async fn execute_unknown_tool_returns_error() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
         client,
@@ -656,12 +656,13 @@ async fn effort_above_none_emits_reasoning_events() {
         Provider::DeepSeek,
         "sk-test".into(),
         Some(format!("http://127.0.0.1:{port}")),
-        Some("deepseek-v4-flash".into()),
     );
 
     let tools = ToolRegistry::new();
-    let mut config = AgentConfig::default();
-    config.effort = Effort::High;
+    let config = AgentConfig {
+        effort: Effort::High,
+        ..AgentConfig::default()
+    };
 
     let mut agent = AgentLoop::new(
         client,
@@ -789,7 +790,6 @@ async fn no_session_survives_a_parent_turn_end() {
         Provider::DeepSeek,
         "sk-test".into(),
         Some(format!("http://127.0.0.1:{port}")),
-        Some("deepseek-v4-flash".into()),
     );
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
@@ -824,7 +824,7 @@ async fn no_session_survives_a_parent_turn_end() {
 /// close happens in `execute_tool`'s `SessionReset` branch.
 #[tokio::test]
 async fn no_session_survives_a_reset() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     tools.register(Arc::new(ResetTool));
     let mut agent = AgentLoop::new(
@@ -854,7 +854,7 @@ async fn no_session_survives_a_reset() {
 
 #[test]
 fn clear_history_drops_messages_keeps_system_prompt() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -879,7 +879,7 @@ fn clear_history_drops_messages_keeps_system_prompt() {
 
 #[test]
 fn restore_history_replaces_messages_and_keeps_system_prompt() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -905,7 +905,7 @@ fn restore_history_replaces_messages_and_keeps_system_prompt() {
 
 #[test]
 fn clear_history_after_voice_suffix_still_produces_working_system_message() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -944,7 +944,7 @@ fn clear_history_after_voice_suffix_still_produces_working_system_message() {
 
 #[tokio::test]
 async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -974,7 +974,7 @@ async fn run_repeat_zero_iterations_emits_only_repeat_finished() {
 
 #[tokio::test]
 async fn run_repeat_stops_immediately_when_interrupt_flag_already_set() {
-    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None, None);
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
         client,
@@ -1058,7 +1058,6 @@ async fn run_repeat_two_iterations_against_mock_server() {
         Provider::DeepSeek,
         "sk-test".into(),
         Some(format!("http://127.0.0.1:{port}")),
-        Some("deepseek-v4-flash".into()),
     );
 
     let tools = ToolRegistry::new();

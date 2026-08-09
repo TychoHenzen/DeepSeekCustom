@@ -472,11 +472,11 @@ impl AgentLoop {
         } else {
             self.history.set_system_suffix(None);
         }
-        if let Some(working_dir) = &self.working_dir {
-            if let Ok(dir) = working_dir.lock() {
-                self.history
-                    .set_working_dir(Some(dir.display().to_string()));
-            }
+        if let Some(working_dir) = &self.working_dir
+            && let Ok(dir) = working_dir.lock()
+        {
+            self.history
+                .set_working_dir(Some(dir.display().to_string()));
         }
     }
 
@@ -1079,11 +1079,11 @@ fn merge_tool_call(accumulated: &mut Vec<ToolCall>, delta: &ToolCall) {
         // Merge function fields
         if let Some(ref delta_func) = delta.function {
             let existing_func = existing.function.get_or_insert_with(Default::default);
-            if let Some(ref name) = delta_func.name {
-                if existing_func.name.is_none() {
-                    debug!(index=?idx, name=%name, "merge_tool_call: set name");
-                    existing_func.name = Some(name.clone());
-                }
+            if let Some(ref name) = delta_func.name
+                && existing_func.name.is_none()
+            {
+                debug!(index=?idx, name=%name, "merge_tool_call: set name");
+                existing_func.name = Some(name.clone());
             }
             if let Some(ref args) = delta_func.arguments {
                 if let Some(ref mut existing_args) = existing_func.arguments {

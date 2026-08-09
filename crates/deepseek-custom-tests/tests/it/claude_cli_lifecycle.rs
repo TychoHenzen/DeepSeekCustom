@@ -150,14 +150,15 @@ async fn interrupt_during_a_turn_kills_the_child_and_the_next_turn_spawns_a_fres
     tokio::time::sleep(Duration::from_millis(400)).await;
     interrupt_flag.store(true, Ordering::SeqCst);
 
-    let (mut driver, result) = tokio::time::timeout(
-        Duration::from_secs(HANG_SLEEP_SECS + 2),
-        handle,
-    )
-    .await
-    .expect("send should return once interrupted, not wait out the full hang")
-    .expect("the spawned task should not panic");
-    assert!(result.is_ok(), "an interrupted send still returns Ok: {result:?}");
+    let (mut driver, result) =
+        tokio::time::timeout(Duration::from_secs(HANG_SLEEP_SECS + 2), handle)
+            .await
+            .expect("send should return once interrupted, not wait out the full hang")
+            .expect("the spawned task should not panic");
+    assert!(
+        result.is_ok(),
+        "an interrupted send still returns Ok: {result:?}"
+    );
 
     let events = drain_all(&mut rx);
     assert!(
@@ -167,17 +168,20 @@ async fn interrupt_during_a_turn_kills_the_child_and_the_next_turn_spawns_a_fres
         "expected an Interrupted event, got {events:?}"
     );
     assert!(
-        !events.iter().any(|e| matches!(e, StreamEvent::TurnEnd { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::TurnEnd { .. })),
         "the hung turn must never complete once its child is killed, got {events:?}"
     );
 
-    let result2 = tokio::time::timeout(
-        Duration::from_secs(10),
-        driver.send("turn after interrupt"),
-    )
-    .await
-    .expect("the turn after an interrupt should not hang");
-    assert!(result2.is_ok(), "the turn after an interrupt should succeed: {result2:?}");
+    let result2 =
+        tokio::time::timeout(Duration::from_secs(10), driver.send("turn after interrupt"))
+            .await
+            .expect("the turn after an interrupt should not hang");
+    assert!(
+        result2.is_ok(),
+        "the turn after an interrupt should succeed: {result2:?}"
+    );
 
     let texts = drain_texts(&mut rx);
     assert_eq!(
@@ -217,7 +221,10 @@ async fn ensure_ready_respawns_after_the_child_exits_on_its_own() {
     let third = tokio::time::timeout(Duration::from_secs(10), driver.send("turn three"))
         .await
         .expect("the respawned turn should not hang");
-    assert!(third.is_ok(), "a fresh child should be spawned and reply: {third:?}");
+    assert!(
+        third.is_ok(),
+        "a fresh child should be spawned and reply: {third:?}"
+    );
 
     let texts = drain_texts(&mut rx);
     assert!(
@@ -247,13 +254,17 @@ async fn flipping_voice_mode_between_turns_respawns_the_child() {
 
     let first = driver.send("turn one").await;
     assert!(first.is_ok(), "first turn should succeed: {first:?}");
-    let pid_before = driver.child_pid().expect("expected a running child after turn one");
+    let pid_before = driver
+        .child_pid()
+        .expect("expected a running child after turn one");
 
     voice_mode_flag.store(true, Ordering::SeqCst);
 
     let second = driver.send("turn two").await;
     assert!(second.is_ok(), "second turn should succeed: {second:?}");
-    let pid_after = driver.child_pid().expect("expected a running child after turn two");
+    let pid_after = driver
+        .child_pid()
+        .expect("expected a running child after turn two");
 
     assert_ne!(
         pid_before, pid_after,
@@ -275,13 +286,17 @@ async fn changing_the_working_directory_between_turns_respawns_the_child() {
 
     let first = driver.send("turn one").await;
     assert!(first.is_ok(), "first turn should succeed: {first:?}");
-    let pid_before = driver.child_pid().expect("expected a running child after turn one");
+    let pid_before = driver
+        .child_pid()
+        .expect("expected a running child after turn one");
 
     *working_dir.lock().unwrap() = std::env::temp_dir();
 
     let second = driver.send("turn two").await;
     assert!(second.is_ok(), "second turn should succeed: {second:?}");
-    let pid_after = driver.child_pid().expect("expected a running child after turn two");
+    let pid_after = driver
+        .child_pid()
+        .expect("expected a running child after turn two");
 
     assert_ne!(
         pid_before, pid_after,
@@ -304,11 +319,15 @@ async fn turn_two_of_an_ordinary_conversation_does_not_respawn_the_child() {
 
     let first = driver.send("turn one").await;
     assert!(first.is_ok(), "first turn should succeed: {first:?}");
-    let pid_before = driver.child_pid().expect("expected a running child after turn one");
+    let pid_before = driver
+        .child_pid()
+        .expect("expected a running child after turn one");
 
     let second = driver.send("turn two").await;
     assert!(second.is_ok(), "second turn should succeed: {second:?}");
-    let pid_after = driver.child_pid().expect("expected a running child after turn two");
+    let pid_after = driver
+        .child_pid()
+        .expect("expected a running child after turn two");
 
     assert_eq!(
         pid_before, pid_after,
@@ -332,14 +351,18 @@ async fn loading_a_different_session_still_respawns_the_child_with_resume() {
 
     let first = driver.send("turn one").await;
     assert!(first.is_ok(), "first turn should succeed: {first:?}");
-    let pid_before = driver.child_pid().expect("expected a running child after turn one");
+    let pid_before = driver
+        .child_pid()
+        .expect("expected a running child after turn one");
 
     let other_session_id = "deadbeef-0000-4000-8000-000000000000".to_string();
     driver.set_claude_session_id(Some(other_session_id.clone()));
 
     let second = driver.send("turn two").await;
     assert!(second.is_ok(), "second turn should succeed: {second:?}");
-    let pid_after = driver.child_pid().expect("expected a running child after turn two");
+    let pid_after = driver
+        .child_pid()
+        .expect("expected a running child after turn two");
 
     assert_ne!(
         pid_before, pid_after,

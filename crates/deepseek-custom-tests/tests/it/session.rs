@@ -3,7 +3,9 @@
 
 use deepseek_custom::api::types::{Content, Message, Role};
 use deepseek_custom::gui::transcript::{BlockKind, Transcript};
-use deepseek_custom::session::{MAX_TITLE_LEN, SessionId, SessionMeta, SessionRecord, derive_title};
+use deepseek_custom::session::{
+    MAX_TITLE_LEN, SessionId, SessionMeta, SessionRecord, derive_title,
+};
 
 fn user_message(content: &str) -> Message {
     Message {
@@ -38,19 +40,28 @@ fn system_message(content: &str) -> Message {
 #[test]
 fn title_from_plain_first_user_message() {
     let messages = vec![user_message("fix the bug in the parser")];
-    assert_eq!(derive_title(&messages, &Transcript::new()), "fix the bug in the parser");
+    assert_eq!(
+        derive_title(&messages, &Transcript::new()),
+        "fix the bug in the parser"
+    );
 }
 
 #[test]
 fn title_with_no_user_message_is_new_conversation() {
     let messages = vec![system_message("you are a helpful assistant")];
-    assert_eq!(derive_title(&messages, &Transcript::new()), "New conversation");
+    assert_eq!(
+        derive_title(&messages, &Transcript::new()),
+        "New conversation"
+    );
 }
 
 #[test]
 fn title_from_empty_message_list_is_new_conversation() {
     let messages: Vec<Message> = Vec::new();
-    assert_eq!(derive_title(&messages, &Transcript::new()), "New conversation");
+    assert_eq!(
+        derive_title(&messages, &Transcript::new()),
+        "New conversation"
+    );
 }
 
 #[test]
@@ -77,7 +88,10 @@ fn title_ignores_leading_assistant_and_system_messages() {
         assistant_message("greeting"),
         user_message("the real question"),
     ];
-    assert_eq!(derive_title(&messages, &Transcript::new()), "the real question");
+    assert_eq!(
+        derive_title(&messages, &Transcript::new()),
+        "the real question"
+    );
 }
 
 #[test]
@@ -122,9 +136,7 @@ fn session_record_round_trips_through_json() {
     transcript.push(BlockKind::User {
         text: "hello".into(),
     });
-    transcript.push(BlockKind::Assistant {
-        spans: vec![],
-    });
+    transcript.push(BlockKind::Assistant { spans: vec![] });
 
     let record = SessionRecord {
         meta: SessionMeta {

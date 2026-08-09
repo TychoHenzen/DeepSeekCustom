@@ -175,9 +175,14 @@ impl AutopilotTab {
         }
         header.show(ui, |ui| {
             ui.label("Task");
+            // A `TextEdit` with no explicit width falls back to
+            // `ui.spacing().text_edit_width`, a fixed 280 points, however
+            // wide the window is. An autopilot task runs to many lines, so
+            // it takes the full tab width instead.
             let task_response = ui.add(
                 TextEdit::multiline(&mut self.task)
                     .desired_rows(6)
+                    .desired_width(f32::INFINITY)
                     .hint_text("Describe the task to repeat"),
             );
             // Save on focus loss, not on every keystroke, matching the wake
@@ -265,4 +270,3 @@ pub fn apply_autopilot_task(settings: &mut Settings, task: &str) {
 pub fn apply_autopilot_iterations(settings: &mut Settings, iterations: u32) {
     settings.autopilot_mut().iterations = Some(iterations);
 }
-

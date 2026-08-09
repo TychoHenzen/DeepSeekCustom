@@ -48,7 +48,7 @@ fn nvidia_bin_dirs_under_finds_bin_dirs_for_each_component() {
     // A component with no bin/ subdirectory must not appear in results.
     fs::create_dir_all(tree.root.join("nvidia/no_bin_here/lib")).unwrap();
 
-    let mut found = nvidia_bin_dirs_under(&[tree.root.clone()]);
+    let mut found = nvidia_bin_dirs_under(std::slice::from_ref(&tree.root));
     found.sort();
 
     let mut expected = vec![
@@ -63,7 +63,7 @@ fn nvidia_bin_dirs_under_finds_bin_dirs_for_each_component() {
 fn nvidia_bin_dirs_under_returns_empty_when_no_nvidia_dir_present() {
     let tree = TempTree::new("no_nvidia");
     // tree.root exists but has no `nvidia` child at all.
-    let found = nvidia_bin_dirs_under(&[tree.root.clone()]);
+    let found = nvidia_bin_dirs_under(std::slice::from_ref(&tree.root));
     assert!(found.is_empty());
 }
 

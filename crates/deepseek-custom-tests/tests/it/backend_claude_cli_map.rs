@@ -57,7 +57,10 @@ fn text_only_fixture_yields_reasoning_text_and_one_turn_end() {
         .filter(|e| matches!(e, StreamEvent::ToolCallStart { .. }))
         .count();
 
-    assert!(reasoning_count >= 1, "expected at least one Reasoning event");
+    assert!(
+        reasoning_count >= 1,
+        "expected at least one Reasoning event"
+    );
     assert!(text_count >= 1, "expected at least one Text event");
     assert_eq!(turn_end_count, 1, "expected exactly one TurnEnd");
     assert_eq!(tool_call_start_count, 0, "expected zero ToolCallStart");
@@ -85,7 +88,10 @@ fn tools_fixture_yields_one_tool_call_start_and_end() {
 
     let start_index = start_index.expect("expected a ToolCallStart with tool Read");
     let end_index = end_index.expect("expected a ToolCallEnd with tool Read");
-    assert!(start_index < end_index, "ToolCallStart should precede ToolCallEnd");
+    assert!(
+        start_index < end_index,
+        "ToolCallStart should precede ToolCallEnd"
+    );
 
     let start_count = events
         .iter()
@@ -99,7 +105,9 @@ fn tools_fixture_yields_one_tool_call_start_and_end() {
     assert_eq!(end_count, 1, "expected exactly one ToolCallEnd");
 
     match &events[end_index] {
-        StreamEvent::ToolCallEnd { output, is_error, .. } => {
+        StreamEvent::ToolCallEnd {
+            output, is_error, ..
+        } => {
             assert!(!is_error, "expected is_error to be false");
             assert!(
                 output.contains("[package]"),
@@ -127,10 +135,8 @@ fn tools_fixture_tool_call_start_carries_real_arguments() {
 
     match start {
         StreamEvent::ToolCallStart { args, .. } => {
-            let parsed: serde_json::Value =
-                serde_json::from_str(args).unwrap_or_else(|e| {
-                    panic!("expected args to parse as JSON, got {args:?}: {e}")
-                });
+            let parsed: serde_json::Value = serde_json::from_str(args)
+                .unwrap_or_else(|e| panic!("expected args to parse as JSON, got {args:?}: {e}"));
             let file_path = parsed
                 .get("file_path")
                 .and_then(|v| v.as_str())

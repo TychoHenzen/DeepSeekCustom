@@ -54,7 +54,6 @@ async fn full_turn_against_mock_server_collects_text_and_turn_end() {
         Provider::DeepSeek,
         "sk-test".into(),
         Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
     );
 
     let tools = ToolRegistry::new();
@@ -70,7 +69,11 @@ async fn full_turn_against_mock_server_collects_text_and_turn_end() {
     agent.set_event_sender(tx);
 
     let result = agent.run("hello").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -156,7 +159,6 @@ fn new_agent_against(
         Provider::DeepSeek,
         "sk-test".into(),
         Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
     );
 
     let tools = ToolRegistry::new();
@@ -225,7 +227,6 @@ async fn tool_call_round_trip_feeds_result_back_and_reaches_turn_end() {
         Provider::DeepSeek,
         "sk-test".into(),
         Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
     );
 
     let tools = ToolRegistry::new();
@@ -245,7 +246,11 @@ async fn tool_call_round_trip_feeds_result_back_and_reaches_turn_end() {
     agent.set_event_sender(tx);
 
     let result = agent.run("please read Cargo.toml").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -390,7 +395,11 @@ async fn retries_after_a_500_and_completes_the_turn() {
     let (mut agent, mut rx) = new_agent_against(&mock_server);
 
     let result = agent.run("hello").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -443,7 +452,11 @@ async fn a_malformed_chunk_is_skipped_and_the_turn_still_completes() {
     let (mut agent, mut rx) = new_agent_against(&mock_server);
 
     let result = agent.run("hello").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -492,7 +505,11 @@ async fn a_stream_missing_the_done_sentinel_still_terminates_the_turn() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), agent.run("hello"))
         .await
         .expect("agent.run should not hang when the [DONE] sentinel is missing");
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -535,12 +552,7 @@ async fn request_body_for_effort(provider: Provider, effort: Effort) -> serde_js
         .mount(&mock_server)
         .await;
 
-    let client = ApiClient::new(
-        provider,
-        "sk-test".into(),
-        Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
-    );
+    let client = ApiClient::new(provider, "sk-test".into(), Some(mock_server.uri()));
 
     let tools = ToolRegistry::new();
     let config = AgentConfig {
@@ -559,7 +571,11 @@ async fn request_body_for_effort(provider: Provider, effort: Effort) -> serde_js
     agent.set_event_sender(tx);
 
     let result = agent.run("hello").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let received = mock_server
         .received_requests()
@@ -666,12 +682,7 @@ async fn run_turn_with_image(
         .mount(&mock_server)
         .await;
 
-    let client = ApiClient::new(
-        provider,
-        "sk-test".into(),
-        Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
-    );
+    let client = ApiClient::new(provider, "sk-test".into(), Some(mock_server.uri()));
 
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
@@ -686,7 +697,11 @@ async fn run_turn_with_image(
     agent.set_event_sender(tx);
 
     let result = agent.run_with_image("look at this", image).await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -725,7 +740,9 @@ async fn ollama_sends_the_image_as_an_openai_image_url_part() {
 
     // Ollama can take the image, so no unsupported-backend notice fires.
     assert!(
-        !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Error { .. })),
         "expected no Error/notice event, got {events:?}"
     );
 }
@@ -782,7 +799,9 @@ async fn a_turn_with_no_image_is_unaffected_on_either_provider() {
             "provider {provider:?}"
         );
         assert!(
-            !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Error { .. })),
             "provider {provider:?}: expected no notice, got {events:?}"
         );
     }
@@ -844,12 +863,7 @@ async fn run_tool_returned_image_turn(provider: Provider) -> (serde_json::Value,
         .mount(&mock_server)
         .await;
 
-    let client = ApiClient::new(
-        provider,
-        "sk-test".into(),
-        Some(mock_server.uri()),
-        Some("deepseek-v4-flash".into()),
-    );
+    let client = ApiClient::new(provider, "sk-test".into(), Some(mock_server.uri()));
 
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -868,7 +882,9 @@ async fn run_tool_returned_image_turn(provider: Provider) -> (serde_json::Value,
     std::fs::write(dir.join("pixel.png"), &image_bytes).unwrap();
 
     let tools = ToolRegistry::new();
-    tools.register(Arc::new(ReadImageTool::new(Arc::new(Mutex::new(dir.clone())))));
+    tools.register(Arc::new(ReadImageTool::new(Arc::new(Mutex::new(
+        dir.clone(),
+    )))));
 
     let mut agent = AgentLoop::new(
         client,
@@ -882,7 +898,11 @@ async fn run_tool_returned_image_turn(provider: Provider) -> (serde_json::Value,
     agent.set_event_sender(tx);
 
     let result = agent.run("please look at pixel.png").await;
-    assert!(result.is_ok(), "agent run should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "agent run should succeed: {:?}",
+        result.err()
+    );
 
     let mut events: Vec<StreamEvent> = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -933,7 +953,9 @@ async fn ollama_carries_a_tool_returned_image_into_the_next_request() {
     );
 
     assert!(
-        !events.iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Error { .. })),
         "Ollama can take the image, expected no notice, got {events:?}"
     );
 }

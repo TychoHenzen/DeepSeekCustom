@@ -170,10 +170,22 @@ fn run_tier1(
     let pinned = pinned_start(groups.len());
     let non_pinned: Vec<usize> = groups[..pinned].iter().flat_map(|&(s, e)| s..e).collect();
 
-    let images_elided = elide_images(messages, eff_scores, &non_pinned, base_tokens, low_water_tokens);
+    let images_elided = elide_images(
+        messages,
+        eff_scores,
+        &non_pinned,
+        base_tokens,
+        low_water_tokens,
+    );
 
     let tool_bodies_elided = if total_tokens(base_tokens, messages) > low_water_tokens {
-        elide_tool_bodies(messages, eff_scores, &non_pinned, base_tokens, low_water_tokens)
+        elide_tool_bodies(
+            messages,
+            eff_scores,
+            &non_pinned,
+            base_tokens,
+            low_water_tokens,
+        )
     } else {
         0
     };
@@ -389,4 +401,3 @@ fn collapse_group(
     }
     true
 }
-

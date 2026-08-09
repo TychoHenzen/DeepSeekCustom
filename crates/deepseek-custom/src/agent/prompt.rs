@@ -11,6 +11,12 @@ pub struct SystemPromptBuilder {
     current_date: String,
 }
 
+impl Default for SystemPromptBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemPromptBuilder {
     pub fn new() -> Self {
         Self {
@@ -48,17 +54,17 @@ impl SystemPromptBuilder {
         parts.push(self.base_instructions.clone());
 
         // 3. Memory files (CLAUDE.md, MEMORY.md)
-        if let Some(mem) = memory_fragment {
-            if !mem.is_empty() {
-                parts.push(format!("\n## Project Context\n\n{mem}"));
-            }
+        if let Some(mem) = memory_fragment
+            && !mem.is_empty()
+        {
+            parts.push(format!("\n## Project Context\n\n{mem}"));
         }
 
         // 4. Skills
-        if let Some(skills) = skills_fragment {
-            if !skills.is_empty() {
-                parts.push(format!("\n## Available Skills\n\n{skills}"));
-            }
+        if let Some(skills) = skills_fragment
+            && !skills.is_empty()
+        {
+            parts.push(format!("\n## Available Skills\n\n{skills}"));
         }
 
         // 5. Tool definitions
@@ -131,4 +137,3 @@ fn chrono_now_or_empty() -> String {
         Err(_) => "unknown".to_string(),
     }
 }
-

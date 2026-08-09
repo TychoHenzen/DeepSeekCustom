@@ -86,8 +86,14 @@ async fn several_calls_in_a_row_each_get_their_own_answer() {
     // answers, so matching by id beats reading the next line and hoping.
     let client = McpClient::connect(&fake_server(&[])).await.unwrap();
 
-    let first = client.call_tool("echo", json!({"text": "one"})).await.unwrap();
-    let second = client.call_tool("echo", json!({"text": "two"})).await.unwrap();
+    let first = client
+        .call_tool("echo", json!({"text": "one"}))
+        .await
+        .unwrap();
+    let second = client
+        .call_tool("echo", json!({"text": "two"}))
+        .await
+        .unwrap();
 
     assert_eq!(first.text, "one");
     assert_eq!(second.text, "two");
@@ -97,7 +103,9 @@ async fn several_calls_in_a_row_each_get_their_own_answer() {
 #[tokio::test]
 async fn a_non_json_line_from_the_server_is_skipped() {
     // A server is free to write a banner to stdout before its first answer.
-    let client = McpClient::connect(&fake_server(&["--noise"])).await.unwrap();
+    let client = McpClient::connect(&fake_server(&["--noise"]))
+        .await
+        .unwrap();
 
     let tools = client.list_tools().await.unwrap();
 

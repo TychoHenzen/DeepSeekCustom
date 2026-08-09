@@ -105,7 +105,12 @@ impl SubagentRegistry {
     /// every event it forwards, and hands the other clone here once the
     /// dispatch turns out to be a `keep_open` one. See the `turns` field
     /// comment on `SessionEntry` for why a shared atomic is needed at all.
-    pub async fn register_with_turns_handle(&self, id: SubagentId, backend: Backend, turns: Arc<AtomicU32>) {
+    pub async fn register_with_turns_handle(
+        &self,
+        id: SubagentId,
+        backend: Backend,
+        turns: Arc<AtomicU32>,
+    ) {
         self.sessions.lock().await.insert(
             id,
             SessionEntry {
@@ -152,6 +157,12 @@ impl SubagentRegistry {
         self.sessions.lock().await.len()
     }
 
+    /// Whether no session is live. Every turn end calls `close_all`, so
+    /// this is the ordinary state between turns.
+    pub async fn is_empty(&self) -> bool {
+        self.sessions.lock().await.is_empty()
+    }
+
     /// How many turns a live session has run so far, including the turn
     /// that opened it. `None` when no session is registered under `id`.
     /// Read-only visibility for a later step's GUI header, see the
@@ -187,7 +198,11 @@ impl SubagentRegistry {
         &self,
         id: SubagentId,
     ) -> Option<Arc<std::sync::atomic::AtomicU8>> {
-        self.sessions.lock().await.get(&id).map(|e| e.backend.effort_flag())
+        self.sessions
+            .lock()
+            .await
+            .get(&id)
+            .map(|e| e.backend.effort_flag())
     }
 
     /// Close one session: removes it and shuts its backend down. Returns
@@ -302,4 +317,3 @@ impl SubagentRegistry {
         text_result
     }
 }
-

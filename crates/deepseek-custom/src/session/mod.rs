@@ -127,10 +127,13 @@ pub fn derive_title(messages: &[Message], transcript: &Transcript) -> String {
 
     let text = match first_user_text {
         Some(text) => Some(text.to_string()),
-        None => transcript.blocks().iter().find_map(|block| match &block.kind {
-            BlockKind::User { text } => Some(text.clone()),
-            _ => None,
-        }),
+        None => transcript
+            .blocks()
+            .iter()
+            .find_map(|block| match &block.kind {
+                BlockKind::User { text } => Some(text.clone()),
+                _ => None,
+            }),
     };
 
     let Some(text) = text else {
@@ -160,4 +163,3 @@ fn truncate_title(text: &str) -> String {
     truncated.push('\u{2026}');
     truncated
 }
-

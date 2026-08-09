@@ -8,11 +8,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::api::types::ImageAttachment;
 use deepseek_custom::backend::claude_cli::process::{
-    ClaudeCliDriver, build_args, effort_changed, build_user_turn_line, resolve_claude_binary,
+    ClaudeCliDriver, build_args, build_user_turn_line, effort_changed, resolve_claude_binary,
     resume_id_changed, working_dir_changed,
 };
-use deepseek_custom::api::types::ImageAttachment;
 use deepseek_custom::effort::Effort;
 
 use tokio::sync::mpsc;
@@ -173,7 +173,13 @@ fn stdin_line_builder_with_no_image_is_unaffected_compared_to_before() {
 
 #[test]
 fn args_builder_produces_exact_flag_list_in_order() {
-    let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
+    let args = build_args(
+        "claude-opus-x",
+        Some("acceptEdits"),
+        None,
+        None,
+        Effort::None,
+    );
     assert_eq!(
         args,
         vec![
@@ -227,13 +233,25 @@ fn args_builder_appends_system_prompt_when_voice_mode_is_on() {
 
 #[test]
 fn args_builder_omits_system_prompt_flag_when_not_given() {
-    let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
+    let args = build_args(
+        "claude-opus-x",
+        Some("acceptEdits"),
+        None,
+        None,
+        Effort::None,
+    );
     assert!(!args.contains(&"--append-system-prompt".to_string()));
 }
 
 #[test]
 fn args_builder_omits_resume_flag_when_no_id_is_held() {
-    let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
+    let args = build_args(
+        "claude-opus-x",
+        Some("acceptEdits"),
+        None,
+        None,
+        Effort::None,
+    );
     assert!(!args.contains(&"--resume".to_string()));
 }
 
@@ -267,7 +285,13 @@ fn args_builder_includes_both_system_prompt_and_resume_when_both_are_given() {
 
 #[test]
 fn args_builder_omits_effort_flag_for_effort_none() {
-    let args = build_args("claude-opus-x", Some("acceptEdits"), None, None, Effort::None);
+    let args = build_args(
+        "claude-opus-x",
+        Some("acceptEdits"),
+        None,
+        None,
+        Effort::None,
+    );
     assert!(!args.contains(&"--effort".to_string()));
 }
 
@@ -316,8 +340,7 @@ fn effort_changed_is_true_when_levels_differ() {
 #[test]
 fn interrupt_drops_the_child_handles_so_the_next_turn_respawns() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut driver =
-        ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
+    let mut driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
     driver.interrupt();
 
@@ -333,8 +356,7 @@ fn interrupt_drops_the_child_handles_so_the_next_turn_respawns() {
 #[test]
 fn child_exited_is_false_when_no_child_is_running() {
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mut driver =
-        ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
+    let mut driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
     assert!(!driver.child_exited_for_test());
 }
@@ -435,8 +457,7 @@ async fn ensure_ready_reads_the_live_working_dir_before_every_spawn_attempt() {
 #[tokio::test]
 async fn await_turn_end_returns_at_once_when_no_turn_is_in_flight() {
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mut driver =
-        ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
+    let mut driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
 
     // No child, so no `turn_done` channel. This must return rather
     // than poll forever.
@@ -446,8 +467,7 @@ async fn await_turn_end_returns_at_once_when_no_turn_is_in_flight() {
 #[tokio::test]
 async fn await_turn_end_returns_when_the_reader_signals_the_turn_ended() {
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mut driver =
-        ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
+    let mut driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
     let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
     driver.set_turn_done_for_test(turn_done_rx);
     turn_done_tx.send(()).unwrap();
@@ -462,8 +482,7 @@ async fn await_turn_end_returns_when_the_reader_signals_the_turn_ended() {
 #[tokio::test]
 async fn await_turn_end_kills_the_child_when_the_interrupt_flag_is_set() {
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mut driver =
-        ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
+    let mut driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
     let (_turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
     driver.set_turn_done_for_test(turn_done_rx);
     driver.interrupt_flag().store(true, Ordering::SeqCst);
@@ -480,12 +499,6 @@ async fn await_turn_end_kills_the_child_when_the_interrupt_flag_is_set() {
 #[test]
 fn new_driver_seeds_model_flag_from_constructor_model() {
     let (tx, _rx) = mpsc::unbounded_channel();
-    let driver = ClaudeCliDriver::new(
-        "opus".to_string(),
-        None,
-        None,
-        test_working_dir(),
-        tx,
-    );
+    let driver = ClaudeCliDriver::new("opus".to_string(), None, None, test_working_dir(), tx);
     assert_eq!(*driver.model_flag().lock().unwrap(), "opus");
 }

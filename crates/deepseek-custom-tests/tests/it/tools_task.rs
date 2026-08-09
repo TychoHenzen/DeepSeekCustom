@@ -148,8 +148,7 @@ fn build_request_missing_prompt_is_an_error_not_a_panic() {
 
 #[test]
 fn build_request_falls_back_to_the_given_default_effort_when_absent() {
-    let request =
-        build_request(well_formed_input(), 1, Effort::Max).expect("should parse");
+    let request = build_request(well_formed_input(), 1, Effort::Max).expect("should parse");
     assert_eq!(request.effort, Effort::Max);
 }
 
@@ -239,7 +238,10 @@ async fn execute_with_an_unrecognised_effort_value_returns_a_tool_error() {
         "effort": "extreme",
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
 
     assert!(output.is_error);
     assert!(output.content.contains("Invalid Task input"));
@@ -250,7 +252,10 @@ async fn execute_with_an_unrecognised_effort_value_returns_a_tool_error() {
 /// names the session id.
 #[tokio::test]
 async fn execute_with_keep_open_registers_a_session_and_names_it_in_the_result() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let registry = empty_registry();
     let tool = TaskTool::new(
         factory,
@@ -266,7 +271,10 @@ async fn execute_with_keep_open_registers_a_session_and_names_it_in_the_result()
         "keep_open": true,
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
 
     assert!(!output.is_error);
     assert!(output.content.contains("scripted reply"));
@@ -280,7 +288,10 @@ async fn execute_with_keep_open_registers_a_session_and_names_it_in_the_result()
 /// generically, so a model reading it can tell what it typed wrong.
 #[tokio::test]
 async fn execute_with_a_missing_working_dir_returns_a_tool_error_naming_the_path() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let tool = TaskTool::new(
         factory,
         1,
@@ -296,7 +307,10 @@ async fn execute_with_a_missing_working_dir_returns_a_tool_error_naming_the_path
         "working_dir": missing.to_string_lossy(),
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
 
     assert!(output.is_error);
     assert!(output.content.contains(&missing.display().to_string()));
@@ -306,7 +320,10 @@ async fn execute_with_a_missing_working_dir_returns_a_tool_error_naming_the_path
 /// registry empty and the result carries only the subagent's text.
 #[tokio::test]
 async fn execute_without_keep_open_leaves_the_registry_empty() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let registry = empty_registry();
     let tool = TaskTool::new(
         factory,
@@ -321,7 +338,10 @@ async fn execute_without_keep_open_leaves_the_registry_empty() {
         "backend": "stub-agent",
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
 
     assert!(!output.is_error);
     assert_eq!(output.content, "scripted reply");
@@ -346,7 +366,10 @@ fn session_id_from_output(content: &str) -> deepseek_custom::agent::agent_loop::
 /// session's own current level.
 #[tokio::test]
 async fn execute_with_an_explicit_effort_override_reaches_the_subagent() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let registry = empty_registry();
     let tool = TaskTool::new(
         factory,
@@ -363,7 +386,10 @@ async fn execute_with_an_explicit_effort_override_reaches_the_subagent() {
         "effort": "high",
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
     assert!(!output.is_error);
 
     let id = session_id_from_output(&output.content);
@@ -378,7 +404,10 @@ async fn execute_with_an_explicit_effort_override_reaches_the_subagent() {
 /// dispatching session's own current level, read at dispatch time.
 #[tokio::test]
 async fn execute_without_an_effort_override_inherits_the_parents_current_level() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let registry = empty_registry();
     let tool = TaskTool::new(
         factory,
@@ -394,7 +423,10 @@ async fn execute_without_an_effort_override_inherits_the_parents_current_level()
         "keep_open": true,
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
     assert!(!output.is_error);
 
     let id = session_id_from_output(&output.content);
@@ -410,7 +442,10 @@ async fn execute_without_an_effort_override_inherits_the_parents_current_level()
 /// flag is written.
 #[tokio::test]
 async fn a_dispatch_never_moves_the_parents_own_effort_level() {
-    let factory = factory_with_stub("stub-agent", vec![StubTurn::Text("scripted reply".to_string())]);
+    let factory = factory_with_stub(
+        "stub-agent",
+        vec![StubTurn::Text("scripted reply".to_string())],
+    );
     let parent_flag = effort_flag_at(Effort::Low);
     let tool = TaskTool::new(
         factory,
@@ -426,7 +461,10 @@ async fn a_dispatch_never_moves_the_parents_own_effort_level() {
         "effort": "max",
     });
 
-    let output = tool.execute(input).await.expect("execute should not return a hard error");
+    let output = tool
+        .execute(input)
+        .await
+        .expect("execute should not return a hard error");
 
     assert!(!output.is_error);
     assert_eq!(Effort::load(&parent_flag), Effort::Low);

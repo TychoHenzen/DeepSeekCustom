@@ -20,18 +20,14 @@ use serde::{Deserialize, Serialize};
 /// effort at all, the same meaning the old `thinking: false` boolean had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Effort {
+    #[default]
     None,
     Low,
     Medium,
     High,
     Max,
-}
-
-impl Default for Effort {
-    fn default() -> Self {
-        Effort::None
-    }
 }
 
 impl Effort {
