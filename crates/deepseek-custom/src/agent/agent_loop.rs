@@ -22,6 +22,12 @@ use super::prompt::{SystemPromptBuilder, voice_mode_instructions};
 /// pruned hard down to a third of it (see `context_low_water`).
 pub const DEFAULT_CONTEXT_BUDGET: usize = 100_000;
 
+/// Replies shorter than this skip the plain-language grade check, since a
+/// grade score on a one-word or one-sentence reply is just noise. The
+/// threshold is character count, not token count, because the text already
+/// arrived before the check runs.
+const MIN_PLAIN_LANGUAGE_LENGTH: usize = 100;
+
 /// Configuration for the agent loop.
 pub struct AgentConfig {
     pub max_turns: u32,
@@ -295,6 +301,16 @@ pub struct AgentLoop {
     /// voice-mode flags, so the model is never told a directory it was
     /// handed once at startup and never revisited.
     working_dir: Option<Arc<Mutex<PathBuf>>>,
+    /// Whether the plain-language grade gate is active. Defaults to false
+    /// (off), matching `StyleConfig::default`. Read unconditionally in
+    /// `run_turn`, no atomic needed: the setting is fixed at startup and
+    /// never changes at runtime.
+    style_plain_language_enabled: bool,
+    /// Target Flesch-Kincaid grade level. Defaults to 8.0.
+    style_target_grade: f32,
+    /// How far above `target_grade` a reply may sit before the gate
+    /// triggers a rewrite. Defaults to 2.0.
+    style_grade_tolerance: f32,
 }
 
 impl AgentLoop {
@@ -324,6 +340,9 @@ impl AgentLoop {
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             subagent_registry: None,
             working_dir: None,
+            style_plain_language_enabled: false,
+            style_target_grade: 8.0,
+            style_grade_tolerance: 2.0,
         }
     }
 
@@ -350,6 +369,21 @@ impl AgentLoop {
     /// next turn's system prompt.
     pub fn set_working_dir(&mut self, working_dir: Arc<Mutex<PathBuf>>) {
         self.working_dir = Some(working_dir);
+    }
+
+    /// Set the plain-language gate config from `Settings`. Called once at
+    /// startup by `BackendFactory`. Unlike the effort and voice-mode flags,
+    /// these are plain values rather than shared handles: the style gate is
+    /// not something the GUI toggles mid-session today.
+    pub fn set_style_config(
+        &mut self,
+        plain_language_enabled: bool,
+        target_grade: f32,
+        grade_tolerance: f32,
+    ) {
+        self.style_plain_language_enabled = plain_language_enabled;
+        self.style_target_grade = target_grade;
+        self.style_grade_tolerance = grade_tolerance;
     }
 
     /// Replace this agent's own effort flag with one the caller already
@@ -841,6 +875,12 @@ impl AgentLoop {
                 if !stream_text.is_empty() {
                     assistant_texts.push(stream_text.clone());
                 }
+
+                // Plain-language gate (D3): compute the Flesch-Kincaid grade
+                // on the final reply. D4 adds the critique-and-revise loop
+                // right here when the grade is too high.
+                let _needs_revision = self.maybe_check_plain_language(&stream_text);
+
                 self.history.push(Message {
                     role: Role::Assistant,
                     content: Some(Content::text(stream_text.clone())),
@@ -995,6 +1035,34 @@ impl AgentLoop {
     #[cfg(feature = "test-support")]
     pub fn config(&self) -> &AgentConfig {
         &self.config
+    }
+
+    /// Compute the Flesch-Kincaid grade of the final reply text when the
+    /// plain-language gate is on and the text is long enough for a
+    /// meaningful score. Returns `true` when the grade exceeds the target
+    /// plus tolerance, signalling that a revision is needed.
+    ///
+    /// A reply shorter than `MIN_PLAIN_LANGUAGE_LENGTH` always returns
+    /// `false`: a grade score on a one-word or one-sentence reply is just
+    /// noise, exactly as the plan states. The gate being off also returns
+    /// `false` with no computation.
+    fn maybe_check_plain_language(&self, text: &str) -> bool {
+        if !self.style_plain_language_enabled {
+            return false;
+        }
+        if text.len() < MIN_PLAIN_LANGUAGE_LENGTH {
+            return false;
+        }
+        let grade = crate::style::flesch_kincaid_grade(text);
+        let threshold = self.style_target_grade + self.style_grade_tolerance;
+        debug!(
+            grade,
+            target = self.style_target_grade,
+            tolerance = self.style_grade_tolerance,
+            text_len = text.len(),
+            "plain-language gate: grade {grade} vs threshold {threshold}"
+        );
+        grade > threshold
     }
 
     /// Clear history and reload system prompt (called after session reset).

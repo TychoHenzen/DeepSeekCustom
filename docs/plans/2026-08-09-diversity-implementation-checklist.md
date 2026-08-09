@@ -62,7 +62,7 @@ built. This one holds the work items, in build order.
       (`plain_language_enabled`, `target_grade`, `grade_tolerance`,
       `max_revise_attempts`, `critic_backend`). Default
       `plain_language_enabled` to `false`.
-- [ ] `D3` Gate in `AgentLoop::run`, right before `TurnEnd`: compute the
+- [x] `D3` Gate in `AgentLoop::run`, right before `TurnEnd`: compute the
       grade on replies past a minimum length. Skip the check entirely when
       the setting is off.
 - [ ] `D4` Critique-and-revise loop against `critic_backend` (falls back
