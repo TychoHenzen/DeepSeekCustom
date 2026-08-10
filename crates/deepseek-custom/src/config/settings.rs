@@ -39,7 +39,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
     /// Cap on the tokens one API reply may produce, reasoning included.
-    /// Defaults to 8192. See `Settings::max_tokens`.
+    /// Defaults to 65536. See `Settings::max_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     /// Whether the GUI shows raw output instead of rendered markdown.
@@ -160,7 +160,7 @@ impl Settings {
 
     /// Cap on the tokens one API reply may produce, clamped to 1024-65536.
     ///
-    /// Defaults to 8192. The cap covers reasoning tokens as well as the
+    /// Defaults to 65536. The cap covers reasoning tokens as well as the
     /// reply, so a thinking model spends part of it before it writes a
     /// single character. It was hardcoded at 4096, and a real autopilot
     /// run showed what that costs: a `write` call carrying a whole source
@@ -168,7 +168,7 @@ impl Settings {
     /// `finish_reason` "length", and the half-written JSON reached the
     /// tool as a parse error the model could not read as truncation.
     pub fn max_tokens(&self) -> u32 {
-        self.max_tokens.unwrap_or(8192).clamp(1024, 65536)
+        self.max_tokens.unwrap_or(65536).clamp(1024, 65536)
     }
 
     /// Whether the GUI shows raw output instead of rendered markdown.
