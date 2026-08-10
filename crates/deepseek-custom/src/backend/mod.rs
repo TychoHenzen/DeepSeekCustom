@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::{AgentLoop, DEFAULT_CONTEXT_BUDGET, RoutedEvent};
+use crate::agent::agent_loop::{AgentLoop, DEFAULT_CONTEXT_BUDGET};
+use crate::agent::events::RoutedEvent;
 use crate::agent::repeat::run_repeat;
 use crate::api::types::{ImageAttachment, Message};
 use crate::error::Result;

@@ -15,7 +15,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::agent::agent_loop::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
+use crate::agent::events::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
 use crate::backend::Backend;
 use crate::backend::claude_cli::one_shot::OneShotResult;
 use crate::backend::claude_cli::process::ClaudeCliDriver;

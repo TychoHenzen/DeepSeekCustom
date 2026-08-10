@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::agent_loop::{
-    AgentConfig, AgentLoop, DEFAULT_CONTEXT_BUDGET, StreamEvent, SubagentId, build_user_content,
-    context_low_water,
+    AgentConfig, AgentLoop, DEFAULT_CONTEXT_BUDGET, build_user_content, context_low_water,
 };
+use deepseek_custom::agent::events::{StreamEvent, SubagentId};
 use deepseek_custom::agent::repeat::run_repeat;
 use deepseek_custom::api::client::{ApiClient, Provider};
 use deepseek_custom::api::types::{Content, ContentPart, ImageAttachment, Message};
@@ -624,19 +624,21 @@ fn sample_image() -> ImageAttachment {
 #[test]
 fn build_user_content_with_no_image_is_plain_text_on_either_provider() {
     for provider in [Provider::DeepSeek, Provider::Ollama] {
-        let (content, notice) = build_user_content(provider, "hello", None);
-        assert_eq!(content, Content::text("hello"));
-        assert!(notice.is_none(), "provider {provider:?}");
+        let built = build_user_content(provider, "hello", None);
+        assert_eq!(built.content, Content::text("hello"));
+        assert!(built.notice.is_none(), "provider {provider:?}");
     }
 }
 
 #[test]
 fn build_user_content_drops_the_image_on_deepseek_and_names_it_in_the_notice() {
     let image = sample_image();
-    let (content, notice) = build_user_content(Provider::DeepSeek, "look at this", Some(&image));
+    let built = build_user_content(Provider::DeepSeek, "look at this", Some(&image));
 
-    assert_eq!(content, Content::text("look at this"));
-    let notice = notice.expect("expected a notice for a DeepSeek image attachment");
+    assert_eq!(built.content, Content::text("look at this"));
+    let notice = built
+        .notice
+        .expect("expected a notice for a DeepSeek image attachment");
     assert!(
         notice.contains("DeepSeek"),
         "notice should name the backend: {notice}"
@@ -646,11 +648,11 @@ fn build_user_content_drops_the_image_on_deepseek_and_names_it_in_the_notice() {
 #[test]
 fn build_user_content_maps_the_image_to_an_image_url_part_on_ollama() {
     let image = sample_image();
-    let (content, notice) = build_user_content(Provider::Ollama, "look at this", Some(&image));
+    let built = build_user_content(Provider::Ollama, "look at this", Some(&image));
 
-    assert!(notice.is_none());
+    assert!(built.notice.is_none());
     assert_eq!(
-        content,
+        built.content,
         Content::Parts(vec![
             ContentPart::Text {
                 text: "look at this".into(),

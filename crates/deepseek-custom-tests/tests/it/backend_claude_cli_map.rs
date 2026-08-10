@@ -1,7 +1,7 @@
 //! Unit tests for `deepseek_custom::backend::claude_cli::map` (`src/backend/claude_cli/map.rs`).
 //! Moved out of the production module as part of the two-crate workspace split.
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::backend::claude_cli::events::{ClaudeEvent, parse_line};
 use deepseek_custom::backend::claude_cli::map::EventMapper;
 use deepseek_custom::backend::claude_cli::stream::{ContentDelta, InnerStreamEvent};

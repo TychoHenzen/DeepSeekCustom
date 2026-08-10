@@ -47,7 +47,7 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1100 tests
+cargo test --workspace                               # All 1115 tests
 cargo test -p deepseek-custom-tests                  # The same 1100, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
@@ -208,6 +208,8 @@ The GUI attaches an image three ways, all feeding the same one-slot pending-atta
 Pruner tier one now elides image parts before it elides tool bodies, both in `crates/deepseek-custom/src/agent/pruning.rs`. `elide_images` runs first, ordered lowest score first and oldest first on a tie, replacing each `ContentPart::ImageUrl` with a `Text { text: "[elided: image]" }` marker; `elide_tool_bodies` only runs afterward if the budget is still not met. Images go first because they never prune well and are expensive: a part is either fully present or fully gone, and a single screenshot's base64 payload can outweigh a lot of text, so dropping it first reclaims the most budget for the least structural damage. This fixed a real bug along the way: before tier one counted image parts, `estimate_message_tokens` gave an `ImageUrl` part zero tokens, so an image never counted toward the budget in the first place and eliding one would have raised the estimate instead of lowering it, making the whole tier pointless for a message that carried one.
 
 **Tools:** `Tool` trait (`name`, `description`, `input_schema`, `execute`) with dynamic `ToolRegistry`. Fourteen built-in tools now: Bash, Read, Write, Edit, Glob, Grep, Cd, Reset, AskUserQuestion, Task, SendMessage, CloseSession, ReadImage, and Skill. Every MCP server's tools join the same registry on top of those, so a normal run on this machine offers 92: see "MCP servers" below. Bash runs a shell command with a timeout. Its `shell` param accepts `auto`, `cmd`, or `powershell`. It auto-detects powershell and pwsh commands and runs them directly through `Command::new("powershell")`. That avoids cmd.exe inner-quote mangling. Read reads a file with line numbers. Write writes a file. Edit replaces an exact string inside one file, Glob finds files by path pattern, and Grep searches file contents by regular expression. Those three match Claude Code's own tools of the same names, and they were added after a real autopilot run proved what their absence costs: with only `read` and `write` between it and a 400-line file, the model called a nonexistent `edit` tool five times, then wrote five PowerShell scripts that did the replacement through `bash` and left them in the project root, one of them broken. It also shelled out to `Get-ChildItem` and `Select-String` for every lookup a `glob` or a `grep` answers directly. An unknown tool name now comes back naming every tool that does exist, so a wrong guess is corrected on the next turn instead of retried. Cd changes the working directory the other tools act in from then on. See "Working directory" above. Reset used to wipe the conversation with no record. It now saves the current conversation to a session file first, then starts a fresh one, closing every subagent session the outgoing conversation still had open along the way. See "Session persistence" below for the save path and "Multi-turn subagent sessions" below for the close. AskUserQuestion asks a small set of labelled-option questions. A policy-driven model call always answers it. See Autopilot below. No human ever answers it directly. Task dispatches a subagent onto a named backend, and can leave its session open for a later follow-up instead of closing it once the call returns. SendMessage sends a follow-up turn into a session Task left open. CloseSession ends one early, before its parent's turn ends on its own. See "Task tool (subagent dispatch)" and "Multi-turn subagent sessions" below. ReadImage reads an image file off disk and hands it back on `ToolOutput::image`; see "Image input" above for how that field actually reaches the model. Skill reads one skill's instructions off disk by name; see "Skills" below for why the system prompt cannot simply carry them. Cascade and Evolve are deliberately not tools. See "Search runs" below for why, and for what drives them instead. Task, SendMessage, and CloseSession are the three tools that are conditional. Past the configured depth limit, a backend's registry gets none of the three, so a subagent at the limit can neither dispatch a subagent of its own, send a follow-up into one, nor close one, matching that it could never have opened one at that depth to begin with. Permission check via settings `allow`/`deny` lists.
+
+**Line endings:** `edit` matches on LF text and writes back whichever endings the file already had, through the three helpers in `crates/deepseek-custom/src/tools/line_endings.rs`. `write` does the same when it overwrites a file that is already CRLF. That is not a nicety, it is what makes `edit` work on Windows at all. `read` hands the model text through `str::lines`, which drops the carriage return of every CRLF line, so every `old_string` the model sends back carries LF. The old byte-exact match then rejected any needle spanning more than one line, and reported the text as missing while it sat in the file in plain view. A real session lost six edits that way, all on the one CRLF file it touched, and the refactor it was in the middle of was left half applied. A file with mixed endings counts as CRLF and comes out wholly CRLF.
 
 `ToolRegistry` holds its map behind an `Arc<RwLock<_>>`, so a clone shares one map with the original. That is what lets an MCP server register its tools after the agent that will call them was already built. `ToolRegistry::downgrade` hands out a weak handle for the same reason a subagent's registry must not be kept alive by the MCP manager that feeds it: a dispatch builds one registry per subagent, and holding each strongly would pile up one dead registry per dispatch for the life of the process.
 
@@ -495,9 +497,9 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1100 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1115 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
-**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 71 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
+**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 72 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
 Cargo's default is the opposite, and it was expensive here. Cargo builds one executable per `.rs` file directly under `tests/`. Each one statically links the whole dependency tree: ONNX Runtime, whisper.cpp, egui, eframe, cpal. Measured on this tree at 71 files: 1.9 GB of executables and 2.7 GB of debug symbols. That is about 4.6 GB, rebuilt from scratch on every full test run. The one target that replaced them is 41 MB with a 72 MB `.pdb`.
 
@@ -531,7 +533,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1080 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1092 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -592,6 +594,7 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `tools/bash.rs` | 14 |
 | `tools/cd.rs` | 6 |
 | `tools/close_session.rs` | 6 |
+| `tools/line_endings.rs` | 5 |
 | `tools/mod.rs` | 4 |
 | `tools/read.rs` | 4 |
 | `tools/read_image.rs` | 5 |
@@ -599,8 +602,8 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `tools/send_message.rs` | 7 |
 | `tools/skill.rs` | 10 |
 | `tools/task.rs` | 19 |
-| `tools/write.rs` | 3 |
-| `tools/edit.rs` | 11 |
+| `tools/write.rs` | 6 |
+| `tools/edit.rs` | 15 |
 | `tools/glob.rs` | 6 |
 | `tools/grep.rs` | 10 |
 | `voice/mod.rs` | 27 |

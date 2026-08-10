@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use crate::agent::agent_loop::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
+use crate::agent::events::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
 use crate::api::types::ImageAttachment;
 use serde::{Deserialize, Deserializer, Serialize};
 

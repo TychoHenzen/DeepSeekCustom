@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use crate::agent::agent_loop::StreamEvent;
+use crate::agent::events::StreamEvent;
 use crate::effort::Effort;
 
 use super::events::{ClaudeEvent, parse_line};

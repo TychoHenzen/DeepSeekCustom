@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::agent::repeat::RepeatTarget;
 use deepseek_custom::backend::stub::{StubBackend, StubTurn};
 

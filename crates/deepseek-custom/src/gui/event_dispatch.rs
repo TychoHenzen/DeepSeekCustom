@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
+use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::search::SearchKind;
 use crate::voice::service::VoiceCommand;
 

@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{error, info, warn};
 
-use super::agent_loop::{AgentLoop, StreamEvent};
+use super::agent_loop::AgentLoop;
+use super::events::StreamEvent;
 use crate::error::Result;
 
 /// A request to run one task repeatedly, sent from the GUI's Autopilot tab

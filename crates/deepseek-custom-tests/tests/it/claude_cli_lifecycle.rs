@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::backend::claude_cli::process::ClaudeCliDriver;
 
 /// Matches `CLAUDE_CLI_PATH_KEY` in `src/backend/claude_cli/process.rs`,
@@ -50,7 +50,7 @@ fn new_driver(
     working_dir: Arc<Mutex<PathBuf>>,
 ) -> (
     ClaudeCliDriver,
-    tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::agent_loop::RoutedEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::events::RoutedEvent>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let driver = ClaudeCliDriver::new(
@@ -64,7 +64,7 @@ fn new_driver(
 }
 
 fn drain_texts(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::agent_loop::RoutedEvent>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::events::RoutedEvent>,
 ) -> Vec<String> {
     let mut texts = Vec::new();
     while let Ok(routed) = rx.try_recv() {
@@ -76,7 +76,7 @@ fn drain_texts(
 }
 
 fn drain_all(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::agent_loop::RoutedEvent>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<deepseek_custom::agent::events::RoutedEvent>,
 ) -> Vec<StreamEvent> {
     let mut events = Vec::new();
     while let Ok(routed) = rx.try_recv() {

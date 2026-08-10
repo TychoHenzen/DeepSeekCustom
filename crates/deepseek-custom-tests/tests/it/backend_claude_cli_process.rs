@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::api::types::ImageAttachment;
 use deepseek_custom::backend::claude_cli::process::{
     ClaudeCliDriver, build_args, build_user_turn_line, effort_changed, resolve_claude_binary,

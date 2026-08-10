@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use super::session_state::SessionOrigin;
-use crate::agent::agent_loop::AgentCommand;
+use crate::agent::events::AgentCommand;
 use crate::api::models::list_models;
 use crate::config::settings::{BackendConfig, Settings};
 

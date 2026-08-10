@@ -150,6 +150,61 @@ async fn an_ambiguous_match_leaves_the_file_untouched() {
 }
 
 #[test]
+fn a_multi_line_needle_matches_a_crlf_source() {
+    // The model never sees a carriage return, because `read` strips it, so
+    // every needle it sends back is LF. A real session lost six edits to
+    // this: each one spanned two lines, and the file was CRLF.
+    let source = "use a::{\r\n    One, Two,\r\n};\r\nfn main() {}\r\n";
+    let (out, count) = apply_edit(source, "use a::{\n    One, Two,\n};", "use a::One;", false)
+        .expect("a multi-line needle must match a CRLF file");
+    assert_eq!(count, 1);
+    assert_eq!(out, "use a::One;\r\nfn main() {}\r\n");
+}
+
+#[test]
+fn an_edit_keeps_the_line_endings_the_file_already_had() {
+    let (crlf, _) = apply_edit("one\r\ntwo\r\n", "one", "uno", false).unwrap();
+    assert_eq!(crlf, "uno\r\ntwo\r\n");
+    assert!(!crlf.contains("\n\n"), "no bare LF may survive: {crlf:?}");
+
+    let (lf, _) = apply_edit("one\ntwo\n", "one", "uno", false).unwrap();
+    assert_eq!(
+        lf, "uno\ntwo\n",
+        "an LF file must not gain carriage returns"
+    );
+}
+
+#[test]
+fn a_multi_line_replacement_gets_the_files_own_line_endings() {
+    let (out, _) = apply_edit("a\r\nb\r\n", "a", "first\nsecond", false).unwrap();
+    assert_eq!(out, "first\r\nsecond\r\nb\r\n");
+}
+
+#[tokio::test]
+async fn the_tool_edits_a_crlf_file_on_disk() {
+    let dir = temp_dir("crlf");
+    let path = dir.join("sample.rs");
+    std::fs::write(&path, "fn one() {\r\n    todo!()\r\n}\r\n").unwrap();
+
+    let tool = tool_in(&dir);
+    let output = tool
+        .execute(serde_json::json!({
+            "file_path": "sample.rs",
+            "old_string": "fn one() {\n    todo!()\n}",
+            "new_string": "fn one() {\n    2\n}"
+        }))
+        .await
+        .unwrap();
+
+    assert!(!output.is_error, "{}", output.content);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "fn one() {\r\n    2\r\n}\r\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn the_tool_is_named_edit() {
     let dir = temp_dir("name");
     assert_eq!(tool_in(&dir).name(), "edit");

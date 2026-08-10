@@ -5,6 +5,7 @@ pub mod close_session;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod line_endings;
 pub mod read;
 pub mod read_image;
 pub mod reset;

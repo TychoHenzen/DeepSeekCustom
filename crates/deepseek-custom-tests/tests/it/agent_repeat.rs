@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::agent::repeat::{RepeatTarget, run_repeat};
 use deepseek_custom::error::{HarnessError, Result};
 

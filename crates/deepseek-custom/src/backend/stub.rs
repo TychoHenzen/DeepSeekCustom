@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "test-support")]
-use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
+use crate::agent::events::{RoutedEvent, StreamEvent};
 #[cfg(feature = "test-support")]
 use crate::agent::repeat::RepeatTarget;
 #[cfg(feature = "test-support")]

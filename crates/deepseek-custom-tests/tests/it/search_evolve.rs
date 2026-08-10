@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use deepseek_custom::agent::agent_loop::{RoutedEvent, StreamEvent};
+use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::stub::StubTurn;
 use deepseek_custom::config::settings::Settings;

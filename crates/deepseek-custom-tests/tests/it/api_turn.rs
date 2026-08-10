@@ -2,12 +2,13 @@
 //! turn against a canned SSE stream served by a local wiremock server,
 //! rather than any real DeepSeek or Ollama endpoint.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::{AgentConfig, AgentLoop, RoutedEvent, StreamEvent};
+use deepseek_custom::agent::agent_loop::{AgentConfig, AgentLoop};
+use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
 use deepseek_custom::api::client::{ApiClient, Provider};
-use deepseek_custom::api::types::ImageAttachment;
+use deepseek_custom::api::types::{Content, ImageAttachment, Message, Role};
 use deepseek_custom::effort::Effort;
 use deepseek_custom::tools::ToolRegistry;
 use deepseek_custom::tools::read::ReadTool;
@@ -993,3 +994,252 @@ async fn deepseek_drops_a_tool_returned_image_and_posts_a_notice() {
         "notice should name the backend: {notice}"
     );
 }
+
+/// Every message the turn produced must already be in the snapshot the
+/// agent sends alongside `TurnEnd`. The GUI persists whatever that last
+/// snapshot carried, so a snapshot read before the final pushes writes a
+/// session file missing its own final assistant message. That regressed
+/// once when the turn body was split into helpers and the snapshot was
+/// captured up front and passed down.
+#[tokio::test]
+async fn the_snapshot_carries_the_assistant_reply_it_was_sent_with() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(SSE_BODY, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (mut agent, mut rx) = new_agent_against(&mock_server);
+    agent.run("hello").await.expect("agent run should succeed");
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev.event);
+    }
+
+    let messages = last_snapshot(&events);
+    let assistant_text: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .filter_map(|m| m.content.as_ref().and_then(Content::as_text))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        assistant_text.iter().any(|t| t == "Hello, world!"),
+        "the snapshot must carry the reply this turn produced, got {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.role == Role::User),
+        "the snapshot must carry the user turn too, got {messages:?}"
+    );
+}
+
+/// The same rule on the tool-call path: the assistant message carrying the
+/// call, and the tool result it produced, are both in the snapshot.
+#[tokio::test]
+async fn the_snapshot_carries_the_tool_result_the_turn_produced() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(HasToolMessage(false))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(TOOL_CALL_SSE_BODY, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(HasToolMessage(true))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(FOLLOWUP_TEXT_SSE_BODY, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = ApiClient::new(
+        Provider::DeepSeek,
+        "sk-test".into(),
+        Some(mock_server.uri()),
+    );
+    let tools = ToolRegistry::new();
+    tools.register(Arc::new(ReadTool::new(Arc::new(Mutex::new(
+        std::env::current_dir().unwrap(),
+    )))));
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        AgentConfig::default(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.set_event_sender(tx);
+
+    agent
+        .run("please read Cargo.toml")
+        .await
+        .expect("agent run should succeed");
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev.event);
+    }
+
+    let messages = last_snapshot(&events);
+    assert!(
+        messages.iter().any(|m| m.role == Role::Tool),
+        "the snapshot must carry the tool result, got {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.tool_calls.is_some()),
+        "the snapshot must carry the assistant message holding the call, got {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .filter_map(|m| m.content.as_ref().and_then(Content::as_text))
+            .any(|t| t == "Done reading."),
+        "the snapshot must carry the final reply, got {messages:?}"
+    );
+}
+
+/// The `messages` of the last `ConversationSnapshot` in `events`.
+fn last_snapshot(events: &[StreamEvent]) -> Vec<Message> {
+    events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            StreamEvent::ConversationSnapshot { messages, .. } => Some(messages.clone()),
+            _ => None,
+        })
+        .expect("a turn must send a ConversationSnapshot")
+}
+
+/// Two tool calls in one batch, where running the first one sets the
+/// interrupt flag. The turn must stop right there: one API request in
+/// total, an `Interrupted` event, and the second tool never runs. Sending
+/// `Interrupted` and then looping into another API call would report a
+/// stop that never happened.
+#[tokio::test]
+async fn an_interrupt_part_way_through_a_tool_batch_ends_the_turn() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(TWO_TOOL_CALL_SSE_BODY, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let client = ApiClient::new(
+        Provider::DeepSeek,
+        "sk-test".into(),
+        Some(mock_server.uri()),
+    );
+
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let tools = ToolRegistry::new();
+    tools.register(Arc::new(InterruptingTool {
+        interrupt: Arc::clone(&interrupt),
+        runs: Arc::clone(&runs),
+    }));
+
+    let mut agent = AgentLoop::new(
+        client,
+        tools,
+        "sys".into(),
+        AgentConfig::default(),
+        Arc::clone(&interrupt),
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.set_event_sender(tx);
+
+    agent.run("go").await.expect("agent run should succeed");
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev.event);
+    }
+
+    assert_eq!(
+        runs.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second tool must never run after the interrupt"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Interrupted { .. })),
+        "the turn must report the interrupt, got {events:?}"
+    );
+    mock_server.verify().await;
+}
+
+/// A tool that sets the shared interrupt flag the first time it runs, and
+/// counts its own runs. Stands in for the user pressing Escape while a
+/// batch of tool calls is part way through.
+struct InterruptingTool {
+    interrupt: Arc<AtomicBool>,
+    runs: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl deepseek_custom::tools::Tool for InterruptingTool {
+    fn name(&self) -> &str {
+        "stopper"
+    }
+    fn description(&self) -> &str {
+        "sets the interrupt flag"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+    ) -> deepseek_custom::error::Result<deepseek_custom::tools::ToolOutput> {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.interrupt
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(deepseek_custom::tools::ToolOutput {
+            content: "stopped".into(),
+            is_error: false,
+            image: None,
+        })
+    }
+}
+
+/// One assistant reply carrying two calls to `stopper`, so a test can
+/// interrupt between the first and the second.
+const TWO_TOOL_CALL_SSE_BODY: &str = concat!(
+    "data: {\"id\":\"t9\",\"object\":\"chat.completion.chunk\",\"created\":9,",
+    "\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":",
+    "{\"tool_calls\":[{\"index\":0,\"id\":\"call_one\",\"type\":\"function\",",
+    "\"function\":{\"name\":\"stopper\",\"arguments\":\"{}\"}},",
+    "{\"index\":1,\"id\":\"call_two\",\"type\":\"function\",",
+    "\"function\":{\"name\":\"stopper\",\"arguments\":\"{}\"}}]},",
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"t9\",\"object\":\"chat.completion.chunk\",\"created\":9,",
+    "\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{},",
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+);

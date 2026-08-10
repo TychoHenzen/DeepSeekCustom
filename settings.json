@@ -15,11 +15,6 @@
   },
   "context_budget": 150000,
   "backends": {
-    "ollama": {
-      "kind": "api",
-      "provider": "ollama",
-      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
-    },
     "deepseek": {
       "kind": "api",
       "provider": "deepseek",
@@ -28,6 +23,11 @@
     "claude": {
       "kind": "claude_cli",
       "model": "opus"
+    },
+    "ollama": {
+      "kind": "api",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
     }
   },
   "default_backend": "deepseek"

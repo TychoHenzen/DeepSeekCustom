@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
-use deepseek_custom::agent::agent_loop::RoutedEvent;
+use deepseek_custom::agent::events::RoutedEvent;
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::backend::stub::StubTurn;
@@ -351,7 +351,7 @@ async fn execute_without_keep_open_leaves_the_registry_empty() {
 /// Parse the numeric id `Task`'s `keep_open` text embeds, so a test can
 /// go look up that session in the registry directly. Mirrors how
 /// `SendMessage`'s own input turns this text back into a `SubagentId`.
-fn session_id_from_output(content: &str) -> deepseek_custom::agent::agent_loop::SubagentId {
+fn session_id_from_output(content: &str) -> deepseek_custom::agent::events::SubagentId {
     content
         .split("session kept open: ")
         .nth(1)

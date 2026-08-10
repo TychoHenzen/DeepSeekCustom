@@ -7,7 +7,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
+use crate::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::api::types::ImageAttachment;
 use crate::config::settings::Settings;
 use crate::effort::Effort;

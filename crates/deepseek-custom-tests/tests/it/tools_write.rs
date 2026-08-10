@@ -89,3 +89,53 @@ async fn changing_shared_working_dir_moves_where_relative_writes_land() {
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
 }
+
+#[tokio::test]
+async fn overwriting_a_crlf_file_keeps_its_line_endings() {
+    let root = unique_temp_dir("crlf");
+    let path = root.join("sample.txt");
+    std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+
+    let tool = WriteTool::new(dir_arc(root.clone()));
+    let output = tool
+        .execute(serde_json::json!({"file_path": "sample.txt", "content": "one\nthree\n"}))
+        .await
+        .expect("execute");
+
+    assert!(!output.is_error);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\r\nthree\r\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_new_file_is_written_with_the_line_endings_it_was_given() {
+    let root = unique_temp_dir("lf");
+    let path = root.join("fresh.txt");
+
+    let tool = WriteTool::new(dir_arc(root.clone()));
+    let output = tool
+        .execute(serde_json::json!({"file_path": "fresh.txt", "content": "one\ntwo\n"}))
+        .await
+        .expect("execute");
+
+    assert!(!output.is_error);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn overwriting_an_lf_file_does_not_add_carriage_returns() {
+    let root = unique_temp_dir("keep-lf");
+    let path = root.join("sample.txt");
+    std::fs::write(&path, "one\ntwo\n").unwrap();
+
+    let tool = WriteTool::new(dir_arc(root.clone()));
+    let output = tool
+        .execute(serde_json::json!({"file_path": "sample.txt", "content": "one\nthree\n"}))
+        .await
+        .expect("execute");
+
+    assert!(!output.is_error);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\nthree\n");
+    let _ = std::fs::remove_dir_all(&root);
+}

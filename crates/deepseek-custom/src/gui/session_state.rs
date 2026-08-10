@@ -18,7 +18,7 @@
 use tracing::{info, warn};
 
 use super::transcript::Transcript;
-use crate::agent::agent_loop::AgentCommand;
+use crate::agent::events::AgentCommand;
 use crate::api::types::Message;
 use crate::session::{
     SessionId, SessionMeta, SessionRecord, SessionSeq, SessionStore, now_timestamp,

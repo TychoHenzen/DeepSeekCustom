@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::agent::agent_loop::StreamEvent;
+use crate::agent::events::StreamEvent;
 
 use super::events::ClaudeEvent;
 use super::stream::{ContentBlock, ContentDelta, InnerStreamEvent};

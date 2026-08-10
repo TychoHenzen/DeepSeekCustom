@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
-use deepseek_custom::agent::agent_loop::{RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
+use deepseek_custom::agent::events::{RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::backend::stub::StubTurn;

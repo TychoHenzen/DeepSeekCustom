@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::AgentCommand;
+use deepseek_custom::agent::events::AgentCommand;
 use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};
 use deepseek_custom::gui::backend_picker::{BackendPicker, apply_backend_model};
 

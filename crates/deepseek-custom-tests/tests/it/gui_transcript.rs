@@ -1,7 +1,7 @@
 //! Unit tests for `deepseek_custom::gui::transcript` (`src/gui/transcript.rs`).
 //! Moved out of the production module as part of the two-crate workspace split.
 
-use deepseek_custom::agent::agent_loop::{
+use deepseek_custom::agent::events::{
     RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
 };
 use deepseek_custom::api::types::ImageAttachment;

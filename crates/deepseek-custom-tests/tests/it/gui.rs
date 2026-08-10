@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use deepseek_custom::agent::agent_loop::{
+use deepseek_custom::agent::events::{
     AgentCommand, RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
 };
 use deepseek_custom::api::types::{Content, ImageAttachment, Message, Role};

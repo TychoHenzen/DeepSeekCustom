@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tracing::{debug, info};
 
 use crate::error::{HarnessError, Result};
+use crate::tools::line_endings::{has_crlf, to_crlf, to_lf};
 use crate::tools::{Tool, ToolOutput};
 
 /// Exact string replacement in a file. Resolves a relative path against
@@ -69,7 +70,27 @@ struct EditOutcome {
 ///
 /// Pure over its inputs, so the whole decision table (missing match,
 /// ambiguous match, no-op edit, single, all) is testable without a file.
+///
+/// Matching happens on LF text, and the result carries back whichever line
+/// endings `source` already used. The model never sees a carriage return,
+/// because `read` strips it, so a byte-exact match against a CRLF file
+/// would reject every needle spanning more than one line. See
+/// `tools/line_endings.rs`.
 pub fn apply_edit(
+    source: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> std::result::Result<(String, usize), String> {
+    let crlf = has_crlf(source);
+    let (source, old_string, new_string) = (to_lf(source), to_lf(old_string), to_lf(new_string));
+    let (edited, replacements) = replace_in_lf(&source, &old_string, &new_string, replace_all)?;
+    let edited = if crlf { to_crlf(&edited) } else { edited };
+    Ok((edited, replacements))
+}
+
+/// The replacement itself, over text whose newlines are already bare LF.
+fn replace_in_lf(
     source: &str,
     old_string: &str,
     new_string: &str,

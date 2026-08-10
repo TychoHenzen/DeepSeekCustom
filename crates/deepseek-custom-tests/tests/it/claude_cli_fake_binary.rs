@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::StreamEvent;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::backend::claude_cli::process::ClaudeCliDriver;
 
 /// Matches `CLAUDE_CLI_PATH_KEY` in `src/backend/claude_cli/process.rs`.

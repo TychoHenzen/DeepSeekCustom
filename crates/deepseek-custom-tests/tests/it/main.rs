@@ -86,6 +86,7 @@ mod tools_close_session;
 mod tools_edit;
 mod tools_glob;
 mod tools_grep;
+mod tools_line_endings;
 mod tools_read;
 mod tools_read_image;
 mod tools_reset;

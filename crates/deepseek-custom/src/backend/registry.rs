@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio::sync::{Mutex, mpsc};
 
-use crate::agent::agent_loop::{RoutedEvent, SubagentId, SubagentMeta};
+use crate::agent::events::{RoutedEvent, SubagentId, SubagentMeta};
 use crate::backend::Backend;
 use crate::backend::subagent::drain_reply_and_forward;
 

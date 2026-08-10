@@ -39,7 +39,7 @@ use egui_commonmark::CommonMarkCache;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::agent::agent_loop::{AgentCommand, RoutedEvent};
+use crate::agent::events::{AgentCommand, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::config::settings::Settings;
 use crate::effort::Effort;

@@ -5,6 +5,7 @@ use serde::Deserialize;
 use tracing::{debug, info};
 
 use crate::error::{HarnessError, Result};
+use crate::tools::line_endings::{has_crlf, to_crlf};
 use crate::tools::{Tool, ToolOutput};
 
 /// File write tool. Resolves a relative path against `working_dir`, read
@@ -26,6 +27,18 @@ impl WriteTool {
 struct WriteInput {
     file_path: String,
     content: String,
+}
+
+/// Rewrite `content` with CRLF endings when the file being overwritten
+/// already used them. The model only ever sees LF text, because `read`
+/// strips the carriage returns, so writing what it sends back verbatim
+/// would flip a whole Windows file to LF and show up as a diff on every
+/// line. A new file, or one that is already LF, is written as given.
+fn match_existing_line_endings(path: &std::path::Path, content: String) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if has_crlf(&existing) => to_crlf(&content),
+        _ => content,
+    }
 }
 
 #[async_trait]
@@ -60,11 +73,8 @@ impl Tool for WriteTool {
             .map_err(|e| HarnessError::Tool(format!("Invalid write input: {e}")))?;
 
         let path = self.resolve_path(&parsed.file_path);
-        debug!(
-            "write: path={}, bytes={}",
-            path.display(),
-            parsed.content.len()
-        );
+        let content = match_existing_line_endings(&path, parsed.content);
+        debug!("write: path={}, bytes={}", path.display(), content.len());
 
         // Create parent directories
         if let Some(parent) = path.parent() {
@@ -72,16 +82,12 @@ impl Tool for WriteTool {
                 .map_err(|e| HarnessError::Tool(format!("Failed to create parent dirs: {e}")))?;
         }
 
-        std::fs::write(&path, &parsed.content)
+        std::fs::write(&path, &content)
             .map_err(|e| HarnessError::Tool(format!("Failed to write {}: {e}", path.display())))?;
 
-        info!(
-            "write: wrote {} bytes to {}",
-            parsed.content.len(),
-            path.display()
-        );
+        info!("write: wrote {} bytes to {}", content.len(), path.display());
         Ok(ToolOutput {
-            content: format!("Wrote {} bytes to {}", parsed.content.len(), path.display()),
+            content: format!("Wrote {} bytes to {}", content.len(), path.display()),
             is_error: false,
             image: None,
         })

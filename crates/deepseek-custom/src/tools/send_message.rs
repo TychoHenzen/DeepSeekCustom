@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::agent::agent_loop::SubagentId;
+use crate::agent::events::SubagentId;
 use crate::backend::registry::SubagentRegistry;
 use crate::error::Result;
 use crate::tools::{Tool, ToolOutput};

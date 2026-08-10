@@ -17,7 +17,7 @@ use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
+use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
 use crate::backend::subagent::{SubagentRequest, run_subagent};

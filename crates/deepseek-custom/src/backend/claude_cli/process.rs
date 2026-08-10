@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
+use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::agent::prompt::voice_mode_instructions;
 use crate::api::types::ImageAttachment;
 use crate::effort::Effort;

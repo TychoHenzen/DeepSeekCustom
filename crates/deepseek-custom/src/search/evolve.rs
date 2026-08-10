@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::agent::agent_loop::RoutedEvent;
+use crate::agent::events::RoutedEvent;
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
 use crate::backend::subagent::{SubagentRequest, run_subagent};

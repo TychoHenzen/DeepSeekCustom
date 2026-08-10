@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use deepseek_custom::agent::agent_loop::SubagentId;
+use deepseek_custom::agent::events::SubagentId;
 use deepseek_custom::api::client::Provider;
 use deepseek_custom::backend::factory::{
     BackendFactory, ResolvedBackend, may_dispatch_for_test, resolve_active_backend,

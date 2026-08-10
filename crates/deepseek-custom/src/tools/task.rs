@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::RoutedEvent;
+use crate::agent::events::RoutedEvent;
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
 use crate::backend::subagent::{SubagentRequest, run_subagent};
