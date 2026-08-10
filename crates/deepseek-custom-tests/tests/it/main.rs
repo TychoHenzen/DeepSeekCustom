@@ -26,6 +26,7 @@ mod agent_prompt;
 mod agent_pruning;
 mod agent_repeat;
 mod api_client;
+mod api_key;
 mod api_models;
 mod api_turn;
 mod api_types;

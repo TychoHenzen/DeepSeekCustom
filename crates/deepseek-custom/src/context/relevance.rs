@@ -11,7 +11,8 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::agent::history::estimate_message_tokens;
-use crate::api::client::{ApiClient, Provider};
+use crate::api::client::ApiClient;
+use crate::api::provider::Provider;
 use crate::api::types::{ChatRequest, Content, Message};
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \

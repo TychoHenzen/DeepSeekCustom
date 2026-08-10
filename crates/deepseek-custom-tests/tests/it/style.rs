@@ -6,7 +6,8 @@ use std::sync::atomic::AtomicBool;
 
 use deepseek_custom::agent::agent_loop::AgentLoop;
 use deepseek_custom::agent::agent_types::AgentConfig;
-use deepseek_custom::api::client::{ApiClient, Provider};
+use deepseek_custom::api::client::ApiClient;
+use deepseek_custom::api::provider::Provider;
 use deepseek_custom::style::flesch_kincaid_grade;
 use deepseek_custom::tools::ToolRegistry;
 

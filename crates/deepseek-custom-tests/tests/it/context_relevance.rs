@@ -1,7 +1,7 @@
 //! Unit tests for `deepseek_custom::context::relevance` (`src/context/relevance.rs`).
 //! Moved out of the production module as part of the two-crate workspace split.
 
-use deepseek_custom::api::client::Provider;
+use deepseek_custom::api::provider::Provider;
 use deepseek_custom::api::types::{FunctionCall, Message, Role, ToolCall};
 use deepseek_custom::context::relevance::{build_index, parse_scores, scoring_model};
 

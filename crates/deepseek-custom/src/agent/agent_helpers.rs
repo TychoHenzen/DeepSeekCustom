@@ -1,6 +1,6 @@
 use tracing::{debug, info};
 
-use crate::api::client::Provider;
+use crate::api::provider::Provider;
 use crate::api::types::{Content, ContentPart, ImageAttachment, Message, Role, ToolCall};
 
 /// Result of building a user's content for an API request: the `Content`
