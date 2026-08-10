@@ -12,6 +12,7 @@ pub mod hemisphere;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;
+pub mod path_repair;
 pub mod plugins;
 pub mod process_group;
 pub mod search;

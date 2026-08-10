@@ -77,6 +77,15 @@ async fn main() {
         std::env::set_var("KOKORO_G2P_SEGMENT_ESPEAK", "0");
     }
 
+    // Rebuild PATH from the registry, so every child this harness spawns can
+    // find `node`, `npx`, and the rest whatever the launcher handed over.
+    // See `path_repair` for the failure this fixes. It runs here, before the
+    // logging layer, for the same reason the line above does, and reports
+    // back so the result can be logged once logging is up.
+    //
+    // SAFETY: no thread of this application has started yet.
+    let path_report = unsafe { deepseek_custom::path_repair::repair_path() };
+
     let project_root = find_project_root();
 
     // ── Logging: stderr + file ────────────────────────────────
@@ -95,6 +104,12 @@ async fn main() {
     info!("DeepSeekCustom harness starting");
     info!("project root: {}", project_root.display());
     info!("log file: {}", log_path.display());
+    info!(
+        "PATH repair: {} entries before, {} after; node.exe: {}",
+        path_report.before,
+        path_report.after,
+        path_report.node.as_deref().unwrap_or("not found")
+    );
 
     // ── Config ──────────────────────────────────────────────
 

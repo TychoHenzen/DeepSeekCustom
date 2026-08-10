@@ -355,9 +355,9 @@ fn new_panel_fields_round_trip_through_a_file() {
 }
 
 #[test]
-fn max_tokens_defaults_to_8192_when_unset() {
+fn max_tokens_defaults_to_65536_when_unset() {
     let s = Settings::default();
-    assert_eq!(s.max_tokens(), 8192);
+    assert_eq!(s.max_tokens(), 65536);
 }
 
 #[test]
