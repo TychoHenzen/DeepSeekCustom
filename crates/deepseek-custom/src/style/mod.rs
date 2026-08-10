@@ -35,7 +35,9 @@ pub fn flesch_kincaid_grade(text: &str) -> f32 {
 }
 
 fn count_sentences(text: &str) -> usize {
-    text.chars().filter(|c| matches!(c, '.' | '!' | '?')).count()
+    text.chars()
+        .filter(|c| matches!(c, '.' | '!' | '?'))
+        .count()
 }
 
 fn count_words(text: &str) -> usize {
@@ -86,4 +88,3 @@ fn syllables_in_word(word: &str) -> usize {
     // Every word has at least one syllable.
     count.max(1)
 }
-

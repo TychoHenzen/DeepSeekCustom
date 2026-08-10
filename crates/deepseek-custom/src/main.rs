@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use deepseek_custom::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent};
+use deepseek_custom::agent::agent_loop::{AgentCommand, RoutedEvent, StreamEvent, grade_to_u8};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::backend::SharedFlags;
 use deepseek_custom::backend::factory::BackendFactory;
@@ -17,6 +17,7 @@ use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
+use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
@@ -155,6 +156,7 @@ async fn main() {
     let (tx_events, rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
+    let (tx_search, mut rx_search) = mpsc::unbounded_channel::<SearchCommand>();
 
     // ── Backend construction ─────────────────────────────────
 
@@ -177,7 +179,22 @@ async fn main() {
     let context_budget = settings.context_budget();
     effort.store(&flags.effort);
     flags.context_budget.store(context_budget, Ordering::SeqCst);
-    info!("seeded from settings: effort={effort:?} context_budget={context_budget}");
+    // The style gate reads these two through the same shared handles, so
+    // they are seeded here rather than left to `set_style_config`: a
+    // depth-0 backend adopts the session flags after it is built, which
+    // would otherwise drop whatever that call had just written.
+    let plain_language = settings.style_plain_language_enabled();
+    let target_grade = grade_to_u8(settings.style_target_grade());
+    flags
+        .style_plain_language
+        .store(plain_language, Ordering::SeqCst);
+    flags
+        .style_target_grade
+        .store(target_grade, Ordering::SeqCst);
+    info!(
+        "seeded from settings: effort={effort:?} context_budget={context_budget} \
+         plain_language={plain_language} target_grade={target_grade}"
+    );
 
     // ── Spawn agent task ────────────────────────────────────
 
@@ -187,6 +204,14 @@ async fn main() {
     // backend this process ever builds streams onto the one channel the
     // GUI reads.
     let switch_factory = Arc::clone(&factory);
+    let search_factory = Arc::clone(&factory);
+    let search_interrupt = Arc::clone(&flags.search_interrupt);
+    // The same two counters the status bar reads, so its escalation rate
+    // covers every run this session made.
+    let search_counters = CascadeCounters {
+        total: Arc::clone(&flags.cascade_total),
+        escalated: Arc::clone(&flags.cascade_escalated),
+    };
     let switch_tx_events = tx_events;
     let repeat_project_root = project_root.clone();
 
@@ -260,6 +285,44 @@ async fn main() {
                         None => break,
                     }
                 }
+                search = rx_search.recv() => {
+                    match search {
+                        // A search runs to completion here, on the same
+                        // task that drives ordinary turns, so a run and a
+                        // turn can never interleave their dispatches and
+                        // one Stop can only mean the run that is going.
+                        Some(command) => {
+                            search_interrupt.store(false, Ordering::SeqCst);
+                            match command {
+                                SearchCommand::Cascade(params) => {
+                                    info!(n = params.n, "cascade run received");
+                                    run_cascade(
+                                        &search_factory,
+                                        *params,
+                                        switch_tx_events.clone(),
+                                        Arc::clone(&search_interrupt),
+                                        search_counters.clone(),
+                                    )
+                                    .await;
+                                }
+                                SearchCommand::Evolve(params) => {
+                                    info!(
+                                        generations = params.generations,
+                                        "evolve run received"
+                                    );
+                                    run_evolve(
+                                        &search_factory,
+                                        *params,
+                                        switch_tx_events.clone(),
+                                        Arc::clone(&search_interrupt),
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
         info!("agent task shutting down");
@@ -280,11 +343,14 @@ async fn main() {
             working_dir: working_dir_flag,
             cascade_total: Arc::clone(&flags.cascade_total),
             cascade_escalated: Arc::clone(&flags.cascade_escalated),
+            style_plain_language: Arc::clone(&flags.style_plain_language),
+            style_target_grade: Arc::clone(&flags.style_target_grade),
         },
         settings.clone(),
         project_root.clone(),
     )
-    .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt));
+    .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt))
+    .with_search(tx_search, Arc::clone(&flags.search_interrupt));
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

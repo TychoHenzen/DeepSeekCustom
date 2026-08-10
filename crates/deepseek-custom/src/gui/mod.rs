@@ -1,17 +1,20 @@
 //! Native GUI built on egui/eframe. `DeepSeekGui` implements
 //! `eframe::App` and owns the transcript, the input bar, the
-//! settings sidebar, and the three tabs (Chat, Autopilot,
-//! Sessions). Rendering, event dispatch, format helpers, and
+//! settings sidebar, and the five tabs (Chat, Autopilot, Cascade,
+//! Evolve, Sessions). Rendering, event dispatch, format helpers, and
 //! test accessors each live in their own submodule.
 
 pub mod agent_handles;
 pub mod attachment;
 pub mod autopilot_tab;
 pub mod backend_picker;
+pub mod cascade_tab;
 mod draw;
 mod event_dispatch;
+pub mod evolve_tab;
 mod format;
 mod panels;
+pub mod search_view;
 pub mod session_state;
 pub mod sessions_tab;
 pub mod settings_panel;
@@ -40,6 +43,7 @@ use crate::agent::agent_loop::{AgentCommand, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
+use crate::search::SearchCommand;
 use crate::session::SessionStore;
 use crate::voice::service::{VoiceCommand, VoiceEvent};
 
@@ -47,6 +51,8 @@ use agent_handles::AgentHandles;
 use attachment::AttachmentSlot;
 use autopilot_tab::AutopilotTab;
 use backend_picker::{BackendPicker, BackendSwitch};
+use cascade_tab::CascadeTab;
+use evolve_tab::EvolveTab;
 use session_state::{SessionOrigin, SessionState};
 use transcript::{BlockKind, Transcript};
 use voice_ui::VoiceUi;
@@ -76,6 +82,8 @@ pub enum ActiveTab {
     #[default]
     Chat,
     Autopilot,
+    Cascade,
+    Evolve,
     Sessions,
 }
 
@@ -95,12 +103,18 @@ pub struct DeepSeekGui {
     pub(super) backends: BackendPicker,
     pub(super) voice: VoiceUi,
     pub(super) autopilot: AutopilotTab,
+    pub(super) cascade: CascadeTab,
+    pub(super) evolve: EvolveTab,
     pub(super) sessions: SessionState,
     pub(super) active_tab: ActiveTab,
     pub(super) settings_visible: bool,
     pub(super) show_raw_output: bool,
     pub(super) effort: Effort,
     pub(super) context_budget: usize,
+    /// Whether the plain-language gate rewrites an over-target reply.
+    pub(super) plain_language: bool,
+    /// Target Flesch-Kincaid grade for that gate, as a whole number.
+    pub(super) plain_language_grade: u8,
     pub(super) working_dir_buffer: String,
     pub(super) token_count: String,
     pub(super) total_cache_hit_tokens: u32,
@@ -128,6 +142,11 @@ impl DeepSeekGui {
     ) -> Self {
         let effort = Effort::load(&handles.effort);
         let context_budget = handles.context_budget.load(Ordering::SeqCst);
+        // Read off the shared handles, not off `settings`, for the same
+        // reason the effort level is: `main.rs` seeds them from settings
+        // before the GUI exists, so the flag is the one source of truth.
+        let plain_language = handles.style_plain_language.load(Ordering::SeqCst);
+        let plain_language_grade = handles.style_target_grade.load(Ordering::SeqCst);
         let working_dir_buffer = handles.working_dir.lock().unwrap().display().to_string();
         let show_raw = settings.show_raw_output();
         let store = SessionStore::for_project(&project_root);
@@ -139,6 +158,8 @@ impl DeepSeekGui {
             backends: BackendPicker::new(&settings, Arc::clone(&handles.model)),
             voice: VoiceUi::new(&settings, &handles.voice_mode),
             autopilot: AutopilotTab::new(&settings, &project_root),
+            cascade: CascadeTab::new(&settings),
+            evolve: EvolveTab::new(&settings),
             sessions: SessionState::new(store, origin),
             rx_events,
             tx_input,
@@ -154,6 +175,8 @@ impl DeepSeekGui {
             show_raw_output: show_raw,
             effort,
             context_budget,
+            plain_language,
+            plain_language_grade,
             working_dir_buffer,
             token_count: "0".into(),
             total_cache_hit_tokens: 0,
@@ -175,6 +198,22 @@ impl DeepSeekGui {
         flag: Arc<AtomicBool>,
     ) -> Self {
         self.autopilot.attach(tx, flag);
+        self
+    }
+
+    /// Attach the search channel and the flag that stops a running search.
+    ///
+    /// One channel and one flag serve both tabs. Only one search runs at a
+    /// time: the agent task drives a run to completion before it reads the
+    /// next command, so two runs cannot interleave their dispatches, and
+    /// one Stop can only ever mean the run that is going.
+    pub fn with_search(
+        mut self,
+        tx: mpsc::UnboundedSender<SearchCommand>,
+        flag: Arc<AtomicBool>,
+    ) -> Self {
+        self.cascade.attach(tx.clone(), Arc::clone(&flag));
+        self.evolve.attach(tx, flag);
         self
     }
 

@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU8};
+// Only the scripted stub backend counts turns, and that is test-only.
+#[cfg(feature = "test-support")]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -28,10 +31,10 @@ use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
 use crate::tools::ToolRegistry;
 use crate::tools::{
-    ask::AskUserQuestionTool, bash::BashTool, cascade::CascadeTool, cd::CdTool,
-    close_session::CloseSessionTool, edit::EditTool, evolve::EvolveTool, glob::GlobTool,
-    grep::GrepTool, read::ReadTool, read_image::ReadImageTool, reset::ResetTool,
-    send_message::SendMessageTool, skill::SkillTool, task::TaskTool, write::WriteTool,
+    ask::AskUserQuestionTool, bash::BashTool, cd::CdTool, close_session::CloseSessionTool,
+    edit::EditTool, glob::GlobTool, grep::GrepTool, read::ReadTool, read_image::ReadImageTool,
+    reset::ResetTool, send_message::SendMessageTool, skill::SkillTool, task::TaskTool,
+    write::WriteTool,
 };
 
 /// The pieces needed to build either kind of backend, resolved from a
@@ -196,24 +199,6 @@ pub fn may_dispatch_for_test(depth: u32, max_depth: u32) -> bool {
     may_dispatch(depth, max_depth)
 }
 
-/// The `cascade_total` counter for a `CascadeTool` built at `depth`. At
-/// depth 0 with session flags available, returns the session's own counter
-/// so the GUI can read it. Otherwise returns a fresh zeroed counter.
-fn cascade_total_for_tool(factory: &Arc<BackendFactory>, depth: u32) -> Arc<AtomicUsize> {
-    match factory.session_flags_for(depth) {
-        Some(flags) => Arc::clone(&flags.cascade_total),
-        None => Arc::new(AtomicUsize::new(0)),
-    }
-}
-
-/// Same as `cascade_total_for_tool`, for the `cascade_escalated` counter.
-fn cascade_escalated_for_tool(factory: &Arc<BackendFactory>, depth: u32) -> Arc<AtomicUsize> {
-    match factory.session_flags_for(depth) {
-        Some(flags) => Arc::clone(&flags.cascade_escalated),
-        None => Arc::new(AtomicUsize::new(0)),
-    }
-}
-
 /// Build the `Api` backend: an `AgentLoop` wired up with the tool
 /// registry, memory, skills, and system prompt. The claude_cli path
 /// skips it, see the comment at that branch in `BackendFactory::build`.
@@ -312,24 +297,6 @@ fn build_api_backend(
             subagent_registry.clone(),
             effort_flag.clone(),
         )));
-        tools.register(Arc::new(CascadeTool::new(
-            factory.clone(),
-            depth + 1,
-            tx_events.clone(),
-            subagent_registry.clone(),
-            effort_flag.clone(),
-            factory.working_dir(),
-            cascade_total_for_tool(factory, depth),
-            cascade_escalated_for_tool(factory, depth),
-        )));
-        tools.register(Arc::new(EvolveTool::new(
-            factory.clone(),
-            depth + 1,
-            tx_events.clone(),
-            subagent_registry.clone(),
-            effort_flag.clone(),
-            factory.working_dir(),
-        )));
         // Gated the same way as `Task`, not separately: a session this
         // backend cannot open in the first place is never reachable
         // through `SendMessage` either, so gating the two independently
@@ -401,6 +368,17 @@ fn build_api_backend(
     // control) is visible to a `Task` dispatch's "inherit the session's
     // current level" default with no extra sync step.
     agent.set_effort_flag(effort_flag);
+    // The plain-language gate reads its whole configuration once, here.
+    // Without this call the agent keeps the defaults `AgentLoop::new` sets,
+    // whose `plain_language_enabled` is false, so the `style` block in
+    // settings.json would be parsed, validated, and then never consulted.
+    agent.set_style_config(
+        settings.style_plain_language_enabled(),
+        settings.style_target_grade(),
+        settings.style_grade_tolerance(),
+        settings.style_max_revise_attempts(),
+        settings.style_critic_backend(),
+    );
     Backend::Api(Box::new(agent))
 }
 

@@ -22,7 +22,8 @@ use deepseek_custom::gui::autopilot_tab::{
 };
 use deepseek_custom::gui::backend_picker::apply_default_backend;
 use deepseek_custom::gui::settings_panel::{
-    apply_context_budget, apply_effort, apply_show_raw_output, apply_working_dir,
+    apply_context_budget, apply_effort, apply_plain_language, apply_show_raw_output,
+    apply_target_grade, apply_working_dir,
 };
 use deepseek_custom::gui::transcript::{
     Block, BlockKind, Severity, Span, SubagentState, Transcript,
@@ -85,6 +86,8 @@ fn make_gui_in(settings: &Settings, project_root: PathBuf) -> DeepSeekGui {
             working_dir: Arc::new(Mutex::new(project_root.clone())),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(8)),
         },
         settings.clone(),
         project_root,
@@ -1032,6 +1035,8 @@ fn transcript_event_forwards_text_to_the_agent_channel() {
             working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(8)),
         },
         Settings::default(),
         unique_temp_dir("ctor"),
@@ -1256,6 +1261,8 @@ fn new_gui_seeds_context_budget_from_the_flag() {
             working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(8)),
         },
         Settings::default(),
         unique_temp_dir("ctor"),
@@ -1299,6 +1306,8 @@ fn new_gui_seeds_effort_from_the_flag() {
             working_dir: Arc::new(Mutex::new(PathBuf::from("."))),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(8)),
         },
         Settings::default(),
         unique_temp_dir("effort-ctor"),
@@ -1394,6 +1403,45 @@ fn context_budget_change_survives_a_save_and_a_load() {
 }
 
 #[test]
+fn plain_language_change_survives_a_save_and_a_load() {
+    let loaded = round_trip(|s| apply_plain_language(s, true));
+    assert!(loaded.style_plain_language_enabled());
+}
+
+#[test]
+fn target_grade_change_survives_a_save_and_a_load() {
+    let loaded = round_trip(|s| apply_target_grade(s, 12.0));
+    assert_eq!(loaded.style_target_grade(), 12.0);
+}
+
+#[test]
+fn new_gui_seeds_the_plain_language_controls_from_the_flags() {
+    let (_tx_events, rx_events) = mpsc::unbounded_channel();
+    let (tx_input, _rx_input) = mpsc::unbounded_channel();
+    let project_root = unique_temp_dir("seed-plain-language");
+    let gui = DeepSeekGui::new(
+        rx_events,
+        tx_input,
+        AgentHandles {
+            interrupt: Arc::new(AtomicBool::new(false)),
+            effort: Arc::new(AtomicU8::new(0)),
+            voice_mode: Arc::new(AtomicBool::new(false)),
+            context_budget: Arc::new(AtomicUsize::new(64_000)),
+            model: Arc::new(Mutex::new("deepseek-v4-flash".into())),
+            working_dir: Arc::new(Mutex::new(project_root.clone())),
+            cascade_total: Arc::new(AtomicUsize::new(0)),
+            cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(true)),
+            style_target_grade: Arc::new(AtomicU8::new(11)),
+        },
+        Settings::default(),
+        project_root,
+    );
+    assert!(gui.plain_language_for_test());
+    assert_eq!(gui.plain_language_grade_for_test(), 11);
+}
+
+#[test]
 fn new_gui_seeds_working_dir_buffer_from_the_flag() {
     let (_tx_events, rx_events) = mpsc::unbounded_channel();
     let (tx_input, _rx_input) = mpsc::unbounded_channel();
@@ -1410,6 +1458,8 @@ fn new_gui_seeds_working_dir_buffer_from_the_flag() {
             working_dir: Arc::new(Mutex::new(seeded_dir.clone())),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(8)),
         },
         Settings::default(),
         unique_temp_dir("ctor"),

@@ -1,16 +1,15 @@
 pub mod ask;
 pub mod bash;
-pub mod cascade;
 pub mod cd;
 pub mod close_session;
 pub mod edit;
-pub mod evolve;
 pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod read_image;
 pub mod reset;
 pub mod send_message;
+pub mod shell_stdin;
 pub mod skill;
 pub mod task;
 pub mod write;

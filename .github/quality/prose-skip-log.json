@@ -84,5 +84,12 @@
     "exempt": false,
     "at": "2026-08-06T00:17:17.111Z",
     "acknowledged": true
+  },
+  {
+    "file": "crates/deepseek-custom/src/tools/evolve.rs",
+    "reasons": [],
+    "exempt": false,
+    "at": "2026-08-09T22:06:32.871Z",
+    "acknowledged": true
   }
 ]

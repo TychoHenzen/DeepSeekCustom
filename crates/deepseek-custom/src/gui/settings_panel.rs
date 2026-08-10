@@ -169,6 +169,51 @@ impl DeepSeekGui {
                     .small(),
                 );
 
+                ui.add_space(8.0);
+
+                // ── Plain-language gate ──
+                let mut plain_language = self.plain_language;
+                if ui
+                    .checkbox(&mut plain_language, "Plain-language gate")
+                    .changed()
+                {
+                    self.plain_language = plain_language;
+                    self.handles
+                        .style_plain_language
+                        .store(plain_language, Ordering::SeqCst);
+                    info!(
+                        plain_language,
+                        "plain-language gate toggled via settings panel"
+                    );
+                    apply_plain_language(&mut self.settings, plain_language);
+                    self.persist_settings();
+                }
+                if self.plain_language {
+                    let mut grade = self.plain_language_grade;
+                    let grade_response = ui.add(
+                        egui::Slider::new(&mut grade, 4..=16).text("Target grade"),
+                    );
+                    if grade_response.changed() {
+                        self.plain_language_grade = grade;
+                        self.handles
+                            .style_target_grade
+                            .store(grade, Ordering::SeqCst);
+                    }
+                    // Same as the budget slider: one write per drag.
+                    if grade_response.drag_stopped() {
+                        let grade = self.plain_language_grade;
+                        apply_target_grade(&mut self.settings, f32::from(grade));
+                        self.persist_settings();
+                    }
+                    ui.label(
+                        RichText::new(
+                            "  Rewrites a reply reading above the target (DeepSeek, Ollama)",
+                        )
+                        .color(Color32::GRAY)
+                        .small(),
+                    );
+                }
+
                 ui.add_space(16.0);
                 ui.separator();
 
@@ -236,6 +281,18 @@ pub fn apply_show_raw_output(settings: &mut Settings, show_raw: bool) {
 /// Store the context budget slider's value.
 pub fn apply_context_budget(settings: &mut Settings, budget: usize) {
     settings.context_budget = Some(budget);
+}
+
+/// Store the plain-language checkbox's value. Creates the `style` block
+/// when it is missing, the same way the voice writer does, so the change
+/// is never silently dropped.
+pub fn apply_plain_language(settings: &mut Settings, enabled: bool) {
+    settings.style_mut().plain_language_enabled = enabled;
+}
+
+/// Store the target-grade slider's value.
+pub fn apply_target_grade(settings: &mut Settings, grade: f32) {
+    settings.style_mut().target_grade = Some(grade);
 }
 
 /// Store the working-directory sidebar field's value.

@@ -411,6 +411,27 @@ impl Transcript {
                     severity: Severity::Info,
                 });
             }
+            // The running search's own tab draws this, live. Pushing a
+            // block per scored candidate would bury the conversation under
+            // a few hundred notices and grow the saved session with them.
+            StreamEvent::SearchProgress(_) => {}
+            // The result does belong in the conversation: a finished run is
+            // a thing that happened, and the summary carries the winner and
+            // the whole archive, so a saved session records it.
+            StreamEvent::SearchFinished {
+                kind,
+                summary,
+                is_error,
+            } => {
+                self.push(BlockKind::Notice {
+                    text: format!("{} finished\n{summary}", kind.label()),
+                    severity: if is_error {
+                        Severity::Warning
+                    } else {
+                        Severity::Info
+                    },
+                });
+            }
         }
     }
 

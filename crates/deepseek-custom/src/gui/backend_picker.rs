@@ -107,6 +107,13 @@ impl BackendPicker {
         picker
     }
 
+    /// Every backend name the `backends` map holds, sorted. The two search
+    /// tabs list these in their own backend dropdowns, so a run can be
+    /// pointed at a cheap entry without moving the session's own backend.
+    pub fn names(&self) -> &[String] {
+        &self.options
+    }
+
     /// The backend the running session is on, empty when there is none.
     pub fn active_backend(&self) -> &str {
         self.active.as_deref().unwrap_or_default()

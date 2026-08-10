@@ -20,7 +20,13 @@ impl DeepSeekGui {
     pub(super) fn paint_central(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for tab in [ActiveTab::Chat, ActiveTab::Autopilot, ActiveTab::Sessions] {
+                for tab in [
+                    ActiveTab::Chat,
+                    ActiveTab::Autopilot,
+                    ActiveTab::Cascade,
+                    ActiveTab::Evolve,
+                    ActiveTab::Sessions,
+                ] {
                     ui.selectable_value(&mut self.active_tab, tab, format!("{tab:?}"));
                 }
             });
@@ -29,6 +35,30 @@ impl DeepSeekGui {
                 ActiveTab::Chat => self.paint_chat(ui),
                 ActiveTab::Autopilot => {
                     let dirty = self.autopilot.render(ui, &mut self.settings);
+                    if dirty {
+                        self.persist_settings();
+                    }
+                    ui.separator();
+                    self.paint_chat(ui);
+                }
+                // Both search tabs draw the same live transcript below
+                // their own controls, the way the Autopilot tab does: a
+                // run's attempts are ordinary subagent dispatches, so each
+                // one is already a `Subagent` block down there.
+                ActiveTab::Cascade => {
+                    let names = self.backends.names().to_vec();
+                    let effort = self.effort;
+                    let dirty = self.cascade.render(ui, &mut self.settings, &names, effort);
+                    if dirty {
+                        self.persist_settings();
+                    }
+                    ui.separator();
+                    self.paint_chat(ui);
+                }
+                ActiveTab::Evolve => {
+                    let names = self.backends.names().to_vec();
+                    let effort = self.effort;
+                    let dirty = self.evolve.render(ui, &mut self.settings, &names, effort);
                     if dirty {
                         self.persist_settings();
                     }

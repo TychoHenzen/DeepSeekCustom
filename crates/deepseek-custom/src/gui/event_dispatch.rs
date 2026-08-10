@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::agent::agent_loop::{RoutedEvent, StreamEvent};
+use crate::search::SearchKind;
 use crate::voice::service::VoiceCommand;
 
 use super::DeepSeekGui;
+use super::search_view::SearchProgress;
 use super::transcript::{BlockKind, Severity};
 use super::voice_ui::PttKeys;
 
@@ -110,7 +112,35 @@ impl DeepSeekGui {
                     debug!(tool=%tool, "tool call ok");
                 }
             }
-            StreamEvent::Reasoning { .. } | StreamEvent::Error { .. } | StreamEvent::Info { .. } => {}
+            StreamEvent::SearchProgress(snapshot) => {
+                self.on_search_progress(SearchProgress::Running(snapshot.clone()), snapshot.kind);
+            }
+            StreamEvent::SearchFinished {
+                kind,
+                summary,
+                is_error,
+            } => {
+                self.on_search_progress(
+                    SearchProgress::Finished {
+                        summary: summary.clone(),
+                        is_error: *is_error,
+                    },
+                    *kind,
+                );
+            }
+            StreamEvent::Reasoning { .. }
+            | StreamEvent::Error { .. }
+            | StreamEvent::Info { .. } => {}
+        }
+    }
+
+    /// Move whichever search tab owns this run to its new state. The kind
+    /// on the event decides, rather than which tab happens to be open, so a
+    /// run keeps reporting to its own tab while the user reads another.
+    fn on_search_progress(&mut self, progress: SearchProgress, kind: SearchKind) {
+        match kind {
+            SearchKind::Cascade => self.cascade.set_progress(progress),
+            SearchKind::Evolve => self.evolve.set_progress(progress),
         }
     }
 
@@ -197,6 +227,10 @@ impl DeepSeekGui {
         if esc {
             self.handles.interrupt.store(true, Ordering::SeqCst);
             self.autopilot.request_stop();
+            // One Escape stops whatever the session is doing, a running
+            // search included. Both tabs share one flag, so either call
+            // stops the run that is going.
+            self.cascade.request_stop();
             self.voice.send(VoiceCommand::StopSpeaking);
             self.transcript.push(BlockKind::Notice {
                 text: "[Interrupting...]".into(),

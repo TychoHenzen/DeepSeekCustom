@@ -54,6 +54,17 @@ pub struct SharedFlags {
     pub cascade_total: Arc<AtomicUsize>,
     /// Bumped per escalation (Cascade vote did not reach `vote_k`).
     pub cascade_escalated: Arc<AtomicUsize>,
+    /// Whether the plain-language gate rewrites a reply that scores above
+    /// its target grade. `Api`-only: a `claude_cli` child owns its own
+    /// reply and this harness never post-processes it.
+    pub style_plain_language: Arc<AtomicBool>,
+    /// Target Flesch-Kincaid grade for that gate, as a whole number.
+    pub style_target_grade: Arc<AtomicU8>,
+    /// Stops a running Cascade or Evolve run between units of work. Kept
+    /// separate from `interrupt`, which a dispatch in flight consumes and
+    /// resets, so a press survives long enough to end the whole run. Same
+    /// reasoning as `repeat_interrupt`.
+    pub search_interrupt: Arc<AtomicBool>,
 }
 
 impl SharedFlags {
@@ -70,6 +81,11 @@ impl SharedFlags {
             repeat_interrupt: Arc::new(AtomicBool::new(false)),
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
+            style_plain_language: Arc::new(AtomicBool::new(false)),
+            style_target_grade: Arc::new(AtomicU8::new(
+                crate::agent::agent_loop::DEFAULT_TARGET_GRADE,
+            )),
+            search_interrupt: Arc::new(AtomicBool::new(false)),
         }
     }
 

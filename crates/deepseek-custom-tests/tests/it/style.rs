@@ -1,8 +1,8 @@
 //! Tests for `deepseek_custom::style` (`src/style/mod.rs`): the
 //! `flesch_kincaid_grade` function and the plain-language revise loop.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use deepseek_custom::agent::agent_loop::{AgentConfig, AgentLoop};
 use deepseek_custom::api::client::{ApiClient, Provider};
@@ -88,10 +88,7 @@ fn no_punctuation_clamped_to_one_sentence() {
     let grade = flesch_kincaid_grade("hello world");
     // 2 words, 1 sentence (clamped), 3 syllables
     // grade = 0.39 * 2 + 11.8 * (3/2) - 15.59 = 0.78 + 17.7 - 15.59 = 2.89
-    assert!(
-        (grade - 2.89).abs() < 0.2,
-        "expected ~2.89, got {grade}"
-    );
+    assert!((grade - 2.89).abs() < 0.2, "expected ~2.89, got {grade}");
 }
 
 // ---------------------------------------------------------------------------
@@ -157,8 +154,7 @@ async fn revise_loop_returns_revised_text_from_mock_api() {
 
     // The original text is long enough and complex enough to trigger
     // the grade gate.  The mock returns a short, simple revision.
-    let original =
-        "The implementation of sophisticated computational methodologies \
+    let original = "The implementation of sophisticated computational methodologies \
          facilitates the optimization of resource allocation paradigms \
          through the utilization of advanced algorithmic frameworks.";
     let (revised, attempts) = agent.revise_for_plain_language_for_test(original).await;
@@ -213,7 +209,11 @@ async fn revise_loop_skips_when_already_plain() {
 fn maybe_check_returns_false_when_gate_off() {
     let tools = ToolRegistry::new();
     let agent = AgentLoop::new(
-        ApiClient::new(Provider::DeepSeek, "sk-test".into(), Some("http://localhost:1".into())),
+        ApiClient::new(
+            Provider::DeepSeek,
+            "sk-test".into(),
+            Some("http://localhost:1".into()),
+        ),
         tools,
         "sys".into(),
         AgentConfig::default(),
@@ -222,8 +222,7 @@ fn maybe_check_returns_false_when_gate_off() {
 
     // Gate defaults to off. A long, jargon-heavy text should still
     // return false because the gate is not active.
-    let jargon =
-        "The implementation of sophisticated computational methodologies \
+    let jargon = "The implementation of sophisticated computational methodologies \
          facilitates the optimization of resource allocation paradigms.";
     assert!(!agent.maybe_check_plain_language_for_test(jargon));
 }
@@ -234,7 +233,11 @@ fn maybe_check_returns_false_when_gate_off() {
 fn maybe_check_returns_false_for_short_text() {
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
-        ApiClient::new(Provider::DeepSeek, "sk-test".into(), Some("http://localhost:1".into())),
+        ApiClient::new(
+            Provider::DeepSeek,
+            "sk-test".into(),
+            Some("http://localhost:1".into()),
+        ),
         tools,
         "sys".into(),
         AgentConfig::default(),
@@ -254,7 +257,11 @@ fn maybe_check_returns_false_for_short_text() {
 fn maybe_check_returns_true_for_jargon_with_gate_on() {
     let tools = ToolRegistry::new();
     let mut agent = AgentLoop::new(
-        ApiClient::new(Provider::DeepSeek, "sk-test".into(), Some("http://localhost:1".into())),
+        ApiClient::new(
+            Provider::DeepSeek,
+            "sk-test".into(),
+            Some("http://localhost:1".into()),
+        ),
         tools,
         "sys".into(),
         AgentConfig::default(),
@@ -266,8 +273,7 @@ fn maybe_check_returns_true_for_jargon_with_gate_on() {
     agent.set_style_config(true, 8.0, 2.0, 2, None);
 
     // A long enough, complex reply.
-    let jargon =
-        "The implementation of sophisticated computational methodologies \
+    let jargon = "The implementation of sophisticated computational methodologies \
          facilitates the optimization of resource allocation paradigms \
          through the utilization of advanced algorithmic frameworks \
          and the integration of heterogeneous data sources.";

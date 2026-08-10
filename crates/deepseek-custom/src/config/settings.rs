@@ -29,6 +29,12 @@ pub struct Settings {
     pub voice: Option<VoiceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autopilot: Option<AutopilotConfig>,
+    /// The Cascade tab's last-used form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<CascadeSettings>,
+    /// The Evolve tab's last-used form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolve: Option<EvolveSettings>,
     /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
@@ -280,6 +286,27 @@ impl Settings {
         self.autopilot.get_or_insert_with(AutopilotConfig::default)
     }
 
+    /// The Cascade tab's saved form, creating the block when it is missing
+    /// so a first change is never dropped.
+    pub fn cascade_mut(&mut self) -> &mut CascadeSettings {
+        self.cascade.get_or_insert_with(CascadeSettings::default)
+    }
+
+    /// The Evolve tab's saved form, same rule as `cascade_mut`.
+    pub fn evolve_mut(&mut self) -> &mut EvolveSettings {
+        self.evolve.get_or_insert_with(EvolveSettings::default)
+    }
+
+    /// The Cascade tab's saved form, if the file carried one.
+    pub fn cascade(&self) -> Option<&CascadeSettings> {
+        self.cascade.as_ref()
+    }
+
+    /// The Evolve tab's saved form, if the file carried one.
+    pub fn evolve(&self) -> Option<&EvolveSettings> {
+        self.evolve.as_ref()
+    }
+
     /// The configured backends map, if any.
     pub fn backends(&self) -> Option<&HashMap<String, BackendConfig>> {
         self.backends.as_ref()
@@ -374,9 +401,7 @@ impl Settings {
     /// backend that wrote the reply. `None` means revise with the same
     /// backend.
     pub fn style_critic_backend(&self) -> Option<String> {
-        self.style
-            .as_ref()
-            .and_then(|s| s.critic_backend.clone())
+        self.style.as_ref().and_then(|s| s.critic_backend.clone())
     }
 
     /// The style block, created with defaults if it is not there yet.
@@ -535,6 +560,52 @@ pub struct AutopilotConfig {
     /// Last-used task text, so the GUI can restore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+}
+
+/// The Cascade tab's form, remembered between runs.
+///
+/// Every field is optional so an absent block means "the form's own
+/// defaults", and a partially filled block still loads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CascadeSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diversity_hints: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_backend: Option<String>,
+}
+
+/// The Evolve tab's form, remembered between runs. Same rule as
+/// `CascadeSettings`: every field optional.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvolveSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub population: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitness_cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub islands: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_interval: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_hints: Option<Vec<String>>,
 }
 
 /// How voice input is triggered.

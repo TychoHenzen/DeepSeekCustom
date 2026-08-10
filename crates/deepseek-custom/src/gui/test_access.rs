@@ -104,6 +104,14 @@ impl DeepSeekGui {
         self.dispatch_event(routed);
     }
 
+    pub fn plain_language_for_test(&self) -> bool {
+        self.plain_language
+    }
+
+    pub fn plain_language_grade_for_test(&self) -> u8 {
+        self.plain_language_grade
+    }
+
     pub fn context_budget_for_test(&self) -> usize {
         self.context_budget
     }

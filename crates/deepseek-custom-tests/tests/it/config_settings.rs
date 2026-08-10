@@ -149,6 +149,8 @@ fn save_then_load_round_trips_values() {
         working_dir: None,
         mcp: None,
         style: None,
+        cascade: None,
+        evolve: None,
     };
 
     original.save(&dir).unwrap();
@@ -253,6 +255,8 @@ fn save_omits_none_fields() {
         working_dir: None,
         mcp: None,
         style: None,
+        cascade: None,
+        evolve: None,
     };
     s.save(&dir).unwrap();
     let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();

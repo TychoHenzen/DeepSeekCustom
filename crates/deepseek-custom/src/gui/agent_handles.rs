@@ -34,4 +34,8 @@ pub struct AgentHandles {
     pub cascade_total: Arc<AtomicUsize>,
     /// Bumped per escalation (Cascade vote did not reach `vote_k`).
     pub cascade_escalated: Arc<AtomicUsize>,
+    /// Whether the plain-language gate is on, read after each reply.
+    pub style_plain_language: Arc<AtomicBool>,
+    /// Target grade for that gate, read alongside it.
+    pub style_target_grade: Arc<AtomicU8>,
 }

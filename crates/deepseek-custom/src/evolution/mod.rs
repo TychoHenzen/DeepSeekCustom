@@ -53,7 +53,11 @@ pub struct MapElitesArchive {
 impl MapElitesArchive {
     /// Create an empty archive with the given bucket width.
     pub fn new(bucket_width: f64) -> Self {
-        Self { bucket_width, cells: HashMap::new(), dims: 0 }
+        Self {
+            bucket_width,
+            cells: HashMap::new(),
+            dims: 0,
+        }
     }
 
     /// Number of occupied cells.
@@ -111,7 +115,9 @@ impl MapElitesArchive {
     /// Return the single highest-fitness candidate across the archive,
     /// or `None` when empty.
     pub fn best(&self) -> Option<&Candidate> {
-        self.cells.values().max_by(|a, b| a.fitness.total_cmp(&b.fitness))
+        self.cells
+            .values()
+            .max_by(|a, b| a.fitness.total_cmp(&b.fitness))
     }
 }
 
@@ -145,7 +151,11 @@ pub struct Island {
 impl Island {
     /// Create a fresh island.
     pub fn new(bucket_width: f64, elite_k: usize) -> Self {
-        Self { archive: MapElitesArchive::new(bucket_width), elites: Vec::new(), elite_k }
+        Self {
+            archive: MapElitesArchive::new(bucket_width),
+            elites: Vec::new(),
+            elite_k,
+        }
     }
 
     /// Insert a candidate into whichever half of the island it belongs
@@ -163,10 +173,17 @@ impl Island {
     /// fallback, or `None` when the island is empty.
     pub fn best(&self) -> Option<&Candidate> {
         let archive_best = self.archive.best();
-        let elite_best = self.elites.iter().max_by(|a, b| a.fitness.total_cmp(&b.fitness));
+        let elite_best = self
+            .elites
+            .iter()
+            .max_by(|a, b| a.fitness.total_cmp(&b.fitness));
         match (archive_best, elite_best) {
             (Some(a), Some(e)) => {
-                if a.fitness >= e.fitness { Some(a) } else { Some(e) }
+                if a.fitness >= e.fitness {
+                    Some(a)
+                } else {
+                    Some(e)
+                }
             }
             (Some(a), None) => Some(a),
             (None, Some(e)) => Some(e),

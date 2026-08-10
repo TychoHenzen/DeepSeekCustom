@@ -28,6 +28,17 @@ pub const DEFAULT_CONTEXT_BUDGET: usize = 100_000;
 /// arrived before the check runs.
 const MIN_PLAIN_LANGUAGE_LENGTH: usize = 100;
 
+/// Default target Flesch-Kincaid grade for the plain-language gate,
+/// matching `Settings::style_target_grade`.
+pub const DEFAULT_TARGET_GRADE: u8 = 8;
+
+/// Round a configured target grade onto the whole number the shared flag
+/// carries. A grade below zero or past 30 is clamped rather than wrapped,
+/// so a stray value in settings.json cannot turn into a nonsense target.
+pub fn grade_to_u8(grade: f32) -> u8 {
+    grade.round().clamp(0.0, 30.0) as u8
+}
+
 /// Configuration for the agent loop.
 pub struct AgentConfig {
     pub max_turns: u32,
@@ -142,6 +153,18 @@ pub enum StreamEvent {
     RepeatFinished { completed: u32, total: u32 },
     /// An informational notice, such as a plain-language revision marker.
     Info { message: String },
+    /// A running search reported its current state. Sent once per scored
+    /// candidate, carrying the whole snapshot rather than a delta, so the
+    /// view never rebuilds state from a partial history. Boxed because the
+    /// snapshot is much larger than every other variant, and an enum is as
+    /// wide as its widest arm.
+    SearchProgress(Box<crate::search::SearchSnapshot>),
+    /// A search run ended, whether it found an answer or not.
+    SearchFinished {
+        kind: crate::search::SearchKind,
+        summary: String,
+        is_error: bool,
+    },
 }
 
 /// Identifies one subagent dispatch, for event routing. Cheap to copy and
@@ -304,12 +327,15 @@ pub struct AgentLoop {
     /// handed once at startup and never revisited.
     working_dir: Option<Arc<Mutex<PathBuf>>>,
     /// Whether the plain-language grade gate is active. Defaults to false
-    /// (off), matching `StyleConfig::default`. Read unconditionally in
-    /// `run_turn`, no atomic needed: the setting is fixed at startup and
-    /// never changes at runtime.
-    style_plain_language_enabled: bool,
-    /// Target Flesch-Kincaid grade level. Defaults to 8.0.
-    style_target_grade: f32,
+    /// (off), matching `StyleConfig::default`. A shared flag rather than a
+    /// plain field, the same pattern the voice-mode toggle uses, so the
+    /// sidebar checkbox reaches the running agent on the next turn instead
+    /// of only at startup.
+    style_plain_language_flag: Arc<AtomicBool>,
+    /// Target Flesch-Kincaid grade level, held as a whole number. Defaults
+    /// to 8. Shared with the sidebar slider for the same reason the toggle
+    /// above is.
+    style_target_grade_flag: Arc<AtomicU8>,
     /// How far above `target_grade` a reply may sit before the gate
     /// triggers a rewrite. Defaults to 2.0.
     style_grade_tolerance: f32,
@@ -348,8 +374,8 @@ impl AgentLoop {
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             subagent_registry: None,
             working_dir: None,
-            style_plain_language_enabled: false,
-            style_target_grade: 8.0,
+            style_plain_language_flag: Arc::new(AtomicBool::new(false)),
+            style_target_grade_flag: Arc::new(AtomicU8::new(DEFAULT_TARGET_GRADE)),
             style_grade_tolerance: 2.0,
             style_max_revise_attempts: 2,
             style_critic_backend: None,
@@ -393,11 +419,31 @@ impl AgentLoop {
         max_revise_attempts: u32,
         critic_backend: Option<String>,
     ) {
-        self.style_plain_language_enabled = plain_language_enabled;
-        self.style_target_grade = target_grade;
+        self.style_plain_language_flag
+            .store(plain_language_enabled, Ordering::SeqCst);
+        self.style_target_grade_flag
+            .store(grade_to_u8(target_grade), Ordering::SeqCst);
         self.style_grade_tolerance = grade_tolerance;
         self.style_max_revise_attempts = max_revise_attempts;
         self.style_critic_backend = critic_backend;
+    }
+
+    /// The target grade the gate is currently measuring against, read from
+    /// the shared flag so a sidebar change lands on the next turn.
+    fn style_target_grade(&self) -> f32 {
+        f32::from(self.style_target_grade_flag.load(Ordering::SeqCst))
+    }
+
+    /// The plain-language toggle, so the sidebar checkbox can write the
+    /// same flag `maybe_check_plain_language` reads.
+    pub fn style_plain_language_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.style_plain_language_flag)
+    }
+
+    /// The target-grade handle, so the sidebar slider can write the same
+    /// flag `style_target_grade` reads.
+    pub fn style_target_grade_flag(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.style_target_grade_flag)
     }
 
     /// Replace this agent's own effort flag with one the caller already
@@ -427,6 +473,8 @@ impl AgentLoop {
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);
         self.context_budget = Arc::clone(&flags.context_budget);
         self.repeat_interrupt_flag = Arc::clone(&flags.repeat_interrupt);
+        self.style_plain_language_flag = Arc::clone(&flags.style_plain_language);
+        self.style_target_grade_flag = Arc::clone(&flags.style_target_grade);
     }
 
     /// The subagent registry this agent owns, if any. Test-only: used by
@@ -924,6 +972,22 @@ impl AgentLoop {
                     assistant_texts.push(final_text.clone());
                 }
 
+                // The reply joins the history before the snapshot goes out,
+                // not after. The GUI persists whatever the last snapshot
+                // carried, so sending it first wrote every session file
+                // with its own final assistant message missing.
+                self.history.push(Message {
+                    role: Role::Assistant,
+                    content: Some(Content::text(final_text)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: if stream_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(stream_reasoning.clone())
+                    },
+                });
+
                 self.send_event(StreamEvent::ConversationSnapshot {
                     messages: self.history.iter().cloned().collect(),
                     claude_session_id: None,
@@ -940,18 +1004,6 @@ impl AgentLoop {
                         .as_ref()
                         .map(|u| u.prompt_cache_miss_tokens)
                         .unwrap_or(0),
-                });
-
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: Some(Content::text(final_text)),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: if stream_reasoning.is_empty() {
-                        None
-                    } else {
-                        Some(stream_reasoning.clone())
-                    },
                 });
                 break;
             }
@@ -1108,17 +1160,17 @@ impl AgentLoop {
     /// noise, exactly as the plan states. The gate being off also returns
     /// `false` with no computation.
     fn maybe_check_plain_language(&self, text: &str) -> bool {
-        if !self.style_plain_language_enabled {
+        if !self.style_plain_language_flag.load(Ordering::SeqCst) {
             return false;
         }
         if text.len() < MIN_PLAIN_LANGUAGE_LENGTH {
             return false;
         }
         let grade = crate::style::flesch_kincaid_grade(text);
-        let threshold = self.style_target_grade + self.style_grade_tolerance;
+        let threshold = self.style_target_grade() + self.style_grade_tolerance;
         debug!(
             grade,
-            target = self.style_target_grade,
+            target = self.style_target_grade(),
             tolerance = self.style_grade_tolerance,
             text_len = text.len(),
             "plain-language gate: grade {grade} vs threshold {threshold}"
@@ -1146,7 +1198,7 @@ impl AgentLoop {
             Preserve every technical fact, name, path, and code reference exactly. \
             Return only the rewritten reply, no preamble or commentary.";
 
-        let target_grade = self.style_target_grade;
+        let target_grade = self.style_target_grade();
         let tolerance = self.style_grade_tolerance;
 
         while attempts < max_attempts {
@@ -1213,7 +1265,10 @@ impl AgentLoop {
                     current = revised;
                 }
                 Err(e) => {
-                    warn!("plain-language revise: API error on attempt {}: {e}", attempts + 1);
+                    warn!(
+                        "plain-language revise: API error on attempt {}: {e}",
+                        attempts + 1
+                    );
                     break;
                 }
             }
