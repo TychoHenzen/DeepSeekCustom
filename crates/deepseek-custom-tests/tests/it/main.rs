@@ -93,6 +93,8 @@ mod tools_reset;
 mod tools_send_message;
 mod tools_skill;
 mod tools_task;
+mod tools_task_input;
+mod tools_task_tool;
 mod tools_write;
 mod voice;
 mod voice_capture;
