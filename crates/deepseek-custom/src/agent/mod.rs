@@ -1,5 +1,8 @@
+pub mod agent_exec;
 pub mod agent_helpers;
 pub mod agent_loop;
+pub mod agent_run;
+pub mod agent_stream;
 pub mod agent_style;
 pub mod agent_types;
 pub mod events;
