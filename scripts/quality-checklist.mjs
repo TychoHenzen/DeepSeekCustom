@@ -13,7 +13,20 @@ const SCANNER =
   "C:\\Users\\siriu\\.claude\\plugins\\cache\\dod-guard\\quality-guard\\037c77ae9669\\skills\\quality-refactor\\scripts\\quality-scan.mjs";
 const OUT = "docs/notes/quality-checklist.md";
 
-const data = JSON.parse(readFileSync(process.argv[2], "utf8"));
+// The units dump arrives from a shell redirect, and which encoding that lands in
+// is the shell's choice, not ours. Windows PowerShell 5.1's `>` writes UTF-16LE
+// with a byte order mark, so reading it as UTF-8 fails on the first character
+// with a SyntaxError naming an unexpected token. Sniff the mark instead of
+// trusting one encoding, and drop a UTF-8 mark too, since JSON.parse rejects
+// that as well.
+const readText = (path) => {
+  const buf = readFileSync(path);
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.toString("utf16le").slice(1);
+  if (buf[0] === 0xfe && buf[1] === 0xff) return buf.swap16().toString("utf16le").slice(1);
+  return buf.toString("utf8").replace(/^\uFEFF/, "");
+};
+
+const data = JSON.parse(readText(process.argv[2]));
 
 // The checklist is generated, but its ticked boxes and `- done:` notes are the
 // only state that crosses between autopilot iterations. Reading the previous
