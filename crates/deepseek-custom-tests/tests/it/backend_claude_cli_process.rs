@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::api::types::ImageAttachment;
-use deepseek_custom::backend::claude_cli::process::{
-    ClaudeCliDriver, build_args, build_user_turn_line, effort_changed, resolve_claude_binary,
-    resume_id_changed, working_dir_changed,
+use deepseek_custom::backend::claude_cli::args::{
+    build_args, build_user_turn_line, effort_changed, resolve_claude_binary, resume_id_changed,
+    working_dir_changed,
 };
+use deepseek_custom::backend::claude_cli::process::ClaudeCliDriver;
 use deepseek_custom::effort::Effort;
 
 use tokio::sync::mpsc;

@@ -17,11 +17,11 @@ use tokio::process::{Child, Command};
 use crate::agent::events::StreamEvent;
 use crate::effort::Effort;
 
+use super::args::{CLAUDE_CLI_PATH_KEY, resolve_claude_binary};
 use super::events::{ClaudeEvent, parse_line};
+use super::io::spawn_stderr_drain;
 use super::map::EventMapper;
-use super::process::{
-    CLAUDE_CLI_PATH_KEY, ClaudeCliDriver, resolve_claude_binary, spawn_stderr_drain,
-};
+use super::process::ClaudeCliDriver;
 
 /// How often the read loop checks the interrupt flag between lines. A
 /// shorter poll interval kills a stuck run faster. 100ms is short enough
