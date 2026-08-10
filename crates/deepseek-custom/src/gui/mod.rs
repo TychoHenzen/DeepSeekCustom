@@ -10,6 +10,7 @@ pub mod autopilot_tab;
 pub mod backend_picker;
 pub mod cascade_tab;
 mod draw;
+mod draw_block;
 mod event_dispatch;
 pub mod evolve_tab;
 mod format;
