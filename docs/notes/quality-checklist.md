@@ -40,7 +40,8 @@ node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\s
   - done: split into agent_loop.rs (789L, 69 viol), agent_types.rs (1 type), agent_helpers.rs (12 warn), agent_style.rs (6 viol). run_turn 204L->90L, extracted free fns+style+types. Dead-export findings all false positives (Backend::Api wrapping)
 - [x] `crates/deepseek-custom/src/agent/agent_loop.rs` - score ~70 (file still 789L)
   - done: split into agent_loop.rs (298L, config/setup/pruning), agent_run.rs (277L, turn execution), agent_stream.rs (117L, SSE collection), agent_exec.rs (156L, tool execution). run_turn 90L→56L, collect_stream 67L→53L. All 23 dead-export findings false positives (Backend::Api wrapping).
-- [ ] `crates/deepseek-custom/src/agent/agent_run.rs` - score ~21 (17 warn, mostly line-length)
+- [x] `crates/deepseek-custom/src/agent/agent_run.rs` - score ~21 (17 warn, mostly line-length)
+  - done: fixed dispatch_tool_calls param count 6->3 (pass &StreamCollection), removed else-branch in build_chat_request and complete_text_turn, reflowed long lines. 21 violations -> 15. Remaining 2 dead-export errors are false positives (used in test crate), 13 warns all under hard bounds.
 - [ ] `crates/deepseek-custom/src/agent/agent_stream.rs` - score ~11 (11 warn)
 - [ ] `crates/deepseek-custom/src/agent/agent_exec.rs` - score ~14 (14 warn)
 - [ ] `crates/deepseek-custom/src/agent/agent_helpers.rs` - score ~12 (warns only)

@@ -63,14 +63,7 @@ impl AgentLoop {
 
             if !valid_tool_calls.is_empty() {
                 if self
-                    .dispatch_tool_calls(
-                        turn,
-                        &collected.text,
-                        &collected.reasoning,
-                        &valid_tool_calls,
-                        &collected.finish_reason,
-                        &collected.usage,
-                    )
+                    .dispatch_tool_calls(turn, &collected, &valid_tool_calls)
                     .await
                     .is_break()
                 {
@@ -94,7 +87,8 @@ impl AgentLoop {
 
     fn prepare_turn(&mut self, user_input: &str, image: Option<&ImageAttachment>) {
         self.sync_dynamic_config();
-        let built = build_user_content(self.client.provider(), user_input, image);
+        let provider = self.client.provider();
+        let built = build_user_content(provider, user_input, image);
         if let Some(message) = built.notice {
             self.send_event(StreamEvent::Error { message });
         }
@@ -136,7 +130,7 @@ impl AgentLoop {
         crate::api::types::ChatRequest {
             model: self.config.model.clone(),
             messages,
-            tools: if tools.is_empty() { None } else { Some(tools) },
+            tools: (!tools.is_empty()).then_some(tools),
             tool_choice: None,
             stream: true,
             temperature: Some(0.7),
@@ -159,43 +153,45 @@ impl AgentLoop {
         });
     }
 
+    /// Build assistant message with tool calls from the collected stream
+    /// and delegate to `run_tool_calls`.
     pub(crate) async fn dispatch_tool_calls(
         &mut self,
         turn: u32,
-        text: &str,
-        reasoning: &str,
+        collected: &StreamCollection,
         tool_calls: &[ToolCall],
-        finish_reason: &str,
-        usage: &Option<Usage>,
     ) -> ControlFlow<()> {
-        self.history
-            .push(assistant_with_tools(text, reasoning, tool_calls));
-        self.run_tool_calls(turn, tool_calls, finish_reason, usage)
+        self.history.push(assistant_with_tools(
+            &collected.text,
+            &collected.reasoning,
+            tool_calls,
+        ));
+        self.run_tool_calls(turn, tool_calls, &collected.finish_reason, &collected.usage)
             .await
     }
 
-    /// Run the plain-language gate on a text-only reply.
+    /// Run the plain-language gate on a text-only reply,
+    /// push the final assistant message, and send the terminal events.
     pub(crate) async fn complete_text_turn(
         &mut self,
         turn: u32,
-        collected: &super::agent_helpers::StreamCollection,
+        collected: &StreamCollection,
         assistant_texts: &mut Vec<String>,
     ) {
-        let final_text = self.finalize_text_reply(turn, collected.text.clone()).await;
+        let stream_text = collected.text.clone();
+        let final_text = self.finalize_text_reply(turn, stream_text).await;
         if !final_text.is_empty() {
             assistant_texts.push(final_text.clone());
         }
+
+        let reasoning = (!collected.reasoning.is_empty()).then(|| collected.reasoning.clone());
 
         self.history.push(Message {
             role: Role::Assistant,
             content: Some(Content::text(final_text)),
             tool_calls: None,
             tool_call_id: None,
-            reasoning_content: if collected.reasoning.is_empty() {
-                None
-            } else {
-                Some(collected.reasoning.clone())
-            },
+            reasoning_content: reasoning,
         });
 
         self.send_snapshot_and_turn_end(turn, &collected.finish_reason, &collected.usage);
@@ -218,15 +214,18 @@ impl AgentLoop {
             )
             .await;
         if revision.text != final_text {
+            let orig_grade = crate::style::flesch_kincaid_grade(&final_text);
+            let rev_grade = crate::style::flesch_kincaid_grade(&revision.text);
             info!(
                 attempts = revision.attempts,
-                original_grade = crate::style::flesch_kincaid_grade(&final_text),
-                revised_grade = crate::style::flesch_kincaid_grade(&revision.text),
+                original_grade = orig_grade,
+                revised_grade = rev_grade,
                 "plain-language gate: reply revised"
             );
             self.send_event(StreamEvent::Info {
                 message: format!(
-                    "Reply revised for plain language ({} attempt(s))",
+                    "Reply revised for plain language \
+                     ({} attempt(s))",
                     revision.attempts
                 ),
             });
@@ -273,7 +272,7 @@ impl AgentLoop {
     ) {
         let builder = SystemPromptBuilder::new();
         let tools = self.tools.to_api_definitions();
-        let new_prompt = builder.build(memory_fragment, skills_fragment, &tools);
-        self.history = MessageHistory::new(new_prompt);
+        let prompt = builder.build(memory_fragment, skills_fragment, &tools);
+        self.history = MessageHistory::new(prompt);
     }
 }
