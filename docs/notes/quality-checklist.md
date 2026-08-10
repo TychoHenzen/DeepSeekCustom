@@ -40,7 +40,8 @@ node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\s
 
 - [x] `crates/deepseek-custom/src/search/cascade.rs` - score 50 (7 error, 29 warn)
   - done: split into cascade/ dir with 11 files. cascade.rs (522L, 7 types, 8E/29W) -> mod.rs + params.rs + counters.rs + report.rs + context.rs + candidate.rs + vote_tally.rs + vote_outcome.rs + run.rs + voting.rs + escalate.rs. 8 errors -> 3. Extracted launch_attempts, apply_check_cmd, escalate functions from run_cascade. dead-export on run_cascade is a false positive (re-export chain through mod.rs and search/mod.rs).
-- [ ] `crates/deepseek-custom/src/search/cascade/run.rs` - score 19 (3 error, 16 warn)
+- [x] `crates/deepseek-custom/src/search/cascade/run.rs` - score 19 (3 error, 16 warn)
+  - done: extracted describe_outcome (52L) and resolve_hints free fns from finish (78L->40L, cx 12->0). finish no longer an error. dead-export on run_cascade is a false positive (re-export chain). 22 violations (1E 21W), all warnings under hard bounds.
 - [ ] `crates/deepseek-custom/src/search/cascade/escalate.rs` - score 9 (0 error, 9 warn)
 - [ ] `crates/deepseek-custom/src/search/cascade/voting.rs` - score 6 (0 error, 6 warn)
 - [ ] `crates/deepseek-custom/src/search/cascade/mod.rs` - score 3 (0 error, 3 warn)

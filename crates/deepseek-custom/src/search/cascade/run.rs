@@ -43,11 +43,7 @@ pub async fn run_cascade(
     counters: CascadeCounters,
 ) -> CascadeReport {
     counters.total.fetch_add(1, Ordering::SeqCst);
-    let hints = if params.diversity_hints.is_empty() {
-        default_diversity_hints()
-    } else {
-        params.diversity_hints.clone()
-    };
+    let hints = resolve_hints(&params);
     let n = params.n.clamp(1, MAX_ATTEMPTS);
     let registry = Arc::new(SubagentRegistry::new());
     let work_dir = factory.working_dir().lock().unwrap().clone();
@@ -94,6 +90,15 @@ pub async fn run_cascade(
         report.is_error,
     );
     report
+}
+
+/// Pick the diversity hints for this run: the user's own when configured,
+/// or the default set otherwise.
+fn resolve_hints(params: &CascadeParams) -> Vec<String> {
+    if !params.diversity_hints.is_empty() {
+        return params.diversity_hints.clone();
+    }
+    default_diversity_hints()
 }
 
 /// Launch all attempts at once, collecting candidates as they land.
@@ -154,8 +159,9 @@ async fn apply_check_cmd(
     failures: &mut Vec<String>,
     work_dir: &Path,
 ) -> Vec<Candidate> {
-    let Some(ref check_cmd) = params.check_cmd else {
-        return candidates;
+    let check_cmd = match &params.check_cmd {
+        Some(cmd) => cmd,
+        None => return candidates,
     };
     let mut passed: Vec<Candidate> = Vec::new();
     for candidate in candidates {
@@ -165,10 +171,12 @@ async fn apply_check_cmd(
                 "Attempt {}: rejected by check_cmd (exited non-zero)",
                 candidate.index
             )),
-            Err(e) => failures.push(format!(
-                "Attempt {}: check_cmd error - {e}",
-                candidate.index
-            )),
+            Err(e) => {
+                failures.push(format!(
+                    "Attempt {}: check_cmd error - {e}",
+                    candidate.index
+                ));
+            }
         }
     }
     passed
@@ -184,54 +192,16 @@ async fn finish(
     mut failures: Vec<String>,
 ) -> CascadeReport {
     let outcome = vote(&candidates, params.vote_k);
-    let mut parts: Vec<String> = Vec::new();
 
-    match &outcome {
-        VoteOutcome::Winner {
-            text,
-            count,
-            winning_indices,
-        } => {
-            let ids: Vec<String> = winning_indices.iter().map(|i| i.to_string()).collect();
-            let label = if ids.len() == 1 {
-                format!("Attempt {}", ids[0])
-            } else {
-                format!("Attempts {}", ids.join(", "))
-            };
-            parts.push(format!(
-                "{label} won ({count} vote(s), lead by at least a {}-vote margin): {text}",
-                params.vote_k
-            ));
-        }
-        VoteOutcome::NoConsensus { tallies } => {
-            if let Some(escalate_backend) = &params.escalate_backend {
-                context.counters.escalated.fetch_add(1, Ordering::SeqCst);
-                return escalate(context, escalate_backend, params, tallies, &failures).await;
-            }
-            if candidates.is_empty() && !failures.is_empty() {
-                if params.check_cmd.is_some() {
-                    parts.push(format!(
-                        "No candidate passed check_cmd on backend \"{}\" (0 of {n} passed).",
-                        params.backend
-                    ));
-                } else {
-                    parts.push(format!(
-                        "All {n} attempts failed on backend \"{}\".",
-                        params.backend
-                    ));
-                }
-            } else if !tallies.is_empty() {
-                parts.push(format!(
-                    "No consensus: no answer reached the required {}-vote lead margin.",
-                    params.vote_k
-                ));
-                for t in tallies {
-                    parts.push(format!("{} vote(s): {}", t.count, t.text));
-                }
-            }
-        }
+    // Escalate early when configured and no candidate reached the lead.
+    if let VoteOutcome::NoConsensus { tallies } = &outcome
+        && let Some(escalate_backend) = &params.escalate_backend
+    {
+        context.counters.escalated.fetch_add(1, Ordering::SeqCst);
+        return escalate(context, escalate_backend, params, tallies, &failures).await;
     }
 
+    let mut parts = describe_outcome(&outcome, params, n, &candidates, &failures);
     let winner = match &outcome {
         VoteOutcome::Winner { text, .. } => Some(text.clone()),
         VoteOutcome::NoConsensus { .. } => None,
@@ -253,6 +223,65 @@ async fn finish(
         is_error,
         winner,
     }
+}
+
+/// Build the human-readable summary lines from the vote outcome.
+///
+/// Produces one or more strings describing what happened: a winner, a lack
+/// of consensus, or a total failure of every attempt.
+fn describe_outcome(
+    outcome: &VoteOutcome,
+    params: &CascadeParams,
+    n: u32,
+    candidates: &[Candidate],
+    failures: &[String],
+) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    match outcome {
+        VoteOutcome::Winner {
+            text,
+            count,
+            winning_indices,
+        } => {
+            let ids: Vec<String> = winning_indices.iter().map(|i| i.to_string()).collect();
+            let label = if ids.len() == 1 {
+                format!("Attempt {}", ids[0])
+            } else {
+                format!("Attempts {}", ids.join(", "))
+            };
+            let margin = params.vote_k;
+            parts.push(format!(
+                "{label} won ({count} vote(s), \
+                 lead by at least a {margin}-vote margin): {text}"
+            ));
+        }
+        VoteOutcome::NoConsensus { tallies } => {
+            if candidates.is_empty() && !failures.is_empty() {
+                let reason = if params.check_cmd.is_some() {
+                    format!(
+                        "No candidate passed check_cmd on backend \"{}\" \
+                         (0 of {n} passed).",
+                        params.backend
+                    )
+                } else {
+                    format!("All {n} attempts failed on backend \"{}\".", params.backend)
+                };
+                parts.push(reason);
+                return parts;
+            }
+            if !tallies.is_empty() {
+                parts.push(format!(
+                    "No consensus: no answer reached the required \
+                     {}-vote lead margin.",
+                    params.vote_k
+                ));
+                for t in tallies {
+                    parts.push(format!("{} vote(s): {}", t.count, t.text));
+                }
+            }
+        }
+    }
+    parts
 }
 
 /// Run the check command against one candidate, with the candidate's own
