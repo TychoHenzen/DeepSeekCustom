@@ -207,6 +207,15 @@ pub(crate) async fn run_command(
 /// handed to the shell with backslashes in it and failed to run at all. A
 /// real run hit this on `"C:\Program Files\nodejs\node.exe" script.mjs`,
 /// which came back as an unrecognized command naming the mangled text.
+///
+/// The whole line then gets one more pair of quotes around it. That is
+/// cmd.exe's own rule, not a guess: given `/C` and a line that starts with
+/// a quote, the shell removes the first and the last quote on the line and
+/// runs what is left. A line naming a quoted program and a quoted argument
+/// carries four quotes, so the shell ate the quote opening the program and
+/// the quote closing the last argument, and `C:\Program` became the program
+/// name. An outer pair gives it a quote to eat that costs nothing. The same
+/// run that hit the escaping bug above hit this one right after it.
 async fn run_cmd(
     cmd_str: &str,
     work_dir: &std::path::Path,
@@ -215,7 +224,7 @@ async fn run_cmd(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.as_std_mut().raw_arg(format!("/C {cmd_str}"));
+        command.as_std_mut().raw_arg(format!("/C \"{cmd_str}\""));
     }
     #[cfg(not(windows))]
     command.args(["/C", cmd_str]);

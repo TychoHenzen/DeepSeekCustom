@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1083 tests
-cargo test -p deepseek-custom-tests                  # The same 1083, named directly
+cargo test --workspace                               # All 1100 tests
+cargo test -p deepseek-custom-tests                  # The same 1100, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -495,7 +495,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1083 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1100 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
 **One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 71 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
@@ -511,7 +511,7 @@ Test files are named by one rule. Take the module path under `crates/deepseek-cu
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1085.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1102.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -531,7 +531,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1063 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1080 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -589,7 +589,7 @@ These are the 1063 tests that cover one production module each, counted per modu
 | `mcp/tool.rs` | 10 |
 | `mcp/manager.rs` | 8 |
 | `tools/ask.rs` | 5 |
-| `tools/bash.rs` | 13 |
+| `tools/bash.rs` | 14 |
 | `tools/cd.rs` | 6 |
 | `tools/close_session.rs` | 6 |
 | `tools/mod.rs` | 4 |
@@ -613,8 +613,9 @@ These are the 1063 tests that cover one production module each, counted per modu
 | `voice/vad.rs` | 7 |
 | `voice/stt.rs` | 2 |
 | `process_group.rs` | 1 |
+| `path_repair.rs` | 16 |
 
-Three modules are missing from that table on purpose. `gui/settings_panel.rs`, `tools/shell_stdin.rs`, and `path_repair.rs` have no tests and so have no test file. `path_repair.rs` reads the real registry and writes the process environment, so it is checked by running `cargo run -p deepseek-custom --example path_repair_probe` rather than by a test. `shell_stdin.rs` is exercised through the two search modules that call it.
+Two modules are missing from that table on purpose. `gui/settings_panel.rs` and `tools/shell_stdin.rs` have no tests and so have no test file. `shell_stdin.rs` is exercised through the two search modules that call it. `path_repair.rs` is in the table, but only its pure list rules are covered there. `repair_path` itself reads the real registry and writes the process environment, so the probe example checks that end.
 
 The three fixtures sit in `crates/deepseek-custom-tests/tests/it/fixtures/`: `chat_response.json`, `claude_stream_json.jsonl`, and `claude_stream_json_tools.jsonl`.
 
@@ -638,15 +639,17 @@ See `docs/plans/2026-08-04-long-term-roadmap.md` for the seven themes of future 
 
 ## Platform
 
-**Windows native.** Batch files have BOM and percent-sign issues in Git Bash. Use PowerShell (`.ps1`) for automation scripts. Incremental compilation is off in `.cargo/config.toml`, which sits at the repository root and applies to both workspace members. It had ballooned to 10+ GB of temp files after a few builds. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`. Bash tool defaults to `cmd /C`. It auto-detects commands starting with `powershell` or `pwsh` and runs them directly, which avoids `cmd.exe` inner-quote mangling. Use the `shell` param for explicit control. The `cmd` path hands its command line to the shell verbatim, through `raw_arg`, rather than as an ordinary argument. Rust quotes an ordinary argument by the C runtime's rules, which escape an inner double quote as `\"`, and `cmd.exe` does not read that escape. A real run failed on a quoted `node.exe` path under `C:\Program Files`: the shell reported the mangled text back as an unrecognized command.
+**Windows native.** Batch files have BOM and percent-sign issues in Git Bash. Use PowerShell (`.ps1`) for automation scripts. Incremental compilation is off in `.cargo/config.toml`, which sits at the repository root and applies to both workspace members. It had ballooned to 10+ GB of temp files after a few builds. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`. Bash tool defaults to `cmd /C`. It auto-detects commands starting with `powershell` or `pwsh` and runs them directly, which avoids `cmd.exe` inner-quote mangling. Use the `shell` param for explicit control. The `cmd` path hands its command line to the shell verbatim, through `raw_arg`, rather than as an ordinary argument. Rust quotes an ordinary argument by the C runtime's rules, which escape an inner double quote as `\"`, and `cmd.exe` does not read that escape. A real run failed on a quoted `node.exe` path under `C:\Program Files`: the shell reported the mangled text back as an unrecognized command. The whole line then gets one more pair of quotes around it, and that pair is load bearing for the same run. Given `/C` and a line that opens with a quote, `cmd.exe` removes the first quote and the last quote on the line and runs what is left, so a quoted program followed by a quoted argument lost the quote opening the program and came back as `'C:\Program' is not recognized`. Measured here: `/C "prog" "arg"` failed and `/C ""prog" "arg""` ran.
 
-**PATH repair at startup.** `crates/deepseek-custom/src/path_repair.rs` rebuilds the process `PATH` from the registry before anything spawns, and `main` calls it as its second statement, next to the `KOKORO_G2P_SEGMENT_ESPEAK` write and for the same soundness reason: `env::set_var` is unsound once another thread reads.
+**PATH repair at startup.** `crates/deepseek-custom/src/path_repair.rs` cuts the process `PATH` back to a length `cmd.exe` can search, and `main` calls it as its second statement, next to the `KOKORO_G2P_SEGMENT_ESPEAK` write and for the same soundness reason: `env::set_var` is unsound once another thread reads.
 
-Every child inherits the process environment, so a launcher that hands over an unusable `PATH` breaks every tool call at once. A real autopilot run hit that. `cmd.exe` answered `'node' is not recognized`, and then `'where' is not recognized` for a program that lives in `System32`. Nothing was missing from the machine: node sits at `C:\Program Files\nodejs\node.exe` and is on both the machine and the user list. The child shell simply had no directory list it could search, and the model spent four turns guessing quoting fixes for a problem that was never about quoting.
+Every child inherits the process environment, so a `PATH` the launcher handed over in an unusable form breaks every tool call at once. A real autopilot run hit that. `cmd.exe` answered `'node' is not recognized` for a program that sits at `C:\Program Files\nodejs\node.exe`, on a list that named that very directory, and the model then spent four turns guessing quoting fixes for a problem that was never about quoting.
 
-The repair reads `Path` from `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` and from `HKCU\Environment`, in that order, and appends whatever the running process is missing. `RegGetValueW` expands the `%SystemRoot%` style references the machine value really carries, so no literal `%VAR%` text lands on the list. Directories already present are kept and stay first, since an inherited `PATH` may name a directory that exists only for this run. A read that fails yields nothing, leaving the inherited `PATH` exactly as it was. On any other platform the whole thing is a no-op.
+The cause is a hard limit in the shell, measured here rather than taken from documentation: `cmd.exe` reads at most 8191 characters of `PATH` and silently drops the rest. A run with 8064 characters found `node`. The same run with 8262 did not. That run's harness had inherited 184 entries, well past the line, so every directory after the cut was invisible to every command the Bash tool ran. Length is the whole problem, which is why the repair shortens the list rather than growing it. An earlier version of this module only appended, and could not have fixed the failure it was written for.
 
-`main` logs the result once logging is up, as `PATH repair: N entries before, M after; node.exe: <path>`. That line is the first thing to read when a tool call cannot find a program. `cargo run -p deepseek-custom --example path_repair_probe` prints the same reading without opening the GUI, which is how the repair was checked: run with `PATH` cut down to `C:\Windows\System32`, it reports `before=1 after=47` and finds `node.exe`.
+The repair drops repeats first, keeping each directory's first appearance. That alone is usually enough, since the bloat comes from a launcher stacking the same directories on every nested shell: on this machine an 85-entry list held 64 distinct directories. It then appends whatever the registry names and the process lacks, reading `Path` from `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` and from `HKCU\Environment`, in the order a normal login joins them. `RegGetValueW` expands the `%SystemRoot%` style references the machine value really carries, so no literal `%VAR%` text lands on the list. While the list is still too long it drops from the end, giving up a directory the registry does not name before one it does, so a run-only directory never costs `System32`. A read that fails yields nothing, leaving the inherited `PATH` as it was. On any other platform the whole thing is a no-op.
+
+`main` logs the result once logging is up, as `PATH repair: N entries / N chars before, M entries / M chars after; node.exe: <path>`. The character counts are the reading that matters, and that line is the first thing to read when a tool call cannot find a program. `cargo run -p deepseek-custom --example path_repair_probe` prints the same reading without opening the GUI, which is how the repair was checked end to end: run with the real list stacked four times over, `cmd.exe` could not find `node` at 15411 characters across 340 entries, the probe reported `before=340 entries / 15411 chars, after=64 entries / 3252 chars`, and `cmd.exe` resolved `node` against the repaired list.
 
 Full debug info was the second part of the same disk problem, and it is a separate setting from incremental compilation. Measured on this tree: 3.81 GB of `.pdb` files. The workspace root `Cargo.toml` now sets `[profile.dev] debug = "line-tables-only"`. With that, `target/` fell from 11 GB to 5.0 GB, and a clean rebuild takes about 4m48s. Line tables keep what a failing test needs, which is a backtrace naming the file and the line. They drop the variable and type records a step debugger uses. Set it back to `true` to step through the GUI, and expect the disk cost to come back with it.
 

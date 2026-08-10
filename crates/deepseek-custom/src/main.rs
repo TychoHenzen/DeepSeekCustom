@@ -105,9 +105,11 @@ async fn main() {
     info!("project root: {}", project_root.display());
     info!("log file: {}", log_path.display());
     info!(
-        "PATH repair: {} entries before, {} after; node.exe: {}",
+        "PATH repair: {} entries / {} chars before, {} entries / {} chars after; node.exe: {}",
         path_report.before,
+        path_report.before_len,
         path_report.after,
+        path_report.after_len,
         path_report.node.as_deref().unwrap_or("not found")
     );
 

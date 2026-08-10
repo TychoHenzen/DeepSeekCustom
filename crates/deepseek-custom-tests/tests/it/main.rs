@@ -67,6 +67,7 @@ mod mcp_protocol;
 mod mcp_spawn;
 mod mcp_tool;
 mod memory;
+mod path_repair;
 mod plugins;
 mod process_group;
 mod search_cascade;

@@ -101,6 +101,37 @@ async fn a_quoted_program_path_survives_the_trip_to_cmd() {
     assert!(output.content.contains("exit code: 0"));
 }
 
+/// Two quoted tokens on one line, which is the shape that really failed.
+/// `cmd.exe` eats the first and the last quote of the line it is given, so
+/// a quoted program followed by a quoted argument lost the quote opening
+/// the program and came back as `'C:\Program' is not recognized`. The outer
+/// pair `run_cmd` adds is what keeps both tokens whole.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_quoted_program_and_a_quoted_argument_both_survive() {
+    let dir = unique_temp_dir("quoted_args");
+    let script = dir.join("say hello.cmd");
+    std::fs::write(&script, "@echo two_quoted_tokens_ok %1\r\n").unwrap();
+
+    let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
+    let input = serde_json::json!({
+        "command": format!(
+            "\"C:\\Windows\\System32\\cmd.exe\" /C \"{}\" plain_tail",
+            script.display()
+        ),
+        "shell": "cmd"
+    });
+    let output = tool.execute(input).await.expect("execute");
+
+    assert!(
+        output.content.contains("two_quoted_tokens_ok"),
+        "cmd ate a quote it should not have: {}",
+        output.content
+    );
+    assert!(output.content.contains("plain_tail"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn explicit_shell_powershell_works() {
     let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
