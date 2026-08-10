@@ -661,7 +661,7 @@ Git does not check hooks in, so a fresh clone starts with none. Run `powershell 
 
 ## Quality refactor checklist
 
-`docs/notes/quality-checklist.md` ranks every file under `crates/` by how far it sits from the project's code quality bounds. It is generated, not hand written. `scripts/quality-checklist.mjs` reads the `--format=units` dump from the `quality-refactor` skill's own scanner and writes the file, so a regeneration overwrites whatever checkboxes were ticked. The header of the checklist holds both commands.
+`docs/notes/quality-checklist.md` ranks every file under `crates/` by how far it sits from the project's code quality bounds. It is generated, not hand written. `scripts/quality-checklist.mjs` reads the `--format=units` dump from the `quality-refactor` skill's own scanner and writes the file, so a regeneration overwrites whatever checkboxes were ticked. The header of the checklist holds both commands. Every path in them is a Windows path, and that is not cosmetic. A bash tool call runs through cmd.exe and reaches a Windows node, so the Git Bash form `/c/Users/...` arrives as a relative path and node resolves it against the drive root. A real autopilot run died on `Cannot find module 'C:\c\Users\siriu\...'` for exactly that reason.
 
 The score is `errors * 3 + warnings`, and the list runs worst first, production files before test files. A box gets ticked only after the file rescans clean and `cargo test --workspace` still passes.
 

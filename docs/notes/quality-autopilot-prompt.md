@@ -23,7 +23,7 @@ that one file, then stop. Do not start a second file.
 
 3. Rescan it to see the exact violations, with line numbers:
 
-   node /c/Users/siriu/.claude/plugins/cache/dod-guard/quality-guard/037c77ae9669/skills/quality-refactor/scripts/quality-scan.mjs <path> --root=.
+   node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\skills\quality-refactor\scripts\quality-scan.mjs <path> --root=.
 
 4. Fix the violations. The bounds are: line 120 characters, file 300 lines, function 60
    lines, cyclomatic complexity 10, 7 parameters, nesting depth 5, one type per file, no

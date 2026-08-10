@@ -4,8 +4,13 @@
 //   node scripts/quality-checklist.mjs units.json
 import { readFileSync, writeFileSync } from "node:fs";
 
+// A Windows path, because the harness runs a bash tool call through cmd.exe
+// and hands the argument to a Windows node. The Git Bash form `/c/Users/...`
+// reaches node as the relative path it looks like, and node resolves it
+// against the drive root: a real autopilot run died on
+// `Cannot find module 'C:\c\Users\siriu\...'`.
 const SCANNER =
-  "/c/Users/siriu/.claude/plugins/cache/dod-guard/quality-guard/037c77ae9669/skills/quality-refactor/scripts/quality-scan.mjs";
+  "C:\\Users\\siriu\\.claude\\plugins\\cache\\dod-guard\\quality-guard\\037c77ae9669\\skills\\quality-refactor\\scripts\\quality-scan.mjs";
 const OUT = "docs/notes/quality-checklist.md";
 
 const data = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -63,14 +68,14 @@ Score is \`errors * 3 + warnings\`. Work the list top down. Check a box only aft
 
 Regenerate:
 
-\`\`\`bash
-node ${SCANNER} crates --root=. --format=units > "$LOCALAPPDATA/Temp/units.json"
-node scripts/quality-checklist.mjs "$LOCALAPPDATA/Temp/units.json"
+\`\`\`text
+node ${SCANNER} crates --root=. --format=units > .quality/units.json
+node scripts/quality-checklist.mjs .quality/units.json
 \`\`\`
 
 Rescan one file:
 
-\`\`\`bash
+\`\`\`text
 node ${SCANNER} <path> --root=.
 \`\`\`
 

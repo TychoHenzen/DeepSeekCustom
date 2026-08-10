@@ -6,15 +6,15 @@ Score is `errors * 3 + warnings`. Work the list top down. Check a box only after
 
 Regenerate:
 
-```bash
-node /c/Users/siriu/.claude/plugins/cache/dod-guard/quality-guard/037c77ae9669/skills/quality-refactor/scripts/quality-scan.mjs crates --root=. --format=units > "$LOCALAPPDATA/Temp/units.json"
-node scripts/quality-checklist.mjs "$LOCALAPPDATA/Temp/units.json"
+```text
+node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\skills\quality-refactor\scripts\quality-scan.mjs crates --root=. --format=units > .quality/units.json
+node scripts/quality-checklist.mjs .quality/units.json
 ```
 
 Rescan one file:
 
-```bash
-node /c/Users/siriu/.claude/plugins/cache/dod-guard/quality-guard/037c77ae9669/skills/quality-refactor/scripts/quality-scan.mjs <path> --root=.
+```text
+node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\skills\quality-refactor\scripts\quality-scan.mjs <path> --root=.
 ```
 
 ## Rule totals
