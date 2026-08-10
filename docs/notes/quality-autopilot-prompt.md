@@ -63,9 +63,17 @@ that one file, then stop. Do not start a second file.
    the bounds in step 4. If a file still breaks a rule, keep working rather than checking
    the box.
 
-7. Update docs/notes/quality-checklist.md: change that file's `- [ ]` to `- [x]` and
-   append `- done: <one line saying what changed>` under it. When the refactor produced
-   new files, add an unchecked box for each new file that still breaks a rule.
+7. Update docs/notes/quality-checklist.md in two steps. First change that file's `- [ ]`
+   to `- [x]` and append `- done: <one line saying what changed>` under it. Then rescan
+   every crate and regenerate the whole checklist:
+
+   node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\skills\quality-refactor\scripts\quality-scan.mjs crates --root=. --format=units > .quality/units.json
+   node scripts/quality-checklist.mjs .quality/units.json
+
+   Regenerating carries your tick and your note forward, and it is how a new file the
+   split produced enters the list, at its real score and in the right place. Do not add a
+   box for a new file by hand. A hand-added row lands where you typed it rather than where
+   its score puts it, and that is what used to leave the list out of order.
 
 8. Update CLAUDE.md when the split changed the architecture a reader needs to know: a new
    module, a moved type, a changed public surface. Keep AGENTS.md in step with it.
