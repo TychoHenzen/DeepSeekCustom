@@ -38,6 +38,9 @@ mutants.out.old/
 # checkpoint state written by gitevo (evo_init)
 .evo/
 
+# scanner baseline and work units written by the quality-refactor skill
+.quality/
+
 # Scratch scripts the harness agent writes when it works around a missing
 # tool. Deleted 2026-08-09 with the Edit tool that removed the need.
 fix_*.ps1

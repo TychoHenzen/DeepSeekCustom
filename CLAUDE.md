@@ -638,4 +638,12 @@ A checked-in git hook handles the third part of the same disk problem. Cargo nev
 
 Git does not check hooks in, so a fresh clone starts with none. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-hooks.ps1` once after cloning to copy every file in `scripts/hooks/` into `.git/hooks/`. `scripts/hooks/` holds the checked-in copy. Edit a hook there, then run the installer again. Editing `.git/hooks/` directly loses the change on the next clone.
 
+## Quality refactor checklist
+
+`docs/notes/quality-checklist.md` ranks every file under `crates/` by how far it sits from the project's code quality bounds. It is generated, not hand written. `scripts/quality-checklist.mjs` reads the `--format=units` dump from the `quality-refactor` skill's own scanner and writes the file, so a regeneration overwrites whatever checkboxes were ticked. The header of the checklist holds both commands.
+
+The score is `errors * 3 + warnings`, and the list runs worst first, production files before test files. A box gets ticked only after the file rescans clean and `cargo test --workspace` still passes.
+
+`docs/notes/quality-autopilot-prompt.md` holds the Autopilot task text that works that list, one file per iteration. The checklist file on disk is the only state that crosses between iterations, since each one starts with an empty conversation. The scanner writes `.quality/` for its own baseline and work units, and `.gitignore` excludes that directory.
+
 RTK convention: prefix commands with `rtk` for token savings on build/test/git output.
