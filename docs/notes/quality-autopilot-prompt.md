@@ -73,8 +73,10 @@ that one file, then stop. Do not start a second file.
 9. Commit with a message shaped `refactor(<module>): <what moved where>`. Do not push.
 
 Constraints for the whole iteration:
-- Touch only the file you picked, the files its split produced, its tests, the checklist,
-  and the two guide documents. Leave every other file alone.
+- Touch only what this one file's refactor forces you to touch: the file you picked, the
+  files its split produced, the mod.rs that declares them, its tests and tests/it/main.rs,
+  every call site an item's move breaks, the checklist, and the two guide documents. In a
+  call site, change the import or the path and nothing else. Leave every other file alone.
 - No em-dash or en-dash anywhere you write. ASCII punctuation only.
 - If the file needs a design change rather than a structural one, say so in the checklist
   entry instead of checking the box, leave the code alone, and stop.
