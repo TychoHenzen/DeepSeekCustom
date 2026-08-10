@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use deepseek_custom::agent::agent_loop::grade_to_u8;
+use deepseek_custom::agent::agent_types::grade_to_u8;
 use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::backend::SharedFlags;

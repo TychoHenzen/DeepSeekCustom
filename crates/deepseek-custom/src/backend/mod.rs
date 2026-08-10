@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::agent_loop::{AgentLoop, DEFAULT_CONTEXT_BUDGET};
+use crate::agent::agent_loop::AgentLoop;
+use crate::agent::agent_types::DEFAULT_CONTEXT_BUDGET;
 use crate::agent::events::RoutedEvent;
 use crate::agent::repeat::run_repeat;
 use crate::api::types::{ImageAttachment, Message};
@@ -84,7 +85,7 @@ impl SharedFlags {
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
             style_plain_language: Arc::new(AtomicBool::new(false)),
             style_target_grade: Arc::new(AtomicU8::new(
-                crate::agent::agent_loop::DEFAULT_TARGET_GRADE,
+                crate::agent::agent_types::DEFAULT_TARGET_GRADE,
             )),
             search_interrupt: Arc::new(AtomicBool::new(false)),
         }

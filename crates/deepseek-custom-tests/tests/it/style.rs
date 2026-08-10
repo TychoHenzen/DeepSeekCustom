@@ -4,7 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use deepseek_custom::agent::agent_loop::{AgentConfig, AgentLoop};
+use deepseek_custom::agent::agent_loop::AgentLoop;
+use deepseek_custom::agent::agent_types::AgentConfig;
 use deepseek_custom::api::client::{ApiClient, Provider};
 use deepseek_custom::style::flesch_kincaid_grade;
 use deepseek_custom::tools::ToolRegistry;
@@ -157,10 +158,14 @@ async fn revise_loop_returns_revised_text_from_mock_api() {
     let original = "The implementation of sophisticated computational methodologies \
          facilitates the optimization of resource allocation paradigms \
          through the utilization of advanced algorithmic frameworks.";
-    let (revised, attempts) = agent.revise_for_plain_language_for_test(original).await;
+    let rev = agent.revise_for_plain_language_for_test(original).await;
 
-    assert_eq!(revised, "We use simple words and short sentences.");
-    assert_eq!(attempts, 1, "expected one revise attempt, got {attempts}");
+    assert_eq!(rev.text, "We use simple words and short sentences.");
+    assert_eq!(
+        rev.attempts, 1,
+        "expected one revise attempt, got {}",
+        rev.attempts
+    );
 
     mock_server.verify().await;
 }
@@ -194,10 +199,10 @@ async fn revise_loop_skips_when_already_plain() {
     agent.set_style_config(true, 25.0, 5.0, 2, None);
 
     let simple_text = "The cat sat on the mat. It was a nice day.";
-    let (revised, attempts) = agent.revise_for_plain_language_for_test(simple_text).await;
+    let rev = agent.revise_for_plain_language_for_test(simple_text).await;
 
-    assert_eq!(revised, simple_text);
-    assert_eq!(attempts, 0);
+    assert_eq!(rev.text, simple_text);
+    assert_eq!(rev.attempts, 0);
 
     // No request was expected on the mock server.
     mock_server.verify().await;

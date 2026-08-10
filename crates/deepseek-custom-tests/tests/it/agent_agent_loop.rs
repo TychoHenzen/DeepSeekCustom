@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::{
-    AgentConfig, AgentLoop, DEFAULT_CONTEXT_BUDGET, build_user_content, context_low_water,
-};
+use deepseek_custom::agent::agent_helpers::{build_user_content, context_low_water};
+use deepseek_custom::agent::agent_loop::AgentLoop;
+use deepseek_custom::agent::agent_types::{AgentConfig, DEFAULT_CONTEXT_BUDGET};
 use deepseek_custom::agent::events::{StreamEvent, SubagentId};
 use deepseek_custom::agent::repeat::run_repeat;
 use deepseek_custom::api::client::{ApiClient, Provider};

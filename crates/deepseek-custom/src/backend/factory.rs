@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::agent::agent_loop::{AgentConfig, AgentLoop};
+use crate::agent::agent_loop::AgentLoop;
+use crate::agent::agent_types::AgentConfig;
 use crate::agent::events::RoutedEvent;
 use crate::agent::prompt::SystemPromptBuilder;
 use crate::api::client::{ApiClient, Provider, resolve_api_key};

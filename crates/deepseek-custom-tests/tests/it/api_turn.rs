@@ -5,7 +5,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
-use deepseek_custom::agent::agent_loop::{AgentConfig, AgentLoop};
+use deepseek_custom::agent::agent_loop::AgentLoop;
+use deepseek_custom::agent::agent_types::AgentConfig;
 use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
 use deepseek_custom::api::client::{ApiClient, Provider};
 use deepseek_custom::api::types::{Content, ImageAttachment, Message, Role};

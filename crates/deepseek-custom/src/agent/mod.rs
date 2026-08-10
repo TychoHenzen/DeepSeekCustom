@@ -1,4 +1,7 @@
+pub mod agent_helpers;
 pub mod agent_loop;
+pub mod agent_style;
+pub mod agent_types;
 pub mod events;
 pub mod history;
 pub mod prompt;

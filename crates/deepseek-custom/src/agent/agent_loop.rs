@@ -6,74 +6,21 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::api::client::{ApiClient, Provider};
-use crate::api::types::{
-    ChatRequest, Content, ContentPart, ImageAttachment, Message, Role, ToolCall,
-};
+use crate::api::client::ApiClient;
+use crate::api::types::{ChatRequest, Content, ImageAttachment, Message, Role, ToolCall};
 use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 use crate::tools::{ToolOutput, ToolRegistry};
 
+use super::agent_helpers::{
+    StreamCollection, assistant_with_tools, build_user_content, filter_valid_tool_calls,
+    merge_tool_call,
+};
+use super::agent_style::StyleState;
+use super::agent_types::{AgentConfig, DEFAULT_CONTEXT_BUDGET, DEFAULT_TARGET_GRADE, grade_to_u8};
 use super::events::{RoutedEvent, StreamEvent};
 use super::history::{MessageHistory, PruneReport};
 use super::prompt::{SystemPromptBuilder, voice_mode_instructions};
-
-/// Default token budget for the context pruning hysteresis oscillator.
-/// History grows freely until it passes this high-water mark, then gets
-/// pruned hard down to a third of it (see `context_low_water`).
-pub const DEFAULT_CONTEXT_BUDGET: usize = 100_000;
-
-/// Replies shorter than this skip the plain-language grade check, since a
-/// grade score on a one-word or one-sentence reply is just noise. The
-/// threshold is character count, not token count, because the text already
-/// arrived before the check runs.
-const MIN_PLAIN_LANGUAGE_LENGTH: usize = 100;
-
-/// Default target Flesch-Kincaid grade for the plain-language gate,
-/// matching `Settings::style_target_grade`.
-pub const DEFAULT_TARGET_GRADE: u8 = 8;
-
-/// Round a configured target grade onto the whole number the shared flag
-/// carries. A grade below zero or past 30 is clamped rather than wrapped,
-/// so a stray value in settings.json cannot turn into a nonsense target.
-pub fn grade_to_u8(grade: f32) -> u8 {
-    grade.round().clamp(0.0, 30.0) as u8
-}
-
-/// Configuration for the agent loop.
-pub struct AgentConfig {
-    pub max_turns: u32,
-    pub model: String,
-    pub effort: Effort,
-    /// Cap on the tokens one API reply may produce, reasoning included.
-    pub max_tokens: u32,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            max_turns: 100,
-            model: "deepseek-v4-flash".into(),
-            effort: Effort::None,
-            max_tokens: 8192,
-        }
-    }
-}
-
-/// Result of a critique-and-revise run: the final text and the number of
-/// revision attempts it took (0 if the original text already passed).
-pub struct StyleRevision {
-    pub text: String,
-    pub attempts: u32,
-}
-
-/// Result of building a user's content for an API request: the `Content`
-/// to send, and an optional notice to post in the transcript when the
-/// image could not be carried on this provider.
-pub struct BuiltUserContent {
-    pub content: Content,
-    pub notice: Option<String>,
-}
 
 /// Core agent loop: user input -> API call -> tool execution -> repeat.
 pub struct AgentLoop {
@@ -90,10 +37,7 @@ pub struct AgentLoop {
     repeat_interrupt_flag: Arc<AtomicBool>,
     subagent_registry: Option<Arc<crate::backend::registry::SubagentRegistry>>,
     working_dir: Option<Arc<Mutex<PathBuf>>>,
-    style_plain_language_flag: Arc<AtomicBool>,
-    style_target_grade_flag: Arc<AtomicU8>,
-    style_grade_tolerance: f32,
-    style_max_revise_attempts: u32,
+    style_state: StyleState,
     style_critic_backend: Option<String>,
 }
 
@@ -107,6 +51,8 @@ impl AgentLoop {
     ) -> Self {
         let effort = config.effort;
         let model = config.model.clone();
+        let style_plain = Arc::new(AtomicBool::new(false));
+        let style_grade = Arc::new(AtomicU8::new(DEFAULT_TARGET_GRADE));
         Self {
             client,
             tools,
@@ -121,10 +67,12 @@ impl AgentLoop {
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             subagent_registry: None,
             working_dir: None,
-            style_plain_language_flag: Arc::new(AtomicBool::new(false)),
-            style_target_grade_flag: Arc::new(AtomicU8::new(DEFAULT_TARGET_GRADE)),
-            style_grade_tolerance: 2.0,
-            style_max_revise_attempts: 2,
+            style_state: StyleState {
+                plain_language_flag: style_plain,
+                target_grade_flag: style_grade,
+                grade_tolerance: 2.0,
+                max_revise_attempts: 2,
+            },
             style_critic_backend: None,
         }
     }
@@ -152,25 +100,23 @@ impl AgentLoop {
         max_revise_attempts: u32,
         critic_backend: Option<String>,
     ) {
-        self.style_plain_language_flag
+        self.style_state
+            .plain_language_flag
             .store(plain_language_enabled, Ordering::SeqCst);
-        self.style_target_grade_flag
+        self.style_state
+            .target_grade_flag
             .store(grade_to_u8(target_grade), Ordering::SeqCst);
-        self.style_grade_tolerance = grade_tolerance;
-        self.style_max_revise_attempts = max_revise_attempts;
+        self.style_state.grade_tolerance = grade_tolerance;
+        self.style_state.max_revise_attempts = max_revise_attempts;
         self.style_critic_backend = critic_backend;
     }
 
-    fn style_target_grade(&self) -> f32 {
-        f32::from(self.style_target_grade_flag.load(Ordering::SeqCst))
-    }
-
     pub fn style_plain_language_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.style_plain_language_flag)
+        Arc::clone(&self.style_state.plain_language_flag)
     }
 
     pub fn style_target_grade_flag(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.style_target_grade_flag)
+        Arc::clone(&self.style_state.target_grade_flag)
     }
 
     pub fn set_effort_flag(&mut self, effort_flag: Arc<AtomicU8>) {
@@ -183,8 +129,8 @@ impl AgentLoop {
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);
         self.context_budget = Arc::clone(&flags.context_budget);
         self.repeat_interrupt_flag = Arc::clone(&flags.repeat_interrupt);
-        self.style_plain_language_flag = Arc::clone(&flags.style_plain_language);
-        self.style_target_grade_flag = Arc::clone(&flags.style_target_grade);
+        self.style_state.plain_language_flag = Arc::clone(&flags.style_plain_language);
+        self.style_state.target_grade_flag = Arc::clone(&flags.style_target_grade);
     }
 
     #[cfg(feature = "test-support")]
@@ -263,7 +209,7 @@ impl AgentLoop {
         let budget = self.context_budget.load(Ordering::SeqCst);
         let report = self
             .history
-            .prune_to_budget(context_low_water(budget), scores);
+            .prune_to_budget(super::agent_helpers::context_low_water(budget), scores);
         info!(
             tokens_before = report.tokens_before,
             tokens_after = report.tokens_after,
@@ -301,13 +247,12 @@ impl AgentLoop {
     }
 
     /// Run the agent loop for a single user message.
-    /// Returns the final assistant text or an error.
     pub async fn run(&mut self, user_input: &str) -> Result<Vec<String>> {
         self.run_with_image(user_input, None).await
     }
 
     /// Run the agent loop for a single user message, with an optional
-    /// image attachment. `run` delegates to this method with `None`.
+    /// image attachment.
     pub async fn run_with_image(
         &mut self,
         user_input: &str,
@@ -333,13 +278,7 @@ impl AgentLoop {
             self.send_event(StreamEvent::Error { message });
         }
 
-        self.history.push(Message {
-            role: Role::User,
-            content: Some(built.content),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        });
+        self.push_user_message(built.content);
 
         let mut assistant_texts: Vec<String> = Vec::new();
 
@@ -348,86 +287,13 @@ impl AgentLoop {
 
             self.maybe_prune_context().await;
 
-            let tools = self.tools.to_api_definitions();
-            let messages = self.history.to_api_messages();
-
-            let effort = self.config.effort;
-            info!(effort = ?effort, "building API request");
-
-            let request = ChatRequest {
-                model: self.config.model.clone(),
-                messages,
-                tools: if tools.is_empty() { None } else { Some(tools) },
-                tool_choice: None,
-                stream: true,
-                temperature: Some(0.7),
-                max_tokens: Some(self.config.max_tokens),
-                thinking: None,
-                thinking_mode: None,
-                reasoning_effort: None,
-                effort: Some(effort),
-            };
-
+            let request = self.build_chat_request();
             let mut rx = self.client.chat_stream(&request);
 
-            let mut stream_text = String::new();
-            let mut stream_reasoning = String::new();
-            let mut stream_tool_calls: Vec<ToolCall> = Vec::new();
-            let mut finish_reason = String::new();
-            let mut stream_usage: Option<crate::api::types::Usage> = None;
-
-            while let Some(chunk_result) = rx.recv().await {
-                if self.interrupt_flag.load(Ordering::SeqCst) {
-                    debug!("interrupt detected during stream receive");
-                    break;
-                }
-                match chunk_result {
-                    Ok(chunk) => {
-                        if let Some(ref choices) = chunk.choices {
-                            for choice in choices {
-                                if let Some(ref content) = choice.delta.content {
-                                    stream_text.push_str(content);
-                                    self.send_event(StreamEvent::Text {
-                                        turn: turn + 1,
-                                        text: content.clone(),
-                                    });
-                                }
-                                if let Some(ref reasoning) = choice.delta.reasoning_content {
-                                    stream_reasoning.push_str(reasoning);
-                                    self.send_event(StreamEvent::Reasoning {
-                                        turn: turn + 1,
-                                        text: reasoning.clone(),
-                                    });
-                                }
-                                if let Some(ref tcs) = choice.delta.tool_calls {
-                                    for tc in tcs {
-                                        merge_tool_call(&mut stream_tool_calls, tc);
-                                    }
-                                }
-                                if let Some(ref fr) = choice.finish_reason {
-                                    finish_reason = fr.clone();
-                                }
-                            }
-                        }
-                        if chunk.usage.is_some() {
-                            stream_usage = chunk.usage;
-                        }
-                    }
-                    Err(e) => {
-                        error!("stream error: {e}");
-                        self.send_event(StreamEvent::Error {
-                            message: format!("{e}"),
-                        });
-                        return Err(e);
-                    }
-                }
-            }
-
-            // Check if stream was interrupted
-            if self.interrupt_flag.swap(false, Ordering::SeqCst) {
-                info!("agent: user interrupted stream");
-                if !stream_text.is_empty() {
-                    assistant_texts.push(stream_text.clone());
+            let collected = self.collect_stream(&mut rx).await;
+            if collected.interrupted {
+                if !collected.text.is_empty() {
+                    assistant_texts.push(collected.text.clone());
                 }
                 self.send_event(StreamEvent::Interrupted {
                     message: "Interrupted by user (Escape)".into(),
@@ -435,70 +301,35 @@ impl AgentLoop {
                 break;
             }
 
-            debug!(
-                "stream complete: text_len={}, reasoning_len={}, \
-                 tool_calls={}, finish={}",
-                stream_text.len(),
-                stream_reasoning.len(),
-                stream_tool_calls.len(),
-                finish_reason,
-            );
+            self.check_output_cap(&collected.finish_reason);
 
-            if finish_reason == "length" {
-                warn!(
-                    max_tokens = self.config.max_tokens,
-                    "reply hit the output cap and was cut off"
-                );
-                self.send_event(StreamEvent::Error {
-                    message: format!(
-                        "The reply hit the {} token output cap and was \
-                         cut off. Raise max_tokens in settings.json.",
-                        self.config.max_tokens
-                    ),
-                });
-            }
-
-            // Filter out tool calls lacking a function name
-            let valid_tool_calls: Vec<ToolCall> = stream_tool_calls
-                .iter()
-                .filter(|tc| tc.function.as_ref().and_then(|f| f.name.as_ref()).is_some())
-                .cloned()
-                .collect();
-            let filtered_out = stream_tool_calls.len() - valid_tool_calls.len();
-            if filtered_out > 0 {
-                info!(
-                    total = stream_tool_calls.len(),
-                    valid = valid_tool_calls.len(),
-                    "filtered out {filtered_out} nameless tool call(s)"
-                );
-            }
+            let valid_tool_calls = filter_valid_tool_calls(&collected.tool_calls);
 
             if !valid_tool_calls.is_empty() {
-                stream_tool_calls = valid_tool_calls;
-
                 self.history.push(assistant_with_tools(
-                    &stream_text,
-                    &stream_reasoning,
-                    &stream_tool_calls,
+                    &collected.text,
+                    &collected.reasoning,
+                    &valid_tool_calls,
                 ));
 
-                // An interrupt inside the batch ends the whole turn, rather
-                // than falling through to another API call with the user's
-                // Escape already reported and consumed.
                 if self
-                    .run_tool_calls(turn, &stream_tool_calls, &finish_reason, &stream_usage)
+                    .run_tool_calls(
+                        turn,
+                        &valid_tool_calls,
+                        &collected.finish_reason,
+                        &collected.usage,
+                    )
                     .await
                     .is_break()
                 {
                     return Ok(assistant_texts);
                 }
 
-                // Continue the turn loop for another API call
                 continue;
             }
 
             // Text-only response
-            let final_text = self.finalize_text_reply(turn, stream_text).await;
+            let final_text = self.finalize_text_reply(turn, collected.text).await;
             if !final_text.is_empty() {
                 assistant_texts.push(final_text.clone());
             }
@@ -508,14 +339,14 @@ impl AgentLoop {
                 content: Some(Content::text(final_text)),
                 tool_calls: None,
                 tool_call_id: None,
-                reasoning_content: if stream_reasoning.is_empty() {
+                reasoning_content: if collected.reasoning.is_empty() {
                     None
                 } else {
-                    Some(stream_reasoning.clone())
+                    Some(collected.reasoning.clone())
                 },
             });
 
-            self.send_snapshot_and_turn_end(turn, &finish_reason, &stream_usage);
+            self.send_snapshot_and_turn_end(turn, &collected.finish_reason, &collected.usage);
             break;
         }
 
@@ -526,15 +357,177 @@ impl AgentLoop {
         Ok(assistant_texts)
     }
 
-    /// Run the plain-language gate on a text-only reply and emit the result.
-    /// Returns the final text to record.
+    fn check_output_cap(&self, finish_reason: &str) {
+        if finish_reason == "length" {
+            warn!(
+                max_tokens = self.config.max_tokens,
+                "reply hit the output cap and was cut off"
+            );
+            self.send_event(StreamEvent::Error {
+                message: format!(
+                    "The reply hit the {} token output cap and was \
+                     cut off. Raise max_tokens in settings.json.",
+                    self.config.max_tokens
+                ),
+            });
+        }
+    }
+
+    /// Build the chat request from current config and history.
+    fn build_chat_request(&self) -> ChatRequest {
+        let tools = self.tools.to_api_definitions();
+        let messages = self.history.to_api_messages();
+        let effort = self.config.effort;
+        info!(effort = ?effort, "building API request");
+
+        ChatRequest {
+            model: self.config.model.clone(),
+            messages,
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice: None,
+            stream: true,
+            temperature: Some(0.7),
+            max_tokens: Some(self.config.max_tokens),
+            thinking: None,
+            thinking_mode: None,
+            reasoning_effort: None,
+            effort: Some(effort),
+        }
+    }
+
+    /// Collect a stream of SSE chunks into a `StreamCollection`.
+    async fn collect_stream(
+        &mut self,
+        rx: &mut mpsc::UnboundedReceiver<
+            std::result::Result<crate::api::types::StreamChunk, crate::error::HarnessError>,
+        >,
+    ) -> StreamCollection {
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut finish_reason = String::new();
+        let mut usage: Option<crate::api::types::Usage> = None;
+        let mut interrupted = false;
+
+        while let Some(chunk_result) = rx.recv().await {
+            if self.interrupt_flag.load(Ordering::SeqCst) {
+                debug!("interrupt detected during stream receive");
+                interrupted = true;
+                break;
+            }
+            match chunk_result {
+                Ok(chunk) => {
+                    self.process_chunk(
+                        &chunk,
+                        &mut text,
+                        &mut reasoning,
+                        &mut tool_calls,
+                        &mut finish_reason,
+                    );
+                    if chunk.usage.is_some() {
+                        usage = chunk.usage;
+                    }
+                }
+                Err(e) => {
+                    error!("stream error: {e}");
+                    self.send_event(StreamEvent::Error {
+                        message: format!("{e}"),
+                    });
+                    return StreamCollection {
+                        text,
+                        reasoning,
+                        tool_calls,
+                        finish_reason,
+                        usage,
+                        interrupted: true,
+                    };
+                }
+            }
+        }
+
+        debug!(
+            "stream complete: text_len={}, reasoning_len={}, \
+             tool_calls={}, finish={}",
+            text.len(),
+            reasoning.len(),
+            tool_calls.len(),
+            finish_reason,
+        );
+
+        StreamCollection {
+            text,
+            reasoning,
+            tool_calls,
+            finish_reason,
+            usage,
+            interrupted,
+        }
+    }
+
+    /// Process one SSE chunk into the accumulators.
+    fn process_chunk(
+        &self,
+        chunk: &crate::api::types::StreamChunk,
+        text: &mut String,
+        reasoning: &mut String,
+        tool_calls: &mut Vec<ToolCall>,
+        finish_reason: &mut String,
+    ) {
+        if let Some(ref choices) = chunk.choices {
+            for choice in choices {
+                if let Some(ref content) = choice.delta.content {
+                    text.push_str(content);
+                    self.send_event(StreamEvent::Text {
+                        turn: 1,
+                        text: content.clone(),
+                    });
+                }
+                if let Some(ref r) = choice.delta.reasoning_content {
+                    reasoning.push_str(r);
+                    self.send_event(StreamEvent::Reasoning {
+                        turn: 1,
+                        text: r.clone(),
+                    });
+                }
+                if let Some(ref tcs) = choice.delta.tool_calls {
+                    for tc in tcs {
+                        merge_tool_call(tool_calls, tc);
+                    }
+                }
+                if let Some(ref fr) = choice.finish_reason {
+                    finish_reason.clone_from(fr);
+                }
+            }
+        }
+    }
+
+    /// Push a user-role message onto history.
+    fn push_user_message(&mut self, content: Content) {
+        self.history.push(Message {
+            role: Role::User,
+            content: Some(content),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        });
+    }
+
+    /// Run the plain-language gate on a text-only reply.
     async fn finalize_text_reply(&mut self, turn: u32, stream_text: String) -> String {
         let mut final_text = stream_text;
-        if !self.maybe_check_plain_language(&final_text) {
+        if !self.style_state.needs_revision(&final_text) {
             return final_text;
         }
 
-        let revision = self.revise_for_plain_language(&final_text).await;
+        let revision = self
+            .style_state
+            .revise(
+                &self.client,
+                &self.config.model,
+                self.config.max_tokens,
+                &final_text,
+            )
+            .await;
         if revision.text != final_text {
             info!(
                 attempts = revision.attempts,
@@ -559,10 +552,6 @@ impl AgentLoop {
     }
 
     /// Execute one batch of tool calls and handle any tool-returned images.
-    ///
-    /// Breaks when the user interrupted part way through the batch, which
-    /// ends the caller's turn. Sending `Interrupted` and then carrying on
-    /// into another API call would report a stop that never happened.
     async fn run_tool_calls(
         &mut self,
         turn: u32,
@@ -616,13 +605,7 @@ impl AgentLoop {
                 if let Some(message) = built.notice {
                     self.send_event(StreamEvent::Error { message });
                 }
-                self.history.push(Message {
-                    role: Role::User,
-                    content: Some(built.content),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                });
+                self.push_user_message(built.content);
             }
         }
 
@@ -630,15 +613,6 @@ impl AgentLoop {
         ControlFlow::Continue(())
     }
 
-    /// Send the conversation snapshot, then `TurnEnd`.
-    ///
-    /// The snapshot is read off `self.history` here, at the moment it goes
-    /// out, never captured earlier and carried in. Every message this turn
-    /// produced, the assistant reply, the assistant-with-tool-calls
-    /// message, each tool result, and any tool-returned image, is already
-    /// pushed by the time a caller reaches this. The GUI persists whatever
-    /// the last snapshot carried, so a snapshot taken any earlier writes a
-    /// session file missing its own final messages.
     fn send_snapshot_and_turn_end(
         &self,
         turn: u32,
@@ -649,18 +623,20 @@ impl AgentLoop {
             messages: self.history.iter().cloned().collect(),
             claude_session_id: None,
         });
+        let hit = stream_usage
+            .as_ref()
+            .map(|u| u.prompt_cache_hit_tokens)
+            .unwrap_or(0);
+        let miss = stream_usage
+            .as_ref()
+            .map(|u| u.prompt_cache_miss_tokens)
+            .unwrap_or(0);
         self.send_event(StreamEvent::TurnEnd {
             turn: turn + 1,
             finish_reason: finish_reason.to_string(),
             total_tokens: self.history.estimated_tokens(),
-            prompt_cache_hit_tokens: stream_usage
-                .as_ref()
-                .map(|u| u.prompt_cache_hit_tokens)
-                .unwrap_or(0),
-            prompt_cache_miss_tokens: stream_usage
-                .as_ref()
-                .map(|u| u.prompt_cache_miss_tokens)
-                .unwrap_or(0),
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
         });
     }
 
@@ -669,12 +645,13 @@ impl AgentLoop {
             return format!("Tool error: Invalid input: {e}");
         }
         format!(
-            "Tool error: the arguments for '{name}' stop part way through \
-             ({e}). The reply ran into the {} token output cap while writing \
-             them, so the call never finished. It carried {} characters. \
-             Retry with a smaller payload: use `edit` to change part of a \
-             file rather than `write` to replace all of it, or write the \
-             file in several smaller calls. Raise `max_tokens` in \
+            "Tool error: the arguments for '{name}' stop part way \
+             through ({e}). The reply ran into the {} token output \
+             cap while writing them, so the call never finished. It \
+             carried {} characters. Retry with a smaller payload: \
+             use `edit` to change part of a file rather than \
+             `write` to replace all of it, or write the file in \
+             several smaller calls. Raise `max_tokens` in \
              settings.json if the payload cannot be split.",
             self.config.max_tokens,
             args.len(),
@@ -766,135 +743,24 @@ impl AgentLoop {
         &self.config
     }
 
-    fn maybe_check_plain_language(&self, text: &str) -> bool {
-        if !self.style_plain_language_flag.load(Ordering::SeqCst) {
-            return false;
-        }
-        if text.len() < MIN_PLAIN_LANGUAGE_LENGTH {
-            return false;
-        }
-        let grade = crate::style::flesch_kincaid_grade(text);
-        let threshold = self.style_target_grade() + self.style_grade_tolerance;
-        debug!(
-            grade,
-            target = self.style_target_grade(),
-            tolerance = self.style_grade_tolerance,
-            text_len = text.len(),
-            "plain-language gate: grade {grade} vs threshold {threshold}"
-        );
-        grade > threshold
-    }
-
-    async fn revise_for_plain_language(&self, text: &str) -> StyleRevision {
-        let max_attempts = self.style_max_revise_attempts;
-        let mut current = text.to_string();
-        let mut attempts = 0u32;
-
-        let rubric = "Rewrite the following reply in plain language. \
-            Use short sentences, common words, and active voice. \
-            Cut padding, jargon, and passive constructions. \
-            Preserve every technical fact, name, path, and code \
-            reference exactly. Return only the rewritten reply, no \
-            preamble or commentary.";
-
-        let target_grade = self.style_target_grade();
-        let tolerance = self.style_grade_tolerance;
-
-        while attempts < max_attempts {
-            let grade = crate::style::flesch_kincaid_grade(&current);
-            let threshold = target_grade + tolerance;
-            if grade <= threshold {
-                debug!(
-                    grade,
-                    attempts,
-                    "plain-language revise: grade {grade} within \
-                     tolerance {threshold}, stopping"
-                );
-                break;
-            }
-
-            debug!(
-                grade,
-                attempt = attempts + 1,
-                max_attempts,
-                "plain-language revise: grade {grade} above \
-                 threshold {threshold}, revising"
-            );
-
-            let request = ChatRequest {
-                model: self.config.model.clone(),
-                messages: vec![
-                    Message {
-                        role: Role::System,
-                        content: Some(Content::text(rubric)),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning_content: None,
-                    },
-                    Message {
-                        role: Role::User,
-                        content: Some(Content::text(current.clone())),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning_content: None,
-                    },
-                ],
-                tools: None,
-                tool_choice: None,
-                stream: false,
-                temperature: Some(0.3),
-                max_tokens: Some(self.config.max_tokens),
-                thinking: None,
-                thinking_mode: None,
-                reasoning_effort: None,
-                effort: Some(Effort::None),
-            };
-
-            match self.client.chat(&request).await {
-                Ok(response) => {
-                    let revised = response
-                        .choices
-                        .first()
-                        .and_then(|c| c.message.content.as_ref())
-                        .and_then(|content| content.as_text())
-                        .unwrap_or_default()
-                        .to_string();
-                    if revised.is_empty() {
-                        warn!(
-                            "plain-language revise: empty response \
-                             from critic, stopping"
-                        );
-                        break;
-                    }
-                    current = revised;
-                }
-                Err(e) => {
-                    warn!(
-                        "plain-language revise: API error on \
-                         attempt {}: {e}",
-                        attempts + 1
-                    );
-                    break;
-                }
-            }
-            attempts += 1;
-        }
-
-        StyleRevision {
-            text: current,
-            attempts,
-        }
-    }
-
     #[cfg(feature = "test-support")]
     pub fn maybe_check_plain_language_for_test(&self, text: &str) -> bool {
-        self.maybe_check_plain_language(text)
+        self.style_state.needs_revision(text)
     }
 
     #[cfg(feature = "test-support")]
-    pub async fn revise_for_plain_language_for_test(&self, text: &str) -> (String, u32) {
-        let rev = self.revise_for_plain_language(text).await;
-        (rev.text, rev.attempts)
+    pub async fn revise_for_plain_language_for_test(
+        &self,
+        text: &str,
+    ) -> super::agent_style::StyleRevision {
+        self.style_state
+            .revise(
+                &self.client,
+                &self.config.model,
+                self.config.max_tokens,
+                text,
+            )
+            .await
     }
 
     pub fn reset(&mut self, new_system_prompt: String, new_user_prompt: String) {
@@ -919,115 +785,5 @@ impl AgentLoop {
         let tools = self.tools.to_api_definitions();
         let new_prompt = builder.build(memory_fragment, skills_fragment, &tools);
         self.history = MessageHistory::new(new_prompt);
-    }
-}
-
-/// Low-water mark for the hysteresis oscillator: a third of the budget.
-pub fn context_low_water(budget: usize) -> usize {
-    budget / 3
-}
-
-/// Build the outgoing `Content` for a turn's user message, mapping an
-/// optional image attachment onto what `provider` actually accepts.
-///
-/// DeepSeek accepts no image content part at all. Ollama accepts the
-/// OpenAI `image_url` shape on a vision model.
-pub fn build_user_content(
-    provider: Provider,
-    text: &str,
-    image: Option<&ImageAttachment>,
-) -> BuiltUserContent {
-    let Some(image) = image else {
-        return BuiltUserContent {
-            content: Content::text(text),
-            notice: None,
-        };
-    };
-    match provider {
-        Provider::DeepSeek => BuiltUserContent {
-            content: Content::text(text),
-            notice: Some(
-                "DeepSeek does not support image attachments; the image \
-                 was not sent."
-                    .to_string(),
-            ),
-        },
-        Provider::Ollama => BuiltUserContent {
-            content: Content::Parts(vec![
-                ContentPart::Text {
-                    text: text.to_string(),
-                },
-                ContentPart::ImageUrl {
-                    url: format!("data:{};base64,{}", image.media_type, image.data),
-                },
-            ]),
-            notice: None,
-        },
-    }
-}
-
-/// Build an assistant message carrying tool calls.
-fn assistant_with_tools(text: &str, reasoning: &str, tool_calls: &[ToolCall]) -> Message {
-    Message {
-        role: Role::Assistant,
-        content: if text.is_empty() {
-            None
-        } else {
-            Some(Content::text(text))
-        },
-        tool_calls: Some(tool_calls.to_vec()),
-        tool_call_id: None,
-        reasoning_content: if reasoning.is_empty() {
-            None
-        } else {
-            Some(reasoning.to_string())
-        },
-    }
-}
-
-/// Merge a streaming tool call delta into the accumulated tool calls list.
-///
-/// DeepSeek streams tool calls across multiple chunks:
-/// - First chunk: `{index: 0, id: "call_xxx",
-///   function: {name: "read", arguments: ""}}`
-/// - Subsequent chunks: `{index: 0, function: {arguments: "more_json"}}`
-///
-/// Matches by index and merges partial fields.
-fn merge_tool_call(accumulated: &mut Vec<ToolCall>, delta: &ToolCall) {
-    let idx = delta.index;
-
-    if let Some(existing) = accumulated.iter_mut().find(|tc| tc.index == idx) {
-        if existing.id.is_empty() && !delta.id.is_empty() {
-            existing.id = delta.id.clone();
-        }
-        if let Some(ref delta_func) = delta.function {
-            let existing_func = existing.function.get_or_insert_with(Default::default);
-            if let Some(ref name) = delta_func.name
-                && existing_func.name.is_none()
-            {
-                debug!(index=?idx, name=%name, "merge_tool_call: set name");
-                existing_func.name = Some(name.clone());
-            }
-            if let Some(ref args) = delta_func.arguments {
-                if let Some(ref mut existing_args) = existing_func.arguments {
-                    existing_args.push_str(args);
-                } else {
-                    existing_func.arguments = Some(args.clone());
-                }
-            }
-        }
-    } else {
-        let mut tc = delta.clone();
-        let func = tc.function.get_or_insert_with(Default::default);
-        if func.arguments.is_none() {
-            func.arguments = Some(String::new());
-        }
-        debug!(
-            index=?idx,
-            name=?func.name,
-            args_len = func.arguments.as_ref().map_or(0, |a| a.len()),
-            "merge_tool_call: new"
-        );
-        accumulated.push(tc);
     }
 }

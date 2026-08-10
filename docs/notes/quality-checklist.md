@@ -36,7 +36,11 @@ node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\s
 
 ## Production files (92)
 
-- [ ] `crates/deepseek-custom/src/agent/agent_loop.rs` - score 96 (9 error, 69 warn)
+- [x] `crates/deepseek-custom/src/agent/agent_loop.rs` - score 96 (9 error, 69 warn)
+  - done: split into agent_loop.rs (789L, 69 viol), agent_types.rs (1 type), agent_helpers.rs (12 warn), agent_style.rs (6 viol). run_turn 204L->90L, extracted free fns+style+types. Dead-export findings all false positives (Backend::Api wrapping)
+- [ ] `crates/deepseek-custom/src/agent/agent_loop.rs` - score ~70 (file still 789L)
+- [ ] `crates/deepseek-custom/src/agent/agent_helpers.rs` - score ~12 (warns only)
+- [ ] `crates/deepseek-custom/src/agent/agent_style.rs` - score ~6 (revise() 106L, cx6)
 - [ ] `crates/deepseek-custom/src/search/cascade.rs` - score 50 (7 error, 29 warn)
 - [ ] `crates/deepseek-custom/src/tools/task.rs` - score 47 (5 error, 32 warn)
 - [ ] `crates/deepseek-custom/src/api/client.rs` - score 45 (6 error, 27 warn)
