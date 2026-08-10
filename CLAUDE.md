@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1002 tests
-cargo test -p deepseek-custom-tests                  # The same 1002, named directly
+cargo test --workspace                               # All 1083 tests
+cargo test -p deepseek-custom-tests                  # The same 1083, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -125,6 +125,16 @@ So the guarantee comes from the operating system. On Windows, `process_group::ad
 **Autopilot across backends:** `run_repeat` in `crates/deepseek-custom/src/agent/repeat.rs` is generic over a `RepeatTarget` trait, with one implementation per backend kind. The `Api` path resets by calling `AgentLoop::clear_history`. The `ClaudeCli` path resets by shutting the child down, so the next turn spawns a fresh one. Both give the same guarantee: no iteration sees an earlier iteration's conversation. `repeat_interrupt_flag` still stops the whole run on either path.
 
 **Agent loop:** applies to the `Api` variant only. User input builds into messages (system prompt, history, tools), goes to the DeepSeek or Ollama API, and comes back as text or tool calls. Tools run through `ToolRegistry`, and results append to history before the next round starts. A max-turns guard defaults to 100. Streaming runs over `reqwest` plus `tokio::sync::mpsc`. Events reach the GUI through the `StreamEvent` enum over an unbounded channel. That decouples the agent from the UI layer. A user interrupt works through an `Arc<AtomicBool>` flag. The GUI sets it on Escape. The agent checks it during stream receive and before tool execution, then sends `StreamEvent::Interrupted`.
+
+**Output cap:** applies to the `Api` variant only. `AgentConfig.max_tokens` caps the tokens one reply may produce, and `settings.json`'s `max_tokens` sets it. It was hardcoded at 4096 in three places, which is the wrong size for an agent that writes source files: the cap covers reasoning tokens too, so a thinking model spends part of it before it writes a character.
+
+A real autopilot run showed what that costs. A `write` call carrying a whole source file ran past the cap part way through its own arguments. The API stopped with `finish_reason` "length", the half-written JSON reached `execute_tool`, and serde reported "EOF while parsing a string at line 1 column 7521". Nothing in that message names an output cap, so the model read it as "the payload is too long for this tool", tried three smaller writes, and then went looking for a way to build the file through `bash` instead. The iteration never finished.
+
+Two things changed alongside the default rising to 8192. A reply whose `finish_reason` is "length" now sends a `StreamEvent::Error` naming the cap, so a truncated reply says so where the user can see it rather than looking like a reply that simply ended. And `AgentLoop::arg_parse_error` splits the two ways an argument string can fail to parse: `serde_json` classifies one that simply stops as `Category::Eof`, and that case names the cap, the payload size, and what to do instead. Anything else keeps the plain parse error, since blaming the cap for a genuinely malformed call would send the model chasing a limit it never reached.
+
+| Field | Default |
+|---|---|
+| `max_tokens` | `8192`, clamped 1024-65536 |
 
 **Voice reply mode:** while text to speech is on, the agent appends a "## Voice reply mode" block to the system prompt each turn. The block tells the model to answer in at most two sentences with a spoken cadence. No markdown, no lists, no code, plain wording for file paths and identifiers. Tool use is unaffected. This is not a separate setting. It follows the text-to-speech checkbox in the settings sidebar, and it starts from the `tts_enabled` value in the `settings.json` voice block. Mechanism: a shared `voice_mode_flag` (`Arc<AtomicBool>`) on `AgentLoop`, read each turn in `sync_dynamic_config` alongside the effort flag and model name, driving `MessageHistory::set_system_suffix`. The instruction text lives in `voice_mode_instructions()` in `crates/deepseek-custom/src/agent/prompt.rs`. The GUI holds the same flag and writes it on every text-to-speech toggle. This is separate from and additional to `filter_for_speech` in `crates/deepseek-custom/src/voice/mod.rs`, which still strips markdown and caps spoken length on the reply the agent sends back. The prompt shortens the reply at the source. The filter cleans whatever comes back regardless.
 
@@ -485,7 +495,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1078 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1083 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
 **One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 71 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
@@ -501,7 +511,7 @@ Test files are named by one rule. Take the module path under `crates/deepseek-cu
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1080.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1085.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -521,11 +531,11 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1058 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1063 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
-| `agent/agent_loop.rs` | 36 |
+| `agent/agent_loop.rs` | 38 |
 | `agent/history.rs` | 22 |
 | `agent/prompt.rs` | 5 |
 | `agent/pruning.rs` | 13 |
@@ -545,7 +555,7 @@ These are the 1058 tests that cover one production module each, counted per modu
 | `backend/claude_cli/events.rs` | 12 |
 | `backend/claude_cli/map.rs` | 9 |
 | `backend/claude_cli/one_shot.rs` | 8 |
-| `config/settings.rs` | 38 |
+| `config/settings.rs` | 40 |
 | `context/relevance.rs` | 15 |
 | `effort.rs` | 9 |
 | `evolution/mod.rs` | 29 |
@@ -579,7 +589,7 @@ These are the 1058 tests that cover one production module each, counted per modu
 | `mcp/tool.rs` | 10 |
 | `mcp/manager.rs` | 8 |
 | `tools/ask.rs` | 5 |
-| `tools/bash.rs` | 12 |
+| `tools/bash.rs` | 13 |
 | `tools/cd.rs` | 6 |
 | `tools/close_session.rs` | 6 |
 | `tools/mod.rs` | 4 |
@@ -628,7 +638,7 @@ See `docs/plans/2026-08-04-long-term-roadmap.md` for the seven themes of future 
 
 ## Platform
 
-**Windows native.** Batch files have BOM and percent-sign issues in Git Bash. Use PowerShell (`.ps1`) for automation scripts. Incremental compilation is off in `.cargo/config.toml`, which sits at the repository root and applies to both workspace members. It had ballooned to 10+ GB of temp files after a few builds. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`. Bash tool defaults to `cmd /C`. It auto-detects commands starting with `powershell` or `pwsh` and runs them directly, which avoids `cmd.exe` inner-quote mangling. Use the `shell` param for explicit control.
+**Windows native.** Batch files have BOM and percent-sign issues in Git Bash. Use PowerShell (`.ps1`) for automation scripts. Incremental compilation is off in `.cargo/config.toml`, which sits at the repository root and applies to both workspace members. It had ballooned to 10+ GB of temp files after a few builds. Hook scripts run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path>`. Bash tool defaults to `cmd /C`. It auto-detects commands starting with `powershell` or `pwsh` and runs them directly, which avoids `cmd.exe` inner-quote mangling. Use the `shell` param for explicit control. The `cmd` path hands its command line to the shell verbatim, through `raw_arg`, rather than as an ordinary argument. Rust quotes an ordinary argument by the C runtime's rules, which escape an inner double quote as `\"`, and `cmd.exe` does not read that escape. A real run failed on a quoted `node.exe` path under `C:\Program Files`: the shell reported the mangled text back as an unrecognized command.
 
 Full debug info was the second part of the same disk problem, and it is a separate setting from incremental compilation. Measured on this tree: 3.81 GB of `.pdb` files. The workspace root `Cargo.toml` now sets `[profile.dev] debug = "line-tables-only"`. With that, `target/` fell from 11 GB to 5.0 GB, and a clean rebuild takes about 4m48s. Line tables keep what a failing test needs, which is a backtrace naming the file and the line. They drop the variable and type records a step debugger uses. Set it back to `true` to step through the GUI, and expect the disk cost to come back with it.
 

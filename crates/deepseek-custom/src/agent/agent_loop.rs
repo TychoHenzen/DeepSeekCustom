@@ -44,6 +44,10 @@ pub struct AgentConfig {
     pub max_turns: u32,
     pub model: String,
     pub effort: Effort,
+    /// Cap on the tokens one API reply may produce, reasoning included.
+    /// See `Settings::max_tokens` for why this is configurable rather
+    /// than the 4096 it used to be hardcoded at.
+    pub max_tokens: u32,
 }
 
 impl Default for AgentConfig {
@@ -52,6 +56,7 @@ impl Default for AgentConfig {
             max_turns: 100,
             model: "deepseek-v4-flash".into(),
             effort: Effort::None,
+            max_tokens: 8192,
         }
     }
 }
@@ -717,7 +722,7 @@ impl AgentLoop {
                 tool_choice: None,
                 stream: true,
                 temperature: Some(0.7),
-                max_tokens: Some(4096),
+                max_tokens: Some(self.config.max_tokens),
                 thinking: None,
                 thinking_mode: None,
                 reasoning_effort: None,
@@ -805,6 +810,24 @@ impl AgentLoop {
                 stream_tool_calls.len(),
                 finish_reason,
             );
+
+            // A reply that hits the output cap stops part way through.
+            // Nothing downstream can tell that from a reply that ended on
+            // its own. So say it here, where the user sees it. Otherwise a
+            // cut-off write shows up later as a parse error with no cause.
+            if finish_reason == "length" {
+                warn!(
+                    max_tokens = self.config.max_tokens,
+                    "reply hit the output cap and was cut off"
+                );
+                self.send_event(StreamEvent::Error {
+                    message: format!(
+                        "The reply hit the {} token output cap and was cut off. \
+                         Raise max_tokens in settings.json.",
+                        self.config.max_tokens
+                    ),
+                });
+            }
 
             // Filter out tool calls lacking a function name (can appear as
             // empty deltas in V4 thinking mode during reasoning phase).
@@ -1017,6 +1040,32 @@ impl AgentLoop {
         Ok(assistant_texts)
     }
 
+    /// The tool result for arguments that are not valid JSON.
+    ///
+    /// A cut-off argument string and a malformed one need different
+    /// answers. Serde's own message tells the two apart for neither the
+    /// user nor the model. `serde_json` classifies a string that simply
+    /// stops as `Category::Eof`. That is what the output cap leaves
+    /// behind. So that case names the cap and says how to get under it.
+    /// Anything else keeps the plain parse error. Blaming the cap for a
+    /// malformed call would send the model after a limit it never hit.
+    fn arg_parse_error(&self, name: &str, args: &str, e: &serde_json::Error) -> String {
+        if e.classify() != serde_json::error::Category::Eof {
+            return format!("Tool error: Invalid input: {e}");
+        }
+        format!(
+            "Tool error: the arguments for '{name}' stop part way through \
+             ({e}). The reply ran into the {} token output cap while writing \
+             them, so the call never finished. It carried {} characters. \
+             Retry with a smaller payload: use `edit` to change part of a \
+             file rather than `write` to replace all of it, or write the \
+             file in several smaller calls. Raise `max_tokens` in \
+             settings.json if the payload cannot be split.",
+            self.config.max_tokens,
+            args.len(),
+        )
+    }
+
     /// Execute a tool by name, handling SessionReset specially. Called
     /// unconditionally from `run_turn` on every production turn, so this
     /// stays `pub(crate)` rather than gated: gating the definition itself
@@ -1032,7 +1081,7 @@ impl AgentLoop {
             Err(e) => {
                 warn!("execute_tool: failed to parse args for '{}': {}", name, e);
                 return ToolOutput {
-                    content: format!("Tool error: Invalid input: {e}"),
+                    content: self.arg_parse_error(name, args, &e),
                     is_error: true,
                     image: None,
                 };
@@ -1242,7 +1291,7 @@ impl AgentLoop {
                 tool_choice: None,
                 stream: false,
                 temperature: Some(0.3),
-                max_tokens: Some(4096),
+                max_tokens: Some(self.config.max_tokens),
                 thinking: None,
                 thinking_mode: None,
                 reasoning_effort: None,

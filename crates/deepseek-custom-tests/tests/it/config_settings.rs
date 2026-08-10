@@ -140,6 +140,7 @@ fn save_then_load_round_trips_values() {
             task: Some("do the thing".into()),
         }),
         context_budget: Some(150_000),
+        max_tokens: Some(16_384),
         show_raw_output: Some(true),
         backends: None,
         default_backend: None,
@@ -246,6 +247,7 @@ fn save_omits_none_fields() {
         voice: None,
         autopilot: None,
         context_budget: None,
+        max_tokens: None,
         show_raw_output: None,
         backends: None,
         default_backend: None,
@@ -336,6 +338,7 @@ fn new_panel_fields_round_trip_through_a_file() {
 
     let original = Settings {
         context_budget: Some(150_000),
+        max_tokens: Some(16_384),
         show_raw_output: Some(true),
         effort: Some(Effort::Max),
         ..Default::default()
@@ -344,10 +347,32 @@ fn new_panel_fields_round_trip_through_a_file() {
 
     let loaded = Settings::load(&dir).unwrap();
     assert_eq!(loaded.context_budget(), 150_000);
+    assert_eq!(loaded.max_tokens(), 16_384);
     assert!(loaded.show_raw_output());
     assert_eq!(loaded.effort(), Effort::Max);
 
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn max_tokens_defaults_to_8192_when_unset() {
+    let s = Settings::default();
+    assert_eq!(s.max_tokens(), 8192);
+}
+
+#[test]
+fn max_tokens_clamps_to_its_bounds() {
+    let low = Settings {
+        max_tokens: Some(16),
+        ..Default::default()
+    };
+    assert_eq!(low.max_tokens(), 1024);
+
+    let high = Settings {
+        max_tokens: Some(1_000_000),
+        ..Default::default()
+    };
+    assert_eq!(high.max_tokens(), 65536);
 }
 
 #[test]

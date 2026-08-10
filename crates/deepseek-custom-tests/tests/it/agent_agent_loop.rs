@@ -556,6 +556,64 @@ async fn execute_unknown_tool_returns_error() {
     assert!(output.content.contains("Unknown tool"));
 }
 
+/// A `write` call cut off by the output cap arrives as JSON that simply
+/// stops. The old message was serde's own text alone, and a real run shows
+/// what that costs: the model read "EOF while parsing a string" as "the
+/// payload is too long for the tool", tried three smaller writes, and then
+/// went looking for a way to build the file through `bash`. The message
+/// has to name the cap.
+#[tokio::test]
+async fn truncated_tool_arguments_report_the_output_cap() {
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
+    let tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let agent = AgentLoop::new(
+        client,
+        tools,
+        "test".into(),
+        AgentConfig {
+            max_tokens: 4096,
+            ..Default::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let output = agent
+        .execute_tool_for_test("echo", "{\"content\": \"fn main() { unfinis")
+        .await;
+
+    assert!(output.is_error);
+    assert!(output.content.contains("4096"), "{}", output.content);
+    assert!(output.content.contains("edit"), "{}", output.content);
+}
+
+/// Arguments that are malformed rather than cut off keep the plain parse
+/// error. Blaming the cap here would send the model chasing a limit it
+/// never reached.
+#[tokio::test]
+async fn malformed_tool_arguments_do_not_blame_the_output_cap() {
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
+    let tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let agent = AgentLoop::new(
+        client,
+        tools,
+        "test".into(),
+        AgentConfig::default(),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let output = agent.execute_tool_for_test("echo", "{\"a\" 1}").await;
+
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("Invalid input"),
+        "{}",
+        output.content
+    );
+    assert!(!output.content.contains("output cap"), "{}", output.content);
+}
+
 fn sample_image() -> ImageAttachment {
     ImageAttachment {
         data: "AAA".into(),

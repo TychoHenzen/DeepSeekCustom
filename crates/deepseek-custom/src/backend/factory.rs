@@ -343,6 +343,7 @@ fn build_api_backend(
 
     let config = AgentConfig {
         model,
+        max_tokens: settings.max_tokens(),
         ..Default::default()
     };
     let mut agent = AgentLoop::new(

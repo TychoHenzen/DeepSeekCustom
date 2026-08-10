@@ -38,6 +38,10 @@ pub struct Settings {
     /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
+    /// Cap on the tokens one API reply may produce, reasoning included.
+    /// Defaults to 8192. See `Settings::max_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     /// Whether the GUI shows raw output instead of rendered markdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_raw_output: Option<bool>,
@@ -152,6 +156,19 @@ impl Settings {
         self.context_budget
             .unwrap_or(100_000)
             .clamp(32_000, 200_000)
+    }
+
+    /// Cap on the tokens one API reply may produce, clamped to 1024-65536.
+    ///
+    /// Defaults to 8192. The cap covers reasoning tokens as well as the
+    /// reply, so a thinking model spends part of it before it writes a
+    /// single character. It was hardcoded at 4096, and a real autopilot
+    /// run showed what that costs: a `write` call carrying a whole source
+    /// file ran past the cap mid-argument, the API stopped with
+    /// `finish_reason` "length", and the half-written JSON reached the
+    /// tool as a parse error the model could not read as truncation.
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens.unwrap_or(8192).clamp(1024, 65536)
     }
 
     /// Whether the GUI shows raw output instead of rendered markdown.
@@ -459,6 +476,9 @@ impl Settings {
         }
         if other.context_budget.is_some() {
             self.context_budget = other.context_budget;
+        }
+        if other.max_tokens.is_some() {
+            self.max_tokens = other.max_tokens;
         }
         if other.show_raw_output.is_some() {
             self.show_raw_output = other.show_raw_output;

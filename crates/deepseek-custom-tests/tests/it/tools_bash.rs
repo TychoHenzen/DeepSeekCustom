@@ -78,6 +78,29 @@ async fn explicit_shell_cmd_works() {
     assert!(output.content.contains("cmd_explicit"));
 }
 
+/// A command whose program is a quoted path has to reach `cmd.exe` with
+/// its quotes intact. Rust's own argument quoting escapes them as `\"`,
+/// which `cmd.exe` does not read, and a real run failed on exactly this
+/// against `"C:\Program Files\nodejs\node.exe"`. `cmd.exe` echoes the
+/// mangled text back in its own error, so the check is that the command
+/// ran at all.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_quoted_program_path_survives_the_trip_to_cmd() {
+    let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
+    let input = serde_json::json!({
+        "command": "\"C:\\Windows\\System32\\cmd.exe\" /C echo quoted_path_ok",
+        "shell": "cmd"
+    });
+    let output = tool.execute(input).await.expect("execute");
+    assert!(
+        output.content.contains("quoted_path_ok"),
+        "quotes were mangled on the way to cmd: {}",
+        output.content
+    );
+    assert!(output.content.contains("exit code: 0"));
+}
+
 #[tokio::test]
 async fn explicit_shell_powershell_works() {
     let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));

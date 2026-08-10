@@ -44,3 +44,12 @@ mutants.out.old/
 # Scratch scripts the harness agent writes when it works around a missing
 # tool. Deleted 2026-08-09 with the Edit tool that removed the need.
 fix_*.ps1
+
+# Two zero-byte files that a stuck shell wrote into the repository root.
+# Both names are shell redirect targets: the `>` of a JavaScript arrow,
+# from an inline `node -e` script that regenerates the quality checklist.
+# The quoting broke, the shell read each `=>` as a redirect, and the shell
+# then hung for over an hour, rewriting both files. Killed 2026-08-10.
+# Kept ignored, since the same script can hang again.
+\['
+i.metric)

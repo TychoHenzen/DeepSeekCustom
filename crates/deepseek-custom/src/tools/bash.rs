@@ -199,12 +199,28 @@ pub(crate) async fn run_command(
 }
 
 /// Run command via cmd.exe /C (default Windows shell).
+///
+/// The command line goes to `cmd.exe` verbatim, through `raw_arg`, rather
+/// than as an ordinary argument. Rust quotes an ordinary argument by the C
+/// runtime's rules, which escape an inner double quote as `\"`. `cmd.exe`
+/// does not read that escape, so any command carrying a quoted path was
+/// handed to the shell with backslashes in it and failed to run at all. A
+/// real run hit this on `"C:\Program Files\nodejs\node.exe" script.mjs`,
+/// which came back as an unrecognized command naming the mangled text.
 async fn run_cmd(
     cmd_str: &str,
     work_dir: &std::path::Path,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
-    let output = Command::new("cmd")
-        .args(["/C", cmd_str])
+    let mut command = Command::new("cmd");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.as_std_mut().raw_arg(format!("/C {cmd_str}"));
+    }
+    #[cfg(not(windows))]
+    command.args(["/C", cmd_str]);
+
+    let output = command
         .current_dir(work_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
