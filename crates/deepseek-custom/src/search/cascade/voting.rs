@@ -23,7 +23,9 @@ pub(super) fn standings(candidates: &[Candidate]) -> Vec<SearchEntry> {
 /// The one-line status: whether anything currently leads by enough.
 pub(super) fn progress_note(candidates: &[Candidate], vote_k: u32) -> String {
     match vote(candidates, vote_k) {
-        VoteOutcome::Winner { count, .. } => format!("leader has {count} vote(s)"),
+        VoteOutcome::Winner { count, .. } => {
+            format!("leader has {count} vote(s)")
+        }
         VoteOutcome::NoConsensus { tallies } if tallies.is_empty() => "no candidates yet".into(),
         VoteOutcome::NoConsensus { .. } => "no winner yet".into(),
     }
@@ -38,13 +40,13 @@ pub(super) fn tallies_of(candidates: &[Candidate]) -> Vec<VoteTally> {
         if let Some(tally) = tallies.iter_mut().find(|t| t.text == trimmed) {
             tally.count += 1;
             tally.indices.push(c.index);
-        } else {
-            tallies.push(VoteTally {
-                text: trimmed.to_string(),
-                count: 1,
-                indices: vec![c.index],
-            });
+            continue;
         }
+        tallies.push(VoteTally {
+            text: trimmed.to_string(),
+            count: 1,
+            indices: vec![c.index],
+        });
     }
     tallies.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.text.cmp(&b.text)));
     tallies
@@ -59,12 +61,11 @@ pub(super) fn vote(candidates: &[Candidate], vote_k: u32) -> VoteOutcome {
     let top = &tallies[0];
     let runner_up = tallies.get(1).map(|t| t.count).unwrap_or(0);
     if top.count.saturating_sub(runner_up) >= vote_k as usize {
-        VoteOutcome::Winner {
+        return VoteOutcome::Winner {
             text: top.text.clone(),
             count: top.count,
             winning_indices: top.indices.clone(),
-        }
-    } else {
-        VoteOutcome::NoConsensus { tallies }
+        };
     }
+    VoteOutcome::NoConsensus { tallies }
 }

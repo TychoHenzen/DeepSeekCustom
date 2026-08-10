@@ -44,7 +44,8 @@ node C:\Users\siriu\.claude\plugins\cache\dod-guard\quality-guard\037c77ae9669\s
   - done: extracted describe_outcome (52L) and resolve_hints free fns from finish (78L->40L, cx 12->0). finish no longer an error. dead-export on run_cascade is a false positive (re-export chain). 22 violations (1E 21W), all warnings under hard bounds.
 - [x] `crates/deepseek-custom/src/search/cascade/escalate.rs` - score 9 (0 error, 9 warn)
   - done: extracted build_escalation_prompt free fn (61L->~30L body), reflowed 6 long lines. 10 viol (2E/8W) -> 4 viol (1E/3W): dead-export is false positive (used in run.rs), 2 fn-length and 1 param-count warnings all under hard bounds.
-- [ ] `crates/deepseek-custom/src/search/cascade/voting.rs` - score 6 (0 error, 6 warn)
+- [x] `crates/deepseek-custom/src/search/cascade/voting.rs` - score 6 (0 error, 6 warn)
+  - done: eliminated both else-branch violations (guard clauses in tallies_of and vote), reflowed 4 long lines. Down to 5 viol (2E/3W): 2 dead-export false positives (used in run.rs), 3 line-length warnings all under 120-char hard bound.
 - [ ] `crates/deepseek-custom/src/search/cascade/mod.rs` - score 3 (0 error, 3 warn)
 - [ ] `crates/deepseek-custom/src/search/cascade/counters.rs` - score 1 (0 error, 1 warn)
 - [ ] `crates/deepseek-custom/src/tools/task.rs` - score 47 (5 error, 32 warn)
