@@ -19,9 +19,9 @@ rule covering it). Disposition is one of `keep`, `ignore`, `delete`,
 | `.autopilot` | the autopilot decision log, written by a run (see `.gitignore:15`) | ignored | keep |
 | `.cargo` | checked in by a project contributor (`config.toml` for the build) | tracked | keep |
 | `.claude` | Claude Code / this harness's own project config directory (see `.gitignore:3`) | ignored | keep |
-| `.code-review-graph` | the code-review-graph MCP server, which writes `graph.db`; its own nested `.gitignore` (`.code-review-graph/.gitignore:3`, pattern `*`) ignores everything inside it, so it never appears as a bare `??` line, though nothing at the top level ignores the directory itself | ignored (via its own nested `.gitignore`) | decide (deleting drops the 5.9 MB `graph.db` cache the server would otherwise rebuild on next use) |
+| `.code-review-graph` | the code-review-graph MCP server, which writes `graph.db`; its own nested `.gitignore` (`.code-review-graph/.gitignore:3`, pattern `*`) ignores everything inside it, so it never appears as a bare `??` line, though nothing at the top level ignores the directory itself | ignored (via its own nested `.gitignore`) | keep (the owner decided this: `graph.db` itself is deleted; the directory and its nested `.gitignore` stay, and the server rebuilds the cache on next use) |
 | `.codex` | checked in by a project contributor (Codex config, mirrors `.claude`) | tracked | keep |
-| `.deepseek` | this harness's own saved-conversation store, written on every session save (see `.gitignore:20`) | ignored | decide (deleting drops 28 MB of saved chat history and every earlier session's transcript) |
+| `.deepseek` | this harness's own saved-conversation store, written on every session save (see `.gitignore:20`) | ignored | keep (the owner decided this: it is user data that nothing regenerates) |
 | `.evo` | gitevo's `evo_init` checkpoint state (see `.gitignore:38` and duplicated in `.git/info/exclude`) | ignored | keep |
 | `.git` | git itself | untracked-visible | keep |
 | `.github` | checked in by a project contributor (GitHub Actions workflows) | tracked | keep |
@@ -39,7 +39,6 @@ rule covering it). Disposition is one of `keep`, `ignore`, `delete`,
 | `deepseek_custom.log` | this harness's own run log, written on every process start (see `.gitignore:17`) | ignored | keep |
 | `docs` | checked in by a project contributor | tracked | keep |
 | `models` | voice model weights, downloaded separately per `docs/voice-setup.md` (see `.gitignore:7`) | ignored | keep |
-| `mutants.out` | cargo-mutants output from a scoped run (see `.gitignore:23`) | ignored | decide (deleting drops 19 MB of the last cargo-mutants run's output, which a future run would need to redo to reproduce) |
 | `openspec` | checked in by a project contributor; `openspec/changes/` inside it is currently untracked and shows as the single `??` line in `git status --porcelain` | tracked | keep |
 | `run.ps1` | checked in by a project contributor | tracked | keep |
 | `scripts` | checked in by a project contributor | tracked | keep |
@@ -49,6 +48,8 @@ rule covering it). Disposition is one of `keep`, `ignore`, `delete`,
 | `voices` | Kokoro voice packs, downloaded separately per `docs/voice-setup.md` (see `.gitignore:8`) | ignored | keep |
 
 This change deleted six entries the table above used to list: the four empty tool-configuration directories `.clinerules`, `.cursor`, `.opencode`, and `.windsurf`, each holding zero files at any depth, and the two stray logs `hs_err_pid50096.log` and `mutants_scoped_run.log`. None of the six has a row here anymore, since the catalogue only lists what `ls -a` currently holds. This paragraph is the record that they existed and were removed.
+
+Step 5.2 of this change resolved the three entries step 5.1 had marked `decide`. The repository owner was asked about each by name. `.deepseek/` is kept: it is user data that nothing regenerates. `mutants.out/` is deleted: it was one scoped run's scratch output, already summarised in `docs/notes/mutants.md`, which stays, so regenerating it means re-running the tool rather than losing a record; its row is removed from the table entirely, the same as the six entries above. `.code-review-graph/graph.db` is deleted, but only the database file: the `.code-review-graph/` directory and its nested `.gitignore` stay, since the server rebuilds the cache on next use and a stale copy holding absolute paths is worth less than a fresh rebuild.
 
 ## Tracked files referencing paths a fresh clone will not have
 

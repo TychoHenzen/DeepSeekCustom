@@ -46,12 +46,12 @@
 
 ## 5. Ask about the large entries
 
-- [ ] 5.1 Mark `.deepseek/sessions/` (28 MB of saved conversations), `mutants.out/` (19 MB), and `.code-review-graph/graph.db` (5.9 MB) with the `decide` disposition in the catalogue, each with a one-line note on what deleting it would cost.
+- [x] 5.1 Mark `.deepseek/sessions/` (28 MB of saved conversations), `mutants.out/` (19 MB), and `.code-review-graph/graph.db` (5.9 MB) with the `decide` disposition in the catalogue, each with a one-line note on what deleting it would cost.
   <!-- covers: repo/layout-catalogue :: Bulk local data is deleted only with approval :: Saved conversations survive a cleanup pass -->
-  <!-- status: pending -->
-- [ ] 5.2 Ask the repository owner about each of the three by name, and record the answer in the catalogue row. Delete nothing until an answer names that entry.
+  <!-- status: completed -->
+- [x] 5.2 Ask the repository owner about each of the three by name, and record the answer in the catalogue row. Delete nothing until an answer names that entry.
   <!-- covers: repo/layout-catalogue :: Bulk local data is deleted only with approval :: Saved conversations survive a cleanup pass -->
-  <!-- status: pending -->
+  <!-- status: completed -->
 
 ## 6. Close out
 
