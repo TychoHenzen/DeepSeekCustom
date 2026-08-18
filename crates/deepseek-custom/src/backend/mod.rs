@@ -4,9 +4,11 @@
 //! `Backend` at startup from the resolved config entry. The GUI never sees
 //! the difference: both variants expose the same six shared flags.
 
+pub mod build_api;
 pub mod claude_cli;
 pub mod factory;
 pub mod registry;
+pub mod resolved;
 pub mod stub;
 pub mod subagent;
 

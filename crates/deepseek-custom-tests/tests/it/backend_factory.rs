@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use deepseek_custom::agent::events::SubagentId;
 use deepseek_custom::api::provider::Provider;
-use deepseek_custom::backend::factory::{
-    BackendFactory, ResolvedBackend, may_dispatch_for_test, resolve_active_backend,
-};
+use deepseek_custom::backend::factory::{BackendFactory, may_dispatch_for_test};
+use deepseek_custom::backend::resolved::{ResolvedBackend, resolve_active_backend};
 use deepseek_custom::backend::stub::StubBackend;
 use deepseek_custom::backend::{Backend, SharedFlags};
 use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};

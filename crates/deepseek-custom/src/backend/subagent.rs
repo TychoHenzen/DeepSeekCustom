@@ -19,8 +19,9 @@ use crate::agent::events::{RouteHop, RoutedEvent, StreamEvent, SubagentId, Subag
 use crate::backend::Backend;
 use crate::backend::claude_cli::one_shot::OneShotResult;
 use crate::backend::claude_cli::process::ClaudeCliDriver;
-use crate::backend::factory::{BackendFactory, ResolvedBackend};
+use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
+use crate::backend::resolved::ResolvedBackend;
 use crate::effort::Effort;
 
 /// What one `Task` call asks for: which backend and model, the subagent's

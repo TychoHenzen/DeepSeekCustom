@@ -4,6 +4,7 @@
 
 mod repeat;
 mod spawn;
+#[cfg(feature = "test-support")]
 mod test_support;
 
 use std::path::PathBuf;
