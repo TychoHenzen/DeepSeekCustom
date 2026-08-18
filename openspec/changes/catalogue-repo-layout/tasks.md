@@ -25,15 +25,15 @@
 
 ## 3. Remove the dead entries
 
-- [ ] 3.1 For each of `.clinerules/`, `.cursor/rules/`, `.opencode/`, and `.windsurf/rules/`, confirm it holds zero files at any depth with `find <dir> -type f`, then delete it. Delete `.cursor/` and `.windsurf/` too if removing the inner directory leaves them empty.
+- [x] 3.1 For each of `.clinerules/`, `.cursor/rules/`, `.opencode/`, and `.windsurf/rules/`, confirm it holds zero files at any depth with `find <dir> -type f`, then delete it. Delete `.cursor/` and `.windsurf/` too if removing the inner directory leaves them empty.
   <!-- covers: repo/layout-catalogue :: An empty tool directory is removed :: An empty agent-config directory is gone -->
-  <!-- status: pending -->
-- [ ] 3.2 Delete the two current stray logs, `hs_err_pid50096.log` and `mutants_scoped_run.log`, from the root. Task 2.3 added the patterns; this task removes the instances. Both are one-off crash and run output, dated 2026-05-29 and 2026-08-05, and neither is referenced by any tracked file.
+  <!-- status: completed -->
+- [x] 3.2 Delete the two current stray logs, `hs_err_pid50096.log` and `mutants_scoped_run.log`, from the root. Task 2.3 added the patterns; this task removes the instances. Both are one-off crash and run output, dated 2026-05-29 and 2026-08-05, and neither is referenced by any tracked file.
   <!-- covers: repo/layout-catalogue :: No unattributed artifact sits untracked in the root :: A stray log is caught on a clean machine -->
-  <!-- status: pending -->
-- [ ] 3.3 Re-run `find . -type d -empty -not -path './.git/*' -not -path './target/*'` and confirm it reports no top-level tool-configuration directory. The two exclusions match the scenario, which exempts `.git/` and a build directory the catalogue marks keep.
+  <!-- status: completed -->
+- [x] 3.3 Re-run `find . -type d -empty -not -path './.git/*' -not -path './target/*'` and confirm it reports no top-level tool-configuration directory. The two exclusions match the scenario, which exempts `.git/` and a build directory the catalogue marks keep.
   <!-- covers: repo/layout-catalogue :: An empty tool directory is removed :: An empty agent-config directory is gone -->
-  <!-- status: pending -->
+  <!-- status: completed -->
 
 ## 4. Repair the tracked hook dependency
 
