@@ -55,9 +55,9 @@
 
 ## 6. Close out
 
-- [ ] 6.1 Update CLAUDE.md and AGENTS.md together if any task above moved or removed a path either document names. CLAUDE.md requires the two be edited as a pair.
-  <!-- status: pending -->
-- [ ] 6.2 Run `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` as a regression check. No Rust source changed, so both are expected to pass unchanged.
-  <!-- status: pending -->
-- [ ] 6.3 Run `git status --porcelain` and account for every line before committing, per the CLAUDE.md rule on `git add -A`.
-  <!-- status: pending -->
+- [x] 6.1 Update CLAUDE.md and AGENTS.md together if any task above moved or removed a path either document names. CLAUDE.md requires the two be edited as a pair.
+  <!-- status: completed -->
+- [x] 6.2 Run `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` as a regression check. No Rust source changed, so both are expected to pass unchanged.
+  <!-- status: completed -->
+- [x] 6.3 Run `git status --porcelain` and account for every line before committing, per the CLAUDE.md rule on `git add -A`.
+  <!-- status: completed -->
