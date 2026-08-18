@@ -1,7 +1,6 @@
 /target
 .idea/
 .claude/
-time.ps1
 
 # Voice models, downloaded separately. See docs/voice-setup.md.
 # 540 MB of whisper and Kokoro weights, plus the Kokoro voice packs.

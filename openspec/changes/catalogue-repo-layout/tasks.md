@@ -37,12 +37,12 @@
 
 ## 4. Repair the tracked hook dependency
 
-- [ ] 4.1 Remove the `time.ps1` line from `.gitignore` and run `git add time.ps1`, so the script both tracked configurations call ships with a clone.
+- [x] 4.1 Remove the `time.ps1` line from `.gitignore` and run `git add time.ps1`, so the script both tracked configurations call ships with a clone.
   <!-- covers: repo/layout-catalogue :: A checked-in configuration does not depend on an ignored file :: A hook script its config calls is reachable after a clone -->
-  <!-- status: pending -->
-- [ ] 4.2 Grep every tracked file for paths that a checked-in ignore rule excludes, and record each remaining case in the catalogue. Fix any whose fix is as small as 4.1; leave the rest as catalogue rows naming the problem.
+  <!-- status: completed -->
+- [x] 4.2 Grep every tracked file for paths that a checked-in ignore rule excludes, and record each remaining case in the catalogue. Fix any whose fix is as small as 4.1; leave the rest as catalogue rows naming the problem.
   <!-- covers: repo/layout-catalogue :: A checked-in configuration does not depend on an ignored file :: A hook script its config calls is reachable after a clone -->
-  <!-- status: pending -->
+  <!-- status: completed -->
 
 ## 5. Ask about the large entries
 
