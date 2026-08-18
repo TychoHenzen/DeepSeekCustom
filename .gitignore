@@ -53,3 +53,12 @@ fix_*.ps1
 # Kept ignored, since the same script can hang again.
 \['
 i.metric)
+
+# JVM crash dumps. Written by the JVM into whatever the current directory
+# was at crash time, never by anything this repo runs on purpose.
+hs_err_pid*.log
+
+# cargo-mutants scoped run logs, e.g. `rtk mutants` output redirected to a
+# file at the repo root. Not the mutants.out/ scratch dir above, which is
+# the tool's own output directory rather than a redirected log.
+mutants_scoped_run.log

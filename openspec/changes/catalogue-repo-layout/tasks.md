@@ -13,15 +13,15 @@
 
 ## 2. Fix the ignore rules
 
-- [ ] 2.1 Move the `.evo/` exclusion out of `.git/info/exclude` and into `.gitignore`, with a comment naming gitevo's `evo_init` as its writer. Confirm `git check-ignore -v .evo/memory.db` then attributes the match to `.gitignore`.
+- [x] 2.1 Move the `.evo/` exclusion out of `.git/info/exclude` and into `.gitignore`, with a comment naming gitevo's `evo_init` as its writer. Confirm `git check-ignore -v .evo/memory.db` then attributes the match to `.gitignore`.
   <!-- covers: repo/layout-catalogue :: A generated directory carries a naming ignore entry :: A local-only exclusion is promoted -->
-  <!-- status: pending -->
-- [ ] 2.2 Add a `.gitignore` entry with a naming comment for every generated directory the catalogue marks as tool written and that no checked-in rule already matches. As of the survey that is `.code-review-graph/`, which is covered by its own nested `.gitignore`, so confirm rather than assume. Record any pre-existing uncommented rule (`/target`, `.idea/`, `.claude/`) as a catalogue row instead of rewriting it.
+  <!-- status: completed -->
+- [x] 2.2 Add a `.gitignore` entry with a naming comment for every generated directory the catalogue marks as tool written and that no checked-in rule already matches. As of the survey that is `.code-review-graph/`, which is covered by its own nested `.gitignore`, so confirm rather than assume. Record any pre-existing uncommented rule (`/target`, `.idea/`, `.claude/`) as a catalogue row instead of rewriting it.
   <!-- covers: repo/layout-catalogue :: A generated directory carries a naming ignore entry :: A generated directory is ignored and attributed -->
-  <!-- status: pending -->
-- [ ] 2.3 Add checked-in ignore patterns covering future stray root logs, `hs_err_pid*.log` for the JVM crash dumps and a pattern matching the mutants run log, each with a naming comment. Run this before task 3.2 deletes the current files, or the check passes on an empty root and proves nothing. Confirm with `git check-ignore -v hs_err_pid50096.log` that the reported source is `.gitignore` and no longer `gitignore_global.txt`.
+  <!-- status: completed -->
+- [x] 2.3 Add checked-in ignore patterns covering future stray root logs, `hs_err_pid*.log` for the JVM crash dumps and a pattern matching the mutants run log, each with a naming comment. Run this before task 3.2 deletes the current files, or the check passes on an empty root and proves nothing. Confirm with `git check-ignore -v hs_err_pid50096.log` that the reported source is `.gitignore` and no longer `gitignore_global.txt`.
   <!-- covers: repo/layout-catalogue :: No unattributed artifact sits untracked in the root :: A stray log is caught on a clean machine -->
-  <!-- status: pending -->
+  <!-- status: completed -->
 
 ## 3. Remove the dead entries
 

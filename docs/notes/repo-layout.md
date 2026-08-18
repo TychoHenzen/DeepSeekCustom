@@ -20,7 +20,7 @@ rule covering it). Disposition is one of `keep`, `ignore`, `delete`,
 | `.cargo` | checked in by a project contributor (`config.toml` for the build) | tracked | keep |
 | `.claude` | Claude Code / this harness's own project config directory (see `.gitignore:3`) | ignored | keep |
 | `.clinerules` | left behind by the Cline extension; empty, zero files at any depth | untracked-visible | delete |
-| `.code-review-graph` | the code-review-graph MCP server, which writes `graph.db`; its own nested `.gitignore` ignores everything inside it, but nothing at the top level ignores the directory itself | untracked-visible | decide (deleting drops the 5.9 MB `graph.db` cache the server would otherwise rebuild on next use) |
+| `.code-review-graph` | the code-review-graph MCP server, which writes `graph.db`; its own nested `.gitignore` (`.code-review-graph/.gitignore:3`, pattern `*`) ignores everything inside it, so it never appears as a bare `??` line, though nothing at the top level ignores the directory itself | ignored (via its own nested `.gitignore`) | decide (deleting drops the 5.9 MB `graph.db` cache the server would otherwise rebuild on next use) |
 | `.codex` | checked in by a project contributor (Codex config, mirrors `.claude`) | tracked | keep |
 | `.cursor` | left behind by the Cursor editor; empty, zero files at any depth | untracked-visible | delete |
 | `.deepseek` | this harness's own saved-conversation store, written on every session save (see `.gitignore:21`) | ignored | decide (deleting drops 28 MB of saved chat history and every earlier session's transcript) |
