@@ -53,9 +53,10 @@
 <!-- covers: deepseek-custom/codex-backend :: Subagent dispatch works on the CodexCli backend :: A kept-open session accepts a follow-up via SendMessage -->
 <!-- status: completed -->
 
-- [ ] 4.4 Add model discovery for `CodexCli` in `crates/deepseek-custom/src/api/models.rs`: return the explicit `models` array if set, otherwise a static fallback of `["o3", "o4-mini"]`.
+- [x] 4.4 Add model discovery for `CodexCli` in `crates/deepseek-custom/src/api/models.rs`: return the explicit `models` array if set, otherwise a static fallback of `["o3", "o4-mini"]`.
 <!-- covers: deepseek-custom/codex-backend :: Model discovery queries the Codex CLI or uses an explicit list :: No explicit models returns the static fallback -->
 <!-- covers: deepseek-custom/codex-backend :: Model discovery queries the Codex CLI or uses an explicit list :: An explicit models array overrides discovery -->
+<!-- status: completed -->
 
 ## 5. Tests
 

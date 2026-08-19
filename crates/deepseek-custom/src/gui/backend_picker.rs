@@ -375,5 +375,6 @@ pub fn apply_backend_model(settings: &mut Settings, backend_name: &str, model: &
     match entry {
         BackendConfig::Api { model: m, .. } => *m = model.to_string(),
         BackendConfig::ClaudeCli { model: m, .. } => *m = model.to_string(),
+        BackendConfig::CodexCli { model: m, .. } => *m = model.to_string(),
     }
 }

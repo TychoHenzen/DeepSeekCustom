@@ -35,6 +35,7 @@ const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEEPSEEK_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CLAUDE_CLI_ALIASES: &[&str] = &["opus", "sonnet", "haiku", "fable"];
+const CODEX_CLI_MODELS: &[&str] = &["o3", "o4-mini"];
 
 /// Models a backend can run, for the GUI picker.
 pub async fn list_models(entry: &BackendConfig) -> Vec<String> {
@@ -55,6 +56,10 @@ pub async fn list_models(entry: &BackendConfig) -> Vec<String> {
             ..
         } => query_deepseek_models(base_url.as_deref(), api_key.as_deref()).await,
         BackendConfig::ClaudeCli { .. } => query_anthropic_models().await,
+        BackendConfig::CodexCli { .. } => CODEX_CLI_MODELS
+            .iter()
+            .map(|model| model.to_string())
+            .collect(),
     };
 
     apply_fallback(discovered, entry.model())
@@ -65,6 +70,7 @@ pub fn entry_models_override(entry: &BackendConfig) -> Option<Vec<String>> {
     match entry {
         BackendConfig::Api { models, .. } => models.clone(),
         BackendConfig::ClaudeCli { models, .. } => models.clone(),
+        BackendConfig::CodexCli { models, .. } => models.clone(),
     }
 }
 
