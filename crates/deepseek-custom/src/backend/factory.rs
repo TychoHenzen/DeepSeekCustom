@@ -14,10 +14,11 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agent::events::RoutedEvent;
-use crate::backend::SharedFlags;
+use crate::backend::codex_cli::CodexCliDriver;
 #[cfg(feature = "test-support")]
 use crate::backend::stub::StubTurn;
-use crate::config::settings::Settings;
+use crate::backend::{Backend, SharedFlags};
+use crate::config::settings::{BackendConfig, Settings};
 use crate::mcp::McpManager;
 use crate::tools::ToolRegistry;
 
@@ -227,6 +228,33 @@ impl BackendFactory {
         tx_events: mpsc::UnboundedSender<RoutedEvent>,
         depth: u32,
     ) -> Result<crate::backend::Backend, String> {
+        #[cfg(feature = "test-support")]
+        if self.stubs.contains_key(name) {
+            return build_backend(self, name, model_override, tx_events, depth);
+        }
+
+        if let Some(BackendConfig::CodexCli {
+            model,
+            sandbox,
+            env,
+            models: _,
+        }) = self.settings.resolve_backend(name)
+        {
+            let model = model_override.unwrap_or(model).to_owned();
+            let driver = CodexCliDriver::new(
+                model,
+                sandbox.clone(),
+                env.clone(),
+                self.working_dir(),
+                tx_events,
+            );
+            let mut backend = Backend::CodexCli(Box::new(driver));
+            if let Some(flags) = self.session_flags_for(depth) {
+                backend.adopt_flags(flags);
+            }
+            return Ok(backend);
+        }
+
         build_backend(self, name, model_override, tx_events, depth)
     }
 }
