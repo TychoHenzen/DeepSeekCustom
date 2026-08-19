@@ -39,6 +39,7 @@ mod backend_claude_cli_map;
 mod backend_claude_cli_one_shot;
 mod backend_claude_cli_process;
 mod backend_codex_cli_events;
+mod backend_codex_cli_map;
 mod backend_factory;
 mod backend_registry;
 mod backend_stub;
