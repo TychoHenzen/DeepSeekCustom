@@ -36,8 +36,9 @@
 <!-- covers: deepseek-custom/codex-backend :: Interrupt kills the child process :: Escape during a running turn kills the child -->
 <!-- status: completed -->
 
-- [ ] 3.3 Create `crates/deepseek-custom/src/backend/codex_cli/repeat.rs`: implement `RepeatTarget` for `CodexCliDriver`. Reset clears `thread_id` so each iteration starts fresh.
+- [x] 3.3 Create `crates/deepseek-custom/src/backend/codex_cli/repeat.rs`: implement `RepeatTarget` for `CodexCliDriver`. Reset clears `thread_id` so each iteration starts fresh.
 <!-- covers: deepseek-custom/codex-backend :: Autopilot repeat works on the CodexCli backend :: An autopilot run of 3 iterations completes -->
+<!-- status: completed -->
 
 ## 4. Backend wiring
 

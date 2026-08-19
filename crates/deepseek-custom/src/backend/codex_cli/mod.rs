@@ -2,6 +2,7 @@
 
 pub mod events;
 pub mod map;
+mod repeat;
 mod spawn;
 
 use std::collections::HashMap;
