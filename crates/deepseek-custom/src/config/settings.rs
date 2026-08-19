@@ -768,6 +768,17 @@ pub enum BackendConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         models: Option<Vec<String>>,
     },
+    CodexCli {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+        /// Explicit model list override. See the `Api` variant's field of
+        /// the same name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        models: Option<Vec<String>>,
+    },
 }
 
 impl BackendConfig {
@@ -776,6 +787,7 @@ impl BackendConfig {
         match self {
             BackendConfig::Api { model, .. } => model,
             BackendConfig::ClaudeCli { model, .. } => model,
+            BackendConfig::CodexCli { model, .. } => model,
         }
     }
 }
