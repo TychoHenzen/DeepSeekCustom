@@ -6,6 +6,7 @@
 
 pub mod build_api;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod factory;
 pub mod registry;
 pub mod resolved;
@@ -27,6 +28,7 @@ use crate::api::types::{ImageAttachment, Message};
 use crate::error::Result;
 
 use claude_cli::process::ClaudeCliDriver;
+use codex_cli::CodexCliDriver;
 #[cfg(feature = "test-support")]
 use stub::StubBackend;
 
@@ -113,6 +115,7 @@ impl SharedFlags {
 pub enum Backend {
     Api(Box<AgentLoop>),
     ClaudeCli(Box<ClaudeCliDriver>),
+    CodexCli(Box<CodexCliDriver>),
     #[cfg(feature = "test-support")]
     Stub(Box<StubBackend>),
 }
@@ -164,6 +167,10 @@ impl Backend {
                 driver.send_with_image(input, image).await?;
                 Ok(Vec::new())
             }
+            Backend::CodexCli(driver) => {
+                driver.send_with_image(input, image).await?;
+                Ok(Vec::new())
+            }
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.run(input).await,
         }
@@ -184,6 +191,9 @@ impl Backend {
             Backend::ClaudeCli(driver) => {
                 run_repeat(driver.as_mut(), task, iterations, project_root).await
             }
+            Backend::CodexCli(driver) => {
+                run_repeat(driver.as_mut(), task, iterations, project_root).await
+            }
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => run_repeat(stub.as_mut(), task, iterations, project_root).await,
         }
@@ -197,6 +207,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.adopt_flags(flags),
             Backend::ClaudeCli(driver) => driver.adopt_flags(flags),
+            Backend::CodexCli(driver) => driver.adopt_flags(flags),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.adopt_flags(flags),
         }
@@ -210,6 +221,7 @@ impl Backend {
         match self {
             Backend::Api(_) => {}
             Backend::ClaudeCli(driver) => driver.shutdown().await,
+            Backend::CodexCli(driver) => driver.shutdown().await,
             #[cfg(feature = "test-support")]
             Backend::Stub(_) => {}
         }
@@ -219,6 +231,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.interrupt_flag(),
             Backend::ClaudeCli(driver) => driver.interrupt_flag(),
+            Backend::CodexCli(driver) => driver.interrupt_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.interrupt_flag(),
         }
@@ -228,6 +241,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.effort_flag(),
             Backend::ClaudeCli(driver) => driver.effort_flag(),
+            Backend::CodexCli(driver) => driver.effort_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.effort_flag(),
         }
@@ -237,6 +251,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.voice_mode_flag(),
             Backend::ClaudeCli(driver) => driver.voice_mode_flag(),
+            Backend::CodexCli(driver) => driver.voice_mode_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.voice_mode_flag(),
         }
@@ -246,6 +261,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.context_budget_flag(),
             Backend::ClaudeCli(driver) => driver.context_budget_flag(),
+            Backend::CodexCli(driver) => driver.context_budget_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.context_budget_flag(),
         }
@@ -255,6 +271,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.model_flag(),
             Backend::ClaudeCli(driver) => driver.model_flag(),
+            Backend::CodexCli(driver) => driver.model_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.model_flag(),
         }
@@ -264,6 +281,7 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.repeat_interrupt_flag(),
             Backend::ClaudeCli(driver) => driver.repeat_interrupt_flag(),
+            Backend::CodexCli(driver) => driver.repeat_interrupt_flag(),
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.repeat_interrupt_flag(),
         }
@@ -278,6 +296,10 @@ impl Backend {
         match self {
             Backend::Api(agent) => agent.clear_history(),
             Backend::ClaudeCli(driver) => driver.shutdown().await,
+            Backend::CodexCli(driver) => {
+                driver.clear_session();
+                driver.shutdown().await;
+            }
             #[cfg(feature = "test-support")]
             Backend::Stub(stub) => stub.reset(),
         }
@@ -297,6 +319,10 @@ impl Backend {
             Backend::Api(agent) => agent.restore_history(messages),
             Backend::ClaudeCli(driver) => {
                 driver.set_claude_session_id(claude_session_id);
+                driver.shutdown().await;
+            }
+            Backend::CodexCli(driver) => {
+                driver.set_thread_id(None);
                 driver.shutdown().await;
             }
             // A stub carries no message history and no claude session id

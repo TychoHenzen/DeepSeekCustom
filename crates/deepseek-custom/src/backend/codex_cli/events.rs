@@ -32,12 +32,16 @@ pub fn parse_event(line: &str) -> Option<CodexEvent> {
         }
     };
 
-    let Some(event_type) = value.get("type").and_then(serde_json::Value::as_str) else {
+    let Some(event_type) = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
         tracing::warn!("codex_cli: skipping JSONL event without a string type field");
         return None;
     };
 
-    let parsed = match event_type {
+    let parsed = match event_type.as_str() {
         "thread.started" => parse_as(value, CodexEvent::ThreadStarted),
         "turn.started" => parse_as(value, CodexEvent::TurnStarted),
         "item.started" => parse_as(value, CodexEvent::ItemStarted),

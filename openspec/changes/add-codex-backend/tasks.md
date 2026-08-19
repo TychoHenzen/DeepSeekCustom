@@ -42,7 +42,8 @@
 
 ## 4. Backend wiring
 
-- [ ] 4.1 Add `CodexCli(Box<CodexCliDriver>)` variant to `Backend` enum in `crates/deepseek-custom/src/backend/mod.rs`. Add arms to `run_with_image`, `run_repeat`, `adopt_flags`, `shutdown`, `interrupt_flag`, `effort_flag`, `voice_mode_flag`, `context_budget_flag`, `model_flag`, and `repeat_interrupt_flag`.
+- [x] 4.1 Add `CodexCli(Box<CodexCliDriver>)` variant to `Backend` enum in `crates/deepseek-custom/src/backend/mod.rs`. Add arms to `run_with_image`, `run_repeat`, `adopt_flags`, `shutdown`, `interrupt_flag`, `effort_flag`, `voice_mode_flag`, `context_budget_flag`, `model_flag`, and `repeat_interrupt_flag`.
+<!-- status: completed -->
 
 - [ ] 4.2 Add the `CodexCli` build path in `crates/deepseek-custom/src/backend/factory.rs`: `BackendFactory::build` matches on `BackendConfig::CodexCli` and constructs a `CodexCliDriver`, the same way it constructs a `ClaudeCliDriver` for the `ClaudeCli` variant.
 
