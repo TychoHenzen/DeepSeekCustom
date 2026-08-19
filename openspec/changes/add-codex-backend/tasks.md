@@ -23,10 +23,11 @@
 
 ## 3. Process management
 
-- [ ] 3.1 Create `crates/deepseek-custom/src/backend/codex_cli/spawn.rs`: build the argument list for `codex exec --json`. Handle `--dangerously-bypass-approvals-and-sandbox` vs `--sandbox <value>`, model via `-m`, effort via `-c reasoning.effort=<value>`, prompt as positional arg, and the `resume <thread_id>` subcommand form. Resolve `codex` on PATH using the same `PATHEXT` logic `mcp/spawn.rs` uses. Call `process_group::adopt` on the child.
+- [x] 3.1 Create `crates/deepseek-custom/src/backend/codex_cli/spawn.rs`: build the argument list for `codex exec --json`. Handle `--dangerously-bypass-approvals-and-sandbox` vs `--sandbox <value>`, model via `-m`, effort via `-c reasoning.effort=<value>`, prompt as positional arg, and the `resume <thread_id>` subcommand form. Resolve `codex` on PATH using the same `PATHEXT` logic `mcp/spawn.rs` uses. Call `process_group::adopt` on the child.
 <!-- covers: deepseek-custom/codex-backend :: The backend spawns codex exec with JSONL output :: A single turn spawns one child and collects its reply -->
 <!-- covers: deepseek-custom/codex-backend :: The backend spawns codex exec with JSONL output :: The child joins the job object -->
 <!-- covers: deepseek-custom/codex-backend :: A settings.json entry with kind "codex_cli" produces a Codex backend :: An explicit sandbox value reaches the child -->
+<!-- status: completed -->
 
 - [ ] 3.2 Create `crates/deepseek-custom/src/backend/codex_cli/mod.rs`: the `CodexCliDriver` struct holding `thread_id: Option<String>`, `working_dir: Arc<Mutex<PathBuf>>`, `tx_events: UnboundedSender<RoutedEvent>`, effort/interrupt/voice_mode/model flags, and the six `SharedFlags` adoption methods. Implement `send` and `send_with_image` (image is dropped with a transcript notice, matching the DeepSeek path). Each `send` spawns a child, reads its stdout line by line, maps events, captures `thread_id`, and waits for `turn.completed` or `turn.failed`.
 <!-- covers: deepseek-custom/codex-backend :: Session resume uses the thread_id from thread.started :: A second turn resumes the first turn's session -->
