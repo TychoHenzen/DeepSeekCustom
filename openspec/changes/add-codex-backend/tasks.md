@@ -60,7 +60,8 @@
 
 ## 5. Tests
 
-- [ ] 5.1 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_events.rs`: tests for `parse_event` covering every event type, malformed lines, and unknown types. Add `mod backend_codex_cli_events;` to `main.rs`.
+- [x] 5.1 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_events.rs`: tests for `parse_event` covering every event type, malformed lines, and unknown types. Add `mod backend_codex_cli_events;` to `main.rs`.
+<!-- status: completed -->
 
 - [ ] 5.2 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_map.rs`: tests for `EventMapper` covering every `CodexEvent`-to-`StreamEvent` mapping. Add `mod backend_codex_cli_map;` to `main.rs`.
 
