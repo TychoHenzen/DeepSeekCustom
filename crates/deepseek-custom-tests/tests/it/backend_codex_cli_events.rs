@@ -105,7 +105,7 @@ fn item_completed_retains_mcp_tool_call_fields() {
             assert_eq!(event.item.tool.as_deref(), Some("read"));
             assert_eq!(event.item.arguments.as_ref().unwrap()["path"], "a.rs");
             assert_eq!(event.item.result.as_ref().unwrap()["content"], "source");
-            assert_eq!(event.item.error, Some(serde_json::Value::Null));
+            assert!(event.item.error.is_none());
         }
         other => panic!("expected ItemCompleted, got {other:?}"),
     }

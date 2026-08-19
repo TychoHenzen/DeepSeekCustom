@@ -401,6 +401,7 @@ fn api_backend_minimal_fields_deserialize() {
             assert!(models.is_none());
         }
         BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        BackendConfig::CodexCli { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -430,6 +431,7 @@ fn api_backend_full_fields_round_trip() {
             assert!(models.is_none());
         }
         BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        BackendConfig::CodexCli { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -461,6 +463,7 @@ fn claude_cli_backend_round_trips() {
             assert!(models.is_none());
         }
         BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
+        BackendConfig::CodexCli { .. } => panic!("expected ClaudeCli variant"),
     }
 }
 
@@ -501,6 +504,7 @@ fn models_override_round_trips_on_api_backend() {
             );
         }
         BackendConfig::ClaudeCli { .. } => panic!("expected Api variant"),
+        BackendConfig::CodexCli { .. } => panic!("expected Api variant"),
     }
 }
 
@@ -519,6 +523,62 @@ fn models_override_round_trips_on_claude_cli_backend() {
             assert_eq!(models, Some(vec!["opus".to_string(), "sonnet".to_string()]));
         }
         BackendConfig::Api { .. } => panic!("expected ClaudeCli variant"),
+        BackendConfig::CodexCli { .. } => panic!("expected ClaudeCli variant"),
+    }
+}
+
+#[test]
+fn codex_cli_backend_minimal_fields_deserialize() {
+    let json = r#"{"kind":"codex_cli","model":"o3"}"#;
+    let backend: BackendConfig = serde_json::from_str(json).unwrap();
+
+    match backend {
+        BackendConfig::CodexCli {
+            model,
+            sandbox,
+            env,
+            models,
+        } => {
+            assert_eq!(model, "o3");
+            assert!(sandbox.is_none());
+            assert!(env.is_none());
+            assert!(models.is_none());
+        }
+        BackendConfig::Api { .. } => panic!("expected CodexCli variant"),
+        BackendConfig::ClaudeCli { .. } => panic!("expected CodexCli variant"),
+    }
+}
+
+#[test]
+fn codex_cli_backend_full_fields_round_trip() {
+    let mut env = HashMap::new();
+    env.insert("CODEX_HOME".to_string(), "C:/codex-home".to_string());
+    let original = BackendConfig::CodexCli {
+        model: "o3".into(),
+        sandbox: Some("workspace-write".into()),
+        env: Some(env),
+        models: Some(vec!["o3".into(), "o4-mini".into()]),
+    };
+    let loaded: BackendConfig =
+        serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+
+    match loaded {
+        BackendConfig::CodexCli {
+            model,
+            sandbox,
+            env,
+            models,
+        } => {
+            assert_eq!(model, "o3");
+            assert_eq!(sandbox.as_deref(), Some("workspace-write"));
+            assert_eq!(
+                env.unwrap().get("CODEX_HOME").map(String::as_str),
+                Some("C:/codex-home")
+            );
+            assert_eq!(models, Some(vec!["o3".to_string(), "o4-mini".to_string()]));
+        }
+        BackendConfig::Api { .. } => panic!("expected CodexCli variant"),
+        BackendConfig::ClaudeCli { .. } => panic!("expected CodexCli variant"),
     }
 }
 

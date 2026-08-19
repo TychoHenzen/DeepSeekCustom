@@ -69,7 +69,8 @@
 - [x] 5.3 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_spawn.rs` (or add to `backend_codex_cli_process.rs`): tests for argument assembly covering sandbox modes, effort levels, model override, resume vs fresh, and working directory.
 <!-- status: completed -->
 
-- [ ] 5.4 Add `CodexCli` variant coverage to existing tests in `backend_factory.rs` (build path, depth gating) and `config_settings.rs` (deserialization of a `codex_cli` entry).
+- [x] 5.4 Add `CodexCli` variant coverage to existing tests in `backend_factory.rs` (build path, depth gating) and `config_settings.rs` (deserialization of a `codex_cli` entry).
+<!-- status: completed -->
 
 - [ ] 5.5 Create `crates/deepseek-custom-tests/src/bin/fake_codex.rs`: a fake Codex binary that emits canned JSONL events (thread.started, turn.started, item.completed with agent_message, turn.completed) and supports the `resume` subcommand. Use it in a lifecycle test covering a two-turn conversation and an interrupt.
 

@@ -69,6 +69,7 @@ fn api_history_len(backend: &Backend) -> usize {
     match backend {
         Backend::Api(agent) => agent.history().len(),
         Backend::ClaudeCli(_) => panic!("expected Api backend"),
+        Backend::CodexCli(_) => panic!("expected Api backend"),
         Backend::Stub(_) => panic!("expected Api backend"),
     }
 }
@@ -122,6 +123,7 @@ async fn claude_cli_driver_accepts_and_returns_stored_session_id() {
             assert_eq!(driver.claude_session_id(), Some("abc-123"));
         }
         Backend::Api(_) => panic!("expected ClaudeCli backend"),
+        Backend::CodexCli(_) => panic!("expected ClaudeCli backend"),
         Backend::Stub(_) => panic!("expected ClaudeCli backend"),
     }
 }
@@ -139,6 +141,7 @@ async fn claude_cli_backend_load_session_stores_id_without_spawning() {
             assert_eq!(driver.claude_session_id(), Some("resume-me"));
         }
         Backend::Api(_) => panic!("expected ClaudeCli backend"),
+        Backend::CodexCli(_) => panic!("expected ClaudeCli backend"),
         Backend::Stub(_) => panic!("expected ClaudeCli backend"),
     }
 }

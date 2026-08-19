@@ -61,6 +61,7 @@ fn resolves_valid_api_entry() {
             assert_eq!(api_key, "ollama");
         }
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::CodexCli { .. } => panic!("expected Api variant"),
         ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
@@ -85,6 +86,7 @@ fn entry_api_key_beats_environment() {
     match resolved {
         ResolvedBackend::Api { api_key, .. } => assert_eq!(api_key, "entry-key-123"),
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::CodexCli { .. } => panic!("expected Api variant"),
         ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
@@ -144,6 +146,7 @@ fn resolves_valid_claude_cli_entry() {
             assert_eq!(resolved_env, Some(env));
         }
         ResolvedBackend::Api { .. } => panic!("expected ClaudeCli variant"),
+        ResolvedBackend::CodexCli { .. } => panic!("expected ClaudeCli variant"),
         ResolvedBackend::Stub { .. } => panic!("expected ClaudeCli variant"),
     }
 }
@@ -176,6 +179,7 @@ fn claude_cli_entry_permission_mode_passes_through_none_when_omitted() {
             assert_eq!(permission_mode, None);
         }
         ResolvedBackend::Api { .. } => panic!("expected ClaudeCli variant"),
+        ResolvedBackend::CodexCli { .. } => panic!("expected ClaudeCli variant"),
         ResolvedBackend::Stub { .. } => panic!("expected ClaudeCli variant"),
     }
 }
@@ -203,6 +207,7 @@ fn absent_default_backend_selects_deepseek() {
             assert_eq!(provider, Provider::DeepSeek);
         }
         ResolvedBackend::ClaudeCli { .. } => panic!("expected Api variant"),
+        ResolvedBackend::CodexCli { .. } => panic!("expected Api variant"),
         ResolvedBackend::Stub { .. } => panic!("expected Api variant"),
     }
 }
@@ -254,6 +259,72 @@ fn build_with_model_override_produces_backend_carrying_the_override() {
         .expect("should build");
 
     assert_eq!(*backend.model_flag().lock().unwrap(), "sonnet");
+}
+
+fn codex_cli_backend_settings() -> Settings {
+    let mut backends = HashMap::new();
+    backends.insert(
+        "codex".to_string(),
+        BackendConfig::CodexCli {
+            model: "o3".to_string(),
+            sandbox: Some("workspace-write".to_string()),
+            env: None,
+            models: None,
+        },
+    );
+    settings_with_backends(Some("codex"), backends)
+}
+
+#[test]
+fn codex_cli_named_entry_builds_variant_with_model_override() {
+    let factory = Arc::new(BackendFactory::new(
+        codex_cli_backend_settings(),
+        PathBuf::from("."),
+    ));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build("codex", Some("o4-mini"), tx, 0)
+        .expect("should build CodexCli backend");
+
+    match backend {
+        Backend::CodexCli(driver) => {
+            assert_eq!(*driver.model_flag().lock().unwrap(), "o4-mini");
+        }
+        Backend::Api(_) => panic!("expected CodexCli variant"),
+        Backend::ClaudeCli(_) => panic!("expected CodexCli variant"),
+        Backend::Stub(_) => panic!("expected CodexCli variant"),
+    }
+}
+
+#[test]
+fn codex_cli_depth_zero_adopts_shared_flags_and_depth_one_does_not() {
+    let flags = flags_for_test();
+    let factory = Arc::new(
+        BackendFactory::new(codex_cli_backend_settings(), PathBuf::from("."))
+            .with_session_flags(flags.clone()),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let main_backend = factory
+        .build("codex", None, tx.clone(), 0)
+        .expect("should build main CodexCli backend");
+    let subagent_backend = factory
+        .build("codex", None, tx, 1)
+        .expect("should build subagent CodexCli backend");
+
+    assert!(matches!(main_backend, Backend::CodexCli(_)));
+    assert!(Arc::ptr_eq(&main_backend.model_flag(), &flags.model));
+    assert!(Arc::ptr_eq(
+        &main_backend.interrupt_flag(),
+        &flags.interrupt
+    ));
+    assert!(matches!(subagent_backend, Backend::CodexCli(_)));
+    assert!(!Arc::ptr_eq(&subagent_backend.model_flag(), &flags.model));
+    assert!(!Arc::ptr_eq(
+        &subagent_backend.interrupt_flag(),
+        &flags.interrupt
+    ));
 }
 
 #[test]
@@ -324,6 +395,7 @@ fn task_tool_registered_below_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "Task")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
@@ -345,6 +417,7 @@ fn task_tool_absent_at_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "Task")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
@@ -367,6 +440,7 @@ fn send_message_tool_registered_below_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "SendMessage")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
@@ -388,6 +462,7 @@ fn send_message_tool_absent_at_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(!agent.tool_names().iter().any(|n| n == "SendMessage")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
@@ -409,6 +484,7 @@ fn close_session_tool_registered_below_the_depth_limit() {
     match backend {
         Backend::Api(agent) => assert!(agent.tool_names().iter().any(|n| n == "CloseSession")),
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
@@ -434,6 +510,7 @@ fn close_session_tool_absent_at_the_depth_limit() {
             assert!(!agent.tool_names().iter().any(|n| n == "CloseSession"));
         }
         Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
         Backend::Stub(_) => panic!("expected Api variant"),
     }
 }
