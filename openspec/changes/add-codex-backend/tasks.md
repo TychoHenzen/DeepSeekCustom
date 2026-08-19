@@ -15,10 +15,11 @@
 <!-- covers: deepseek-custom/codex-backend :: JSONL events map to the existing StreamEvent enum :: Malformed lines are skipped -->
 <!-- status: completed -->
 
-- [ ] 2.2 Create `crates/deepseek-custom/src/backend/codex_cli/map.rs`: an `EventMapper` that maps `CodexEvent` values to `StreamEvent` values. Map `agent_message` to `Text`, `reasoning` to `Reasoning`, `command_execution`/`file_change`/`mcp_tool_call` to `ToolCallStart`/`ToolCallEnd`, `turn.completed` to `TurnEnd`, and `turn.failed` to `Error`.
+- [x] 2.2 Create `crates/deepseek-custom/src/backend/codex_cli/map.rs`: an `EventMapper` that maps `CodexEvent` values to `StreamEvent` values. Map `agent_message` to `Text`, `reasoning` to `Reasoning`, `command_execution`/`file_change`/`mcp_tool_call` to `ToolCallStart`/`ToolCallEnd`, `turn.completed` to `TurnEnd`, and `turn.failed` to `Error`.
 <!-- covers: deepseek-custom/codex-backend :: JSONL events map to the existing StreamEvent enum :: An agent_message item becomes Text -->
 <!-- covers: deepseek-custom/codex-backend :: JSONL events map to the existing StreamEvent enum :: A command_execution item becomes a tool call pair -->
 <!-- covers: deepseek-custom/codex-backend :: JSONL events map to the existing StreamEvent enum :: A turn.failed event becomes an Error -->
+<!-- status: completed -->
 
 ## 3. Process management
 
