@@ -66,7 +66,8 @@
 - [x] 5.2 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_map.rs`: tests for `EventMapper` covering every `CodexEvent`-to-`StreamEvent` mapping. Add `mod backend_codex_cli_map;` to `main.rs`.
 <!-- status: completed -->
 
-- [ ] 5.3 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_spawn.rs` (or add to `backend_codex_cli_process.rs`): tests for argument assembly covering sandbox modes, effort levels, model override, resume vs fresh, and working directory.
+- [x] 5.3 Create `crates/deepseek-custom-tests/tests/it/backend_codex_cli_spawn.rs` (or add to `backend_codex_cli_process.rs`): tests for argument assembly covering sandbox modes, effort levels, model override, resume vs fresh, and working directory.
+<!-- status: completed -->
 
 - [ ] 5.4 Add `CodexCli` variant coverage to existing tests in `backend_factory.rs` (build path, depth gating) and `config_settings.rs` (deserialization of a `codex_cli` entry).
 

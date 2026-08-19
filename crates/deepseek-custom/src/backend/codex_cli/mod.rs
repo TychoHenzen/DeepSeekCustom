@@ -3,6 +3,11 @@
 pub mod events;
 pub mod map;
 mod repeat;
+#[cfg_attr(feature = "test-support", doc(hidden))]
+#[cfg_attr(feature = "test-support", allow(missing_docs))]
+#[cfg(feature = "test-support")]
+pub mod spawn;
+#[cfg(not(feature = "test-support"))]
 mod spawn;
 
 use std::collections::HashMap;

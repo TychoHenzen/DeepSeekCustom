@@ -59,16 +59,19 @@ pub(super) fn build_args(
     args
 }
 
-/// Spawn one Codex turn in `working_dir`.
-///
-/// `codex` is resolved with the shared Windows `PATH` and `PATHEXT` logic.
-/// Batch-file installations run through `cmd /c`. The returned stdout and
-/// stderr handles remain readable by the driver.
-pub(super) fn spawn_codex(
-    args: &[String],
-    working_dir: &Path,
-    extra_env: Option<&HashMap<String, String>>,
-) -> Result<SpawnedCodex> {
+/// Test-only access to the argument contract without widening production API.
+#[cfg(feature = "test-support")]
+pub fn build_args_for_test(
+    prompt: &str,
+    thread_id: Option<&str>,
+    sandbox: Option<&str>,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    build_args(prompt, thread_id, sandbox, model, effort)
+}
+
+fn build_command(args: &[String], working_dir: &Path) -> Command {
     let resolved = resolve_command("codex");
     let mut command = Command::new(&resolved.program);
     command
@@ -79,6 +82,32 @@ pub(super) fn spawn_codex(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command
+}
+
+/// Returns the directory configured on the real spawn command.
+#[cfg(feature = "test-support")]
+pub fn command_working_dir_for_test(
+    args: &[String],
+    working_dir: &Path,
+) -> Option<std::path::PathBuf> {
+    build_command(args, working_dir)
+        .as_std()
+        .get_current_dir()
+        .map(Path::to_path_buf)
+}
+
+/// Spawn one Codex turn in `working_dir`.
+///
+/// `codex` is resolved with the shared Windows `PATH` and `PATHEXT` logic.
+/// Batch-file installations run through `cmd /c`. The returned stdout and
+/// stderr handles remain readable by the driver.
+pub(super) fn spawn_codex(
+    args: &[String],
+    working_dir: &Path,
+    extra_env: Option<&HashMap<String, String>>,
+) -> Result<SpawnedCodex> {
+    let mut command = build_command(args, working_dir);
 
     if let Some(extra_env) = extra_env {
         command.envs(extra_env);
