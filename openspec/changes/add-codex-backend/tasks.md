@@ -29,11 +29,12 @@
 <!-- covers: deepseek-custom/codex-backend :: A settings.json entry with kind "codex_cli" produces a Codex backend :: An explicit sandbox value reaches the child -->
 <!-- status: completed -->
 
-- [ ] 3.2 Create `crates/deepseek-custom/src/backend/codex_cli/mod.rs`: the `CodexCliDriver` struct holding `thread_id: Option<String>`, `working_dir: Arc<Mutex<PathBuf>>`, `tx_events: UnboundedSender<RoutedEvent>`, effort/interrupt/voice_mode/model flags, and the six `SharedFlags` adoption methods. Implement `send` and `send_with_image` (image is dropped with a transcript notice, matching the DeepSeek path). Each `send` spawns a child, reads its stdout line by line, maps events, captures `thread_id`, and waits for `turn.completed` or `turn.failed`.
+- [x] 3.2 Create `crates/deepseek-custom/src/backend/codex_cli/mod.rs`: the `CodexCliDriver` struct holding `thread_id: Option<String>`, `working_dir: Arc<Mutex<PathBuf>>`, `tx_events: UnboundedSender<RoutedEvent>`, effort/interrupt/voice_mode/model flags, and the six `SharedFlags` adoption methods. Implement `send` and `send_with_image` (image is dropped with a transcript notice, matching the DeepSeek path). Each `send` spawns a child, reads its stdout line by line, maps events, captures `thread_id`, and waits for `turn.completed` or `turn.failed`.
 <!-- covers: deepseek-custom/codex-backend :: Session resume uses the thread_id from thread.started :: A second turn resumes the first turn's session -->
 <!-- covers: deepseek-custom/codex-backend :: Session resume uses the thread_id from thread.started :: A session reset clears the thread_id -->
 <!-- covers: deepseek-custom/codex-backend :: Working directory reaches the child :: A cd changes where the next Codex turn runs -->
 <!-- covers: deepseek-custom/codex-backend :: Interrupt kills the child process :: Escape during a running turn kills the child -->
+<!-- status: completed -->
 
 - [ ] 3.3 Create `crates/deepseek-custom/src/backend/codex_cli/repeat.rs`: implement `RepeatTarget` for `CodexCliDriver`. Reset clears `thread_id` so each iteration starts fresh.
 <!-- covers: deepseek-custom/codex-backend :: Autopilot repeat works on the CodexCli backend :: An autopilot run of 3 iterations completes -->
