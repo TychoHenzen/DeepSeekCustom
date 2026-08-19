@@ -18,6 +18,10 @@ path = "tests/it/main.rs"
 name = "fake_claude"
 path = "src/bin/fake_claude.rs"
 
+[[bin]]
+name = "fake_codex"
+path = "src/bin/fake_codex.rs"
+
 # Spawns a long-running child, hands it to `process_group::adopt`, then
 # exits without cleaning it up. `tests/process_group.rs` runs this and then
 # checks the grandchild died anyway. See that test for why the check needs

@@ -47,6 +47,7 @@ mod backend_stub;
 mod backend_subagent;
 mod claude_cli_fake_binary;
 mod claude_cli_lifecycle;
+mod codex_cli_lifecycle;
 mod config_settings;
 mod context_relevance;
 mod effort;
