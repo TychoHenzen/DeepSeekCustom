@@ -39,6 +39,13 @@ pub enum ResolvedBackend {
         permission_mode: Option<String>,
         env: Option<HashMap<String, String>>,
     },
+    /// Enough to spawn a Codex CLI session through `CodexCliDriver`.
+    CodexCli {
+        name: String,
+        model: String,
+        sandbox: Option<String>,
+        env: Option<HashMap<String, String>>,
+    },
     /// Enough to build a `StubBackend`. Never produced from `settings.json`:
     /// only `BackendFactory::with_stub` puts an entry in the map `resolve`
     /// checks first. Gated the same way as the stub itself, see
@@ -122,6 +129,19 @@ pub fn resolve_named_backend(
                 .map(|m| m.to_string())
                 .unwrap_or_else(|| model.clone()),
             permission_mode: permission_mode.clone(),
+            env: env.clone(),
+        }),
+        BackendConfig::CodexCli {
+            model,
+            sandbox,
+            env,
+            models: _,
+        } => Ok(ResolvedBackend::CodexCli {
+            name: name.to_string(),
+            model: model_override
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| model.clone()),
+            sandbox: sandbox.clone(),
             env: env.clone(),
         }),
     }

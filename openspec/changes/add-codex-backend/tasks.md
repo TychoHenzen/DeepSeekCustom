@@ -48,9 +48,10 @@
 - [x] 4.2 Add the `CodexCli` build path in `crates/deepseek-custom/src/backend/factory.rs`: `BackendFactory::build` matches on `BackendConfig::CodexCli` and constructs a `CodexCliDriver`, the same way it constructs a `ClaudeCliDriver` for the `ClaudeCli` variant.
 <!-- status: completed -->
 
-- [ ] 4.3 Add `CodexCli` to `resolve_named_backend` in `crates/deepseek-custom/src/backend/resolved.rs` so the `Task` tool can dispatch onto a `codex_cli` entry.
+- [x] 4.3 Add `CodexCli` to `resolve_named_backend` in `crates/deepseek-custom/src/backend/resolved.rs` so the `Task` tool can dispatch onto a `codex_cli` entry.
 <!-- covers: deepseek-custom/codex-backend :: Subagent dispatch works on the CodexCli backend :: A one-shot subagent dispatch returns the reply -->
 <!-- covers: deepseek-custom/codex-backend :: Subagent dispatch works on the CodexCli backend :: A kept-open session accepts a follow-up via SendMessage -->
+<!-- status: completed -->
 
 - [ ] 4.4 Add model discovery for `CodexCli` in `crates/deepseek-custom/src/api/models.rs`: return the explicit `models` array if set, otherwise a static fallback of `["o3", "o4-mini"]`.
 <!-- covers: deepseek-custom/codex-backend :: Model discovery queries the Codex CLI or uses an explicit list :: No explicit models returns the static fallback -->

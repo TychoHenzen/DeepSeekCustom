@@ -18,6 +18,7 @@ use crate::api::types::ToolDef;
 use crate::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
 use crate::autopilot::policy::PolicyStore;
 use crate::backend::Backend;
+use crate::backend::codex_cli::CodexCliDriver;
 use crate::backend::registry::SubagentRegistry;
 #[cfg(feature = "test-support")]
 use crate::backend::stub::StubBackend;
@@ -261,6 +262,26 @@ fn build_from_resolved(
                 factory.working_dir(),
                 tx_events,
             )
+        }
+        ResolvedBackend::CodexCli {
+            name,
+            model,
+            sandbox,
+            env,
+        } => {
+            info!(
+                "resolved backend: name={} kind=codex_cli model={} sandbox={}",
+                name,
+                model,
+                sandbox.as_deref().unwrap_or("(default)"),
+            );
+            Backend::CodexCli(Box::new(CodexCliDriver::new(
+                model,
+                sandbox,
+                env,
+                factory.working_dir(),
+                tx_events,
+            )))
         }
         #[cfg(feature = "test-support")]
         ResolvedBackend::Stub {

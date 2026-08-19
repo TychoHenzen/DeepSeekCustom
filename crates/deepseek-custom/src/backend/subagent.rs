@@ -205,6 +205,7 @@ fn resolved_model(resolved: &ResolvedBackend) -> String {
     match resolved {
         ResolvedBackend::Api { model, .. } => model.clone(),
         ResolvedBackend::ClaudeCli { model, .. } => model.clone(),
+        ResolvedBackend::CodexCli { model, .. } => model.clone(),
         #[cfg(feature = "test-support")]
         ResolvedBackend::Stub { model, .. } => model.clone(),
     }
