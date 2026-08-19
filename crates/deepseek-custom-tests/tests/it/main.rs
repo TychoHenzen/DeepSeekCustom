@@ -65,6 +65,8 @@ mod gui_transcript;
 mod gui_voice_ui;
 mod hemisphere;
 mod hooks;
+mod image_bytes;
+mod json_reply;
 mod mcp_client;
 mod mcp_config;
 mod mcp_manager;

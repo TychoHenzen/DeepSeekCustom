@@ -1,13 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use base64::Engine;
-use image::ImageFormat;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::api::types::ImageAttachment;
 use crate::error::{HarnessError, Result};
+use crate::image_bytes::attachment_from_image_bytes;
 use crate::tools::{Tool, ToolOutput};
 
 /// Reads an image file off disk and hands it back as an `ImageAttachment`
@@ -105,7 +103,10 @@ impl Tool for ReadImageTool {
             }
         };
 
-        match attachment_from_image_bytes(&bytes) {
+        // The label handed to `attachment_from_image_bytes` is this path, so
+        // the reason it reports already names the file. Wrapping it again
+        // would print the path twice.
+        match attachment_from_image_bytes(&bytes, &path.display().to_string()) {
             Ok(attachment) => Ok(ToolOutput {
                 content: format!(
                     "Read image {} ({}, {} bytes)",
@@ -117,42 +118,10 @@ impl Tool for ReadImageTool {
                 image: Some(attachment),
             }),
             Err(reason) => Ok(ToolOutput {
-                content: format!("{} is not a readable image: {reason}", path.display()),
+                content: reason,
                 is_error: true,
                 image: None,
             }),
         }
-    }
-}
-
-/// Validate that `bytes` is a real, decodable image and wrap it as an
-/// `ImageAttachment`, keeping the original bytes rather than re-encoding.
-/// `image::guess_format` only sniffs magic bytes; `load_from_memory_with_format`
-/// is what actually proves the file decodes, catching a truncated or
-/// corrupt file. Mirrors `attachment_from_image_bytes` in `src/gui/mod.rs`,
-/// which does the same job for a pasted or dropped image; kept as its own
-/// copy here since a tool must not depend on the GUI crate module.
-fn attachment_from_image_bytes(bytes: &[u8]) -> std::result::Result<ImageAttachment, String> {
-    let format =
-        image::guess_format(bytes).map_err(|_| "not a recognized image format".to_string())?;
-    image::load_from_memory_with_format(bytes, format)
-        .map_err(|e| format!("could not be decoded: {e}"))?;
-    Ok(ImageAttachment {
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-        media_type: mime_for_image_format(format).to_string(),
-    })
-}
-
-/// The MIME type an `ImageAttachment` carries for a decoded
-/// `image::ImageFormat`. Only png, jpeg, and bmp are backed by an enabled
-/// decoder in this build (see the `image` dependency comment in
-/// `Cargo.toml`); any other format `guess_format` recognises by its magic
-/// bytes still fails at the `load_from_memory_with_format` step above.
-fn mime_for_image_format(format: ImageFormat) -> &'static str {
-    match format {
-        ImageFormat::Png => "image/png",
-        ImageFormat::Jpeg => "image/jpeg",
-        ImageFormat::Bmp => "image/bmp",
-        _ => "application/octet-stream",
     }
 }

@@ -14,6 +14,7 @@ use crate::api::types::{ChatRequest, Content, Message};
 use crate::autopilot::policy::{PolicyStore, format_policy_prompt_section};
 use crate::autopilot::question::{Answer, AskInput};
 use crate::error::Result;
+use crate::json_reply::extract_array_span;
 
 /// Cap on how many recent decision-log lines are folded into the prompt.
 const RECENT_DECISIONS_LIMIT: usize = 20;
@@ -183,16 +184,6 @@ pub fn parse_reply(reply: &str) -> Option<Vec<Answer>> {
     }
 
     Some(answers)
-}
-
-/// Find the outermost `[...]` span in `text`.
-fn extract_array_span(text: &str) -> Option<&str> {
-    let start = text.find('[')?;
-    let end = text.rfind(']')?;
-    if end < start {
-        return None;
-    }
-    Some(&text[start..=end])
 }
 
 /// Validate parsed answers against `input` and fall back to the first option

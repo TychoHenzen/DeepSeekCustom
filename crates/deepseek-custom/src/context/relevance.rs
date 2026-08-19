@@ -14,6 +14,7 @@ use crate::agent::history::estimate_message_tokens;
 use crate::api::client::ApiClient;
 use crate::api::provider::Provider;
 use crate::api::types::{ChatRequest, Content, Message};
+use crate::json_reply::extract_array_span;
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
 trimmed to save tokens. For each entry, score from 0.0 to 1.0 how much its full content is \
@@ -100,16 +101,6 @@ pub fn parse_scores(reply: &str, expected_len: usize) -> Option<Vec<f32>> {
         scores[id] = Some(score.clamp(0.0, 1.0));
     }
     scores.into_iter().collect()
-}
-
-/// Find the outermost `[...]` span in `text`.
-fn extract_array_span(text: &str) -> Option<&str> {
-    let start = text.find('[')?;
-    let end = text.rfind(']')?;
-    if end < start {
-        return None;
-    }
-    Some(&text[start..=end])
 }
 
 /// The model a scoring call runs on for this provider.

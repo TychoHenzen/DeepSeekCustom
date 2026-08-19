@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1100 tests
-cargo test -p deepseek-custom-tests                  # The same 1100, named directly
+cargo test --workspace                               # All 1122 tests
+cargo test -p deepseek-custom-tests                  # The same 1122, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -148,7 +148,7 @@ A turn group is one `Role::User` message plus every message that follows it, up 
 
 Three tiers run in order. Each stops the moment the token count reaches the low-water mark. Tier one first elides image parts, then, only if still over budget, elides tool bodies. An eliminated `ContentPart::ImageUrl` becomes a `Text { text: "[elided: image]" }` marker; a `Role::Tool` message's content becomes `[elided: N chars of tool output]`. Role, `tool_call_id`, and position stay untouched. An already-elided message or part is skipped, so a second pass does not double-wrap it. Images go first: a part is either fully present or fully gone, and a single screenshot's base64 payload can outweigh a lot of text, so eliding it first reclaims the most budget for the least structural damage. See "Image input" below for how an image part reaches a message in the first place. Tier two collapses groups. It keeps the leading user message and the last assistant message with content and no tool calls. It drops everything else in the group, so tool-call pairing survives. Tier three drops groups outright. Ordering inside every tier is lowest relevance score first, then oldest first on a tie.
 
-When the high-water mark trips, `crates/deepseek-custom/src/context/relevance.rs` makes one extra non-streaming call before pruning. It sends an index of the history, not the history itself: id, role, token count, and a 100-character preview per message. It asks for a JSON array of `{"id","score"}` scores from 0.0 to 1.0. The model it runs on comes from `scoring_model`. A DeepSeek backend always scores on `deepseek-v4-flash`, whatever the main conversation model is, since it only ranks short previews. Any other provider scores on the conversation model itself: a DeepSeek model name would just fail there, and an Ollama call is local, so there is nothing to save. Scoring with hindsight is the point: at prune time the model already knows which messages mattered. Any failure returns `None` and is logged at `warn`: a network error, malformed JSON, a missing or duplicate id, an out-of-range id, or a non-finite score. The prune then proceeds with uniform scores, which degrades to oldest-first. A scoring failure never blocks a turn.
+When the high-water mark trips, `crates/deepseek-custom/src/context/relevance.rs` makes one extra non-streaming call before pruning. It sends an index of the history, not the history itself: id, role, token count, and a 100-character preview per message. It asks for a JSON array of `{"id","score"}` scores from 0.0 to 1.0. The model it runs on comes from `scoring_model`. A DeepSeek backend always scores on `deepseek-v4-flash`, whatever the main conversation model is, since it only ranks short previews. Any other provider scores on the conversation model itself: a DeepSeek model name would just fail there, and an Ollama call is local, so there is nothing to save. Scoring with hindsight is the point: at prune time the model already knows which messages mattered. Any failure returns `None` and is logged at `warn`: a network error, malformed JSON, a missing or duplicate id, an out-of-range id, or a non-finite score. The prune then proceeds with uniform scores, which degrades to oldest-first. A scoring failure never blocks a turn. `parse_scores` finds the array through `extract_array_span` in `crates/deepseek-custom/src/json_reply.rs`, which tolerates a markdown fence or surrounding prose. `autopilot/answerer.rs` parses its own answer array through the same function. Both held a byte-identical copy of it before that module existed.
 
 The budget lives on a slider in the Experimental section of the settings sidebar, 32000 to 200000 in steps of 1000. A grey caption shows the derived low-water mark. The slider writes an `Arc<AtomicUsize>` shared with the agent, the same way the effort control and voice controls do. The floor is 32000. Below that, the low-water mark lands inside the pinned region and pruning cannot reach its target.
 
@@ -206,6 +206,8 @@ The GUI attaches an image three ways, all feeding the same one-slot pending-atta
 `BlockKind::Image { image: ImageAttachment }` in `crates/deepseek-custom/src/gui/transcript.rs` renders inline as a capped thumbnail (`render_image_block`) that opens full size on click, and the raw-output toggle covers it the same exhaustive way it covers every other block kind. The base64 bytes inside `ImageAttachment` are what actually lands on disk when a session saves: a real per-session cost, a few hundred KB of base64 text per screenshot, with no compression beyond what the source PNG or JPEG already applied and no separate blob store. `egui_extras` and `base64` became direct dependencies for this (both were already in the lock file), and `main.rs` installs the egui image loaders at startup.
 
 `crates/deepseek-custom/src/tools/read_image.rs` holds `ReadImageTool`, registered as `read_image`, a separate tool from `ReadTool` rather than an image-aware branch on it: an image needs a binary read, a decode-and-validate step, and a different output shape (`ToolOutput::image`, not more `content`) that would make one shared schema ambiguous about which behavior a call gets. `ToolOutput` gained an `image: Option<ImageAttachment>` field for this. An image cannot ride back on a `Role::Tool` result message, because the OpenAI-compatible schema both DeepSeek and Ollama speak only accepts an image content part inside a `user`-role message, never a `tool`-role one. So `AgentLoop::run_turn` reads `ToolOutput::image` after the tool result message is pushed and, when set, appends a synthetic `Role::User` message built through the same `build_user_content` a pasted or dropped image already goes through: DeepSeek still gets a transcript notice instead of the bytes, matching a pasted image on that backend.
+
+Both the pasted-image path and this tool build their attachment through `attachment_from_image_bytes` and `mime_for_image_format` in `crates/deepseek-custom/src/image_bytes.rs`. That module sits at the crate root because its two callers, `gui/attachment.rs` and `tools/read_image.rs`, share no parent but the crate. Each held its own copy of both functions before, and the copies had drifted apart in their error wording: the tool's copy took no label and its caller prefixed the path itself, so the shared version takes the label and the tool passes the path.
 
 Pruner tier one now elides image parts before it elides tool bodies, both in `crates/deepseek-custom/src/agent/pruning.rs`. `elide_images` runs first, ordered lowest score first and oldest first on a tie, replacing each `ContentPart::ImageUrl` with a `Text { text: "[elided: image]" }` marker; `elide_tool_bodies` only runs afterward if the budget is still not met. Images go first because they never prune well and are expensive: a part is either fully present or fully gone, and a single screenshot's base64 payload can outweigh a lot of text, so dropping it first reclaims the most budget for the least structural damage. This fixed a real bug along the way: before tier one counted image parts, `estimate_message_tokens` gave an `ImageUrl` part zero tokens, so an image never counted toward the budget in the first place and eliding one would have raised the estimate instead of lowering it, making the whole tier pointless for a message that carried one.
 
@@ -499,9 +501,9 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1100 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1122 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
-**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 71 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
+**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 88 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
 Cargo's default is the opposite, and it was expensive here. Cargo builds one executable per `.rs` file directly under `tests/`. Each one statically links the whole dependency tree: ONNX Runtime, whisper.cpp, egui, eframe, cpal. Measured on this tree at 71 files: 1.9 GB of executables and 2.7 GB of debug symbols. That is about 4.6 GB, rebuilt from scratch on every full test run. The one target that replaced them is 41 MB with a 72 MB `.pdb`.
 
@@ -515,7 +517,7 @@ Test files are named by one rule. Take the module path under `crates/deepseek-cu
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1102.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1124.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -535,7 +537,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1080 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1099 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -546,7 +548,7 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `agent/repeat.rs` | 6 |
 | `api/client.rs` | 7 |
 | `api/key.rs` | 5 |
-| `api/models.rs` | 14 |
+| `api/models.rs` | 19 |
 | `api/types.rs` | 17 |
 | `autopilot/answerer.rs` | 9 |
 | `autopilot/policy.rs` | 10 |
@@ -571,7 +573,7 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `gui/transcript.rs` | 42 |
 | `gui/voice_ui.rs` | 40 |
 | `gui/backend_picker.rs` | 20 |
-| `gui/attachment.rs` | 14 |
+| `gui/attachment.rs` | 10 |
 | `gui/autopilot_tab.rs` | 11 |
 | `gui/session_state.rs` | 11 |
 | `gui/sessions_tab.rs` | 5 |
@@ -597,6 +599,7 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `tools/bash.rs` | 14 |
 | `tools/cd.rs` | 6 |
 | `tools/close_session.rs` | 6 |
+| `tools/line_endings.rs` | 5 |
 | `tools/mod.rs` | 4 |
 | `tools/read.rs` | 4 |
 | `tools/read_image.rs` | 5 |
@@ -604,8 +607,8 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `tools/send_message.rs` | 7 |
 | `tools/skill.rs` | 10 |
 | `tools/task/` | 19 |
-| `tools/write.rs` | 3 |
-| `tools/edit.rs` | 11 |
+| `tools/write.rs` | 6 |
+| `tools/edit.rs` | 15 |
 | `tools/glob.rs` | 6 |
 | `tools/grep.rs` | 10 |
 | `voice/mod.rs` | 27 |
@@ -619,6 +622,8 @@ These are the 1080 tests that cover one production module each, counted per modu
 | `voice/stt.rs` | 2 |
 | `process_group.rs` | 1 |
 | `path_repair.rs` | 16 |
+| `image_bytes.rs` | 4 |
+| `json_reply.rs` | 7 |
 
 Two modules are missing from that table on purpose. `gui/settings_panel.rs` and `tools/shell_stdin.rs` have no tests and so have no test file. `shell_stdin.rs` is exercised through the two search modules that call it. `path_repair.rs` is in the table, but only its pure list rules are covered there. `repair_path` itself reads the real registry and writes the process environment, so the probe example checks that end.
 
