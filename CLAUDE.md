@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-DeepSeekCustom is an experimental Rust harness for AI coding agents. It runs one of three backends behind a shared GUI: DeepSeek or Ollama through its own in-process agent loop, or Anthropic through a `claude -p` child process. It piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md), so the same project config works with either harness.
+DeepSeekCustom is an experimental Rust harness for AI coding agents. It runs one of four backends behind a shared GUI: DeepSeek or Ollama through its own in-process agent loop, Anthropic through a `claude -p` child process, or OpenAI through one-shot `codex exec --json` child processes. It piggybacks on Claude Code's file formats (settings.json, skills/*.md, CLAUDE.md, MEMORY.md), so the same project config works with either harness.
 
 **Target:** Rust edition 2024, DeepSeek API v4 (OpenAI-compatible format), egui/eframe native GUI.
 
@@ -15,7 +15,7 @@ The repository is a Cargo workspace with two members.
 | Member | Holds |
 |---|---|
 | `crates/deepseek-custom` | The production package. Library target `deepseek_custom`, the `main.rs` binary, and the three voice examples. No test code at all. |
-| `crates/deepseek-custom-tests` | Every test, the `fake_claude` and `orphan_probe` binaries, and the three fixtures. |
+| `crates/deepseek-custom-tests` | Every test, the `fake_claude`, `fake_codex`, and `orphan_probe` binaries, and the three fixtures. |
 
 The root `Cargo.toml` holds only the `[workspace]` table and two profile blocks. `.cargo/config.toml` stayed at the repository root, where it already applied to everything.
 
@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1115 tests
-cargo test -p deepseek-custom-tests                  # The same 1100, named directly
+cargo test --workspace                               # All 1152 tests
+cargo test -p deepseek-custom-tests                  # The same 1152, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -82,13 +82,17 @@ Tests live in `crates/deepseek-custom-tests/tests/it/`. Fixtures live in `crates
     Reset)                              pruning code runs on this path.
 ```
 
-Both variants read the same `Settings` and stream `RoutedEvent` values, each a `StreamEvent` tagged with the chain of subagents it passed through, to the GUI over the same channel. The GUI does not need to know which one is active.
+All three production variants read the same `Settings` and stream `RoutedEvent` values, each a `StreamEvent` tagged with the chain of subagents it passed through, to the GUI over the same channel. The GUI does not need to know which one is active.
 
-**Backend kinds:** `crates/deepseek-custom/src/backend/mod.rs` defines `enum Backend { Api(Box<AgentLoop>), ClaudeCli(Box<ClaudeCliDriver>), Stub(Box<StubBackend>) }`. `main.rs` builds one variant at startup from the resolved config entry and never switches at runtime. The build path itself lives in `crates/deepseek-custom/src/backend/factory.rs`'s `BackendFactory`, extracted from `main.rs`. It runs again at runtime, on a possibly different entry, whenever the `Task` tool dispatches a subagent. See "Task tool (subagent dispatch)" below. The `Stub` variant, in `crates/deepseek-custom/src/backend/stub.rs`, answers each turn from a scripted `StubTurn` list, with no network call and no child process. It exists only so subagent tests can exercise dispatch, the registry, and the turn caps without hitting a real API or spawning `claude`. `BackendFactory::with_stub` is the one way to reach it, and that method is gated behind the `test-support` feature, as the `Stub` variant itself is. A plain `cargo build` compiles all of it out. The `backends` map in settings.json can only ever produce an `Api` or `ClaudeCli` entry, so a stub cannot appear in a normal run by accident.
+**Backend kinds:** `crates/deepseek-custom/src/backend/mod.rs` defines `enum Backend { Api(Box<AgentLoop>), ClaudeCli(Box<ClaudeCliDriver>), CodexCli(Box<CodexCliDriver>), Stub(Box<StubBackend>) }`. `main.rs` builds one variant at startup from the resolved config entry and never switches at runtime. The build path itself lives in `crates/deepseek-custom/src/backend/factory.rs`'s `BackendFactory`, extracted from `main.rs`. It runs again at runtime, on a possibly different entry, whenever the `Task` tool dispatches a subagent. See "Task tool (subagent dispatch)" below. The `Stub` variant, in `crates/deepseek-custom/src/backend/stub.rs`, answers each turn from a scripted `StubTurn` list, with no network call and no child process. It exists only so subagent tests can exercise dispatch, the registry, and the turn caps without hitting a real API or spawning a CLI. `BackendFactory::with_stub` is the one way to reach it, and that method is gated behind the `test-support` feature, as the `Stub` variant itself is. A plain `cargo build` compiles all of it out. The `backends` map in settings.json can produce an `Api`, `ClaudeCli`, or `CodexCli` entry, so a stub cannot appear in a normal run by accident.
 
 The `Api` variant is the harness's own in-process HTTP client. It serves both DeepSeek and Ollama. Everything this harness does applies to it: its own `ToolRegistry`, `HookRunner`, `MemoryStore`, skills, context pruning, and relevance scoring, all described below.
 
 The `ClaudeCli` variant is a long-lived `claude -p` child process, for Anthropic. Claude Code owns the whole turn loop on this path. It uses its own tools, its own skills, its own hooks, its own CLAUDE.md loading, and its own compaction and permissions. This harness's `ToolRegistry`, `HookRunner`, `MemoryStore`, pruning, and relevance scoring do not run on this path at all. State that plainly. A future reader will assume this harness's tool and memory machinery always applies. On this path it does not.
+
+The `CodexCli` variant wraps `CodexCliDriver` in `crates/deepseek-custom/src/backend/codex_cli/mod.rs`. Every turn spawns `codex exec --json`; later turns add `resume <thread_id>` directly after `exec`. The driver parses JSONL through `events.rs` and maps it through `map.rs`. Codex owns its tools, instructions, context, and permissions. This harness's `ToolRegistry`, `HookRunner`, `MemoryStore`, skills, pruning, and relevance scoring do not run inside Codex.
+
+`crates/deepseek-custom/src/backend/codex_cli/spawn.rs` builds the arguments and starts each child. With no configured `sandbox`, it passes `--dangerously-bypass-approvals-and-sandbox`. A configured value instead becomes `--sandbox <value>`. The spawn uses the current harness working directory and the entry's optional `env` map. It sets `kill_on_drop` and calls `process_group::adopt`, so Windows job adoption covers Codex children too. Escape kills and reaps the active child. Autopilot uses `crates/deepseek-custom/src/backend/codex_cli/repeat.rs` and clears `thread_id` before each iteration. An image attachment is not sent, and the transcript receives an `Info` notice naming the limitation.
 
 **The Ollama provider:** `crates/deepseek-custom/src/api/provider.rs` defines `enum Provider { DeepSeek, Ollama }`. `ApiClient::prepare_request` in `crates/deepseek-custom/src/api/client.rs` adapts each outgoing request per provider before it goes out. For Ollama it clears `tool_choice`, since Ollama does not support it, and fills `reasoning_effort` from `ChatRequest.effort` through `Effort::ollama_reasoning_effort`. See "Effort control" below for the full per-provider mapping, shared with DeepSeek's `thinking_mode`. A request with no `effort` set leaves whichever wire field the caller put there directly untouched.
 
@@ -120,9 +124,9 @@ Interrupt kills the child outright, since the protocol carries no cancel message
 
 `kill_on_drop` alone does not fix it, and both spawn paths set it anyway as a second line of defence. It only fires when the `Child` value is really dropped, and on the way out of `main` the agent task that owns the backend is a detached tokio task that never gets dropped at all. A panic or an outside `taskkill` skips every destructor regardless.
 
-So the guarantee comes from the operating system. On Windows, `process_group::adopt` creates one job object on first use, with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` set, and every adopted child joins it. When this process ends, however it ends, its last handle to the job closes and the kernel terminates everything still inside. A child's own children join the same job automatically, which is what makes this reach a whole subtree rather than only the process spawned here. The job handle is deliberately never closed: holding it open for the life of the process is the entire mechanism. A failure is logged at `warn` and swallowed, since a turn running with an unreaped child beats no turn at all. On any other platform `adopt` is a no-op that reports success, so a caller needs no `cfg` of its own, and there is no equivalent guarantee there yet. Both spawn paths call it: `ClaudeCliDriver::spawn_child` in `crates/deepseek-custom/src/backend/claude_cli/process/spawn.rs` and `spawn_one_shot_child` in `crates/deepseek-custom/src/backend/claude_cli/one_shot.rs`.
+So the guarantee comes from the operating system. On Windows, `process_group::adopt` creates one job object on first use, with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` set, and every adopted child joins it. When this process ends, however it ends, its last handle to the job closes and the kernel terminates everything still inside. A child's own children join the same job automatically, which is what makes this reach a whole subtree rather than only the process spawned here. The job handle is deliberately never closed: holding it open for the life of the process is the entire mechanism. A failure is logged at `warn` and swallowed, since a turn running with an unreaped child beats no turn at all. On any other platform `adopt` is a no-op that reports success, so a caller needs no `cfg` of its own, and there is no equivalent guarantee there yet. The Claude spawn paths call it in `crates/deepseek-custom/src/backend/claude_cli/process/spawn.rs` and `crates/deepseek-custom/src/backend/claude_cli/one_shot.rs`. The Codex path calls it in `crates/deepseek-custom/src/backend/codex_cli/spawn.rs`.
 
-**Autopilot across backends:** `run_repeat` in `crates/deepseek-custom/src/agent/repeat.rs` is generic over a `RepeatTarget` trait, with one implementation per backend kind. The `Api` path resets by calling `AgentLoop::clear_history`. The `ClaudeCli` path resets by shutting the child down, so the next turn spawns a fresh one. Both give the same guarantee: no iteration sees an earlier iteration's conversation. `repeat_interrupt_flag` still stops the whole run on either path.
+**Autopilot across backends:** `run_repeat` in `crates/deepseek-custom/src/agent/repeat.rs` is generic over a `RepeatTarget` trait, with one implementation per backend kind. The `Api` path resets by calling `AgentLoop::clear_history`. The `ClaudeCli` path resets by shutting the child down, so the next turn spawns a fresh one. The `CodexCli` path clears its `thread_id`, so the next turn starts a fresh Codex thread. All three give the same guarantee: no iteration sees an earlier iteration's conversation. `repeat_interrupt_flag` stops the whole run on every path.
 
 **Agent loop:** applies to the `Api` variant only. User input builds into messages (system prompt, history, tools), goes to the DeepSeek or Ollama API, and comes back as text or tool calls. Tools run through `ToolRegistry`, and results append to history before the next round starts. A max-turns guard defaults to 100. Streaming runs over `reqwest` plus `tokio::sync::mpsc`. Events reach the GUI through the `StreamEvent` enum over an unbounded channel. That decouples the agent from the UI layer. A user interrupt works through an `Arc<AtomicBool>` flag. The GUI sets it on Escape. The agent checks it during stream receive and before tool execution, then sends `StreamEvent::Interrupted`.
 
@@ -256,17 +260,19 @@ The `settings.json` `mcp` block, with defaults:
 
 **Effort control:** `crates/deepseek-custom/src/effort.rs` holds `Effort`, an `enum { None, Low, Medium, High, Max }`, the harness's one reasoning-effort control shared across every backend kind. It replaced a boolean thinking toggle that only ever reached DeepSeek and Ollama and gave `claude_cli` no control at all. A single `Arc<AtomicU8>` flag carries the level through `Effort::to_u8` and `Effort::from_u8`, the same pattern `context_budget_flag` already used for the pruning slider. Each backend maps `Effort` to its own wire format at the edge, right before a request goes out or a child gets spawned, never earlier:
 
-| Level | DeepSeek `thinking_mode` | Ollama `reasoning_effort` | `claude_cli` `--effort` |
-|---|---|---|---|
-| `None` | `non-thinking` | `none` | flag omitted (CLI's own default) |
-| `Low` | `thinking` | `low` | `low` |
-| `Medium` | `thinking` | `medium` | `medium` |
-| `High` | `thinking` | `high` | `high` |
-| `Max` | `thinking_max` | `max` | `max` |
+| Level | DeepSeek `thinking_mode` | Ollama `reasoning_effort` | `claude_cli` `--effort` | `codex_cli` split arguments |
+|---|---|---|---|---|
+| `None` | `non-thinking` | `none` | flag omitted (CLI's own default) | omitted |
+| `Low` | `thinking` | `low` | `low` | `-c` then `reasoning.effort=low` |
+| `Medium` | `thinking` | `medium` | `medium` | `-c` then `reasoning.effort=medium` |
+| `High` | `thinking` | `high` | `high` | `-c` then `reasoning.effort=high` |
+| `Max` | `thinking_max` | `max` | `max` | `-c` then `reasoning.effort=max` |
 
 DeepSeek only has three thinking modes for the harness's five levels, so `Low` through `High` all collapse onto `thinking`. Ollama and `claude_cli` both map one to one, though under different names: Ollama has a `none` value and no `xhigh` slot, `claude_cli` has no `none` value and an `xhigh` slot the harness's enum has no room for. `claude_cli`'s five accepted values (`low, medium, high, xhigh, max`) and the choice to omit the flag for `Effort::None` were confirmed against the real `claude` binary, version 2.1.220 (a patched build on this machine), not guessed: see `docs/notes/claude-effort.md` for the full trace, including the binary's own rejection message for a bad value and a real turn accepted alongside the harness's full flag set. No field in the stream-json protocol reports back which effort level a turn actually ran at.
 
 `ApiClient::prepare_request` in `crates/deepseek-custom/src/api/client.rs` fills `thinking_mode` for DeepSeek and `reasoning_effort` for Ollama from `ChatRequest.effort`, an `Option<Effort>` a caller sets while leaving both wire fields `None`. A request built with no `effort` set leaves both wire fields exactly as the caller put them there directly. `build_args` in `crates/deepseek-custom/src/backend/claude_cli/args.rs` adds `--effort <level>` right after `--permission-mode` when `claude_cli_effort()` returns one, and omits it for `Effort::None`; `ensure_ready` respawns the child on an effort change alongside the other four respawn triggers, see "Working directory" above. `build_one_shot_args` in `crates/deepseek-custom/src/backend/claude_cli/one_shot.rs` does the same for a one-shot `claude_cli` subagent. This is independent of DeepSeek's V4 `thinking_mode` wire format itself: reasoning content still streams via `delta.reasoning_content` and must be echoed back in the next request or the API returns 400, whatever `effort` is set to.
+
+`build_args` in `crates/deepseek-custom/src/backend/codex_cli/spawn.rs` passes Codex effort as two arguments: `-c` followed by `reasoning.effort=low|medium|high|max`. `Effort::None` omits both arguments. Codex has no dedicated `--effort` flag.
 
 The sidebar's effort control replaced the old thinking checkbox: a five-stop combo box, seeded from `Settings::effort()` and persisted through `apply_effort` like every other control, with a grey caption saying a change applies next turn for DeepSeek and Ollama and that `claude_cli` respawns its child. The status bar shows the current level in its own `Effort: level` readout. `Task` gained an optional `effort` field; see "Task tool (subagent dispatch)" below.
 
@@ -376,12 +382,13 @@ The GUI saves the current session after every `TurnEnd`, on a session switch, on
 
 **Switching sessions mid-turn:** a session switch asked for while a turn is still streaming is held until that turn ends, as a `PendingSwitch` on `DeepSeekGui`. Applying it at once corrupted both conversations. The transcript and the session id moved immediately while the turn kept running, so the rest of that turn's text, tool calls, `ConversationSnapshot`, and `TurnEnd` landed in the conversation just opened, and the `TurnEnd` autosave then wrote the old turn's API history under the new conversation's id. The agent side could not save it either: it reads one `AgentCommand` at a time and only reaches `LoadSession` after the running turn returns, so its history switched at a different moment than the GUI's did. A held switch posts a `Notice` saying so, and Escape ends the turn to apply it now. `DeepSeekGui::event_ends_turn` decides when the hold lifts: `TurnEnd`, `Interrupted`, and `RepeatFinished` all end a turn, while `Error` does not, since it also fires mid-turn for an image a backend cannot take. One autopilot iteration's `TurnEnd` does not lift it either, because the next iteration rotates to a fresh conversation immediately and would discard the switch a moment later. A turn that fails outright now ends too: `report_failed_turn` in `crates/deepseek-custom/src/main.rs` sends an `Error` and then a `TurnEnd` on the `Err` arm of the agent task, which before this sent nothing at all and left the status bar reading "Running..." for the rest of the session.
 
-**Config:** the `backends` block in `settings.json` replaced the old top-level `model` field, which is deleted. Each entry is a `BackendConfig` in `crates/deepseek-custom/src/config/settings.rs`, tagged on `kind`, either `"api"` or `"claude_cli"`.
+**Config:** the `backends` block in `settings.json` replaced the old top-level `model` field, which is deleted. Each entry is a `BackendConfig` in `crates/deepseek-custom/src/config/settings.rs`, tagged on `kind` as `"api"`, `"claude_cli"`, or `"codex_cli"`.
 
 | `kind` | Fields |
 |---|---|
 | `api` | `provider` (`"deepseek"` or `"ollama"`), `model`, optional `base_url`, optional `api_key`, optional `models` |
 | `claude_cli` | `model`, optional `permission_mode`, optional `env` map, optional `models` |
+| `codex_cli` | required `model`, optional `sandbox`, optional `env` map, optional `models` |
 
 `default_backend` names the active entry. `BackendFactory::default_backend_name` reads it, falling back to `"deepseek"` when the field is absent. `main.rs` calls that, then `BackendFactory::build` at depth 0 to construct the main session's own backend. An unknown name is a hard startup error naming both the requested entry and the entries that exist. It never falls back silently. Picking another entry in the settings sidebar replaces the running backend in place: the picker returns an `AgentCommand::SwitchBackend`, and the agent task builds the replacement, shuts the outgoing one down, and swaps it in before the next turn. See "Runtime backend switching" below.
 
@@ -445,13 +452,15 @@ The `settings.json` subagent block, with defaults:
 
 **Model picker:** the settings sidebar now has a model dropdown under the backend picker. `list_models` in `crates/deepseek-custom/src/api/models.rs` fills it. An explicit `models` array on the backend entry always wins. Otherwise discovery runs by kind and provider. Ollama is queried live at `/api/tags`. DeepSeek returns the known pair `deepseek-v4-flash` and `deepseek-v4-pro`. `claude_cli` queries the Anthropic `/v1/models` endpoint using the OAuth token from `~/.claude/.credentials.json` and prepends the short aliases (`opus`, `sonnet`, `haiku`, `fable`), so the picker shows both aliases and full model IDs like `claude-opus-4-6`. Missing credentials, a network failure, or a bad response all fall back to the aliases alone. DeepSeek queries its own `/models` endpoint using the resolved API key (config `api_key`, then `DEEPSEEK_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`). Both Anthropic and DeepSeek responses use the same OpenAI-compatible `{"data":[{"id":"..."}]}` shape, parsed by `parse_models_response`. When discovery yields nothing, the result falls back to the model the entry declares. That way the dropdown is never empty and always holds the current selection.
 
+`codex_cli` does not query a model endpoint. Its explicit `models` list wins. Without that list, the picker uses `o3` and `o4-mini`.
+
 No provider being down must stop the GUI from opening. All three discovery functions (`query_ollama_models`, `query_anthropic_models`, `query_deepseek_models`) turn every failure into a fallback instead of an error. `apply_fallback` covers an empty list from there.
 
 The list resolves on a background task, `spawn_model_list_fetch`, and arrives over a channel the paint loop polls each frame. No network call happens on the paint loop itself. A result tagged with a backend name the user has since switched away from gets dropped as stale.
 
 A model change persists onto that backend's entry in settings.json, through `apply_backend_model`, and writes the shared `model_flag`. That write is unconditional now. It used to be guarded on the picker still pointing at the running backend, back when a backend switch took effect only on the next start and the two could disagree for a whole session. A switch is applied immediately, so the model picked here is always the running backend's. The change takes effect on the next turn for DeepSeek and Ollama, since `sync_dynamic_config` re-reads `model_flag` every turn. The `claude_cli` backend instead respawns its child to pick up a new model, since `--model` is a spawn-time flag.
 
-The new optional `models` array sits on a backend entry in settings.json. It is `Option<Vec<String>>` on both the `Api` and `ClaudeCli` variants of `BackendConfig`, absent by default.
+The new optional `models` array sits on a backend entry in settings.json. It is `Option<Vec<String>>` on the `Api`, `ClaudeCli`, and `CodexCli` variants of `BackendConfig`, absent by default.
 
 **Key architectural choices:**
 - Every conversation persists to disk as one JSON file under `.deepseek/sessions/`. See "Session persistence" above. Memory files and `settings.json` are not the only things that survive between runs anymore.
@@ -468,6 +477,7 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 **Done:**
 - Runtime backend switching: `SharedFlags` and `Backend::adopt_flags` in `crates/deepseek-custom/src/backend/mod.rs`, `with_session_flags` and `session_flags_for` in `crates/deepseek-custom/src/backend/factory.rs`, `AgentCommand::SwitchBackend` in `crates/deepseek-custom/src/agent/agent_loop.rs`, its arm in the agent task in `crates/deepseek-custom/src/main.rs`, `BackendSwitch` and `PickerOutcome` in `crates/deepseek-custom/src/gui/backend_picker.rs`, and `apply_backend_switch` in `crates/deepseek-custom/src/gui/mod.rs`. See "Runtime backend switching" above.
 - Backend: `crates/deepseek-custom/src/backend/mod.rs` (the `Backend` enum and its shared flags), `crates/deepseek-custom/src/backend/claude_cli/process/` (`ClaudeCliDriver` and its sub-modules: `mod.rs` for core driver, `spawn.rs` for child spawning, `repeat.rs` for `RepeatTarget`, `test_support.rs` for test seams), `crates/deepseek-custom/src/backend/claude_cli/args.rs` (argument assembly and wire-format helpers), `crates/deepseek-custom/src/backend/claude_cli/io.rs` (stdout/stderr reader tasks), `crates/deepseek-custom/src/backend/claude_cli/events.rs` (stream-json event parsing), `crates/deepseek-custom/src/backend/claude_cli/map.rs` (`EventMapper`, mapping to `StreamEvent`). See the Backend section above for the full mechanism.
+- Codex backend: `crates/deepseek-custom/src/backend/codex_cli/mod.rs` (`CodexCliDriver` and JSONL lifecycle), `crates/deepseek-custom/src/backend/codex_cli/events.rs` (event parsing), `crates/deepseek-custom/src/backend/codex_cli/map.rs` (`EventMapper`), `crates/deepseek-custom/src/backend/codex_cli/spawn.rs` (arguments and one-shot child spawning), and `crates/deepseek-custom/src/backend/codex_cli/repeat.rs` (`RepeatTarget`).
 - API client: `ApiClient` talks to both DeepSeek and Ollama. It streams replies, retries on failure, and reads its key from an env var or `settings.json`. It uses the V4 `thinking_mode` format. `prepare_request` fills `thinking_mode` or `reasoning_effort` from the shared `Effort` control to fit whichever provider is active; see "Effort control" above.
 - Agent loop: turn cycle, tool execution, session reset, system prompt rebuild. Echoes reasoning_content back. Filters nameless tool calls (V4 thinking deltas). Syncs config from the GUI each turn (effort_flag, model_flag, voice_mode_flag). Emits StreamEvent::Reasoning, ToolCallStart, ToolCallEnd, and TurnEnd. TurnEnd carries the prompt cache hit and miss counts.
 - Tools: Bash, Read, Write, Edit, Glob, Grep, Cd, Reset, AskUserQuestion, Task, SendMessage, CloseSession, ReadImage (Tool trait + ToolRegistry + permission check). `crates/deepseek-custom/src/tools/edit.rs`, `glob.rs`, and `grep.rs` are the three file tools added to match Claude Code's own set; see "Tools" above for the run that showed what their absence cost. See "Working directory" above for Cd, "Task tool (subagent dispatch)" and "Multi-turn subagent sessions" above for Task, SendMessage, and CloseSession, and "Image input" above for ReadImage.
@@ -501,9 +511,9 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1115 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1152 tests, all passing, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
-**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 72 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
+**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 88 files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
 Cargo's default is the opposite, and it was expensive here. Cargo builds one executable per `.rs` file directly under `tests/`. Each one statically links the whole dependency tree: ONNX Runtime, whisper.cpp, egui, eframe, cpal. Measured on this tree at 71 files: 1.9 GB of executables and 2.7 GB of debug symbols. That is about 4.6 GB, rebuilt from scratch on every full test run. The one target that replaced them is 41 MB with a 72 MB `.pdb`.
 
@@ -517,7 +527,9 @@ Test files are named by one rule. Take the module path under `crates/deepseek-cu
 
 Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 20 tests the per-module table below does not count.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1102.
+Codex coverage lives in `crates/deepseek-custom-tests/tests/it/backend_codex_cli_events.rs`, `backend_codex_cli_map.rs`, `backend_codex_cli_spawn.rs`, and `codex_cli_lifecycle.rs`. `crates/deepseek-custom-tests/src/bin/fake_codex.rs` supplies the child process for lifecycle coverage. `backend_factory.rs` and `config_settings.rs` cover factory resolution and the `codex_cli` settings schema.
+
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1154.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -537,7 +549,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1092 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1132 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 20 tests sit in the three older targets named above, which cover a path rather than a module.
 
 | Production module | Tests |
 |---|---|
@@ -562,6 +574,9 @@ These are the 1092 tests that cover one production module each, counted per modu
 | `backend/claude_cli/events.rs` | 12 |
 | `backend/claude_cli/map.rs` | 9 |
 | `backend/claude_cli/one_shot.rs` | 8 |
+| `backend/codex_cli/events.rs` | 10 |
+| `backend/codex_cli/map.rs` | 9 |
+| `backend/codex_cli/spawn.rs` | 6 |
 | `config/settings.rs` | 40 |
 | `context/relevance.rs` | 15 |
 | `effort.rs` | 9 |

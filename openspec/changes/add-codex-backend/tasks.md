@@ -77,4 +77,5 @@
 
 ## 6. Documentation
 
-- [ ] 6.1 Update CLAUDE.md: add the `CodexCli` variant to the Backend, Config, and Effort sections. Add the new module paths to the Architecture section and the test table.
+- [x] 6.1 Update CLAUDE.md: add the `CodexCli` variant to the Backend, Config, and Effort sections. Add the new module paths to the Architecture section and the test table.
+<!-- status: completed -->
