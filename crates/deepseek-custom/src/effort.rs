@@ -106,4 +106,16 @@ impl Effort {
             Effort::Max => Some("max"),
         }
     }
+
+    /// The `codex` CLI config override for this level.
+    /// `None` omits the override entirely.
+    pub fn codex_cli_effort(&self) -> Option<String> {
+        match self {
+            Effort::None => None,
+            Effort::Low => Some("-c reasoning.effort=low".to_owned()),
+            Effort::Medium => Some("-c reasoning.effort=medium".to_owned()),
+            Effort::High => Some("-c reasoning.effort=high".to_owned()),
+            Effort::Max => Some("-c reasoning.effort=max".to_owned()),
+        }
+    }
 }

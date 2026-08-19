@@ -4,9 +4,10 @@
 <!-- covers: deepseek-custom/codex-backend :: A settings.json entry with kind "codex_cli" produces a Codex backend :: A codex_cli entry builds and runs -->
 <!-- status: completed -->
 
-- [ ] 1.2 Add `Effort` mapping for Codex in `crates/deepseek-custom/src/effort.rs`: a `codex_cli_effort(&self) -> Option<String>` method returning the `-c reasoning.effort=<value>` string, `None` for `Effort::None`.
+- [x] 1.2 Add `Effort` mapping for Codex in `crates/deepseek-custom/src/effort.rs`: a `codex_cli_effort(&self) -> Option<String>` method returning the `-c reasoning.effort=<value>` string, `None` for `Effort::None`.
 <!-- covers: deepseek-custom/codex-backend :: Effort maps to Codex reasoning_effort values :: Effort::High passes the correct config override -->
 <!-- covers: deepseek-custom/codex-backend :: Effort maps to Codex reasoning_effort values :: Effort::None omits the flag -->
+<!-- status: completed -->
 
 ## 2. JSONL event parsing
 
