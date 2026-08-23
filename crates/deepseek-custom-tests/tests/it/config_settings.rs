@@ -676,7 +676,7 @@ fn subagent_max_depth_takes_part_in_merge() {
 /// an exact `default_backend` here would fail the suite for anyone who
 /// touched the backend picker.
 #[test]
-fn repo_settings_json_parses_with_three_backends() {
+fn repo_settings_json_includes_codex_among_four_backends() {
     // The crate now sits two levels under the repo root
     // (crates/deepseek-custom), so a future move of the crate needs to
     // update this join count.
@@ -688,7 +688,7 @@ fn repo_settings_json_parses_with_three_backends() {
     let s: Settings = serde_json::from_str(&contents).unwrap();
 
     let backends = s.backends().unwrap();
-    assert_eq!(backends.len(), 3);
+    assert_eq!(backends.len(), 4);
 
     let selected = s.default_backend().expect("default_backend must be set");
     assert!(
@@ -721,6 +721,23 @@ fn repo_settings_json_parses_with_three_backends() {
             assert!(!model.is_empty());
         }
         _ => panic!("expected claude to be a ClaudeCli backend"),
+    }
+
+    match backends.get("codex").unwrap() {
+        BackendConfig::CodexCli {
+            model,
+            sandbox,
+            models,
+            ..
+        } => {
+            assert!(!model.is_empty());
+            assert_eq!(sandbox.as_deref(), Some("workspace-write"));
+            assert!(
+                models.is_none(),
+                "Codex models must come from its local cache"
+            );
+        }
+        _ => panic!("expected codex to be a CodexCli backend"),
     }
 }
 

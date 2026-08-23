@@ -17,6 +17,7 @@
 //! JSON all yield a fallback (aliases for `claude_cli`, empty for Ollama),
 //! which the final fallback then covers.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -35,7 +36,6 @@ const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEEPSEEK_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CLAUDE_CLI_ALIASES: &[&str] = &["opus", "sonnet", "haiku", "fable"];
-const CODEX_CLI_MODELS: &[&str] = &["o3", "o4-mini"];
 
 /// Models a backend can run, for the GUI picker.
 pub async fn list_models(entry: &BackendConfig) -> Vec<String> {
@@ -56,13 +56,80 @@ pub async fn list_models(entry: &BackendConfig) -> Vec<String> {
             ..
         } => query_deepseek_models(base_url.as_deref(), api_key.as_deref()).await,
         BackendConfig::ClaudeCli { .. } => query_anthropic_models().await,
-        BackendConfig::CodexCli { .. } => CODEX_CLI_MODELS
-            .iter()
-            .map(|model| model.to_string())
-            .collect(),
+        BackendConfig::CodexCli { env, .. } => query_codex_models(env.as_ref()),
     };
 
     apply_fallback(discovered, entry.model())
+}
+
+/// Read the model list maintained by Codex CLI itself. The parser only
+/// depends on `slug`, `visibility`, and `priority`, so unrelated cache schema
+/// changes do not hide models from the application.
+fn query_codex_models(extra_env: Option<&HashMap<String, String>>) -> Vec<String> {
+    let Some(path) = codex_models_cache_path(extra_env) else {
+        debug!("codex model discovery: no home directory found");
+        return Vec::new();
+    };
+    let body = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) => {
+            debug!(path = %path.display(), %error, "codex model discovery: cache unavailable");
+            return Vec::new();
+        }
+    };
+    parse_codex_models_cache(&body)
+}
+
+fn codex_models_cache_path(extra_env: Option<&HashMap<String, String>>) -> Option<PathBuf> {
+    if let Some(codex_home) = extra_env
+        .and_then(|env| env.get("CODEX_HOME"))
+        .filter(|value| !value.is_empty())
+    {
+        return Some(PathBuf::from(codex_home).join("models_cache.json"));
+    }
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(codex_home).join("models_cache.json"));
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".codex").join("models_cache.json"))
+}
+
+fn parse_codex_models_cache(body: &str) -> Vec<String> {
+    let json: serde_json::Value = match serde_json::from_str(body) {
+        Ok(json) => json,
+        Err(error) => {
+            debug!(%error, "codex model discovery: malformed cache");
+            return Vec::new();
+        }
+    };
+    let Some(entries) = json.get("models").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let mut visible = entries
+        .iter()
+        .filter(|entry| entry.get("visibility").and_then(serde_json::Value::as_str) == Some("list"))
+        .filter_map(|entry| {
+            let slug = entry.get("slug")?.as_str()?.trim();
+            if slug.is_empty() {
+                return None;
+            }
+            let priority = entry
+                .get("priority")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(i64::MAX);
+            Some((priority, slug.to_string()))
+        })
+        .collect::<Vec<_>>();
+    visible.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut seen = HashSet::new();
+    visible
+        .into_iter()
+        .filter_map(|(_, slug)| seen.insert(slug.clone()).then_some(slug))
+        .collect()
 }
 
 /// The entry's explicit `models` override, if it carries one.

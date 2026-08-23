@@ -2,6 +2,8 @@
 //! production module as part of the two-crate workspace split.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use deepseek_custom::api::models::{
     apply_fallback, claude_cli_aliases, entry_models_override, list_models, ollama_tags_url,
@@ -36,6 +38,26 @@ fn claude_cli_entry(models: Option<Vec<String>>) -> BackendConfig {
         env: None,
         models,
     }
+}
+
+fn codex_cli_entry(models: Option<Vec<String>>) -> BackendConfig {
+    BackendConfig::CodexCli {
+        model: "gpt-5.6-sol".to_string(),
+        sandbox: Some("workspace-write".to_string()),
+        env: None,
+        models,
+    }
+}
+
+fn unique_temp_path(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "deepseek-custom-{label}-{}-{nanos}",
+        std::process::id()
+    ))
 }
 
 #[test]
@@ -79,6 +101,71 @@ async fn explicit_override_wins_for_claude_cli_variant() {
     let entry = claude_cli_entry(Some(vec!["custom-alias".to_string()]));
     let models = list_models(&entry).await;
     assert_eq!(models, vec!["custom-alias".to_string()]);
+}
+
+#[tokio::test]
+async fn explicit_override_exposes_all_configured_codex_models() {
+    let configured = vec![
+        "gpt-5.6-sol".to_string(),
+        "gpt-5.6-terra".to_string(),
+        "gpt-5.6-luna".to_string(),
+    ];
+    let entry = codex_cli_entry(Some(configured.clone()));
+    let models = list_models(&entry).await;
+    assert_eq!(models, configured);
+}
+
+#[tokio::test]
+async fn codex_cli_without_override_uses_declared_model_only() {
+    let mut env = HashMap::new();
+    env.insert(
+        "CODEX_HOME".to_string(),
+        unique_temp_path("missing-codex-home")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let entry = BackendConfig::CodexCli {
+        model: "gpt-5.6-sol".to_string(),
+        sandbox: Some("workspace-write".to_string()),
+        env: Some(env),
+        models: None,
+    };
+    let models = list_models(&entry).await;
+    assert_eq!(models, vec!["gpt-5.6-sol".to_string()]);
+}
+
+#[tokio::test]
+async fn codex_cli_cache_exposes_visible_models_in_priority_order() {
+    let codex_home = unique_temp_path("codex-model-cache");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::write(
+        codex_home.join("models_cache.json"),
+        r#"{
+            "models": [
+                {"slug":"gpt-5.4","visibility":"list","priority":16},
+                {"slug":"gpt-reserve","visibility":"hide","priority":1},
+                {"slug":"gpt-5.6-luna","visibility":"list","priority":3},
+                {"slug":"gpt-5.6-sol","visibility":"list","priority":1}
+            ]
+        }"#,
+    )
+    .unwrap();
+    let mut env = HashMap::new();
+    env.insert(
+        "CODEX_HOME".to_string(),
+        codex_home.to_string_lossy().into_owned(),
+    );
+    let entry = BackendConfig::CodexCli {
+        model: "gpt-5.6-sol".to_string(),
+        sandbox: Some("workspace-write".to_string()),
+        env: Some(env),
+        models: None,
+    };
+
+    let models = list_models(&entry).await;
+
+    assert_eq!(models, ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]);
+    std::fs::remove_dir_all(codex_home).unwrap();
 }
 
 #[tokio::test]

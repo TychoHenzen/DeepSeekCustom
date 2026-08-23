@@ -2,6 +2,7 @@
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::events::AgentCommand;
@@ -44,6 +45,19 @@ fn picker_on(settings: &Settings, model: &str) -> BackendPicker {
 fn new_sorts_the_backend_names() {
     let picker = picker_on(&settings_with_two_backends(), "deepseek-v4-flash");
     assert_eq!(picker.options(), ["claude", "deepseek"]);
+}
+
+#[test]
+fn repo_settings_make_codex_selectable_in_the_backend_picker() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let contents = std::fs::read_to_string(repo_root.join("settings.json")).unwrap();
+    let settings: Settings = serde_json::from_str(&contents).unwrap();
+    let picker = picker_on(&settings, "deepseek-v4-flash");
+
+    assert!(picker.options().contains(&"codex".to_string()));
 }
 
 #[test]
