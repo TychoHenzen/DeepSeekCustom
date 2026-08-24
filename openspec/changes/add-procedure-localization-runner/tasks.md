@@ -25,12 +25,16 @@
 
 ## 3. Repository index
 
-- [ ] 3.1 Walk the current working directory into normalized repository-relative paths while excluding `.git`, `target`, `.deepseek`, binary files, and reparse-point traversal.
-- [ ] 3.2 Extract conservative Rust item symbols per indexed path and support path-only targets for other file types.
-- [ ] 3.3 Validate every returned path and optional symbol against the current index and report all rejected targets together.
+- [x] 3.1 Walk the current working directory into normalized repository-relative paths while excluding `.git`, `target`, `.deepseek`, binary files, and reparse-point traversal.
+  <!-- status: completed -->
+- [x] 3.2 Extract conservative Rust item symbols per indexed path and support path-only targets for other file types.
+  <!-- status: completed -->
+- [x] 3.3 Validate every returned path and optional symbol against the current index and report all rejected targets together.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: All reported targets are valid -->
-- [ ] 3.4 Add regression fixtures for traversal, absolute paths, invented files, mismatched symbols, Unicode paths, and index-size limits.
+  <!-- status: completed -->
+- [x] 3.4 Add regression fixtures for traversal, absolute paths, invented files, mismatched symbols, Unicode paths, and index-size limits.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: A target is invented -->
+  <!-- status: completed -->
 
 ## 4. Structured local dispatch
 
