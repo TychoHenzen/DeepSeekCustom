@@ -124,6 +124,7 @@ impl StyleState {
                 thinking: None,
                 thinking_mode: None,
                 reasoning_effort: None,
+                response_format: None,
                 effort: Some(Effort::None),
             };
 

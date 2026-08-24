@@ -58,6 +58,12 @@ pub struct LocalizationTarget {
     pub evidence: String,
 }
 
+/// Schema-constrained final content returned by a localization dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalizationEnvelope {
+    pub targets: Vec<LocalizationTarget>,
+}
+
 /// The validation outcome of one model response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

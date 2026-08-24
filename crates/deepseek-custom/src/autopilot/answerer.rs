@@ -72,6 +72,7 @@ impl QuestionAnswerer for PolicyAnswerer {
             thinking: None,
             thinking_mode: None,
             reasoning_effort: None,
+            response_format: None,
             effort: Some(crate::effort::Effort::None),
         };
 

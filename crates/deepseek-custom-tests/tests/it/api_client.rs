@@ -4,7 +4,7 @@
 
 use deepseek_custom::api::client::ApiClient;
 use deepseek_custom::api::provider::Provider;
-use deepseek_custom::api::types::{ChatRequest, ToolChoice};
+use deepseek_custom::api::types::{ChatRequest, JsonSchemaFormat, ResponseFormat, ToolChoice};
 use deepseek_custom::effort::Effort;
 
 fn sample_request(effort: Option<Effort>) -> ChatRequest {
@@ -19,6 +19,7 @@ fn sample_request(effort: Option<Effort>) -> ChatRequest {
         thinking: None,
         thinking_mode: None,
         reasoning_effort: None,
+        response_format: None,
         effort,
     }
 }
@@ -111,4 +112,36 @@ fn ollama_with_no_effort_leaves_reasoning_effort_alone() {
     let prepared = client.prepare_request_for_test(&req);
 
     assert_eq!(prepared.reasoning_effort.as_deref(), Some("low"));
+}
+
+fn structured_format() -> ResponseFormat {
+    ResponseFormat::JsonSchema {
+        json_schema: JsonSchemaFormat {
+            name: "test_schema".to_string(),
+            strict: true,
+            schema: serde_json::json!({"type": "object"}),
+        },
+    }
+}
+
+#[test]
+fn ollama_retains_the_structured_response_format() {
+    let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
+    let mut req = sample_request(None);
+    req.response_format = Some(structured_format());
+
+    let prepared = client.prepare_request_for_test(&req);
+
+    assert_eq!(prepared.response_format, req.response_format);
+}
+
+#[test]
+fn deepseek_drops_the_ollama_only_structured_response_format() {
+    let client = ApiClient::new(Provider::DeepSeek, "sk-test".into(), None);
+    let mut req = sample_request(None);
+    req.response_format = Some(structured_format());
+
+    let prepared = client.prepare_request_for_test(&req);
+
+    assert!(prepared.response_format.is_none());
 }

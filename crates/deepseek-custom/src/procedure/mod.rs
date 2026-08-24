@@ -4,13 +4,16 @@
 //! subsystem. Each run carries the complete typed state needed to rebuild a
 //! short prompt for its current stage.
 
+mod dispatch;
 mod index;
 mod input;
 mod prompt;
 pub mod report;
 mod run;
+mod schema;
 mod validation;
 
+pub use dispatch::{LocalizationDispatchError, LocalizationDispatcher};
 pub use index::{RepositoryIndexError, build_repository_index};
 pub use input::{
     CapabilityDeltaSlice, ContractSelection, OpenSpecChange, OpenSpecCommandFailure, OpenSpecInput,
@@ -24,10 +27,11 @@ pub use prompt::{
 pub use report::ProcedureReportStore;
 
 pub use run::{
-    LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    LocalizationAttempt, LocalizationEnvelope, LocalizationTarget, ProcedureAttemptDisposition,
+    ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition,
 };
+pub use schema::localization_response_format;
 pub use validation::{
     LocalizationTargetRejection, LocalizationTargetValidationError, validate_localization_targets,
 };

@@ -38,12 +38,16 @@
 
 ## 4. Structured local dispatch
 
-- [ ] 4.1 Add optional typed `response_format` support to `ChatRequest` without changing normal agent request serialization.
-- [ ] 4.2 Map the localization JSON Schema onto Ollama's OpenAI-compatible request and add a captured-wire integration test.
+- [x] 4.1 Add optional typed `response_format` support to `ChatRequest` without changing normal agent request serialization.
+  <!-- status: completed -->
+- [x] 4.2 Map the localization JSON Schema onto Ollama's OpenAI-compatible request and add a captured-wire integration test.
   <!-- covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Ollama receives the localization schema -->
-- [ ] 4.3 Reject non-Ollama localization backends before dispatch and cover the error for Api, Claude CLI, and Codex CLI entries.
+  <!-- status: completed -->
+- [x] 4.3 Reject non-Ollama localization backends before dispatch and cover the error for Api, Claude CLI, and Codex CLI entries.
   <!-- covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Backend cannot constrain output -->
-- [ ] 4.4 Implement the tool-free, non-streaming localization call and decode its final content into the typed envelope.
+  <!-- status: completed -->
+- [x] 4.4 Implement the tool-free, non-streaming localization call and decode its final content into the typed envelope.
+  <!-- status: completed -->
 
 ## 5. Bounded localization run
 

@@ -32,12 +32,31 @@ pub struct ChatRequest {
     /// `thinking_mode`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Provider-native structured final-response constraint. `None` keeps
+    /// ordinary agent requests byte-for-byte wire compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     /// The harness's own five-level effort control. Never sent on the wire:
     /// `ApiClient::prepare_request` reads it to fill in `thinking_mode`
     /// (DeepSeek) or `reasoning_effort` (Ollama) per provider, at the edge,
     /// right before the request goes out. See `crate::effort::Effort`.
     #[serde(skip)]
     pub effort: Option<Effort>,
+}
+
+/// A structured final-response constraint accepted by compatible providers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    JsonSchema { json_schema: JsonSchemaFormat },
+}
+
+/// Named JSON Schema carried as typed JSON, not as an encoded string.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JsonSchemaFormat {
+    pub name: String,
+    pub strict: bool,
+    pub schema: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

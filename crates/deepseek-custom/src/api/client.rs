@@ -63,6 +63,7 @@ impl ApiClient {
         let mut prepared = req.clone();
         match self.provider {
             Provider::DeepSeek => {
+                prepared.response_format = None;
                 if let Some(effort) = req.effort {
                     prepared.thinking_mode = Some(effort.deepseek_thinking_mode().to_string());
                 }
