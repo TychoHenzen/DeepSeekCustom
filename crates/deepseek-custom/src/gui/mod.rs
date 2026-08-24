@@ -1,7 +1,7 @@
 //! Native GUI built on egui/eframe. `DeepSeekGui` implements
 //! `eframe::App` and owns the transcript, the input bar, the
-//! settings sidebar, and the five tabs (Chat, Autopilot, Cascade,
-//! Evolve, Sessions). Rendering, event dispatch, format helpers, and
+//! settings sidebar, and the six tabs (Chat, Autopilot, Cascade,
+//! Evolve, Procedure, Sessions). Rendering, event dispatch, format helpers, and
 //! test accessors each live in their own submodule.
 
 pub mod agent_handles;
@@ -15,6 +15,7 @@ mod event_dispatch;
 pub mod evolve_tab;
 mod format;
 mod panels;
+pub mod procedure_tab;
 pub mod search_view;
 pub mod session_state;
 pub mod sessions_tab;
@@ -44,6 +45,7 @@ use crate::agent::events::{AgentCommand, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
+use crate::procedure::{ProcedureCommand, ProcedureProgress};
 use crate::search::SearchCommand;
 use crate::session::SessionStore;
 use crate::voice::service::{VoiceCommand, VoiceEvent};
@@ -54,6 +56,7 @@ use autopilot_tab::AutopilotTab;
 use backend_picker::{BackendPicker, BackendSwitch};
 use cascade_tab::CascadeTab;
 use evolve_tab::EvolveTab;
+use procedure_tab::ProcedureTab;
 use session_state::{SessionOrigin, SessionState};
 use transcript::{BlockKind, Transcript};
 use voice_ui::VoiceUi;
@@ -85,6 +88,7 @@ pub enum ActiveTab {
     Autopilot,
     Cascade,
     Evolve,
+    Procedure,
     Sessions,
 }
 
@@ -106,6 +110,7 @@ pub struct DeepSeekGui {
     pub(super) autopilot: AutopilotTab,
     pub(super) cascade: CascadeTab,
     pub(super) evolve: EvolveTab,
+    pub(super) procedure: ProcedureTab,
     pub(super) sessions: SessionState,
     pub(super) active_tab: ActiveTab,
     pub(super) settings_visible: bool,
@@ -161,6 +166,7 @@ impl DeepSeekGui {
             autopilot: AutopilotTab::new(&settings, &project_root),
             cascade: CascadeTab::new(&settings),
             evolve: EvolveTab::new(&settings),
+            procedure: ProcedureTab::new(&settings, &project_root),
             sessions: SessionState::new(store, origin),
             rx_events,
             tx_input,
@@ -218,6 +224,17 @@ impl DeepSeekGui {
         self
     }
 
+    /// Attach the dedicated procedure command and progress channels.
+    pub fn with_procedure(
+        mut self,
+        tx: mpsc::UnboundedSender<ProcedureCommand>,
+        rx: mpsc::UnboundedReceiver<ProcedureProgress>,
+        interrupt: Arc<AtomicBool>,
+    ) -> Self {
+        self.procedure.attach(tx, rx, interrupt);
+        self
+    }
+
     /// Attach a running voice service's channels.
     pub fn with_voice(
         mut self,
@@ -237,6 +254,7 @@ impl DeepSeekGui {
     }
 
     pub(super) fn apply_backend_switch(&mut self, switch: BackendSwitch) {
+        self.procedure.request_stop();
         self.sessions
             .save_outgoing_and_start_new(&mut self.transcript, switch.outgoing);
         let _ = self.tx_input.send(switch.command);
@@ -250,6 +268,7 @@ impl DeepSeekGui {
     }
 
     pub(super) fn start_new_session(&mut self) {
+        self.procedure.request_stop();
         if self.defer_switch(PendingSwitch::New) {
             return;
         }
@@ -259,6 +278,7 @@ impl DeepSeekGui {
     }
 
     pub(super) fn load_session(&mut self, id: crate::session::SessionId) {
+        self.procedure.request_stop();
         if self.defer_switch(PendingSwitch::Load(id)) {
             return;
         }
@@ -308,6 +328,7 @@ impl DeepSeekGui {
         if !has_text && !has_image {
             return;
         }
+        self.procedure.request_stop();
         let text = std::mem::take(&mut self.input_buffer);
         let image = self.attachment.take();
         self.transcript.push(BlockKind::User { text: text.clone() });
@@ -323,6 +344,7 @@ impl DeepSeekGui {
 
 impl eframe::App for DeepSeekGui {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+        self.procedure.drain_progress();
         self.drain_events();
         self.check_timed_save();
         self.drain_voice();

@@ -18,6 +18,10 @@ use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
+use deepseek_custom::procedure::{
+    LocalizationDispatcher, OpenSpecInput, ProcedureCommand, ProcedureProgress,
+    ProcedureReportStore, ProcedureRunner,
+};
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
@@ -175,6 +179,10 @@ async fn main() {
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
     let (tx_search, mut rx_search) = mpsc::unbounded_channel::<SearchCommand>();
+    let (tx_procedure, mut rx_procedure) = mpsc::unbounded_channel::<ProcedureCommand>();
+    let (tx_procedure_progress, rx_procedure_progress) =
+        mpsc::unbounded_channel::<ProcedureProgress>();
+    let procedure_interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // ── Backend construction ─────────────────────────────────
 
@@ -232,6 +240,10 @@ async fn main() {
     };
     let switch_tx_events = tx_events;
     let repeat_project_root = project_root.clone();
+    let procedure_project_root = project_root.clone();
+    let procedure_settings = settings.clone();
+    let procedure_working_dir = Arc::clone(&working_dir_flag);
+    let procedure_task_interrupt = Arc::clone(&procedure_interrupt);
 
     tokio::spawn(async move {
         info!("agent task started");
@@ -341,6 +353,54 @@ async fn main() {
                         None => break,
                     }
                 }
+                procedure = rx_procedure.recv() => {
+                    match procedure {
+                        Some(command) => {
+                            let mut run_settings = procedure_settings.clone();
+                            run_settings.procedure_mut().localization_backend =
+                                Some(command.backend.clone());
+                            match LocalizationDispatcher::from_settings(
+                                &run_settings,
+                                &procedure_project_root,
+                            ) {
+                                Ok(dispatcher) => {
+                                    let working_dir =
+                                        procedure_working_dir.lock().unwrap().clone();
+                                    let limits = run_settings
+                                        .procedure()
+                                        .map(|procedure| procedure.repository_index.clone())
+                                        .unwrap_or_default();
+                                    let runner = ProcedureRunner::new(
+                                        OpenSpecInput::new(&procedure_project_root),
+                                        working_dir,
+                                        limits,
+                                        dispatcher,
+                                        ProcedureReportStore::for_project(
+                                            &procedure_project_root,
+                                        ),
+                                        Arc::clone(&procedure_task_interrupt),
+                                    )
+                                    .with_progress(tx_procedure_progress.clone());
+                                    if let Err(error) = runner.run(command.request).await {
+                                        let _ = tx_procedure_progress.send(
+                                            ProcedureProgress::RunFailed {
+                                                message: error.to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::RunFailed {
+                                            message: error.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
         info!("agent task shutting down");
@@ -368,7 +428,12 @@ async fn main() {
         project_root.clone(),
     )
     .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt))
-    .with_search(tx_search, Arc::clone(&flags.search_interrupt));
+    .with_search(tx_search, Arc::clone(&flags.search_interrupt))
+    .with_procedure(
+        tx_procedure,
+        rx_procedure_progress,
+        Arc::clone(&procedure_interrupt),
+    );
 
     let voice_forwarder = if let Some(v) = voice {
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();

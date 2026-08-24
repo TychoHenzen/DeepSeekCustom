@@ -65,7 +65,11 @@
 
 ## 6. Procedure interface and verification
 
-- [ ] 6.1 Add the Procedure tab with active-change, task, and localization-backend controls, a Run button, progress, targets, evidence, and final status.
-- [ ] 6.2 Wire Procedure events and interruption through the existing GUI event path without adding messages to chat history.
-- [ ] 6.3 Run a real read-only localization against `implement-hemisphere-model` with the configured Ollama backend and record the observed result in the change notes.
-- [ ] 6.4 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+- [x] 6.1 Add the Procedure tab with active-change, task, and localization-backend controls, a Run button, progress, targets, evidence, and final status.
+  <!-- status: completed -->
+- [x] 6.2 Wire Procedure events and interruption through the existing GUI event path without adding messages to chat history.
+  <!-- status: completed -->
+- [x] 6.3 Run a real read-only localization against `implement-hemisphere-model` with the configured Ollama backend and record the observed result in the change notes.
+  <!-- status: completed -->
+- [x] 6.4 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+  <!-- status: completed -->

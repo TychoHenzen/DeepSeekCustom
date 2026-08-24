@@ -58,6 +58,7 @@ mod gui_autopilot_tab;
 mod gui_backend_picker;
 mod gui_cascade_tab;
 mod gui_evolve_tab;
+mod gui_procedure_tab;
 mod gui_search_view;
 mod gui_session_state;
 mod gui_sessions_tab;

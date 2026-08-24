@@ -25,7 +25,8 @@ impl ProcedureReportStore {
         Self::new(project_root.join(PROCEDURE_RUNS_SUBDIR))
     }
 
-    fn report_path(&self, id: &ProcedureRunId) -> PathBuf {
+    /// Path used by one run report.
+    pub fn report_path(&self, id: &ProcedureRunId) -> PathBuf {
         self.reports_dir.join(format!("{}.json", id.as_str()))
     }
 

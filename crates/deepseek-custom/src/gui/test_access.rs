@@ -18,6 +18,7 @@ use super::agent_handles::AgentHandles;
 use super::attachment::AttachmentSlot;
 use super::autopilot_tab::AutopilotTab;
 use super::backend_picker::BackendPicker;
+use super::procedure_tab::ProcedureTab;
 use super::session_state::SessionState;
 use super::transcript::Transcript;
 use super::voice_ui::VoiceUi;
@@ -178,6 +179,18 @@ impl DeepSeekGui {
 
     pub fn backends_mut_for_test(&mut self) -> &mut BackendPicker {
         &mut self.backends
+    }
+
+    pub fn procedure_for_test(&self) -> &ProcedureTab {
+        &self.procedure
+    }
+
+    pub fn procedure_mut_for_test(&mut self) -> &mut ProcedureTab {
+        &mut self.procedure
+    }
+
+    pub fn drain_procedure_for_test(&mut self) {
+        self.procedure.drain_progress();
     }
 
     /// Whether a turn is in flight. Nothing production reads this back:

@@ -14,6 +14,7 @@ impl DeepSeekGui {
                     ActiveTab::Autopilot,
                     ActiveTab::Cascade,
                     ActiveTab::Evolve,
+                    ActiveTab::Procedure,
                     ActiveTab::Sessions,
                 ] {
                     ui.selectable_value(&mut self.active_tab, tab, format!("{tab:?}"));
@@ -54,6 +55,14 @@ impl DeepSeekGui {
                     }
                     ui.separator();
                     self.paint_chat(ui);
+                }
+                ActiveTab::Procedure => {
+                    let dirty = self
+                        .procedure
+                        .render(ui, &mut self.settings, &self.project_root);
+                    if dirty {
+                        self.persist_settings();
+                    }
                 }
                 ActiveTab::Sessions => {
                     self.render_sessions_tab(ui);

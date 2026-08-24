@@ -157,6 +157,7 @@ impl DeepSeekGui {
     }
 
     fn on_session_reset(&mut self) {
+        self.procedure.request_stop();
         let origin = self.current_origin();
         self.sessions
             .save_outgoing_and_start_new(&mut self.transcript, origin);
@@ -231,6 +232,7 @@ impl DeepSeekGui {
             // search included. Both tabs share one flag, so either call
             // stops the run that is going.
             self.cascade.request_stop();
+            self.procedure.request_stop();
             self.voice.send(VoiceCommand::StopSpeaking);
             self.transcript.push(BlockKind::Notice {
                 text: "[Interrupting...]".into(),

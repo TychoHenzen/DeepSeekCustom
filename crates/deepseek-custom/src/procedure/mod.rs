@@ -32,7 +32,9 @@ pub use run::{
     ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition,
 };
-pub use runner::{ProcedureProgress, ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError};
+pub use runner::{
+    ProcedureCommand, ProcedureProgress, ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError,
+};
 pub use schema::localization_response_format;
 pub use validation::{
     LocalizationTargetRejection, LocalizationTargetValidationError, validate_localization_targets,

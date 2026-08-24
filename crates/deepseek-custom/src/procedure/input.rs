@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::ProcedureTask;
-use crate::mcp::spawn::resolve_command;
+use crate::mcp::spawn::{ResolvedCommand, resolve_command};
 
 const OPENSPEC_COMMAND: &str = "openspec";
 
@@ -149,7 +149,7 @@ impl OpenSpecInput {
         &self,
         change_id: &str,
     ) -> Result<OpenSpecValidation, OpenSpecInputError> {
-        let resolved = resolve_command(&self.command);
+        let resolved = resolve_openspec_command(&self.command);
         let mut args = resolved.prefix_args;
         args.extend([
             "validate".to_string(),
@@ -324,6 +324,28 @@ impl OpenSpecInput {
             )));
         }
         Ok(path)
+    }
+}
+
+fn resolve_openspec_command(command: &str) -> ResolvedCommand {
+    let resolved = resolve_command(command);
+    if !cfg!(windows) || command != OPENSPEC_COMMAND || resolved.prefix_args.len() != 2 {
+        return resolved;
+    }
+
+    let batch = Path::new(&resolved.prefix_args[1]);
+    let Some(directory) = batch.parent() else {
+        return resolved;
+    };
+    let script = directory.join("node_modules/@fission-ai/openspec/bin/openspec.js");
+    let node = resolve_command("node");
+    if !script.is_file() || !Path::new(&node.program).is_file() {
+        return resolved;
+    }
+
+    ResolvedCommand {
+        program: node.program,
+        prefix_args: vec![script.display().to_string()],
     }
 }
 

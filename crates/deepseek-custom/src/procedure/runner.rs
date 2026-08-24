@@ -30,6 +30,13 @@ pub struct ProcedureRunRequest {
     pub scratchpad: ProcedureScratchpad,
 }
 
+/// One GUI-selected run sent to the background procedure executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureCommand {
+    pub backend: String,
+    pub request: ProcedureRunRequest,
+}
+
 /// Small procedure-only events emitted in execution order.
 ///
 /// This type is intentionally separate from chat `StreamEvent`, so a run
@@ -69,6 +76,9 @@ pub enum ProcedureProgress {
         run_id: ProcedureRunId,
         disposition: ProcedureTerminalDisposition,
     },
+    /// Infrastructure or backend preflight failed before a runner could
+    /// produce its normal terminal report.
+    RunFailed { message: String },
 }
 
 /// Infrastructure failure that prevents a terminal report from being saved.
