@@ -178,3 +178,91 @@ The capability-specific structured results are:
 - Effective final procedure-localization spec: 23 of 23 unique scenario IDs bound.
 
 The effective count is `12 + 17 - 6 = 23`. This is also `12` main scenarios plus `7` added-delta scenarios plus `4` new scenarios in modified requirements. The coverage ratchet remained unchanged.
+
+## Live Ollama smoke
+
+This evidence uses active change `implement-hemisphere-model`, task `1.1`, and the `ollama` backend. The run started from the repository root with:
+
+```powershell
+cargo run -p deepseek-custom --example procedure_localization_smoke
+```
+
+The example read `settings.json` at runtime. It used the configured model exactly as written:
+
+```text
+hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M
+```
+
+The read-only preflight reached Ollama `0.32.6`. The exact configured model appeared in `/api/tags`. The installation contained three models.
+
+The report file timestamp was `2026-08-24T19:50:41.149Z`. The live result was:
+
+- Report ID: `3e13ad71-35a7-4659-9a20-99fe3e0ff83e`.
+- Report path: `.deepseek/procedure-runs/3e13ad71-35a7-4659-9a20-99fe3e0ff83e.json`.
+- Attempt count: 2.
+- Transport: passed. Ollama returned a response for both bounded attempts.
+- Schema decoding: passed. Both responses decoded into localization target arrays.
+- Repository structural validation: failed. Every returned Markdown target used the invented symbol `Select`.
+- Semantic review: not reached. No structurally valid pending target set existed.
+
+Attempt 1 returned these targets:
+
+- `docs/agent-project-context.md`, symbol `Select`, evidence `docs/notes/claude-effort.md`.
+- `docs/notes/claude-resume.md`, symbol `Select`, evidence `docs/notes/claude-effort.md`.
+- `docs/notes/claude-thinking-display.md`, symbol `Select`, evidence `docs/notes/claude-effort.md`.
+
+Attempt 2 returned the same three paths and symbol. Each target cited its own path as evidence. Both attempts were rejected with `symbol is not present under the indexed path` for every target.
+
+The task contract names `crates/deepseek-custom/src/config/settings.rs` as the owner of `HemisphereSettings`. The returned targets did not point to that file. No approval was recorded for this live-model result.
+
+## Source-mutation evidence
+
+The aggregate covers every regular file under `crates/`. Paths are normalized to `/` and sorted with Node's default ordinal code-unit order. SHA-256 receives each normalized path, one NUL byte, then the file contents. Generated `.deepseek` reports are outside this source set.
+
+Run the exact aggregate command from the repository root:
+
+```powershell
+node -e "const fs=require('fs');const path=require('path');const crypto=require('crypto');const walk=p=>fs.readdirSync(p,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(p,e.name)):e.isFile()?[path.join(p,e.name)]:[]);const files=walk('crates').map(p=>p.split(path.sep).join('/')).sort();const h=crypto.createHash('sha256');for(const file of files){h.update(file);h.update(Buffer.from([0]));h.update(fs.readFileSync(file));}console.log(JSON.stringify({files:files.length,sha256:h.digest('hex')}));"
+```
+
+The live smoke used 268 source files. Its aggregate was identical before and after the model run:
+
+```text
+d49d0da9d9e148a61c566a3633936670fa3d2e8ef73ad37a999f5eeab4d1185a
+```
+
+The live result never reached an eligible review state. Separate controlled reports therefore exercise the production review storage operations. These are mutation checks, not live-model results. The helper validates the known target against the production repository index and sets `model: "not-dispatched"`.
+
+The controlled target was `crates/deepseek-custom/src/config/settings.rs` with no symbol. Its evidence was `Task 1.1 names this file as the owner of HemisphereSettings.`
+
+Approval command:
+
+```powershell
+cargo run -p deepseek-custom --example procedure_localization_smoke -- controlled-review approve
+```
+
+Approval result:
+
+- Report ID: `a61ec86a-1550-49e4-9f5a-1fe8243474ee`.
+- Report timestamp: `2026-08-24T20:08:43.658Z`.
+- Report path: `.deepseek/procedure-runs/a61ec86a-1550-49e4-9f5a-1fe8243474ee.json`.
+- Review disposition: `approved`.
+- Model dispatch: false.
+- Source aggregate before and after: `25e982dea23d838b7805814fa68a07091892847453fa1f0e998e5b503b3c3225` across 268 files.
+
+Rejection command:
+
+```powershell
+cargo run -p deepseek-custom --example procedure_localization_smoke -- controlled-review reject
+```
+
+Rejection result:
+
+- Report ID: `1bf8580f-43d3-43d1-b2b5-802efc0a3c46`.
+- Report timestamp: `2026-08-24T20:08:59.358Z`.
+- Report path: `.deepseek/procedure-runs/1bf8580f-43d3-43d1-b2b5-802efc0a3c46.json`.
+- Review disposition: `rejected`.
+- Model dispatch: false.
+- Source aggregate before and after: `25e982dea23d838b7805814fa68a07091892847453fa1f0e998e5b503b3c3225` across 268 files.
+
+The controlled aggregate differs from the earlier live-smoke aggregate because the maintained controlled-review command was added afterward. Each before-and-after comparison is internally identical. Approval and rejection changed only their named files under `.deepseek/procedure-runs/`.
