@@ -11,8 +11,9 @@ use tracing::info;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
     OpenSpecChange, OpenSpecInput, ProcedureAttemptDisposition, ProcedureCommand,
-    ProcedureProgress, ProcedureReportStore, ProcedureRun, ProcedureRunId, ProcedureRunRequest,
-    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
+    ProcedureProgress, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
+    ProcedureTerminalDisposition,
 };
 
 use super::cascade_tab::backend_combo;
@@ -24,6 +25,33 @@ pub enum ProcedureStatus {
     Running { message: String },
     Finished(ProcedureTerminalDisposition),
     Error { message: String },
+}
+
+/// Stable presentation states shown by the Procedure view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcedureViewState {
+    Idle,
+    Running,
+    AwaitingReview,
+    Approved,
+    Rejected,
+    Failed,
+    Interrupted,
+}
+
+impl ProcedureViewState {
+    /// Exact short label rendered for this state.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "ready",
+            Self::Running => "running",
+            Self::AwaitingReview => "awaiting review",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
 }
 
 /// Selection, channel ownership, progress, and the latest report.
@@ -44,6 +72,7 @@ pub struct ProcedureTab {
     attempt_number: Option<u8>,
     latest_run: Option<ProcedureRun>,
     report_path: Option<PathBuf>,
+    review_error: Option<String>,
     reports: ProcedureReportStore,
 }
 
@@ -75,6 +104,7 @@ impl ProcedureTab {
             attempt_number: None,
             latest_run: None,
             report_path: None,
+            review_error: None,
             reports: ProcedureReportStore::for_project(project_root),
         };
         tab.refresh_changes(project_root);
@@ -132,6 +162,38 @@ impl ProcedureTab {
 
     pub fn latest_report_path(&self) -> Option<&Path> {
         self.report_path.as_deref()
+    }
+
+    /// State label selected from progress and the persisted review decision.
+    pub fn view_state(&self) -> ProcedureViewState {
+        match &self.status {
+            ProcedureStatus::Idle => ProcedureViewState::Idle,
+            ProcedureStatus::Running { .. } => ProcedureViewState::Running,
+            ProcedureStatus::Error { .. } => ProcedureViewState::Failed,
+            ProcedureStatus::Finished(ProcedureTerminalDisposition::Interrupted) => {
+                ProcedureViewState::Interrupted
+            }
+            ProcedureStatus::Finished(ProcedureTerminalDisposition::Failed { .. }) => {
+                ProcedureViewState::Failed
+            }
+            ProcedureStatus::Finished(
+                ProcedureTerminalDisposition::AwaitingReview
+                | ProcedureTerminalDisposition::Succeeded,
+            ) => match self.latest_run.as_ref().map(|run| run.review_disposition) {
+                Some(ProcedureReviewDisposition::Approved) => ProcedureViewState::Approved,
+                Some(ProcedureReviewDisposition::Rejected) => ProcedureViewState::Rejected,
+                Some(
+                    ProcedureReviewDisposition::Pending
+                    | ProcedureReviewDisposition::LegacyUnreviewed,
+                )
+                | None => ProcedureViewState::AwaitingReview,
+            },
+        }
+    }
+
+    /// Most recent review failure, retained until a review succeeds or a new run starts.
+    pub fn review_error(&self) -> Option<&str> {
+        self.review_error.as_deref()
     }
 
     /// Receive progress without entering the routed chat event path.
@@ -199,6 +261,7 @@ impl ProcedureTab {
                 Ok(run) => {
                     self.report_path = Some(self.reports.report_path(&run_id));
                     self.latest_run = Some(run);
+                    self.review_error = None;
                     self.active_run = None;
                     self.status = ProcedureStatus::Finished(disposition);
                 }
@@ -307,10 +370,22 @@ impl ProcedureTab {
             }
             ProcedureStatus::Running { message } => {
                 ui.spinner();
+                ui.label(format!("Status: {}", self.view_state().label()));
                 ui.label(message);
             }
             ProcedureStatus::Finished(disposition) => {
-                ui.label(format!("Final status: {}", disposition_label(disposition)));
+                let label = self.view_state().label();
+                match disposition {
+                    ProcedureTerminalDisposition::Failed { reason } => {
+                        ui.label(
+                            RichText::new(format!("Final status: {label}: {reason}"))
+                                .color(Color32::LIGHT_RED),
+                        );
+                    }
+                    _ => {
+                        ui.label(format!("Final status: {label}"));
+                    }
+                }
             }
             ProcedureStatus::Error { message } => {
                 ui.label(
@@ -327,7 +402,7 @@ impl ProcedureTab {
         }
     }
 
-    fn render_result(&self, ui: &mut egui::Ui) {
+    fn render_result(&mut self, ui: &mut egui::Ui) {
         let Some(run) = &self.latest_run else {
             return;
         };
@@ -343,6 +418,7 @@ impl ProcedureTab {
                 validation.exit_code
             ));
         }
+        ui.label(format!("Review: {}", run.review_disposition));
         ui.label(format!("Attempts: {}", run.attempts.len()));
         for attempt in &run.attempts {
             ui.label(format!(
@@ -350,6 +426,7 @@ impl ProcedureTab {
                 attempt.number, attempt.backend, attempt.model, attempt.disposition
             ));
             if attempt.disposition == ProcedureAttemptDisposition::Accepted {
+                ui.label("Proposed targets:");
                 for target in &attempt.targets {
                     let symbol = target
                         .symbol
@@ -363,6 +440,50 @@ impl ProcedureTab {
         }
         if let Some(path) = &self.report_path {
             ui.label(format!("Report: {}", path.display()));
+        }
+        if let Some(error) = &self.review_error {
+            ui.label(RichText::new(error).color(Color32::LIGHT_RED));
+        }
+        if self.can_review_latest() {
+            ui.horizontal(|ui| {
+                if ui.button("Approve").clicked() {
+                    self.apply_review(ProcedureReviewDisposition::Approved);
+                }
+                if ui.button("Reject").clicked() {
+                    self.apply_review(ProcedureReviewDisposition::Rejected);
+                }
+            });
+        }
+    }
+
+    fn can_review_latest(&self) -> bool {
+        self.view_state() == ProcedureViewState::AwaitingReview
+            && self.latest_run.as_ref().is_some_and(|run| {
+                run.review_disposition == ProcedureReviewDisposition::Pending
+                    && run.terminal_disposition
+                        == Some(ProcedureTerminalDisposition::AwaitingReview)
+            })
+    }
+
+    fn apply_review(&mut self, disposition: ProcedureReviewDisposition) {
+        let Some(run_id) = self.latest_run.as_ref().map(|run| run.id) else {
+            return;
+        };
+        let result = match disposition {
+            ProcedureReviewDisposition::Approved => self.reports.approve(&run_id),
+            ProcedureReviewDisposition::Rejected => self.reports.reject(&run_id),
+            ProcedureReviewDisposition::Pending | ProcedureReviewDisposition::LegacyUnreviewed => {
+                return;
+            }
+        };
+        match result {
+            Ok(run) => {
+                self.latest_run = Some(run);
+                self.review_error = None;
+            }
+            Err(error) => {
+                self.review_error = Some(error.to_string());
+            }
         }
     }
 
@@ -404,6 +525,7 @@ impl ProcedureTab {
         self.dispatch_backend = None;
         self.dispatch_model = None;
         self.attempt_number = None;
+        self.review_error = None;
         self.status = ProcedureStatus::Running {
             message: "Queued".to_string(),
         };
@@ -468,6 +590,21 @@ impl ProcedureTab {
     #[cfg(feature = "test-support")]
     pub fn start_for_test(&mut self) {
         self.start_run();
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn review_actions_available_for_test(&self) -> bool {
+        self.can_review_latest()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn approve_for_test(&mut self) {
+        self.apply_review(ProcedureReviewDisposition::Approved);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn reject_for_test(&mut self) {
+        self.apply_review(ProcedureReviewDisposition::Rejected);
     }
 }
 
@@ -534,13 +671,4 @@ fn stage_label(stage: ProcedureStage, suffix: &str) -> String {
         ProcedureStage::Finished => "Procedure",
     };
     format!("{name} {suffix}")
-}
-
-fn disposition_label(disposition: &ProcedureTerminalDisposition) -> String {
-    match disposition {
-        ProcedureTerminalDisposition::Succeeded => "succeeded".to_string(),
-        ProcedureTerminalDisposition::AwaitingReview => "awaiting review".to_string(),
-        ProcedureTerminalDisposition::Interrupted => "interrupted".to_string(),
-        ProcedureTerminalDisposition::Failed { reason } => format!("failed: {reason}"),
-    }
 }

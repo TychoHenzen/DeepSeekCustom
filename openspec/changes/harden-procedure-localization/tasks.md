@@ -57,9 +57,11 @@
 
 ## 4. Procedure view and durable evidence
 
-- [ ] 4.1 Render distinct running, awaiting-review, approved, rejected, failed, and interrupted states, with target evidence and run-scoped approve and reject controls.
-- [ ] 4.2 Add external GUI-state and report round-trip tests that inspect approved targets, review disposition, backend, model, attempts, and structural validation.
+- [x] 4.1 Render distinct running, awaiting-review, approved, rejected, failed, and interrupted states, with target evidence and run-scoped approve and reject controls.
+  <!-- status: completed -->
+- [x] 4.2 Add external GUI-state and report round-trip tests that inspect approved targets, review disposition, backend, model, attempts, and structural validation.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Completed report is inspectable -->
+  <!-- status: completed -->
 - [ ] 4.3 Extend the source-hash harness across structural success, validation failure, interruption, approval, and rejection.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Workspace remains unchanged -->
 - [ ] 4.4 Add a verification-manifest test that requires the maintained GUI checklist and every named state screenshot to exist.

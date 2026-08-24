@@ -9,11 +9,12 @@ use deepseek_custom::config::settings::{
 };
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
-use deepseek_custom::gui::procedure_tab::{ProcedureStatus, ProcedureTab};
+use deepseek_custom::gui::procedure_tab::{ProcedureStatus, ProcedureTab, ProcedureViewState};
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureProgress,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureAttemptDisposition,
+    ProcedureProgress, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition,
 };
 use tokio::sync::mpsc;
 
@@ -221,6 +222,263 @@ fn completed_progress_loads_targets_dispatch_details_and_report_path() {
             .unwrap()
             .ends_with(format!("{}.json", run_id.as_str()))
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn procedure_view_exposes_distinct_run_and_review_state_labels() {
+    let root = fixture_root("state-labels");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    let run_id = ProcedureRunId::new();
+
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    assert_eq!(tab.view_state(), ProcedureViewState::Running);
+    assert_eq!(tab.view_state().label(), "running");
+
+    let mut pending = completed_run(run_id);
+    pending.review_disposition = ProcedureReviewDisposition::Pending;
+    pending.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    ProcedureReportStore::for_project(&root)
+        .save(&pending)
+        .unwrap();
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    assert_eq!(tab.view_state(), ProcedureViewState::AwaitingReview);
+    assert_eq!(tab.view_state().label(), "awaiting review");
+    assert!(tab.review_actions_available_for_test());
+    assert_eq!(
+        tab.latest_run().unwrap().attempts[0].targets[0],
+        LocalizationTarget {
+            path: "src/procedure.rs".to_string(),
+            symbol: Some("run".to_string()),
+            evidence: "owns the runner".to_string(),
+        }
+    );
+
+    tab.approve_for_test();
+    assert_eq!(tab.view_state(), ProcedureViewState::Approved);
+    assert_eq!(tab.view_state().label(), "approved");
+    assert!(!tab.review_actions_available_for_test());
+
+    let rejected_id = ProcedureRunId::new();
+    let mut rejected = completed_run(rejected_id);
+    rejected.review_disposition = ProcedureReviewDisposition::Pending;
+    rejected.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    ProcedureReportStore::for_project(&root)
+        .save(&rejected)
+        .unwrap();
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: rejected_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    tab.reject_for_test();
+    assert_eq!(tab.view_state(), ProcedureViewState::Rejected);
+    assert_eq!(tab.view_state().label(), "rejected");
+    assert!(!tab.review_actions_available_for_test());
+
+    let failed_id = ProcedureRunId::new();
+    let mut failed = completed_run(failed_id);
+    failed.review_disposition = ProcedureReviewDisposition::Pending;
+    failed.terminal_disposition = Some(ProcedureTerminalDisposition::Failed {
+        reason: "exact fixture failure".to_string(),
+    });
+    ProcedureReportStore::for_project(&root)
+        .save(&failed)
+        .unwrap();
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: failed_id,
+        disposition: failed.terminal_disposition.clone().unwrap(),
+    });
+    assert_eq!(tab.view_state(), ProcedureViewState::Failed);
+    assert_eq!(tab.view_state().label(), "failed");
+
+    let interrupted_id = ProcedureRunId::new();
+    let mut interrupted = completed_run(interrupted_id);
+    interrupted.review_disposition = ProcedureReviewDisposition::Pending;
+    interrupted.terminal_disposition = Some(ProcedureTerminalDisposition::Interrupted);
+    ProcedureReportStore::for_project(&root)
+        .save(&interrupted)
+        .unwrap();
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: interrupted_id,
+        disposition: ProcedureTerminalDisposition::Interrupted,
+    });
+    assert_eq!(tab.view_state(), ProcedureViewState::Interrupted);
+    assert_eq!(tab.view_state().label(), "interrupted");
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn review_controls_are_visible_only_for_the_displayed_pending_run() {
+    let root = fixture_root("review-controls");
+    let store = ProcedureReportStore::for_project(&root);
+    let visible_id = ProcedureRunId::new();
+    let other_id = ProcedureRunId::new();
+    let mut visible = completed_run(visible_id);
+    visible.review_disposition = ProcedureReviewDisposition::Pending;
+    visible.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    let mut other = completed_run(other_id);
+    other.review_disposition = ProcedureReviewDisposition::Pending;
+    other.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    store.save(&visible).unwrap();
+    store.save(&other).unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: visible_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+
+    assert!(tab.review_actions_available_for_test());
+    assert_eq!(tab.latest_run().unwrap().id, visible_id);
+    assert_eq!(
+        tab.latest_run().unwrap().attempts[0].targets,
+        visible.attempts[0].targets
+    );
+    tab.approve_for_test();
+    assert_eq!(
+        tab.latest_run().unwrap().review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert!(!tab.review_actions_available_for_test());
+    assert_eq!(
+        store.load(&visible_id).unwrap().review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(
+        store.load(&other_id).unwrap().review_disposition,
+        ProcedureReviewDisposition::Pending
+    );
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn review_failure_is_visible_and_keeps_the_pending_disposition() {
+    let root = fixture_root("review-error");
+    let store = ProcedureReportStore::for_project(&root);
+    let run_id = ProcedureRunId::new();
+    let mut pending = completed_run(run_id);
+    pending.review_disposition = ProcedureReviewDisposition::Pending;
+    pending.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    store.save(&pending).unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    std::fs::remove_file(store.report_path(&run_id)).unwrap();
+
+    tab.reject_for_test();
+
+    assert_eq!(
+        tab.latest_run().unwrap().review_disposition,
+        ProcedureReviewDisposition::Pending
+    );
+    assert_eq!(tab.view_state(), ProcedureViewState::AwaitingReview);
+    assert!(tab.review_actions_available_for_test());
+    let error = tab.review_error().unwrap();
+    assert!(error.contains(&run_id.as_str()));
+    assert!(error.contains("could not load procedure run"));
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn approved_structural_report_round_trip_populates_the_complete_procedure_view() {
+    let root = fixture_root("approved-observability");
+    let store = ProcedureReportStore::for_project(&root);
+    let run_id = ProcedureRunId::new();
+    let target = LocalizationTarget {
+        path: "src/procedure.rs".to_string(),
+        symbol: Some("run".to_string()),
+        evidence: "The indexed symbol owns the localization runner.".to_string(),
+    };
+    let validation = OpenSpecValidation {
+        command: vec![
+            "openspec".to_string(),
+            "validate".to_string(),
+            "a-change".to_string(),
+            "--strict".to_string(),
+        ],
+        exit_code: Some(0),
+        stdout: "Change 'a-change' is valid".to_string(),
+        stderr: String::new(),
+    };
+    let mut pending = completed_run(run_id);
+    pending.validation = Some(validation.clone());
+    pending.review_disposition = ProcedureReviewDisposition::Pending;
+    pending.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    pending.attempts = vec![
+        LocalizationAttempt {
+            number: 1,
+            backend: "ollama-a".to_string(),
+            model: "qwen-a".to_string(),
+            disposition: ProcedureAttemptDisposition::Rejected,
+            targets: Vec::new(),
+            validation_error: Some("first result was not structurally valid".to_string()),
+        },
+        LocalizationAttempt {
+            number: 2,
+            backend: "ollama-a".to_string(),
+            model: "qwen-a".to_string(),
+            disposition: ProcedureAttemptDisposition::Accepted,
+            targets: vec![target.clone()],
+            validation_error: None,
+        },
+    ];
+    store.save(&pending).unwrap();
+    let mut review_tab = ProcedureTab::new(&settings(), &root);
+    review_tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    assert_eq!(review_tab.view_state(), ProcedureViewState::AwaitingReview);
+
+    review_tab.approve_for_test();
+    let persisted = store.load(&run_id).unwrap();
+    let mut reloaded_tab = ProcedureTab::new(&settings(), &root);
+    reloaded_tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    let visible = reloaded_tab.latest_run().unwrap();
+
+    assert_eq!(reloaded_tab.view_state(), ProcedureViewState::Approved);
+    assert_ne!(
+        reloaded_tab.view_state(),
+        ProcedureViewState::AwaitingReview
+    );
+    assert_eq!(visible, &persisted);
+    assert_eq!(
+        visible.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(visible.validation.as_ref(), Some(&validation));
+    assert_eq!(visible.attempts.len(), 2);
+    assert_eq!(
+        visible
+            .attempts
+            .iter()
+            .map(|attempt| attempt.disposition)
+            .collect::<Vec<_>>(),
+        vec![
+            ProcedureAttemptDisposition::Rejected,
+            ProcedureAttemptDisposition::Accepted,
+        ]
+    );
+    assert_eq!(visible.attempts[1].backend, "ollama-a");
+    assert_eq!(visible.attempts[1].model, "qwen-a");
+    assert_eq!(visible.attempts[1].targets, vec![target]);
+    assert!(!reloaded_tab.review_actions_available_for_test());
+
     std::fs::remove_dir_all(root).ok();
 }
 

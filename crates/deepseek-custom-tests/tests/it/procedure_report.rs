@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, ProcedureApprovedReportError,
+    LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureApprovedReportError,
     ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
     ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition, require_approved_report,
@@ -280,4 +280,80 @@ fn downstream_consumer_guard_accepts_only_approved_reports_without_changing_them
 
     assert!(std::ptr::eq(consumed, &report));
     assert_eq!(consumed, &before);
+}
+
+#[test]
+fn approved_report_round_trip_preserves_targets_dispatch_and_structural_validation() {
+    let reports_dir = temp_path("approved-observability");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let target = LocalizationTarget {
+        path: "crates/deepseek-custom/src/procedure/report.rs".to_string(),
+        symbol: Some("ProcedureReportStore".to_string()),
+        evidence: "The store owns persisted review decisions.".to_string(),
+    };
+    let validation = OpenSpecValidation {
+        command: vec![
+            "openspec".to_string(),
+            "validate".to_string(),
+            "harden-procedure-localization".to_string(),
+            "--strict".to_string(),
+        ],
+        exit_code: Some(0),
+        stdout: "Change 'harden-procedure-localization' is valid".to_string(),
+        stderr: String::new(),
+    };
+    let mut pending = awaiting_review_run();
+    pending.validation = Some(validation.clone());
+    pending.attempts = vec![
+        LocalizationAttempt {
+            number: 1,
+            backend: "ollama".to_string(),
+            model: "qwen2.5-coder:7b-instruct-q4_K_M".to_string(),
+            disposition: ProcedureAttemptDisposition::Rejected,
+            targets: Vec::new(),
+            validation_error: Some("first structural response was rejected".to_string()),
+        },
+        LocalizationAttempt {
+            number: 2,
+            backend: "ollama".to_string(),
+            model: "qwen2.5-coder:7b-instruct-q4_K_M".to_string(),
+            disposition: ProcedureAttemptDisposition::Accepted,
+            targets: vec![target.clone()],
+            validation_error: None,
+        },
+    ];
+    store.save(&pending).unwrap();
+
+    store.approve(&pending.id).unwrap();
+    let approved = store.load(&pending.id).unwrap();
+
+    assert_eq!(
+        approved.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(
+        approved.terminal_disposition,
+        Some(ProcedureTerminalDisposition::AwaitingReview)
+    );
+    assert_eq!(approved.validation, Some(validation));
+    assert_eq!(approved.attempts.len(), 2);
+    assert_eq!(
+        approved
+            .attempts
+            .iter()
+            .map(|attempt| attempt.disposition)
+            .collect::<Vec<_>>(),
+        vec![
+            ProcedureAttemptDisposition::Rejected,
+            ProcedureAttemptDisposition::Accepted,
+        ]
+    );
+    assert_eq!(approved.attempts[1].backend, "ollama");
+    assert_eq!(
+        approved.attempts[1].model,
+        "qwen2.5-coder:7b-instruct-q4_K_M"
+    );
+    assert_eq!(approved.attempts[1].targets, vec![target]);
+
+    std::fs::remove_dir_all(reports_dir).ok();
 }
