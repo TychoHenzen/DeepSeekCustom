@@ -79,6 +79,32 @@ fn write_fixture(root: &Path) -> PathBuf {
     command
 }
 
+fn write_unbound_fixture(root: &Path, capability_count: usize) -> PathBuf {
+    let command = write_fake_openspec(root);
+    let change = root.join("openspec/changes/fixture-change");
+    std::fs::create_dir_all(&change).unwrap();
+    std::fs::write(
+        change.join("proposal.md"),
+        "# Proposal\n\n## Why\n\nSelect one contract.\n\n## What Changes\n\n- Exercise contract selection.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        change.join("tasks.md"),
+        "- [ ] 1.1 Localize an unbound task\n",
+    )
+    .unwrap();
+    for index in 0..capability_count {
+        let spec_dir = change.join("specs").join(format!("capability-{index}"));
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "## ADDED Requirements\n\n### Requirement: Selection fixture\nSelect one contract.\n\n#### Scenario: Selection\n- **WHEN** selection runs\n- **THEN** one contract is selected\n",
+        )
+        .unwrap();
+    }
+    command
+}
+
 fn request(change_id: &str) -> ProcedureRunRequest {
     ProcedureRunRequest {
         change_id: change_id.to_string(),
@@ -377,6 +403,44 @@ async fn failed_stage_zero_saves_exact_failure_without_model_dispatch() {
         run
     );
     std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn ambiguous_unbound_contracts_fail_before_indexing_or_model_dispatch() {
+    for capability_count in [0, 2] {
+        let root = temp_dir(&format!("ambiguous-contract-{capability_count}"));
+        let command = write_unbound_fixture(&root, capability_count);
+        let stub = StubLocalizationDispatcher::success(Vec::new());
+        let runner = ProcedureRunner::new(
+            deepseek_custom::procedure::OpenSpecInput::with_command(
+                &root,
+                command.display().to_string(),
+            ),
+            root.clone(),
+            RepositoryIndexLimits {
+                max_files: 0,
+                max_total_bytes: 0,
+            },
+            stub.clone(),
+            ProcedureReportStore::for_project(&root),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let run = runner.run(request("fixture-change")).await.unwrap();
+
+        assert_eq!(stub.calls(), 0);
+        assert!(run.repository_fingerprint.is_none());
+        assert!(run.attempts.is_empty());
+        assert_eq!(
+            run.terminal_disposition,
+            Some(ProcedureTerminalDisposition::Failed {
+                reason: format!(
+                    "OpenSpec input error: unbound task `1.1` in change `fixture-change` needs exactly one capability delta, found {capability_count}"
+                ),
+            })
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
 }
 
 #[tokio::test]

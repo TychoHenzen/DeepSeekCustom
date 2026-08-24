@@ -9,14 +9,18 @@
 - [x] 1.3 Report the effective index limit and first sorted overflow path, with deterministic file-count and byte-count fixtures.
   <!-- covers: deepseek-custom/procedure-localization :: Repository index boundaries are explicit :: Repository index exceeds a configured limit -->
   <!-- status: completed -->
-- [ ] 1.4 Retain automatic contract selection for an unbound task in a one-capability change and add a direct input-parser regression test.
+- [x] 1.4 Retain automatic contract selection for an unbound task in a one-capability change and add a direct input-parser regression test.
   <!-- covers: deepseek-custom/procedure-localization :: Task contract selection is unambiguous :: One capability supports an unbound task -->
-- [ ] 1.5 Add zero-capability and multi-capability fixtures that assert failure before index or model seams are called and inspect the complete error.
+  <!-- status: completed -->
+- [x] 1.5 Add zero-capability and multi-capability fixtures that assert failure before index or model seams are called and inspect the complete error.
   <!-- covers: deepseek-custom/procedure-localization :: Task contract selection is unambiguous :: Multiple capabilities require a binding -->
-- [ ] 1.6 Lock the supported ASCII Rust item kinds and exact identifiers with a repository-index fixture.
+  <!-- status: completed -->
+- [x] 1.6 Lock the supported ASCII Rust item kinds and exact identifiers with a repository-index fixture.
   <!-- covers: deepseek-custom/procedure-localization :: Conservative Rust symbols retain a path-only fallback :: Supported ASCII Rust items expose symbols -->
-- [ ] 1.7 Add a valid Unicode Rust identifier fixture that remains path-selectable without an invented or normalized symbol.
+  <!-- status: completed -->
+- [x] 1.7 Add a valid Unicode Rust identifier fixture that remains path-selectable without an invented or normalized symbol.
   <!-- covers: deepseek-custom/procedure-localization :: Conservative Rust symbols retain a path-only fallback :: Unicode Rust identifier falls back to its path -->
+  <!-- status: completed -->
 
 ## 2. Structured Ollama dispatch
 

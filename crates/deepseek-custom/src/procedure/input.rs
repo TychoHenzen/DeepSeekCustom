@@ -420,6 +420,9 @@ fn load_capability_deltas(
     change_dir: &Path,
 ) -> Result<Vec<CapabilityDeltaSlice>, OpenSpecInputError> {
     let specs_dir = change_dir.join("specs");
+    if !specs_dir.is_dir() {
+        return Ok(Vec::new());
+    }
     let mut files = Vec::new();
     collect_spec_files(&specs_dir, &mut files)?;
     files.sort();

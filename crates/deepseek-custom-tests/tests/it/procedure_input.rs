@@ -60,6 +60,22 @@ fn bound_spec() -> &'static str {
     "## Purpose\n\nBound fixture.\n\n## ADDED Requirements\n\n### Requirement: Selected requirement\nThe selected requirement text.\n\n#### Scenario: Selected scenario\n- **WHEN** selected input arrives\n- **THEN** selected output is produced\n\n#### Scenario: Unrelated scenario\nUNRELATED_SCENARIO_SENTINEL\n\n### Requirement: Unrelated requirement\nUNRELATED_REQUIREMENT_SENTINEL\n\n#### Scenario: Other\n- **THEN** nothing selected\n"
 }
 
+fn write_unbound_change_with_capability_count(root: &Path, change_id: &str, count: usize) {
+    let change = root.join("openspec/changes").join(change_id);
+    std::fs::create_dir_all(&change).unwrap();
+    std::fs::write(change.join("tasks.md"), "- [ ] 1.1 Unbound task\n").unwrap();
+    std::fs::write(
+        change.join("proposal.md"),
+        "# Proposal\n\n## Why\n\nSelect one contract.\n\n## What Changes\n\n- Exercise contract selection.\n",
+    )
+    .unwrap();
+    for index in 0..count {
+        let spec_dir = change.join("specs").join(format!("capability-{index}"));
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), bound_spec()).unwrap();
+    }
+}
+
 #[test]
 fn strict_validation_uses_the_required_argument_order() {
     let root = temp_dir("valid");
@@ -220,7 +236,7 @@ fn a_bound_task_loads_only_its_named_requirement_and_scenario() {
 }
 
 #[test]
-fn an_unbound_task_loads_its_task_capability_delta_and_compact_proposal_scope() {
+fn one_capability_change_selects_the_complete_delta_for_an_unbound_task() {
     let root = temp_dir("unbound");
     let command = write_fake_openspec(&root);
     write_change(
@@ -248,9 +264,84 @@ fn an_unbound_task_loads_its_task_capability_delta_and_compact_proposal_scope() 
             assert_eq!(capability_delta.capability, "sample/capability");
             assert_eq!(capability_delta.purpose, "Bound fixture.");
             assert_eq!(capability_delta.requirements.len(), 2);
+            assert_eq!(
+                capability_delta.requirements[0].name,
+                "Selected requirement"
+            );
+            assert_eq!(
+                capability_delta.requirements[0].text,
+                "The selected requirement text."
+            );
+            assert_eq!(capability_delta.requirements[0].scenarios.len(), 2);
+            assert_eq!(
+                capability_delta.requirements[0].scenarios[0].name,
+                "Selected scenario"
+            );
+            assert_eq!(
+                capability_delta.requirements[0].scenarios[0].text,
+                "- **WHEN** selected input arrives\n- **THEN** selected output is produced"
+            );
+            assert_eq!(
+                capability_delta.requirements[0].scenarios[1].name,
+                "Unrelated scenario"
+            );
+            assert_eq!(
+                capability_delta.requirements[0].scenarios[1].text,
+                "UNRELATED_SCENARIO_SENTINEL"
+            );
+            assert_eq!(
+                capability_delta.requirements[1].name,
+                "Unrelated requirement"
+            );
+            assert_eq!(
+                capability_delta.requirements[1].text,
+                "UNRELATED_REQUIREMENT_SENTINEL"
+            );
+            assert_eq!(capability_delta.requirements[1].scenarios.len(), 1);
+            assert_eq!(capability_delta.requirements[1].scenarios[0].name, "Other");
+            assert_eq!(
+                capability_delta.requirements[1].scenarios[0].text,
+                "- **THEN** nothing selected"
+            );
         }
         other => panic!("expected unbound contract, got {other:?}"),
     }
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn an_unbound_task_with_zero_capability_deltas_reports_the_complete_error() {
+    let root = temp_dir("unbound-zero-capabilities");
+    let command = write_fake_openspec(&root);
+    write_unbound_change_with_capability_count(&root, "valid-change", 0);
+    let input = OpenSpecInput::with_command(&root, command.display().to_string());
+
+    let error = input
+        .validate_and_select_task("valid-change", "1.1")
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "OpenSpec input error: unbound task `1.1` in change `valid-change` needs exactly one capability delta, found 0"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn an_unbound_task_with_multiple_capability_deltas_reports_the_complete_error() {
+    let root = temp_dir("unbound-multiple-capabilities");
+    let command = write_fake_openspec(&root);
+    write_unbound_change_with_capability_count(&root, "valid-change", 2);
+    let input = OpenSpecInput::with_command(&root, command.display().to_string());
+
+    let error = input
+        .validate_and_select_task("valid-change", "1.1")
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "OpenSpec input error: unbound task `1.1` in change `valid-change` needs exactly one capability delta, found 2"
+    );
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -79,33 +79,42 @@ fn repository_index_reports_a_missing_root() {
 }
 
 #[test]
-fn rust_paths_include_conservative_declared_symbols() {
+fn supported_ascii_rust_item_kinds_expose_their_exact_identifiers() {
     let root = temp_dir("rust-symbols");
     write(
         &root,
         "src/items.rs",
         r#"
-pub(crate) struct Visible;
-pub enum Choice { A }
-async unsafe fn do_work() {}
-pub extern "C" fn on_wire() {}
-const LIMIT: usize = 1;
-macro_rules! make_item { () => {} }
+pub(crate) struct StructItem;
+pub enum EnumItem { Variant }
+pub trait TraitItem {}
+union UnionItem { field: u8 }
+type TypeAlias = usize;
+const CONST_ITEM: usize = 1;
+static STATIC_ITEM: usize = 2;
+mod module_item {}
+async unsafe fn function_item() {}
+macro_rules! macro_item { () => {} }
 "#,
     );
 
     let index = build_repository_index(&root, &generous_limits()).unwrap();
 
     assert_eq!(index.len(), 1);
+    assert_eq!(index[0].path, "src/items.rs");
     assert_eq!(
         index[0].symbols,
         vec![
-            "Choice",
-            "LIMIT",
-            "Visible",
-            "do_work",
-            "make_item",
-            "on_wire"
+            "CONST_ITEM",
+            "EnumItem",
+            "STATIC_ITEM",
+            "StructItem",
+            "TraitItem",
+            "TypeAlias",
+            "UnionItem",
+            "function_item",
+            "macro_item",
+            "module_item",
         ]
     );
     std::fs::remove_dir_all(root).ok();
@@ -142,6 +151,28 @@ fn non_rust_paths_remain_available_without_symbols() {
 
     assert_eq!(index[0].path, "docs/guide.md");
     assert!(index[0].symbols.is_empty());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn unicode_rust_identifier_remains_available_only_as_a_path_target() {
+    let root = temp_dir("unicode-identifier");
+    write(&root, "src/unicode_item.rs", "pub fn λογος() {}\n");
+
+    let index = build_repository_index(&root, &generous_limits()).unwrap();
+    let path_only_target = LocalizationTarget {
+        path: "src/unicode_item.rs".to_string(),
+        symbol: None,
+        evidence: "The file contains the unsupported Unicode identifier.".to_string(),
+    };
+
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].path, "src/unicode_item.rs");
+    assert!(index[0].symbols.is_empty());
+    assert_eq!(
+        validate_localization_targets(vec![path_only_target.clone()], &index).unwrap(),
+        vec![path_only_target]
+    );
     std::fs::remove_dir_all(root).ok();
 }
 
