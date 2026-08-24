@@ -9,8 +9,9 @@ use deepseek_custom::config::settings::{RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope, LocalizationTarget,
     ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad,
-    ProcedureStage, ProcedureTerminalDisposition, RepositoryIndexEntry,
+    ProcedureReviewDisposition, ProcedureReviewError, ProcedureRunId, ProcedureRunRequest,
+    ProcedureRunner, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
+    RepositoryIndexEntry,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -384,6 +385,98 @@ async fn stage_zero_and_one_finalize_a_saved_report_with_ordered_progress() {
         }
     ));
     assert_eq!(events.len(), 8);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn review_decision_matrix_is_run_scoped_and_never_redispatches_localization() {
+    let root = temp_dir("review-decision-matrix");
+    let command = write_fixture(&root);
+    let valid = LocalizationTarget {
+        path: "src/lib.rs".to_string(),
+        symbol: Some("target_symbol".to_string()),
+        evidence: "The indexed fixture defines this symbol.".to_string(),
+    };
+    let stub = StubLocalizationDispatcher::script(
+        (0..4)
+            .map(|_| {
+                Ok(LocalizationEnvelope {
+                    targets: vec![valid.clone()],
+                })
+            })
+            .collect(),
+    );
+    let runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &root,
+            command.display().to_string(),
+        ),
+        root.clone(),
+        limits(),
+        stub.clone(),
+        ProcedureReportStore::for_project(&root),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let approve_twice = runner.run(request("fixture-change")).await.unwrap();
+    let reject_twice = runner.run(request("fixture-change")).await.unwrap();
+    let approve_then_reject = runner.run(request("fixture-change")).await.unwrap();
+    let reject_then_approve = runner.run(request("fixture-change")).await.unwrap();
+    assert_eq!(stub.calls(), 4);
+    let store = ProcedureReportStore::for_project(&root);
+
+    let approved = store.approve(&approve_twice.id).unwrap();
+    assert_eq!(stub.calls(), 4);
+    assert_eq!(store.approve(&approve_twice.id).unwrap(), approved);
+    assert_eq!(stub.calls(), 4);
+    assert_eq!(store.load(&approve_twice.id).unwrap(), approved);
+
+    let rejected = store.reject(&reject_twice.id).unwrap();
+    assert_eq!(stub.calls(), 4);
+    assert_eq!(store.reject(&reject_twice.id).unwrap(), rejected);
+    assert_eq!(stub.calls(), 4);
+    assert_eq!(store.load(&reject_twice.id).unwrap(), rejected);
+
+    let approved_first = store.approve(&approve_then_reject.id).unwrap();
+    assert_eq!(stub.calls(), 4);
+    let approve_reversal = store.reject(&approve_then_reject.id).unwrap_err();
+    assert_eq!(stub.calls(), 4);
+    assert!(matches!(
+        approve_reversal,
+        ProcedureReviewError::DecisionConflict {
+            requested: ProcedureReviewDisposition::Rejected,
+            actual: ProcedureReviewDisposition::Approved,
+            ..
+        }
+    ));
+    assert_eq!(store.load(&approve_then_reject.id).unwrap(), approved_first);
+
+    let rejected_first = store.reject(&reject_then_approve.id).unwrap();
+    assert_eq!(stub.calls(), 4);
+    let reject_reversal = store.approve(&reject_then_approve.id).unwrap_err();
+    assert_eq!(stub.calls(), 4);
+    assert!(matches!(
+        reject_reversal,
+        ProcedureReviewError::DecisionConflict {
+            requested: ProcedureReviewDisposition::Approved,
+            actual: ProcedureReviewDisposition::Rejected,
+            ..
+        }
+    ));
+    assert_eq!(store.load(&reject_then_approve.id).unwrap(), rejected_first);
+
+    let stale_id = ProcedureRunId::new();
+    let stale_error = store.approve(&stale_id).unwrap_err();
+    assert_eq!(stub.calls(), 4);
+    assert!(matches!(
+        stale_error,
+        ProcedureReviewError::ReportLoad { ref run_id, .. } if run_id == &stale_id.as_str()
+    ));
+    assert_eq!(store.load(&approve_twice.id).unwrap(), approved);
+    assert_eq!(store.load(&reject_twice.id).unwrap(), rejected);
+    assert_eq!(store.load(&approve_then_reject.id).unwrap(), approved_first);
+    assert_eq!(store.load(&reject_then_approve.id).unwrap(), rejected_first);
+
     std::fs::remove_dir_all(root).ok();
 }
 

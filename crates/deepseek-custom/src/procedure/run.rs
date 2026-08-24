@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use uuid::Uuid;
 
 use super::OpenSpecValidation;
@@ -88,6 +89,24 @@ pub enum ProcedureReviewDisposition {
     Approved,
     Rejected,
     LegacyUnreviewed,
+}
+
+impl ProcedureReviewDisposition {
+    /// Stable serialized name used in review diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::LegacyUnreviewed => "legacy_unreviewed",
+        }
+    }
+}
+
+impl fmt::Display for ProcedureReviewDisposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 const fn legacy_unreviewed() -> ProcedureReviewDisposition {

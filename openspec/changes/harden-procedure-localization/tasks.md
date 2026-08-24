@@ -44,12 +44,16 @@
 - [x] 3.3 Keep whole-result rejection for invented paths or symbols and add a distinct synchronous binding test for its complete diagnostics.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: A target is invented -->
   <!-- status: completed -->
-- [ ] 3.4 Add a run-id-scoped rejection command that saves the decision and makes the report fail the approved-report guard.
+- [x] 3.4 Add a run-id-scoped rejection command that saves the decision and makes the report fail the approved-report guard.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: Structurally valid targets are semantically wrong -->
-- [ ] 3.5 Add a run-id-scoped approval command that saves the decision and is the only path through the approved-report guard.
+  <!-- status: completed -->
+- [x] 3.5 Add a run-id-scoped approval command that saves the decision and is the only path through the approved-report guard.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: Structurally valid targets are approved -->
-- [ ] 3.6 Make repeated matching decisions idempotent, reject decision reversal and stale run identifiers, and prove that none of these paths dispatches the model again.
-- [ ] 3.7 Add consumer tests showing that pending, rejected, and legacy-unreviewed reports cannot enter a downstream procedure stage.
+  <!-- status: completed -->
+- [x] 3.6 Make repeated matching decisions idempotent, reject decision reversal and stale run identifiers, and prove that none of these paths dispatches the model again.
+  <!-- status: completed -->
+- [x] 3.7 Add consumer tests showing that pending, rejected, and legacy-unreviewed reports cannot enter a downstream procedure stage.
+  <!-- status: completed -->
 
 ## 4. Procedure view and durable evidence
 

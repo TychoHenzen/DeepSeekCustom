@@ -25,7 +25,10 @@ pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
     build_localization_prompt,
 };
-pub use report::ProcedureReportStore;
+pub use report::{
+    ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
+    require_approved_report,
+};
 
 pub use run::{
     LocalizationAttempt, LocalizationEnvelope, LocalizationTarget, ProcedureAttemptDisposition,

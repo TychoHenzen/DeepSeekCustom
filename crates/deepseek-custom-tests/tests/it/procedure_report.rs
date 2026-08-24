@@ -3,9 +3,10 @@ use std::path::PathBuf;
 
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition,
+    LocalizationAttempt, LocalizationTarget, ProcedureApprovedReportError,
+    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, require_approved_report,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -83,6 +84,13 @@ fn load_returns_the_saved_targets_and_dispatch_details() {
         Some("ProcedureReportStore")
     );
     std::fs::remove_dir_all(reports_dir).ok();
+}
+
+fn awaiting_review_run() -> ProcedureRun {
+    let mut report = completed_run();
+    report.review_disposition = ProcedureReviewDisposition::Pending;
+    report.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    report
 }
 
 #[test]
@@ -164,4 +172,112 @@ fn corrupt_report_returns_a_parse_error_that_names_the_file() {
     assert!(message.contains("could not parse procedure report"));
     assert!(message.contains(&path.display().to_string()));
     std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approved_guard() {
+    let reports_dir = temp_path("reject-review");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let pending = awaiting_review_run();
+    let untouched = awaiting_review_run();
+    store.save(&pending).unwrap();
+    store.save(&untouched).unwrap();
+
+    let rejected = store.reject(&pending.id).unwrap();
+
+    assert_eq!(
+        rejected.review_disposition,
+        ProcedureReviewDisposition::Rejected
+    );
+    assert_eq!(
+        rejected.terminal_disposition,
+        Some(ProcedureTerminalDisposition::AwaitingReview)
+    );
+    assert_eq!(rejected.attempts, pending.attempts);
+    assert_eq!(rejected.validation, pending.validation);
+    assert_eq!(store.load(&pending.id).unwrap(), rejected);
+    assert_eq!(store.load(&untouched.id).unwrap(), untouched);
+    assert_eq!(
+        require_approved_report(&rejected).unwrap_err().to_string(),
+        format!(
+            "procedure run {} cannot enter a downstream procedure stage: review disposition is rejected",
+            pending.id.as_str()
+        )
+    );
+    assert!(
+        !reports_dir
+            .join(format!("{}.json.tmp", pending.id.as_str()))
+            .exists()
+    );
+
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn approval_preserves_structural_evidence_and_is_the_only_path_through_the_guard() {
+    let reports_dir = temp_path("approve-review");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let pending = awaiting_review_run();
+    store.save(&pending).unwrap();
+
+    assert!(require_approved_report(&pending).is_err());
+
+    let approved = store.approve(&pending.id).unwrap();
+    let consumed = require_approved_report(&approved).unwrap();
+
+    assert!(std::ptr::eq(consumed, &approved));
+    assert_eq!(
+        approved.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(approved.attempts, pending.attempts);
+    assert_eq!(approved.spec_fingerprint, pending.spec_fingerprint);
+    assert_eq!(
+        approved.repository_fingerprint,
+        pending.repository_fingerprint
+    );
+    assert_eq!(approved.validation, pending.validation);
+    assert_eq!(store.load(&pending.id).unwrap(), approved);
+
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn downstream_consumer_guard_accepts_only_approved_reports_without_changing_them() {
+    let mut report = awaiting_review_run();
+
+    for disposition in [
+        ProcedureReviewDisposition::Pending,
+        ProcedureReviewDisposition::Rejected,
+        ProcedureReviewDisposition::LegacyUnreviewed,
+    ] {
+        report.review_disposition = disposition;
+        let before = report.clone();
+
+        let error = require_approved_report(&report).unwrap_err();
+
+        assert_eq!(
+            error,
+            ProcedureApprovedReportError {
+                run_id: report.id.as_str(),
+                disposition,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "procedure run {} cannot enter a downstream procedure stage: review disposition is {}",
+                report.id.as_str(),
+                disposition.as_str()
+            )
+        );
+        assert_eq!(report, before);
+    }
+
+    report.review_disposition = ProcedureReviewDisposition::Approved;
+    let before = report.clone();
+    let consumed = require_approved_report(&report).unwrap();
+
+    assert!(std::ptr::eq(consumed, &report));
+    assert_eq!(consumed, &before);
 }
