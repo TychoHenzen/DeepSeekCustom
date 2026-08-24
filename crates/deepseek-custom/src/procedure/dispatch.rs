@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::api::client::ApiClient;
@@ -12,9 +13,29 @@ use crate::config::settings::Settings;
 use crate::effort::Effort;
 
 use super::{
-    LocalizationEnvelope, LocalizationPromptInput, build_localization_prompt,
+    LocalizationEnvelope, LocalizationPromptInput, RepositoryIndexEntry, build_localization_prompt,
     localization_response_format,
 };
+
+/// One schema-constrained localization request.
+///
+/// The runner depends on this narrow boundary so tests can provide a
+/// scripted localizer without starting a network request or chat session.
+#[async_trait]
+pub trait LocalizationDispatch: Send + Sync {
+    /// The configured backend name retained in each attempt report.
+    fn backend_name(&self) -> &str;
+
+    /// The configured model retained in each attempt report.
+    fn model(&self) -> &str;
+
+    /// Dispatch one already reconstructed prompt against the current index.
+    async fn dispatch_prompt(
+        &self,
+        prompt: String,
+        repository_index: &[RepositoryIndexEntry],
+    ) -> Result<LocalizationEnvelope, LocalizationDispatchError>;
+}
 
 /// A localization backend that passed the structured-output preflight.
 ///
@@ -112,6 +133,25 @@ impl LocalizationDispatcher {
                 reason: error.to_string(),
             }
         })?;
+        self.dispatch_prompt(prompt, repository_index).await
+    }
+}
+
+#[async_trait]
+impl LocalizationDispatch for LocalizationDispatcher {
+    fn backend_name(&self) -> &str {
+        &self.backend_name
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn dispatch_prompt(
+        &self,
+        prompt: String,
+        repository_index: &[RepositoryIndexEntry],
+    ) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
         let request = ChatRequest {
             model: self.model.clone(),
             messages: vec![Message {

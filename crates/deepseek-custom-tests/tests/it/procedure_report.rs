@@ -30,6 +30,7 @@ fn completed_run() -> ProcedureRun {
         },
         spec_fingerprint: Some("spec-fingerprint".to_string()),
         repository_fingerprint: Some("repository-fingerprint".to_string()),
+        validation: None,
         scratchpad: ProcedureScratchpad::default(),
         stage: ProcedureStage::Finished,
         attempts: vec![LocalizationAttempt {

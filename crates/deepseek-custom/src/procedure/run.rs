@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::OpenSpecValidation;
+
 /// Identifies one procedure run and supplies its report file name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -101,6 +103,9 @@ pub struct ProcedureRun {
     pub selected_task: ProcedureTask,
     pub spec_fingerprint: Option<String>,
     pub repository_fingerprint: Option<String>,
+    /// Exact successful Stage 0 command evidence, when validation completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<OpenSpecValidation>,
     pub scratchpad: ProcedureScratchpad,
     pub stage: ProcedureStage,
     pub attempts: Vec<LocalizationAttempt>,

@@ -10,10 +10,11 @@ mod input;
 mod prompt;
 pub mod report;
 mod run;
+mod runner;
 mod schema;
 mod validation;
 
-pub use dispatch::{LocalizationDispatchError, LocalizationDispatcher};
+pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use index::{RepositoryIndexError, build_repository_index};
 pub use input::{
     CapabilityDeltaSlice, ContractSelection, OpenSpecChange, OpenSpecCommandFailure, OpenSpecInput,
@@ -31,6 +32,7 @@ pub use run::{
     ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition,
 };
+pub use runner::{ProcedureProgress, ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError};
 pub use schema::localization_response_format;
 pub use validation::{
     LocalizationTargetRejection, LocalizationTargetValidationError, validate_localization_targets,

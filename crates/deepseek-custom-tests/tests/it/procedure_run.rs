@@ -16,6 +16,7 @@ fn procedure_run_round_trips_through_json() {
         },
         spec_fingerprint: Some("spec-sha256".to_string()),
         repository_fingerprint: Some("repo-sha256".to_string()),
+        validation: None,
         scratchpad: ProcedureScratchpad {
             goals: vec!["localize the change".to_string()],
             files: vec!["crates/deepseek-custom/src/procedure/run.rs".to_string()],

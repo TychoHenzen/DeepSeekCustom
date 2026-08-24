@@ -51,13 +51,17 @@
 
 ## 5. Bounded localization run
 
-- [ ] 5.1 Implement the Stage 0 to Stage 1 runner with progress events, interrupt checks, fingerprints, and report finalization.
-- [ ] 5.2 Retry one malformed or invalid localization with the exact validation error and accept a valid second result.
+- [x] 5.1 Implement the Stage 0 to Stage 1 runner with progress events, interrupt checks, fingerprints, and report finalization.
+  <!-- status: completed -->
+- [x] 5.2 Retry one malformed or invalid localization with the exact validation error and accept a valid second result.
   <!-- covers: deepseek-custom/procedure-localization :: Invalid localization has one bounded retry :: Retry repairs invalid output -->
-- [ ] 5.3 Stop after two invalid results and assert that no third model call occurs.
+  <!-- status: completed -->
+- [x] 5.3 Stop after two invalid results and assert that no third model call occurs.
   <!-- covers: deepseek-custom/procedure-localization :: Invalid localization has one bounded retry :: Retry budget is exhausted -->
-- [ ] 5.4 Add a full stub-backed run test that hashes the fixture workspace before and after success, failure, and interruption.
+  <!-- status: completed -->
+- [x] 5.4 Add a full stub-backed run test that hashes the fixture workspace before and after success, failure, and interruption.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Workspace remains unchanged -->
+  <!-- status: completed -->
 
 ## 6. Procedure interface and verification
 
