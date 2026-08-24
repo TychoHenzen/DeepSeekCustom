@@ -36,7 +36,8 @@ pub use run::{
     ProcedureTask, ProcedureTerminalDisposition,
 };
 pub use runner::{
-    ProcedureCommand, ProcedureProgress, ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError,
+    ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunRequest,
+    ProcedureRunner, ProcedureRunnerError, apply_review_decision,
 };
 pub use schema::localization_response_format;
 pub use validation::{

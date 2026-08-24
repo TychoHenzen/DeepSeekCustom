@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -12,11 +12,42 @@ use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::gui::procedure_tab::{ProcedureStatus, ProcedureTab, ProcedureViewState};
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureAttemptDisposition,
-    ProcedureProgress, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition,
+    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition, apply_review_decision,
 };
 use tokio::sync::mpsc;
+
+const PROCEDURE_VISUAL_VERIFICATION_MANIFEST: &[(&str, &str)] = &[
+    (
+        "maintained GUI checklist",
+        "docs/procedure-localization-verification.md",
+    ),
+    (
+        "running screenshot",
+        "docs/evidence/procedure-localization/running.png",
+    ),
+    (
+        "awaiting-review screenshot",
+        "docs/evidence/procedure-localization/awaiting-review.png",
+    ),
+    (
+        "approved screenshot",
+        "docs/evidence/procedure-localization/approved.png",
+    ),
+    (
+        "rejected screenshot",
+        "docs/evidence/procedure-localization/rejected.png",
+    ),
+    (
+        "failed screenshot",
+        "docs/evidence/procedure-localization/failed.png",
+    ),
+    (
+        "interrupted screenshot",
+        "docs/evidence/procedure-localization/interrupted.png",
+    ),
+];
 
 fn temp_dir(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -99,6 +130,84 @@ fn fixture_root(tag: &str) -> PathBuf {
     root
 }
 
+fn attach_tab(tab: &mut ProcedureTab) -> mpsc::UnboundedReceiver<ProcedureCommand> {
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let (_progress_tx, progress_rx) = mpsc::unbounded_channel();
+    tab.attach(command_tx, progress_rx, Arc::new(AtomicBool::new(false)));
+    command_rx
+}
+
+fn finish_review_command(
+    root: &Path,
+    tab: &mut ProcedureTab,
+    command_rx: &mut mpsc::UnboundedReceiver<ProcedureCommand>,
+) -> (ProcedureRunId, ProcedureReviewDecision) {
+    let ProcedureCommand::Review { run_id, decision } = command_rx.try_recv().unwrap() else {
+        panic!("review control must send a review command")
+    };
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    apply_review_decision(
+        &ProcedureReportStore::for_project(root),
+        run_id,
+        decision,
+        &progress_tx,
+    );
+    tab.handle_progress(progress_rx.try_recv().unwrap());
+    (run_id, decision)
+}
+
+#[test]
+fn procedure_visual_verification_manifest_requires_every_state_artifact() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("external test crate must remain under the repository's crates directory")
+        .canonicalize()
+        .expect("repository root must be readable");
+    let mut problems = Vec::new();
+
+    for (description, relative) in PROCEDURE_VISUAL_VERIFICATION_MANIFEST {
+        let relative_path = Path::new(relative);
+        let escapes_repository = relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            });
+        if escapes_repository {
+            problems.push(format!(
+                "{description}: path must stay inside the repository: {relative}"
+            ));
+            continue;
+        }
+
+        let candidate = repository.join(relative_path);
+        match candidate.canonicalize() {
+            Ok(actual) if !actual.starts_with(&repository) => problems.push(format!(
+                "{description}: resolved path escapes the repository: {relative}"
+            )),
+            Ok(actual) if !actual.is_file() => {
+                problems.push(format!("{description}: is not a file: {relative}"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                problems.push(format!("{description}: missing {relative}"));
+            }
+            Err(error) => problems.push(format!(
+                "{description}: could not inspect {relative}: {error}"
+            )),
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "procedure visual verification manifest is incomplete:\n- {}",
+        problems.join("\n- ")
+    );
+}
+
 fn gui_with_procedure(
     root: PathBuf,
 ) -> (
@@ -168,10 +277,15 @@ fn run_sends_one_command_and_disables_a_second_start() {
     tab.start_for_test();
     tab.start_for_test();
 
-    let command = command_rx.try_recv().unwrap();
-    assert_eq!(command.backend, "ollama-a");
-    assert_eq!(command.request.change_id, "a-change");
-    assert_eq!(command.request.task_id, "1.1");
+    let ProcedureCommand::Run {
+        backend, request, ..
+    } = command_rx.try_recv().unwrap()
+    else {
+        panic!("Run must send a localization command")
+    };
+    assert_eq!(backend, "ollama-a");
+    assert_eq!(request.change_id, "a-change");
+    assert_eq!(request.task_id, "1.1");
     assert!(
         command_rx.try_recv().is_err(),
         "second start stays disabled"
@@ -261,7 +375,9 @@ fn procedure_view_exposes_distinct_run_and_review_state_labels() {
         }
     );
 
+    let mut command_rx = attach_tab(&mut tab);
     tab.approve_for_test();
+    finish_review_command(&root, &mut tab, &mut command_rx);
     assert_eq!(tab.view_state(), ProcedureViewState::Approved);
     assert_eq!(tab.view_state().label(), "approved");
     assert!(!tab.review_actions_available_for_test());
@@ -273,11 +389,19 @@ fn procedure_view_exposes_distinct_run_and_review_state_labels() {
     ProcedureReportStore::for_project(&root)
         .save(&rejected)
         .unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: rejected_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     tab.handle_progress(ProcedureProgress::RunFinished {
         run_id: rejected_id,
         disposition: ProcedureTerminalDisposition::AwaitingReview,
     });
+    let mut command_rx = attach_tab(&mut tab);
     tab.reject_for_test();
+    finish_review_command(&root, &mut tab, &mut command_rx);
     assert_eq!(tab.view_state(), ProcedureViewState::Rejected);
     assert_eq!(tab.view_state().label(), "rejected");
     assert!(!tab.review_actions_available_for_test());
@@ -291,6 +415,12 @@ fn procedure_view_exposes_distinct_run_and_review_state_labels() {
     ProcedureReportStore::for_project(&root)
         .save(&failed)
         .unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: failed_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     tab.handle_progress(ProcedureProgress::RunFinished {
         run_id: failed_id,
         disposition: failed.terminal_disposition.clone().unwrap(),
@@ -305,6 +435,12 @@ fn procedure_view_exposes_distinct_run_and_review_state_labels() {
     ProcedureReportStore::for_project(&root)
         .save(&interrupted)
         .unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: interrupted_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     tab.handle_progress(ProcedureProgress::RunFinished {
         run_id: interrupted_id,
         disposition: ProcedureTerminalDisposition::Interrupted,
@@ -331,6 +467,11 @@ fn review_controls_are_visible_only_for_the_displayed_pending_run() {
     store.save(&other).unwrap();
     let mut tab = ProcedureTab::new(&settings(), &root);
 
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: visible_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     tab.handle_progress(ProcedureProgress::RunFinished {
         run_id: visible_id,
         disposition: ProcedureTerminalDisposition::AwaitingReview,
@@ -342,7 +483,9 @@ fn review_controls_are_visible_only_for_the_displayed_pending_run() {
         tab.latest_run().unwrap().attempts[0].targets,
         visible.attempts[0].targets
     );
+    let mut command_rx = attach_tab(&mut tab);
     tab.approve_for_test();
+    finish_review_command(&root, &mut tab, &mut command_rx);
     assert_eq!(
         tab.latest_run().unwrap().review_disposition,
         ProcedureReviewDisposition::Approved
@@ -370,13 +513,20 @@ fn review_failure_is_visible_and_keeps_the_pending_disposition() {
     pending.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
     store.save(&pending).unwrap();
     let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     tab.handle_progress(ProcedureProgress::RunFinished {
         run_id,
         disposition: ProcedureTerminalDisposition::AwaitingReview,
     });
     std::fs::remove_file(store.report_path(&run_id)).unwrap();
 
+    let mut command_rx = attach_tab(&mut tab);
     tab.reject_for_test();
+    finish_review_command(&root, &mut tab, &mut command_rx);
 
     assert_eq!(
         tab.latest_run().unwrap().review_disposition,
@@ -436,15 +586,27 @@ fn approved_structural_report_round_trip_populates_the_complete_procedure_view()
     ];
     store.save(&pending).unwrap();
     let mut review_tab = ProcedureTab::new(&settings(), &root);
+    review_tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     review_tab.handle_progress(ProcedureProgress::RunFinished {
         run_id,
         disposition: ProcedureTerminalDisposition::AwaitingReview,
     });
     assert_eq!(review_tab.view_state(), ProcedureViewState::AwaitingReview);
 
+    let mut command_rx = attach_tab(&mut review_tab);
     review_tab.approve_for_test();
+    finish_review_command(&root, &mut review_tab, &mut command_rx);
     let persisted = store.load(&run_id).unwrap();
     let mut reloaded_tab = ProcedureTab::new(&settings(), &root);
+    reloaded_tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
     reloaded_tab.handle_progress(ProcedureProgress::RunFinished {
         run_id,
         disposition: ProcedureTerminalDisposition::AwaitingReview,
@@ -489,12 +651,17 @@ fn procedure_progress_stays_out_of_transcript_and_agent_history_path() {
         gui_with_procedure(root.clone());
 
     gui.procedure_mut_for_test().start_for_test();
-    let command = procedure_rx.try_recv().unwrap();
+    let ProcedureCommand::Run {
+        run_id, request, ..
+    } = procedure_rx.try_recv().unwrap()
+    else {
+        panic!("start must send a run command")
+    };
     progress_tx
         .send(ProcedureProgress::RunStarted {
-            run_id: ProcedureRunId::new(),
-            change_id: command.request.change_id,
-            task_id: command.request.task_id,
+            run_id,
+            change_id: request.change_id,
+            task_id: request.task_id,
         })
         .unwrap();
     gui.drain_procedure_for_test();
@@ -504,6 +671,72 @@ fn procedure_progress_stays_out_of_transcript_and_agent_history_path() {
         agent_rx.try_recv().is_err(),
         "procedure uses no AgentCommand, so MessageHistory cannot receive it"
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn stale_run_and_review_events_cannot_change_the_active_or_visible_run() {
+    let root = fixture_root("stale-procedure-events");
+    let store = ProcedureReportStore::for_project(&root);
+    let active_id = ProcedureRunId::new();
+    let stale_id = ProcedureRunId::new();
+    let mut active = completed_run(active_id);
+    active.review_disposition = ProcedureReviewDisposition::Pending;
+    active.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    let mut stale = completed_run(stale_id);
+    stale.review_disposition = ProcedureReviewDisposition::Pending;
+    stale.terminal_disposition = Some(ProcedureTerminalDisposition::AwaitingReview);
+    store.save(&active).unwrap();
+    store.save(&stale).unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: active_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::AttemptStarted {
+        run_id: stale_id,
+        number: 2,
+        backend: "stale-backend".to_string(),
+        model: "stale-model".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: stale_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+
+    assert_eq!(
+        tab.status(),
+        &ProcedureStatus::Running {
+            message: "Validating a-change task 1.1".to_string(),
+        }
+    );
+    assert!(tab.latest_run().is_none());
+
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: active_id,
+        disposition: ProcedureTerminalDisposition::AwaitingReview,
+    });
+    store.approve(&stale_id).unwrap();
+    tab.handle_progress(ProcedureProgress::ReviewSucceeded {
+        run_id: stale_id,
+        disposition: ProcedureReviewDisposition::Approved,
+    });
+    tab.handle_progress(ProcedureProgress::ReviewFailed {
+        run_id: stale_id,
+        disposition: ProcedureReviewDisposition::Rejected,
+        error: "stale review failure".to_string(),
+    });
+
+    assert_eq!(tab.latest_run().unwrap().id, active_id);
+    assert_eq!(
+        tab.latest_run().unwrap().review_disposition,
+        ProcedureReviewDisposition::Pending
+    );
+    assert_eq!(tab.view_state(), ProcedureViewState::AwaitingReview);
+    assert!(tab.review_error().is_none());
+
     std::fs::remove_dir_all(root).ok();
 }
 

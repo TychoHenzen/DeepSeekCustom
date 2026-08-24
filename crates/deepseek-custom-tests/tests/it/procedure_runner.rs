@@ -8,10 +8,10 @@ use deepseek_custom::agent::history::MessageHistory;
 use deepseek_custom::config::settings::{RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope, LocalizationTarget,
-    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore,
+    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
     ProcedureReviewDisposition, ProcedureReviewError, ProcedureRunId, ProcedureRunRequest,
     ProcedureRunner, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    RepositoryIndexEntry,
+    RepositoryIndexEntry, apply_review_decision,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -481,6 +481,90 @@ async fn review_decision_matrix_is_run_scoped_and_never_redispatches_localizatio
 }
 
 #[tokio::test]
+async fn review_channel_events_name_the_run_and_never_redispatch_localization() {
+    let root = temp_dir("review-channel-events");
+    let command = write_fixture(&root);
+    let stub = StubLocalizationDispatcher::success(vec![LocalizationTarget {
+        path: "src/lib.rs".to_string(),
+        symbol: Some("target_symbol".to_string()),
+        evidence: "The indexed fixture defines this symbol.".to_string(),
+    }]);
+    let runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &root,
+            command.display().to_string(),
+        ),
+        root.clone(),
+        limits(),
+        stub.clone(),
+        ProcedureReportStore::for_project(&root),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let pending = runner.run(request("fixture-change")).await.unwrap();
+    assert_eq!(stub.calls(), 1);
+    let store = ProcedureReportStore::for_project(&root);
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    apply_review_decision(
+        &store,
+        pending.id,
+        ProcedureReviewDecision::Approve,
+        &progress_tx,
+    );
+    assert_eq!(stub.calls(), 1);
+    assert_eq!(
+        progress_rx.try_recv().unwrap(),
+        ProcedureProgress::ReviewSucceeded {
+            run_id: pending.id,
+            disposition: ProcedureReviewDisposition::Approved,
+        }
+    );
+
+    apply_review_decision(
+        &store,
+        pending.id,
+        ProcedureReviewDecision::Reject,
+        &progress_tx,
+    );
+    assert_eq!(stub.calls(), 1);
+    assert!(matches!(
+        progress_rx.try_recv().unwrap(),
+        ProcedureProgress::ReviewFailed {
+            run_id,
+            disposition: ProcedureReviewDisposition::Rejected,
+            ref error,
+        } if run_id == pending.id
+            && error.contains("cannot record rejected review")
+            && error.contains("review disposition is already approved")
+    ));
+
+    let stale_id = ProcedureRunId::new();
+    apply_review_decision(
+        &store,
+        stale_id,
+        ProcedureReviewDecision::Approve,
+        &progress_tx,
+    );
+    assert_eq!(stub.calls(), 1);
+    assert!(matches!(
+        progress_rx.try_recv().unwrap(),
+        ProcedureProgress::ReviewFailed {
+            run_id,
+            disposition: ProcedureReviewDisposition::Approved,
+            ref error,
+        } if run_id == stale_id
+            && error.contains(&stale_id.as_str())
+            && error.contains("could not load procedure run")
+    ));
+    assert_eq!(
+        store.load(&pending.id).unwrap().review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
 async fn failed_stage_zero_saves_exact_failure_without_model_dispatch() {
     let root = temp_dir("stage-zero-failure");
     let command = write_fake_openspec(&root);
@@ -898,7 +982,7 @@ fn panic_if_dispatched() -> Result<LocalizationEnvelope, LocalizationDispatchErr
 }
 
 #[tokio::test]
-async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged() {
+async fn source_hash_is_unchanged_across_success_validation_failure_interruption_and_review() {
     let history = MessageHistory::new("chat history sentinel".to_string());
 
     let success_root = temp_dir("hash-success");
@@ -946,18 +1030,18 @@ async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged(
             .unwrap(),
         success
     );
+    let success_store = ProcedureReportStore::for_project(&success_root);
+    let approved = success_store.approve(&success.id).unwrap();
+    assert_eq!(
+        approved.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(workspace_hash(&success_root), success_before);
 
     let failure_root = temp_dir("hash-failure");
-    let failure_command = write_fixture(&failure_root);
+    let failure_command = write_fake_openspec(&failure_root);
     let failure_before = workspace_hash(&failure_root);
-    let failure_stub = StubLocalizationDispatcher::script(vec![
-        Err(LocalizationDispatchError::InvalidEnvelope {
-            reason: "first invalid result".to_string(),
-        }),
-        Err(LocalizationDispatchError::InvalidEnvelope {
-            reason: "second invalid result".to_string(),
-        }),
-    ]);
+    let failure_stub = StubLocalizationDispatcher::success(Vec::new());
     let (failure_tx, mut failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let failure_runner = ProcedureRunner::new(
         deepseek_custom::procedure::OpenSpecInput::with_command(
@@ -971,10 +1055,10 @@ async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged(
         Arc::new(AtomicBool::new(false)),
     )
     .with_progress(failure_tx);
-    let failure = failure_runner.run(request("fixture-change")).await.unwrap();
+    let failure = failure_runner.run(request("invalid-change")).await.unwrap();
     let failure_events: Vec<_> = std::iter::from_fn(|| failure_rx.try_recv().ok()).collect();
     assert_eq!(workspace_hash(&failure_root), failure_before);
-    assert_eq!(failure_stub.calls(), 2);
+    assert_eq!(failure_stub.calls(), 0);
     assert!(matches!(
         failure.terminal_disposition,
         Some(ProcedureTerminalDisposition::Failed { .. })
@@ -992,6 +1076,39 @@ async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged(
             .unwrap(),
         failure
     );
+
+    let rejection_root = temp_dir("hash-rejection");
+    let rejection_command = write_fixture(&rejection_root);
+    let rejection_before = workspace_hash(&rejection_root);
+    let rejection_stub = StubLocalizationDispatcher::success(vec![LocalizationTarget {
+        path: "src/lib.rs".to_string(),
+        symbol: Some("target_symbol".to_string()),
+        evidence: "The indexed fixture defines this symbol.".to_string(),
+    }]);
+    let rejection_runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &rejection_root,
+            rejection_command.display().to_string(),
+        ),
+        rejection_root.clone(),
+        limits(),
+        rejection_stub,
+        ProcedureReportStore::for_project(&rejection_root),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let pending_rejection = rejection_runner
+        .run(request("fixture-change"))
+        .await
+        .unwrap();
+    assert_eq!(workspace_hash(&rejection_root), rejection_before);
+    let rejected = ProcedureReportStore::for_project(&rejection_root)
+        .reject(&pending_rejection.id)
+        .unwrap();
+    assert_eq!(
+        rejected.review_disposition,
+        ProcedureReviewDisposition::Rejected
+    );
+    assert_eq!(workspace_hash(&rejection_root), rejection_before);
 
     let interrupted_root = temp_dir("hash-interrupted");
     let interrupted_command = write_fixture(&interrupted_root);
@@ -1044,5 +1161,6 @@ async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged(
     assert_eq!(history.len(), 0);
     std::fs::remove_dir_all(success_root).ok();
     std::fs::remove_dir_all(failure_root).ok();
+    std::fs::remove_dir_all(rejection_root).ok();
     std::fs::remove_dir_all(interrupted_root).ok();
 }

@@ -20,7 +20,7 @@ use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
 use deepseek_custom::procedure::{
     LocalizationDispatcher, OpenSpecInput, ProcedureCommand, ProcedureProgress,
-    ProcedureReportStore, ProcedureRunner,
+    ProcedureReportStore, ProcedureRunner, apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
@@ -355,10 +355,14 @@ async fn main() {
                 }
                 procedure = rx_procedure.recv() => {
                     match procedure {
-                        Some(command) => {
+                        Some(ProcedureCommand::Run {
+                            run_id,
+                            backend: selected_backend,
+                            request,
+                        }) => {
                             let mut run_settings = procedure_settings.clone();
                             run_settings.procedure_mut().localization_backend =
-                                Some(command.backend.clone());
+                                Some(selected_backend);
                             match LocalizationDispatcher::from_settings(
                                 &run_settings,
                                 &procedure_project_root,
@@ -381,9 +385,10 @@ async fn main() {
                                         Arc::clone(&procedure_task_interrupt),
                                     )
                                     .with_progress(tx_procedure_progress.clone());
-                                    if let Err(error) = runner.run(command.request).await {
+                                    if let Err(error) = runner.run_with_id(run_id, request).await {
                                         let _ = tx_procedure_progress.send(
                                             ProcedureProgress::RunFailed {
+                                                run_id,
                                                 message: error.to_string(),
                                             },
                                         );
@@ -392,11 +397,20 @@ async fn main() {
                                 Err(error) => {
                                     let _ = tx_procedure_progress.send(
                                         ProcedureProgress::RunFailed {
+                                            run_id,
                                             message: error.to_string(),
                                         },
                                     );
                                 }
                             }
+                        }
+                        Some(ProcedureCommand::Review { run_id, decision }) => {
+                            apply_review_decision(
+                                &ProcedureReportStore::for_project(&procedure_project_root),
+                                run_id,
+                                decision,
+                                &tx_procedure_progress,
+                            );
                         }
                         None => break,
                     }

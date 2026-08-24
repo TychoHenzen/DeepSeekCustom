@@ -11,8 +11,8 @@ use tracing::info;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
     OpenSpecChange, OpenSpecInput, ProcedureAttemptDisposition, ProcedureCommand,
-    ProcedureProgress, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
+    ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition,
+    ProcedureRun, ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
     ProcedureTerminalDisposition,
 };
 
@@ -73,6 +73,7 @@ pub struct ProcedureTab {
     latest_run: Option<ProcedureRun>,
     report_path: Option<PathBuf>,
     review_error: Option<String>,
+    review_in_flight: bool,
     reports: ProcedureReportStore,
 }
 
@@ -105,6 +106,7 @@ impl ProcedureTab {
             latest_run: None,
             report_path: None,
             review_error: None,
+            review_in_flight: false,
             reports: ProcedureReportStore::for_project(project_root),
         };
         tab.refresh_changes(project_root);
@@ -214,27 +216,41 @@ impl ProcedureTab {
                 change_id,
                 task_id,
             } => {
+                if self.active_run.is_some_and(|active| active != run_id)
+                    || (self.active_run.is_none() && self.latest_run.is_some())
+                {
+                    return;
+                }
                 self.active_run = Some(run_id);
                 self.status = ProcedureStatus::Running {
                     message: format!("Validating {change_id} task {task_id}"),
                 };
             }
-            ProcedureProgress::StageStarted { stage, .. } => {
+            ProcedureProgress::StageStarted { run_id, stage } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.status = ProcedureStatus::Running {
                     message: stage_label(stage, "running"),
                 };
             }
-            ProcedureProgress::StageCompleted { stage, .. } => {
+            ProcedureProgress::StageCompleted { run_id, stage } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.status = ProcedureStatus::Running {
                     message: stage_label(stage, "complete"),
                 };
             }
             ProcedureProgress::AttemptStarted {
+                run_id,
                 number,
                 backend,
                 model,
-                ..
             } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.attempt_number = Some(number);
                 self.dispatch_backend = Some(backend);
                 self.dispatch_model = Some(model);
@@ -242,14 +258,26 @@ impl ProcedureTab {
                     message: format!("Localization attempt {number} of 2"),
                 };
             }
-            ProcedureProgress::AttemptRejected { number, error, .. } => {
+            ProcedureProgress::AttemptRejected {
+                run_id,
+                number,
+                error,
+            } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.status = ProcedureStatus::Running {
                     message: format!("Attempt {number} rejected: {error}"),
                 };
             }
             ProcedureProgress::AttemptAccepted {
-                number, targets, ..
+                run_id,
+                number,
+                targets,
             } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.status = ProcedureStatus::Running {
                     message: format!("Attempt {number} accepted {targets} target(s)"),
                 };
@@ -257,22 +285,63 @@ impl ProcedureTab {
             ProcedureProgress::RunFinished {
                 run_id,
                 disposition,
-            } => match self.reports.load(&run_id) {
-                Ok(run) => {
-                    self.report_path = Some(self.reports.report_path(&run_id));
-                    self.latest_run = Some(run);
-                    self.review_error = None;
-                    self.active_run = None;
-                    self.status = ProcedureStatus::Finished(disposition);
+            } => {
+                if !self.owns_active_run(run_id) {
+                    return;
                 }
-                Err(error) => {
-                    self.active_run = None;
-                    self.status = ProcedureStatus::Error {
-                        message: format!("could not load completed procedure report: {error}"),
-                    };
+                match self.reports.load(&run_id) {
+                    Ok(run) => {
+                        self.report_path = Some(self.reports.report_path(&run_id));
+                        self.latest_run = Some(run);
+                        self.review_error = None;
+                        self.review_in_flight = false;
+                        self.active_run = None;
+                        self.status = ProcedureStatus::Finished(disposition);
+                    }
+                    Err(error) => {
+                        self.active_run = None;
+                        self.status = ProcedureStatus::Error {
+                            message: format!("could not load completed procedure report: {error}"),
+                        };
+                    }
                 }
-            },
-            ProcedureProgress::RunFailed { message } => {
+            }
+            ProcedureProgress::ReviewSucceeded {
+                run_id,
+                disposition: _,
+            } => {
+                if !self.displays_run(run_id) {
+                    return;
+                }
+                self.review_in_flight = false;
+                match self.reports.load(&run_id) {
+                    Ok(run) => {
+                        self.latest_run = Some(run);
+                        self.review_error = None;
+                    }
+                    Err(error) => {
+                        self.review_error = Some(format!(
+                            "could not load reviewed procedure run {}: {error}",
+                            run_id.as_str()
+                        ));
+                    }
+                }
+            }
+            ProcedureProgress::ReviewFailed {
+                run_id,
+                disposition: _,
+                error,
+            } => {
+                if !self.displays_run(run_id) {
+                    return;
+                }
+                self.review_in_flight = false;
+                self.review_error = Some(error);
+            }
+            ProcedureProgress::RunFailed { run_id, message } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
                 self.active_run = None;
                 self.status = ProcedureStatus::Error { message };
             }
@@ -447,17 +516,18 @@ impl ProcedureTab {
         if self.can_review_latest() {
             ui.horizontal(|ui| {
                 if ui.button("Approve").clicked() {
-                    self.apply_review(ProcedureReviewDisposition::Approved);
+                    self.apply_review(ProcedureReviewDecision::Approve);
                 }
                 if ui.button("Reject").clicked() {
-                    self.apply_review(ProcedureReviewDisposition::Rejected);
+                    self.apply_review(ProcedureReviewDecision::Reject);
                 }
             });
         }
     }
 
     fn can_review_latest(&self) -> bool {
-        self.view_state() == ProcedureViewState::AwaitingReview
+        !self.review_in_flight
+            && self.view_state() == ProcedureViewState::AwaitingReview
             && self.latest_run.as_ref().is_some_and(|run| {
                 run.review_disposition == ProcedureReviewDisposition::Pending
                     && run.terminal_disposition
@@ -465,26 +535,31 @@ impl ProcedureTab {
             })
     }
 
-    fn apply_review(&mut self, disposition: ProcedureReviewDisposition) {
+    fn apply_review(&mut self, decision: ProcedureReviewDecision) {
         let Some(run_id) = self.latest_run.as_ref().map(|run| run.id) else {
             return;
         };
-        let result = match disposition {
-            ProcedureReviewDisposition::Approved => self.reports.approve(&run_id),
-            ProcedureReviewDisposition::Rejected => self.reports.reject(&run_id),
-            ProcedureReviewDisposition::Pending | ProcedureReviewDisposition::LegacyUnreviewed => {
-                return;
-            }
+        let Some(command_tx) = &self.command_tx else {
+            self.review_error = Some("procedure executor is unavailable".to_string());
+            return;
         };
-        match result {
-            Ok(run) => {
-                self.latest_run = Some(run);
-                self.review_error = None;
-            }
-            Err(error) => {
-                self.review_error = Some(error.to_string());
-            }
+        if command_tx
+            .send(ProcedureCommand::Review { run_id, decision })
+            .is_err()
+        {
+            self.review_error = Some("procedure executor is unavailable".to_string());
+            return;
         }
+        self.review_in_flight = true;
+        self.review_error = None;
+    }
+
+    fn owns_active_run(&self, run_id: ProcedureRunId) -> bool {
+        self.active_run == Some(run_id)
+    }
+
+    fn displays_run(&self, run_id: ProcedureRunId) -> bool {
+        self.active_run.is_none() && self.latest_run.as_ref().is_some_and(|run| run.id == run_id)
     }
 
     fn can_run(&self) -> bool {
@@ -505,7 +580,9 @@ impl ProcedureTab {
         if let Some(interrupt) = &self.interrupt {
             interrupt.store(false, Ordering::SeqCst);
         }
-        let command = ProcedureCommand {
+        let run_id = ProcedureRunId::new();
+        let command = ProcedureCommand::Run {
+            run_id,
             backend: self.backend.clone(),
             request: ProcedureRunRequest {
                 change_id: self.selected_change.clone(),
@@ -513,19 +590,21 @@ impl ProcedureTab {
                 scratchpad: ProcedureScratchpad::default(),
             },
         };
-        info!(change = %command.request.change_id, task = %command.request.task_id, backend = %command.backend, "procedure run requested");
+        info!(change = %self.selected_change, task = %self.selected_task, backend = %self.backend, "procedure run requested");
         if command_tx.send(command).is_err() {
             self.status = ProcedureStatus::Error {
                 message: "procedure executor is unavailable".to_string(),
             };
             return;
         }
+        self.active_run = Some(run_id);
         self.latest_run = None;
         self.report_path = None;
         self.dispatch_backend = None;
         self.dispatch_model = None;
         self.attempt_number = None;
         self.review_error = None;
+        self.review_in_flight = false;
         self.status = ProcedureStatus::Running {
             message: "Queued".to_string(),
         };
@@ -599,12 +678,23 @@ impl ProcedureTab {
 
     #[cfg(feature = "test-support")]
     pub fn approve_for_test(&mut self) {
-        self.apply_review(ProcedureReviewDisposition::Approved);
+        self.apply_review(ProcedureReviewDecision::Approve);
     }
 
     #[cfg(feature = "test-support")]
     pub fn reject_for_test(&mut self) {
-        self.apply_review(ProcedureReviewDisposition::Rejected);
+        self.apply_review(ProcedureReviewDecision::Reject);
+    }
+
+    /// Render the production Procedure view for deterministic external visual evidence.
+    #[cfg(feature = "test-support")]
+    pub fn render_for_test(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings: &mut Settings,
+        project_root: &Path,
+    ) -> bool {
+        self.render(ui, settings, project_root)
     }
 }
 

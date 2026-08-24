@@ -62,11 +62,14 @@
 - [x] 4.2 Add external GUI-state and report round-trip tests that inspect approved targets, review disposition, backend, model, attempts, and structural validation.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Completed report is inspectable -->
   <!-- status: completed -->
-- [ ] 4.3 Extend the source-hash harness across structural success, validation failure, interruption, approval, and rejection.
+- [x] 4.3 Extend the source-hash harness across structural success, validation failure, interruption, approval, and rejection.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Workspace remains unchanged -->
-- [ ] 4.4 Add a verification-manifest test that requires the maintained GUI checklist and every named state screenshot to exist.
+  <!-- status: completed -->
+- [x] 4.4 Add a verification-manifest test that requires the maintained GUI checklist and every named state screenshot to exist.
   <!-- covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Procedure review states are visually inspectable -->
-- [ ] 4.5 Preserve run-id event isolation, reset interruption, and parent-drop interruption while adding review events to the procedure channel.
+  <!-- status: completed -->
+- [x] 4.5 Preserve run-id event isolation, reset interruption, and parent-drop interruption while adding review events to the procedure channel.
+  <!-- status: completed -->
 
 ## 5. Executable scenario bindings
 

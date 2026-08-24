@@ -64,6 +64,10 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # one already-locked copy. Needed for gui.rs, which asserts a block's colour
 # against `egui::Color32::WHITE`, the same way the moved inline test did.
 eframe = "0.31"
+# Already present in Cargo.lock through eframe. The visual evidence example
+# uses it directly to render egui into a fixed offscreen texture, without an
+# OS window or changing the production crate's renderer.
+egui-wgpu = "0.31"
 
 [features]
 # Forwards to deepseek-custom's own voice-models feature. Off by default,

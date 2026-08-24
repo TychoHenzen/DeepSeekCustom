@@ -32,9 +32,32 @@ pub struct ProcedureRunRequest {
 
 /// One GUI-selected run sent to the background procedure executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcedureCommand {
-    pub backend: String,
-    pub request: ProcedureRunRequest,
+pub enum ProcedureCommand {
+    Run {
+        run_id: ProcedureRunId,
+        backend: String,
+        request: ProcedureRunRequest,
+    },
+    Review {
+        run_id: ProcedureRunId,
+        decision: ProcedureReviewDecision,
+    },
+}
+
+/// Terminal decision requested for one awaiting-review run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcedureReviewDecision {
+    Approve,
+    Reject,
+}
+
+impl ProcedureReviewDecision {
+    pub const fn disposition(self) -> ProcedureReviewDisposition {
+        match self {
+            Self::Approve => ProcedureReviewDisposition::Approved,
+            Self::Reject => ProcedureReviewDisposition::Rejected,
+        }
+    }
 }
 
 /// Small procedure-only events emitted in execution order.
@@ -76,9 +99,47 @@ pub enum ProcedureProgress {
         run_id: ProcedureRunId,
         disposition: ProcedureTerminalDisposition,
     },
+    ReviewSucceeded {
+        run_id: ProcedureRunId,
+        disposition: ProcedureReviewDisposition,
+    },
+    ReviewFailed {
+        run_id: ProcedureRunId,
+        disposition: ProcedureReviewDisposition,
+        error: String,
+    },
     /// Infrastructure or backend preflight failed before a runner could
     /// produce its normal terminal report.
-    RunFailed { message: String },
+    RunFailed {
+        run_id: ProcedureRunId,
+        message: String,
+    },
+}
+
+/// Apply one persisted review decision and publish its run-scoped result.
+pub fn apply_review_decision(
+    reports: &ProcedureReportStore,
+    run_id: ProcedureRunId,
+    decision: ProcedureReviewDecision,
+    progress: &mpsc::UnboundedSender<ProcedureProgress>,
+) {
+    let disposition = decision.disposition();
+    let result = match decision {
+        ProcedureReviewDecision::Approve => reports.approve(&run_id),
+        ProcedureReviewDecision::Reject => reports.reject(&run_id),
+    };
+    let event = match result {
+        Ok(_) => ProcedureProgress::ReviewSucceeded {
+            run_id,
+            disposition,
+        },
+        Err(error) => ProcedureProgress::ReviewFailed {
+            run_id,
+            disposition,
+            error: error.to_string(),
+        },
+    };
+    let _ = progress.send(event);
 }
 
 /// Infrastructure failure that prevents a terminal report from being saved.
@@ -144,8 +205,17 @@ where
         &self,
         request: ProcedureRunRequest,
     ) -> Result<ProcedureRun, ProcedureRunnerError> {
+        self.run_with_id(ProcedureRunId::new(), request).await
+    }
+
+    /// Run localization under the identifier already owned by the GUI channel.
+    pub async fn run_with_id(
+        &self,
+        run_id: ProcedureRunId,
+        request: ProcedureRunRequest,
+    ) -> Result<ProcedureRun, ProcedureRunnerError> {
         let mut run = ProcedureRun {
-            id: ProcedureRunId::new(),
+            id: run_id,
             change_id: request.change_id.clone(),
             selected_task: ProcedureTask {
                 id: request.task_id.clone(),
