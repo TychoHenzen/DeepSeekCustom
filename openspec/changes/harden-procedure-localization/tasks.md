@@ -86,8 +86,10 @@
 
 ## 6. Maintained visual and Ollama verification
 
-- [ ] 6.1 Create a maintained procedure-localization verification document with exact GUI setup, actions, expected states, and screenshot paths.
-- [ ] 6.2 Capture the running, review, approved, rejected, failed, and interrupted Procedure views at a readable window size, then inspect each image for overlap, clipping, disabled actions, progress, and target evidence.
+- [x] 6.1 Create a maintained procedure-localization verification document with exact GUI setup, actions, expected states, and screenshot paths.
+  <!-- status: completed -->
+- [x] 6.2 Capture the running, review, approved, rejected, failed, and interrupted Procedure views at a readable window size, then inspect each image for overlap, clipping, disabled actions, progress, and target evidence.
+  <!-- status: completed -->
 - [ ] 6.3 Run the configured Ollama localization smoke case, record the exact model and report identifier, and classify transport, schema, structural, and semantic results separately.
 - [ ] 6.4 Hash workspace source files before and after the smoke run and both review decisions, then record the comparison without committing generated run reports.
 - [ ] 6.5 Update maintained procedure documentation with index defaults, the ASCII symbol boundary, report review semantics, Ollama reasoning omission, and the relationship to the archived smoke note.
