@@ -36,11 +36,14 @@
 
 ## 3. Structural validation and semantic review
 
-- [ ] 3.1 Add report review types for pending, approved, rejected, and legacy-unreviewed dispositions, with backward-compatible deserialization fixtures.
-- [ ] 3.2 Change a schema-valid, index-valid result to save and publish `AwaitingReview` instead of a completed success.
+- [x] 3.1 Add report review types for pending, approved, rejected, and legacy-unreviewed dispositions, with backward-compatible deserialization fixtures.
+  <!-- status: completed -->
+- [x] 3.2 Change a schema-valid, index-valid result to save and publish `AwaitingReview` instead of a completed success.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: All reported targets are valid -->
-- [ ] 3.3 Keep whole-result rejection for invented paths or symbols and add a distinct synchronous binding test for its complete diagnostics.
+  <!-- status: completed -->
+- [x] 3.3 Keep whole-result rejection for invented paths or symbols and add a distinct synchronous binding test for its complete diagnostics.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: A target is invented -->
+  <!-- status: completed -->
 - [ ] 3.4 Add a run-id-scoped rejection command that saves the decision and makes the report fail the approved-report guard.
   <!-- covers: deepseek-custom/procedure-localization :: Every localization target exists :: Structurally valid targets are semantically wrong -->
 - [ ] 3.5 Add a run-id-scoped approval command that saves the decision and is the only path through the approved-report guard.

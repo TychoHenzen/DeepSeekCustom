@@ -8,9 +8,9 @@ use deepseek_custom::agent::history::MessageHistory;
 use deepseek_custom::config::settings::{RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope, LocalizationTarget,
-    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore, ProcedureRunRequest,
-    ProcedureRunner, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    RepositoryIndexEntry,
+    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore,
+    ProcedureReviewDisposition, ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad,
+    ProcedureStage, ProcedureTerminalDisposition, RepositoryIndexEntry,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -324,11 +324,21 @@ async fn stage_zero_and_one_finalize_a_saved_report_with_ordered_progress() {
         ProcedureAttemptDisposition::Accepted
     );
     assert_eq!(run.scratchpad.files, vec!["src/lib.rs"]);
+    assert_eq!(run.review_disposition, ProcedureReviewDisposition::Pending);
     assert_eq!(
         run.terminal_disposition,
-        Some(ProcedureTerminalDisposition::Succeeded)
+        Some(ProcedureTerminalDisposition::AwaitingReview)
     );
-    assert_eq!(store.load(&run.id).unwrap(), run);
+    let saved = store.load(&run.id).unwrap();
+    assert_eq!(saved, run);
+    assert_eq!(
+        saved.review_disposition,
+        ProcedureReviewDisposition::Pending
+    );
+    assert_eq!(
+        saved.attempts[0].targets[0].evidence,
+        "The fixture source defines the selected entry point."
+    );
     assert!(matches!(events[0], ProcedureProgress::RunStarted { .. }));
     assert!(matches!(
         events[1],
@@ -366,7 +376,13 @@ async fn stage_zero_and_one_finalize_a_saved_report_with_ordered_progress() {
             ..
         }
     ));
-    assert!(matches!(events[7], ProcedureProgress::RunFinished { .. }));
+    assert!(matches!(
+        events[7],
+        ProcedureProgress::RunFinished {
+            disposition: ProcedureTerminalDisposition::AwaitingReview,
+            ..
+        }
+    ));
     assert_eq!(events.len(), 8);
     std::fs::remove_dir_all(root).ok();
 }
@@ -528,8 +544,9 @@ async fn invalid_first_result_is_retried_with_exact_error_and_valid_second_resul
     assert_eq!(run.scratchpad.last_error.as_deref(), Some(exact_error));
     assert_eq!(
         run.terminal_disposition,
-        Some(ProcedureTerminalDisposition::Succeeded)
+        Some(ProcedureTerminalDisposition::AwaitingReview)
     );
+    assert_eq!(run.review_disposition, ProcedureReviewDisposition::Pending);
     assert_eq!(
         ProcedureReportStore::for_project(&root)
             .load(&run.id)
@@ -549,6 +566,91 @@ async fn invalid_first_result_is_retried_with_exact_error_and_valid_second_resul
     assert!(second.get("messages").is_none());
     assert!(!prompts[1].contains("This target is intentionally absent."));
     std::fs::remove_dir_all(root).ok();
+}
+
+async fn mixed_invalid_result_is_rejected_as_a_whole_with_complete_diagnostics() {
+    let root = temp_dir("mixed-invalid-whole-result");
+    let command = write_fixture(&root);
+    let returned_targets = vec![
+        LocalizationTarget {
+            path: "src/lib.rs".to_string(),
+            symbol: Some("target_symbol".to_string()),
+            evidence: "This target is valid but belongs to the rejected result.".to_string(),
+        },
+        LocalizationTarget {
+            path: "src/invented.rs".to_string(),
+            symbol: None,
+            evidence: "This path is invented.".to_string(),
+        },
+        LocalizationTarget {
+            path: "src/lib.rs".to_string(),
+            symbol: Some("invented_symbol".to_string()),
+            evidence: "This symbol is invented.".to_string(),
+        },
+    ];
+    let stub = StubLocalizationDispatcher::script(vec![
+        Ok(LocalizationEnvelope {
+            targets: returned_targets.clone(),
+        }),
+        Ok(LocalizationEnvelope {
+            targets: returned_targets.clone(),
+        }),
+        panic_if_dispatched(),
+    ]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &root,
+            command.display().to_string(),
+        ),
+        root.clone(),
+        limits(),
+        stub.clone(),
+        ProcedureReportStore::for_project(&root),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_progress(tx);
+
+    let run = runner.run(request("fixture-change")).await.unwrap();
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let exact_error = "localization target validation failed:\n- target[1] path=\"src/invented.rs\": path is not present in the repository index\n- target[2] path=\"src/lib.rs\" symbol=\"invented_symbol\": symbol is not present under the indexed path\n";
+
+    assert_eq!(stub.calls(), 2);
+    assert_eq!(run.attempts.len(), 2);
+    for attempt in &run.attempts {
+        assert_eq!(attempt.disposition, ProcedureAttemptDisposition::Rejected);
+        assert_eq!(attempt.targets, returned_targets);
+        assert_eq!(attempt.validation_error.as_deref(), Some(exact_error));
+    }
+    assert!(run.scratchpad.files.is_empty());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ProcedureProgress::AttemptAccepted { .. }))
+    );
+    assert_eq!(
+        run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::Failed {
+            reason: exact_error.to_string(),
+        })
+    );
+    assert_eq!(
+        ProcedureReportStore::for_project(&root)
+            .load(&run.id)
+            .unwrap(),
+        run
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: Every localization target exists :: A target is invented
+#[test]
+fn invented_path_or_symbol_rejects_the_complete_localization_result() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(mixed_invalid_result_is_rejected_as_a_whole_with_complete_diagnostics());
 }
 
 #[tokio::test]
@@ -581,8 +683,9 @@ async fn malformed_final_json_is_the_only_dispatch_error_that_gets_a_repair_atte
     assert_eq!(run.attempts.len(), 2);
     assert_eq!(
         run.terminal_disposition,
-        Some(ProcedureTerminalDisposition::Succeeded)
+        Some(ProcedureTerminalDisposition::AwaitingReview)
     );
+    assert_eq!(run.review_disposition, ProcedureReviewDisposition::Pending);
     assert_eq!(
         run.attempts[0].validation_error.as_deref(),
         Some(
@@ -731,12 +834,16 @@ async fn success_failure_and_interruption_leave_the_fixture_workspace_unchanged(
     assert_eq!(workspace_hash(&success_root), success_before);
     assert_eq!(
         success.terminal_disposition,
-        Some(ProcedureTerminalDisposition::Succeeded)
+        Some(ProcedureTerminalDisposition::AwaitingReview)
+    );
+    assert_eq!(
+        success.review_disposition,
+        ProcedureReviewDisposition::Pending
     );
     assert!(matches!(
         success_events.last(),
         Some(ProcedureProgress::RunFinished {
-            disposition: ProcedureTerminalDisposition::Succeeded,
+            disposition: ProcedureTerminalDisposition::AwaitingReview,
             ..
         })
     ));

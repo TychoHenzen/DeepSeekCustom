@@ -11,9 +11,9 @@ use tokio::sync::mpsc;
 
 use super::{
     LocalizationAttempt, LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope,
-    LocalizationPromptInput, ProcedureAttemptDisposition, ProcedureReportStore, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition, RepositoryIndexEntry, build_localization_prompt,
+    LocalizationPromptInput, ProcedureAttemptDisposition, ProcedureReportStore,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition, RepositoryIndexEntry, build_localization_prompt,
     build_repository_index, validate_localization_targets,
 };
 use crate::config::settings::RepositoryIndexLimits;
@@ -158,6 +158,7 @@ where
             scratchpad: request.scratchpad,
             stage: ProcedureStage::SpecValidation,
             attempts: Vec::new(),
+            review_disposition: ProcedureReviewDisposition::Pending,
             terminal_disposition: None,
         };
         self.emit(ProcedureProgress::RunStarted {
@@ -355,7 +356,7 @@ where
                         run_id: run.id,
                         stage: ProcedureStage::Localization,
                     });
-                    return self.finish(run, ProcedureTerminalDisposition::Succeeded);
+                    return self.finish(run, ProcedureTerminalDisposition::AwaitingReview);
                 }
                 Err(error) => {
                     let message = error.to_string();

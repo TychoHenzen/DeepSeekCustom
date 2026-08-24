@@ -539,6 +539,7 @@ fn stage_label(stage: ProcedureStage, suffix: &str) -> String {
 fn disposition_label(disposition: &ProcedureTerminalDisposition) -> String {
     match disposition {
         ProcedureTerminalDisposition::Succeeded => "succeeded".to_string(),
+        ProcedureTerminalDisposition::AwaitingReview => "awaiting review".to_string(),
         ProcedureTerminalDisposition::Interrupted => "interrupted".to_string(),
         ProcedureTerminalDisposition::Failed { reason } => format!("failed: {reason}"),
     }

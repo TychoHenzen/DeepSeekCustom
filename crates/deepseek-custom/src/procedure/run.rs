@@ -75,6 +75,25 @@ pub enum ProcedureAttemptDisposition {
     Interrupted,
 }
 
+/// The semantic review state persisted with one localization report.
+///
+/// `LegacyUnreviewed` is reserved for reports written before this field
+/// existed. New runs start as `Pending` and must record an explicit review
+/// decision before later procedure stages may trust their targets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureReviewDisposition {
+    #[default]
+    Pending,
+    Approved,
+    Rejected,
+    LegacyUnreviewed,
+}
+
+const fn legacy_unreviewed() -> ProcedureReviewDisposition {
+    ProcedureReviewDisposition::LegacyUnreviewed
+}
+
 /// One bounded localization dispatch and its validated result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizationAttempt {
@@ -91,6 +110,7 @@ pub struct LocalizationAttempt {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProcedureTerminalDisposition {
     Succeeded,
+    AwaitingReview,
     Failed { reason: String },
     Interrupted,
 }
@@ -109,5 +129,8 @@ pub struct ProcedureRun {
     pub scratchpad: ProcedureScratchpad,
     pub stage: ProcedureStage,
     pub attempts: Vec<LocalizationAttempt>,
+    /// Semantic review state. A missing field identifies a legacy report.
+    #[serde(default = "legacy_unreviewed")]
+    pub review_disposition: ProcedureReviewDisposition,
     pub terminal_disposition: Option<ProcedureTerminalDisposition>,
 }

@@ -1,7 +1,7 @@
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition,
+    LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition,
 };
 
 #[test]
@@ -36,6 +36,7 @@ fn procedure_run_round_trips_through_json() {
             }],
             validation_error: None,
         }],
+        review_disposition: ProcedureReviewDisposition::Pending,
         terminal_disposition: Some(ProcedureTerminalDisposition::Succeeded),
     };
 
@@ -44,4 +45,26 @@ fn procedure_run_round_trips_through_json() {
         serde_json::from_str(&json).expect("procedure run should deserialize");
 
     assert_eq!(decoded, run);
+}
+
+#[test]
+fn every_review_disposition_round_trips_exactly() {
+    for disposition in [
+        ProcedureReviewDisposition::Pending,
+        ProcedureReviewDisposition::Approved,
+        ProcedureReviewDisposition::Rejected,
+        ProcedureReviewDisposition::LegacyUnreviewed,
+    ] {
+        let json = serde_json::to_string(&disposition).unwrap();
+        let decoded: ProcedureReviewDisposition = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, disposition);
+    }
+}
+
+#[test]
+fn new_review_dispositions_default_to_pending() {
+    assert_eq!(
+        ProcedureReviewDisposition::default(),
+        ProcedureReviewDisposition::Pending
+    );
 }

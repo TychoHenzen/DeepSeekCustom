@@ -12,8 +12,8 @@ use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::gui::procedure_tab::{ProcedureStatus, ProcedureTab};
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureProgress,
-    ProcedureReportStore, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition,
+    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
 };
 use tokio::sync::mpsc;
 
@@ -294,6 +294,7 @@ fn completed_run(id: ProcedureRunId) -> ProcedureRun {
             }],
             validation_error: None,
         }],
+        review_disposition: ProcedureReviewDisposition::Approved,
         terminal_disposition: Some(ProcedureTerminalDisposition::Succeeded),
     }
 }

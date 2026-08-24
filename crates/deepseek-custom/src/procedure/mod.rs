@@ -29,8 +29,8 @@ pub use report::ProcedureReportStore;
 
 pub use run::{
     LocalizationAttempt, LocalizationEnvelope, LocalizationTarget, ProcedureAttemptDisposition,
-    ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition,
 };
 pub use runner::{
     ProcedureCommand, ProcedureProgress, ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError,

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, ProcedureAttemptDisposition, ProcedureReportStore,
-    ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -45,6 +45,7 @@ fn completed_run() -> ProcedureRun {
             }],
             validation_error: None,
         }],
+        review_disposition: ProcedureReviewDisposition::Approved,
         terminal_disposition: Some(ProcedureTerminalDisposition::Succeeded),
     }
 }
@@ -80,6 +81,56 @@ fn load_returns_the_saved_targets_and_dispatch_details() {
     assert_eq!(
         loaded.attempts[0].targets[0].symbol.as_deref(),
         Some("ProcedureReportStore")
+    );
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn report_store_round_trips_every_review_disposition() {
+    let reports_dir = temp_path("review-round-trip");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+
+    for disposition in [
+        ProcedureReviewDisposition::Pending,
+        ProcedureReviewDisposition::Approved,
+        ProcedureReviewDisposition::Rejected,
+        ProcedureReviewDisposition::LegacyUnreviewed,
+    ] {
+        let mut report = completed_run();
+        report.review_disposition = disposition;
+        store.save(&report).unwrap();
+        assert_eq!(
+            store.load(&report.id).unwrap().review_disposition,
+            disposition
+        );
+    }
+
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn report_without_review_disposition_loads_as_legacy_unreviewed() {
+    let reports_dir = temp_path("legacy-review");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let report = completed_run();
+    let mut json = serde_json::to_value(&report).unwrap();
+    json.as_object_mut().unwrap().remove("review_disposition");
+    std::fs::create_dir_all(&reports_dir).unwrap();
+    std::fs::write(
+        store.report_path(&report.id),
+        serde_json::to_string_pretty(&json).unwrap(),
+    )
+    .unwrap();
+
+    let loaded = store.load(&report.id).unwrap();
+
+    assert_eq!(
+        loaded.review_disposition,
+        ProcedureReviewDisposition::LegacyUnreviewed
+    );
+    assert_ne!(
+        loaded.review_disposition,
+        ProcedureReviewDisposition::Approved
     );
     std::fs::remove_dir_all(reports_dir).ok();
 }
