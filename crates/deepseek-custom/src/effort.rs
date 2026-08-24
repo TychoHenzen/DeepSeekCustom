@@ -1,13 +1,14 @@
 //! `Effort`: the harness's own five-level reasoning-effort control, shared
 //! across every backend. A single control replaces the old per-backend
-//! guesswork: a boolean thinking toggle for DeepSeek and Ollama, and no
-//! control at all for `claude_cli`.
+//! guesswork: a boolean thinking toggle for API backends and no control at
+//! all for `claude_cli`.
 //!
 //! Each backend maps `Effort` to whatever its own API or CLI expects, at the
 //! edge, right before a request goes out or a child gets spawned:
-//! `ApiClient::prepare_request` in `src/api/client.rs` for DeepSeek and
-//! Ollama, `build_args` in `src/backend/claude_cli/process.rs` for the
-//! `claude` CLI. See phase 5 of
+//! `ApiClient::prepare_request` in `src/api/client.rs` for DeepSeek,
+//! `build_args` in `src/backend/claude_cli/process.rs` for the `claude` CLI,
+//! and the Codex spawn adapter. Ollama intentionally ignores this control.
+//! See phase 5 of
 //! `docs/plans/2026-08-04-long-term-roadmap.md` and
 //! `docs/notes/claude-effort.md` for the mapping decisions and their
 //! evidence.
@@ -76,18 +77,6 @@ impl Effort {
             Effort::None => "non-thinking",
             Effort::Low | Effort::Medium | Effort::High => "thinking",
             Effort::Max => "thinking_max",
-        }
-    }
-
-    /// Ollama's `reasoning_effort` value for this level: a direct
-    /// one-to-one mapping, since Ollama also has five levels.
-    pub fn ollama_reasoning_effort(self) -> &'static str {
-        match self {
-            Effort::None => "none",
-            Effort::Low => "low",
-            Effort::Medium => "medium",
-            Effort::High => "high",
-            Effort::Max => "max",
         }
     }
 

@@ -48,14 +48,10 @@ impl ApiClient {
 
     /// Adapt a request to what this client's provider accepts.
     ///
-    /// Both `thinking_mode` (DeepSeek) and `reasoning_effort` (Ollama) are
-    /// filled in here, from `req.effort`, the harness's own five-level
-    /// control. A caller builds a `ChatRequest` by setting `effort` and
-    /// leaving both wire fields `None`; this is the one place that maps
-    /// `effort` onto whichever field the active provider actually reads.
-    /// See `crate::effort::Effort` for the per-provider mapping. A request
-    /// with no `effort` set leaves both fields untouched, whatever the
-    /// caller put there directly.
+    /// DeepSeek's `thinking_mode` is filled from `req.effort`, the harness's
+    /// own five-level control. Ollama requests omit provider-native
+    /// thinking fields because many locally runnable models reject native
+    /// thinking control even when their prompts produce reasoning text.
     ///
     /// Ollama also does not support `tool_choice`, so that is cleared here
     /// too, regardless of `effort`.
@@ -70,10 +66,9 @@ impl ApiClient {
             }
             Provider::Ollama => {
                 prepared.tool_choice = None;
+                prepared.thinking = None;
                 prepared.thinking_mode = None;
-                if let Some(effort) = req.effort {
-                    prepared.reasoning_effort = Some(effort.ollama_reasoning_effort().to_string());
-                }
+                prepared.reasoning_effort = None;
             }
         }
         prepared

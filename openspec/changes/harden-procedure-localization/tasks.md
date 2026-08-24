@@ -24,12 +24,15 @@
 
 ## 2. Structured Ollama dispatch
 
-- [ ] 2.1 Add an Ollama request-capture test that asserts the localization JSON Schema is sent through the structured-response field.
+- [x] 2.1 Add an Ollama request-capture test that asserts the localization JSON Schema is sent through the structured-response field.
   <!-- covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Ollama receives the localization schema -->
-- [ ] 2.2 Add a configuration test that rejects unsupported localization backends before dispatch and names the selected backend.
+  <!-- status: completed -->
+- [x] 2.2 Add a configuration test that rejects unsupported localization backends before dispatch and names the selected backend.
   <!-- covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Backend cannot constrain output -->
-- [ ] 2.3 Lock Ollama request serialization so every shared effort setting omits provider-native reasoning fields while retaining the localization schema.
+  <!-- status: completed -->
+- [x] 2.3 Lock Ollama request serialization so every shared effort setting omits provider-native reasoning fields while retaining the localization schema.
   <!-- covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Ollama model lacks native thinking control -->
+  <!-- status: completed -->
 
 ## 3. Structural validation and semantic review
 

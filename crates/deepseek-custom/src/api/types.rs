@@ -26,10 +26,8 @@ pub struct ChatRequest {
     /// `effort` instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
-    /// Ollama's `/v1/chat/completions` thinking control: `"high" | "medium" |
-    /// "low" | "max" | "none"`. Unused by DeepSeek. Filled in by
-    /// `ApiClient::prepare_request` from `effort` below, the same way as
-    /// `thinking_mode`.
+    /// OpenAI-compatible thinking control. Ollama requests clear this field
+    /// because the harness does not assume a local model supports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     /// Provider-native structured final-response constraint. `None` keeps
@@ -37,9 +35,9 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     /// The harness's own five-level effort control. Never sent on the wire:
-    /// `ApiClient::prepare_request` reads it to fill in `thinking_mode`
-    /// (DeepSeek) or `reasoning_effort` (Ollama) per provider, at the edge,
-    /// right before the request goes out. See `crate::effort::Effort`.
+    /// `ApiClient::prepare_request` reads it to fill in `thinking_mode` for
+    /// DeepSeek. Ollama ignores it and uses the model's default behavior.
+    /// See `crate::effort::Effort`.
     #[serde(skip)]
     pub effort: Option<Effort>,
 }

@@ -325,7 +325,7 @@ async fn localization_dispatch_is_one_tool_free_non_streaming_ollama_request() {
     assert_eq!(body["stream"], false);
     assert_eq!(body["temperature"], 0.0);
     assert_eq!(body["max_tokens"], 4096);
-    assert_eq!(body["reasoning_effort"], "high");
+    assert!(body.get("reasoning_effort").is_none());
     assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     assert_eq!(body["messages"][0]["role"], "user");
     assert!(
@@ -336,7 +336,97 @@ async fn localization_dispatch_is_one_tool_free_non_streaming_ollama_request() {
     );
     assert!(body.get("tools").is_none());
     assert!(body.get("tool_choice").is_none());
-    assert_eq!(body["response_format"]["type"], "json_schema");
+    let format = &body["response_format"];
+    assert_eq!(format["type"], "json_schema");
+    assert_eq!(format["json_schema"]["name"], "procedure_localization");
+    assert_eq!(format["json_schema"]["strict"], true);
+    let schema = &format["json_schema"]["schema"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], serde_json::json!(["targets"]));
+    let target = &schema["properties"]["targets"]["items"];
+    assert_eq!(target["additionalProperties"], false);
+    assert_eq!(target["required"], serde_json::json!(["path", "evidence"]));
+    assert_eq!(
+        target["properties"]["path"]["enum"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    assert_eq!(
+        target["properties"]["symbol"]["type"],
+        serde_json::json!(["string", "null"])
+    );
+    assert_eq!(target["properties"]["evidence"]["minLength"], 1);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn ollama_localization_retains_the_schema_without_native_reasoning_at_every_effort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_raw(TYPED_LOCALIZATION_RESPONSE, "application/json"),
+        )
+        .expect(5)
+        .mount(&server)
+        .await;
+    let contract = selected_contract();
+    let index = repository_index();
+    let scratchpad = ProcedureScratchpad::default();
+
+    for effort in [
+        Effort::None,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Max,
+    ] {
+        let mut settings = settings_for(
+            "local-ollama",
+            BackendConfig::Api {
+                provider: ApiProvider::Ollama,
+                model: "qwen-local".to_string(),
+                base_url: Some(server.uri()),
+                api_key: None,
+                models: None,
+            },
+        );
+        settings.effort = Some(effort);
+        let dispatcher = LocalizationDispatcher::from_settings(&settings, Path::new(".")).unwrap();
+
+        dispatcher
+            .localize(LocalizationPromptInput {
+                contract: &contract,
+                repository_index: &index,
+                scratchpad: &scratchpad,
+            })
+            .await
+            .unwrap();
+    }
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 5);
+    let expected_format = serde_json::to_value(localization_response_format(&index)).unwrap();
+    for (request, effort) in requests.into_iter().zip([
+        Effort::None,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Max,
+    ]) {
+        let body: serde_json::Value = request.body_json().unwrap();
+        for field in ["thinking", "thinking_mode", "reasoning_effort"] {
+            assert!(
+                body.get(field).is_none(),
+                "effort {effort:?} unexpectedly sent {field}"
+            );
+        }
+        assert_eq!(
+            body["response_format"], expected_format,
+            "effort {effort:?} changed the localization schema"
+        );
+    }
     server.verify().await;
 }
 

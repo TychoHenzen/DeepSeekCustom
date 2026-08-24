@@ -4,7 +4,9 @@
 
 use deepseek_custom::api::client::ApiClient;
 use deepseek_custom::api::provider::Provider;
-use deepseek_custom::api::types::{ChatRequest, JsonSchemaFormat, ResponseFormat, ToolChoice};
+use deepseek_custom::api::types::{
+    ChatRequest, JsonSchemaFormat, ResponseFormat, ThinkingConfig, ToolChoice,
+};
 use deepseek_custom::effort::Effort;
 
 fn sample_request(effort: Option<Effort>) -> ChatRequest {
@@ -83,35 +85,37 @@ fn ollama_clears_thinking_mode_and_tool_choice() {
 }
 
 #[test]
-fn ollama_maps_every_level_one_to_one() {
+fn ollama_omits_reasoning_effort_for_every_level() {
     let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
-    let cases = [
-        (Effort::None, "none"),
-        (Effort::Low, "low"),
-        (Effort::Medium, "medium"),
-        (Effort::High, "high"),
-        (Effort::Max, "max"),
-    ];
-    for (level, expected) in cases {
+    for level in [
+        Effort::None,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Max,
+    ] {
         let req = sample_request(Some(level));
         let prepared = client.prepare_request_for_test(&req);
-        assert_eq!(
-            prepared.reasoning_effort.as_deref(),
-            Some(expected),
-            "level {level:?} should map to {expected:?}"
-        );
+        assert_eq!(prepared.reasoning_effort, None, "level {level:?}");
     }
 }
 
 #[test]
-fn ollama_with_no_effort_leaves_reasoning_effort_alone() {
+fn ollama_clears_every_explicit_native_reasoning_field() {
     let client = ApiClient::new(Provider::Ollama, "sk-test".into(), None);
     let mut req = sample_request(None);
+    req.thinking = Some(ThinkingConfig {
+        thinking_type: "enabled".to_string(),
+        reasoning_effort: Some("high".to_string()),
+    });
+    req.thinking_mode = Some("thinking_max".to_string());
     req.reasoning_effort = Some("low".to_string());
 
     let prepared = client.prepare_request_for_test(&req);
 
-    assert_eq!(prepared.reasoning_effort.as_deref(), Some("low"));
+    assert!(prepared.thinking.is_none());
+    assert!(prepared.thinking_mode.is_none());
+    assert_eq!(prepared.reasoning_effort, None);
 }
 
 fn structured_format() -> ResponseFormat {
