@@ -76,6 +76,8 @@ mod mcp_tool;
 mod memory;
 mod path_repair;
 mod plugins;
+mod procedure_input;
+mod procedure_prompt;
 mod procedure_report;
 mod procedure_run;
 mod process_group;

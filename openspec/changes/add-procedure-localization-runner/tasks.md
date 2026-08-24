@@ -10,14 +10,18 @@
 
 ## 2. Stage 0 OpenSpec input
 
-- [ ] 2.1 Resolve and invoke `openspec validate <change> --strict --no-interactive` with the current Windows command resolution rules, capturing its exact failure.
+- [x] 2.1 Resolve and invoke `openspec validate <change> --strict --no-interactive` with the current Windows command resolution rules, capturing its exact failure.
   <!-- covers: deepseek-custom/procedure-localization :: A procedure run starts from a valid OpenSpec change :: Invalid change stops before model use -->
-- [ ] 2.2 Load active changes, unchecked tasks, `covers` bindings, and the smallest requirement or capability slice needed by the selected task.
+  <!-- status: completed -->
+- [x] 2.2 Load active changes, unchecked tasks, `covers` bindings, and the smallest requirement or capability slice needed by the selected task.
   <!-- covers: deepseek-custom/procedure-localization :: A procedure run starts from a valid OpenSpec change :: Valid change starts localization -->
-- [ ] 2.3 Build the typed localization prompt from only the spec slice, repository index, and scratchpad, with the target-selection instruction at the prompt boundary.
+  <!-- status: completed -->
+- [x] 2.3 Build the typed localization prompt from only the spec slice, repository index, and scratchpad, with the target-selection instruction at the prompt boundary.
   <!-- covers: deepseek-custom/procedure-localization :: Localization context is short and typed :: Captured request contains only stage context -->
-- [ ] 2.4 Add prompt-capture assertions for instruction placement and the absence of unrelated conversation history.
+  <!-- status: completed -->
+- [x] 2.4 Add prompt-capture assertions for instruction placement and the absence of unrelated conversation history.
   <!-- covers: deepseek-custom/procedure-localization :: Localization context is short and typed :: Key instruction is not buried -->
+  <!-- status: completed -->
 
 ## 3. Repository index
 
