@@ -695,6 +695,7 @@ fn existing_settings_without_procedure_block_still_load() {
     );
 }
 
+// covers: deepseek-custom/procedure-localization :: Repository index boundaries are explicit :: Missing index settings use documented defaults
 #[test]
 fn procedure_block_without_repository_index_uses_named_defaults() {
     let dir = unique_temp_dir("procedure-index-defaults");

@@ -77,9 +77,12 @@
   <!-- status: completed -->
 - [x] 5.2 Give each unchanged main-spec scenario for change selection, context construction, retry bounds, and interruption its own synchronous external test and direct `// covers:` marker.
   <!-- status: completed -->
-- [ ] 5.3 Convert async binding entry points to exact `#[test]` wrappers around shared Tokio helpers, with one marker and one scenario per wrapper.
-- [ ] 5.4 Generate every procedure-localization verification command through dod-guard, execute it, and correct any binding whose command does not run its named test.
-- [ ] 5.5 Record the derived final scenario count and assert that every final `deepseek-custom/procedure-localization` scenario is bound without weakening the repository coverage ratchet.
+- [x] 5.3 Convert async binding entry points to exact `#[test]` wrappers around shared Tokio helpers, with one marker and one scenario per wrapper.
+  <!-- status: completed -->
+- [x] 5.4 Generate every procedure-localization verification command through dod-guard, execute it, and correct any binding whose command does not run its named test.
+  <!-- status: completed -->
+- [x] 5.5 Record the derived final scenario count and assert that every final `deepseek-custom/procedure-localization` scenario is bound without weakening the repository coverage ratchet.
+  <!-- status: completed -->
 
 ## 6. Maintained visual and Ollama verification
 

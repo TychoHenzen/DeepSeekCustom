@@ -1,0 +1,5 @@
+{
+  "deepseek-custom": [
+    "crates/deepseek-custom-tests/tests/it/*.rs"
+  ]
+}

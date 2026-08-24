@@ -19,6 +19,15 @@ test("OpenSpec config maps Rust files to the portable Node runner", async () => 
   assert.equal(config.rust, "node scripts/run-rust-test-file.mjs");
 });
 
+test("OpenSpec discovery stays inside the maintained external Rust integration tests", async () => {
+  const config = JSON.parse(
+    await readFile(new URL("../openspec/test-globs.json", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(config, {
+    "deepseek-custom": ["crates/deepseek-custom-tests/tests/it/*.rs"],
+  });
+});
+
 test("Rust test paths must stay inside the external integration-test directory", () => {
   assert.equal(deriveIntegrationModule(PROCEDURE_RUNNER), "procedure_runner");
   assert.equal(

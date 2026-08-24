@@ -124,6 +124,7 @@ fn limits() -> RepositoryIndexLimits {
     }
 }
 
+// covers: deepseek-custom/procedure-localization :: Repository index boundaries are explicit :: Configured index settings replace defaults
 #[test]
 fn configured_index_limits_reach_the_next_runner_without_replacement() {
     let root = temp_dir("configured-limits");
@@ -401,6 +402,12 @@ fn valid_change_starts_localization() {
     run_async_test(valid_change_starts_localization_case());
 }
 
+// covers: deepseek-custom/procedure-localization :: Every localization target exists :: All reported targets are valid
+#[test]
+fn all_reported_targets_are_structurally_valid_and_await_review() {
+    run_async_test(valid_change_starts_localization_case());
+}
+
 #[tokio::test]
 async fn review_decision_matrix_is_run_scoped_and_never_redispatches_localization() {
     let root = temp_dir("review-decision-matrix");
@@ -616,8 +623,7 @@ fn invalid_change_stops_before_model_use() {
     run_async_test(invalid_change_stops_before_model_use_case());
 }
 
-#[tokio::test]
-async fn ambiguous_unbound_contracts_fail_before_indexing_or_model_dispatch() {
+async fn multiple_capabilities_require_a_binding_case() {
     for capability_count in [0, 2] {
         let root = temp_dir(&format!("ambiguous-contract-{capability_count}"));
         let command = write_unbound_fixture(&root, capability_count);
@@ -654,8 +660,13 @@ async fn ambiguous_unbound_contracts_fail_before_indexing_or_model_dispatch() {
     }
 }
 
-#[tokio::test]
-async fn repository_index_overflow_stops_before_model_dispatch() {
+// covers: deepseek-custom/procedure-localization :: Task contract selection is unambiguous :: Multiple capabilities require a binding
+#[test]
+fn multiple_capabilities_require_a_binding() {
+    run_async_test(multiple_capabilities_require_a_binding_case());
+}
+
+async fn repository_index_overflow_stops_before_model_dispatch_case() {
     let root = temp_dir("index-overflow");
     let command = write_fixture(&root);
     let stub = StubLocalizationDispatcher::success(Vec::new());
@@ -686,6 +697,12 @@ async fn repository_index_overflow_stops_before_model_dispatch() {
     );
 
     std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: Repository index boundaries are explicit :: Repository index exceeds a configured limit
+#[test]
+fn repository_index_overflow_stops_before_model_dispatch() {
+    run_async_test(repository_index_overflow_stops_before_model_dispatch_case());
 }
 
 async fn retry_repairs_invalid_output_case() {

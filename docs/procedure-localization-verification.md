@@ -129,3 +129,52 @@ Inspection: The interrupted state is distinct from failed and rejected. All visi
 ## Maintained evidence contract
 
 The external test `procedure_visual_verification_manifest_requires_every_state_artifact` requires this checklist and all six PNGs. It rejects absolute paths, parent traversal, missing files, non-files, and paths that resolve outside the repository.
+
+## Executable scenario coverage
+
+The maintained Rust discovery entry is `crates/deepseek-custom-tests/tests/it/*.rs` under the `deepseek-custom` group in `openspec/test-globs.json`. The runner entry is `node scripts/run-rust-test-file.mjs` in `openspec/test-runners.json`.
+
+Run the change coverage report:
+
+```powershell
+node "$env:USERPROFILE\mcp-servers\dod-guard\packages\dod-guard\dist\bundle.js" cover harden-procedure-localization
+```
+
+Observed result on 2026-08-24: `17 scenario(s): 17 bound, 0 unwired` and `cover OK - 0 regression(s)`.
+
+Dod-guard generated seven distinct commands for the active delta. Each command ran its complete module, printed every bound test name, and passed:
+
+| Generated command | Result | Bound tests observed |
+|---|---:|---|
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_input.rs"` | 10 passed | `one_capability_change_selects_the_complete_delta_for_an_unbound_task` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_runner.rs"` | 14 passed | `multiple_capabilities_require_a_binding`, `configured_index_limits_reach_the_next_runner_without_replacement`, `repository_index_overflow_stops_before_model_dispatch`, `all_reported_targets_are_structurally_valid_and_await_review`, `invented_path_or_symbol_rejects_the_complete_localization_result`, `workspace_remains_unchanged` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/config_settings.rs"` | 48 passed | `procedure_block_without_repository_index_uses_named_defaults` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_index.rs"` | 16 passed | `supported_ascii_rust_item_kinds_expose_their_exact_identifiers`, `unicode_rust_identifier_remains_available_only_as_a_path_target` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_dispatch.rs"` | 6 passed | `ollama_receives_the_localization_schema`, `backend_cannot_constrain_localization_output`, `ollama_model_lacks_native_thinking_control` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_report.rs"` | 10 passed | `rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approved_guard`, `approval_preserves_structural_evidence_and_is_the_only_path_through_the_guard` |
+| `node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/gui_procedure_tab.rs"` | 11 passed | `approved_structural_report_round_trip_populates_the_complete_procedure_view`, `procedure_visual_verification_manifest_requires_every_state_artifact` |
+
+The unchanged main-spec bindings also generated and passed:
+
+```powershell
+node scripts/run-rust-test-file.mjs "crates/deepseek-custom-tests/tests/it/procedure_prompt.rs"
+```
+
+Observed result: 3 passed, including both marked prompt tests.
+
+Run repository coverage:
+
+```powershell
+node "$env:USERPROFILE\mcp-servers\dod-guard\packages\dod-guard\dist\bundle.js" cover --all
+```
+
+Observed aggregate result: 39 repository scenarios, 12 bound and 27 unwired, with `cover OK - 0 regression(s)`. The aggregate includes other capabilities, so it does not represent procedure-localization completeness.
+
+The capability-specific structured results are:
+
+- Main procedure-localization spec: 12 of 12 bound.
+- Active delta: 17 of 17 bound.
+- Main and delta overlap: 6 modified scenarios.
+- Effective final procedure-localization spec: 23 of 23 unique scenario IDs bound.
+
+The effective count is `12 + 17 - 6 = 23`. This is also `12` main scenarios plus `7` added-delta scenarios plus `4` new scenarios in modified requirements. The coverage ratchet remained unchanged.

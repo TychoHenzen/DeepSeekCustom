@@ -127,8 +127,15 @@ fn repository_index() -> Vec<RepositoryIndexEntry> {
     }]
 }
 
-#[tokio::test]
-async fn ollama_wire_request_carries_the_localization_json_schema() {
+fn run_async_test(future: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future);
+}
+
+async fn ollama_wire_request_carries_the_localization_json_schema_case() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -182,6 +189,12 @@ async fn ollama_wire_request_carries_the_localization_json_schema() {
     server.verify().await;
 }
 
+// covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Ollama receives the localization schema
+#[test]
+fn ollama_receives_the_localization_schema() {
+    run_async_test(ollama_wire_request_carries_the_localization_json_schema_case());
+}
+
 #[test]
 fn ollama_localization_backend_passes_preflight() {
     let settings = settings_for(
@@ -202,8 +215,7 @@ fn ollama_localization_backend_passes_preflight() {
     assert_eq!(dispatcher.model(), "qwen-local");
 }
 
-#[tokio::test]
-async fn deepseek_api_localization_backend_is_rejected_before_wire_dispatch() {
+async fn deepseek_api_localization_backend_is_rejected_before_wire_dispatch_case() {
     let server = MockServer::start().await;
     let settings = settings_for(
         "remote-api",
@@ -227,8 +239,7 @@ async fn deepseek_api_localization_backend_is_rejected_before_wire_dispatch() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
-#[test]
-fn claude_cli_localization_backend_is_rejected_before_process_dispatch() {
+fn claude_cli_localization_backend_is_rejected_before_process_dispatch_case() {
     let settings = settings_for(
         "claude-localizer",
         BackendConfig::ClaudeCli {
@@ -249,8 +260,7 @@ fn claude_cli_localization_backend_is_rejected_before_process_dispatch() {
     );
 }
 
-#[test]
-fn codex_cli_localization_backend_is_rejected_before_process_dispatch() {
+fn codex_cli_localization_backend_is_rejected_before_process_dispatch_case() {
     let settings = settings_for(
         "codex-localizer",
         BackendConfig::CodexCli {
@@ -269,6 +279,14 @@ fn codex_cli_localization_backend_is_rejected_before_process_dispatch() {
         error.to_string(),
         "localization backend \"codex-localizer\" is unsupported: kind codex_cli cannot enforce the localization JSON Schema"
     );
+}
+
+// covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Backend cannot constrain output
+#[test]
+fn backend_cannot_constrain_localization_output() {
+    run_async_test(deepseek_api_localization_backend_is_rejected_before_wire_dispatch_case());
+    claude_cli_localization_backend_is_rejected_before_process_dispatch_case();
+    codex_cli_localization_backend_is_rejected_before_process_dispatch_case();
 }
 
 #[tokio::test]
@@ -358,8 +376,7 @@ async fn localization_dispatch_is_one_tool_free_non_streaming_ollama_request() {
     server.verify().await;
 }
 
-#[tokio::test]
-async fn ollama_localization_retains_the_schema_without_native_reasoning_at_every_effort() {
+async fn ollama_localization_retains_the_schema_without_native_reasoning_at_every_effort_case() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -428,6 +445,14 @@ async fn ollama_localization_retains_the_schema_without_native_reasoning_at_ever
         );
     }
     server.verify().await;
+}
+
+// covers: deepseek-custom/procedure-localization :: Localizer output is schema constrained :: Ollama model lacks native thinking control
+#[test]
+fn ollama_model_lacks_native_thinking_control() {
+    run_async_test(
+        ollama_localization_retains_the_schema_without_native_reasoning_at_every_effort_case(),
+    );
 }
 
 #[tokio::test]

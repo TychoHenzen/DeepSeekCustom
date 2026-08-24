@@ -174,6 +174,7 @@ fn corrupt_report_returns_a_parse_error_that_names_the_file() {
     std::fs::remove_dir_all(reports_dir).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Every localization target exists :: Structurally valid targets are semantically wrong
 #[test]
 fn rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approved_guard() {
     let reports_dir = temp_path("reject-review");
@@ -213,6 +214,7 @@ fn rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approve
     std::fs::remove_dir_all(reports_dir).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Every localization target exists :: Structurally valid targets are approved
 #[test]
 fn approval_preserves_structural_evidence_and_is_the_only_path_through_the_guard() {
     let reports_dir = temp_path("approve-review");

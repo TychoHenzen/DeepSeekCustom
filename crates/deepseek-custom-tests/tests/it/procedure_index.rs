@@ -78,6 +78,7 @@ fn repository_index_reports_a_missing_root() {
     );
 }
 
+// covers: deepseek-custom/procedure-localization :: Conservative Rust symbols retain a path-only fallback :: Supported ASCII Rust items expose symbols
 #[test]
 fn supported_ascii_rust_item_kinds_expose_their_exact_identifiers() {
     let root = temp_dir("rust-symbols");
@@ -154,6 +155,7 @@ fn non_rust_paths_remain_available_without_symbols() {
     std::fs::remove_dir_all(root).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Conservative Rust symbols retain a path-only fallback :: Unicode Rust identifier falls back to its path
 #[test]
 fn unicode_rust_identifier_remains_available_only_as_a_path_target() {
     let root = temp_dir("unicode-identifier");

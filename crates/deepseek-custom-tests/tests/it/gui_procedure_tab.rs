@@ -156,6 +156,7 @@ fn finish_review_command(
     (run_id, decision)
 }
 
+// covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Procedure review states are visually inspectable
 #[test]
 fn procedure_visual_verification_manifest_requires_every_state_artifact() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -541,6 +542,7 @@ fn review_failure_is_visible_and_keeps_the_pending_disposition() {
     std::fs::remove_dir_all(root).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Completed report is inspectable
 #[test]
 fn approved_structural_report_round_trip_populates_the_complete_procedure_view() {
     let root = fixture_root("approved-observability");

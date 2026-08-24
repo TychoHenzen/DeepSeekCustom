@@ -235,6 +235,7 @@ fn a_bound_task_loads_only_its_named_requirement_and_scenario() {
     std::fs::remove_dir_all(root).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Task contract selection is unambiguous :: One capability supports an unbound task
 #[test]
 fn one_capability_change_selects_the_complete_delta_for_an_unbound_task() {
     let root = temp_dir("unbound");
