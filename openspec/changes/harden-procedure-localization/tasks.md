@@ -73,8 +73,10 @@
 
 ## 5. Executable scenario bindings
 
-- [ ] 5.1 Add a portable Node Rust-test-file runner and map `rust` to it in `openspec/test-runners.json`; test path validation, module derivation, exit propagation, and paths with spaces.
-- [ ] 5.2 Give each unchanged main-spec scenario for change selection, context construction, retry bounds, and interruption its own synchronous external test and direct `// covers:` marker.
+- [x] 5.1 Add a portable Node Rust-test-file runner and map `rust` to it in `openspec/test-runners.json`; test path validation, module derivation, exit propagation, and paths with spaces.
+  <!-- status: completed -->
+- [x] 5.2 Give each unchanged main-spec scenario for change selection, context construction, retry bounds, and interruption its own synchronous external test and direct `// covers:` marker.
+  <!-- status: completed -->
 - [ ] 5.3 Convert async binding entry points to exact `#[test]` wrappers around shared Tokio helpers, with one marker and one scenario per wrapper.
 - [ ] 5.4 Generate every procedure-localization verification command through dod-guard, execute it, and correct any binding whose command does not run its named test.
 - [ ] 5.5 Record the derived final scenario count and assert that every final `deepseek-custom/procedure-localization` scenario is bound without weakening the repository coverage ratchet.

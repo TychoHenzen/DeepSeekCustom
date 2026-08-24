@@ -58,6 +58,7 @@ fn scratchpad() -> ProcedureScratchpad {
     }
 }
 
+// covers: deepseek-custom/procedure-localization :: Localization context is short and typed :: Captured request contains only stage context
 #[test]
 fn localization_prompt_serializes_only_the_three_typed_stage_inputs() {
     let contract = selected_contract();
@@ -88,6 +89,7 @@ fn localization_prompt_serializes_only_the_three_typed_stage_inputs() {
     assert!(prompt.contains("first result used an invented symbol"));
 }
 
+// covers: deepseek-custom/procedure-localization :: Localization context is short and typed :: Key instruction is not buried
 #[test]
 fn target_selection_instruction_is_the_prompt_prefix() {
     let contract = selected_contract();

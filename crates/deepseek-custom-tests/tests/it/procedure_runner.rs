@@ -276,8 +276,15 @@ impl LocalizationDispatch for StubLocalizationDispatcher {
     }
 }
 
-#[tokio::test]
-async fn stage_zero_and_one_finalize_a_saved_report_with_ordered_progress() {
+fn run_async_test(future: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future);
+}
+
+async fn valid_change_starts_localization_case() {
     let root = temp_dir("success");
     let command = write_fixture(&root);
     let stub = StubLocalizationDispatcher::success(vec![LocalizationTarget {
@@ -386,6 +393,12 @@ async fn stage_zero_and_one_finalize_a_saved_report_with_ordered_progress() {
     ));
     assert_eq!(events.len(), 8);
     std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: A procedure run starts from a valid OpenSpec change :: Valid change starts localization
+#[test]
+fn valid_change_starts_localization() {
+    run_async_test(valid_change_starts_localization_case());
 }
 
 #[tokio::test]
@@ -564,8 +577,7 @@ async fn review_channel_events_name_the_run_and_never_redispatch_localization() 
     std::fs::remove_dir_all(root).ok();
 }
 
-#[tokio::test]
-async fn failed_stage_zero_saves_exact_failure_without_model_dispatch() {
+async fn invalid_change_stops_before_model_use_case() {
     let root = temp_dir("stage-zero-failure");
     let command = write_fake_openspec(&root);
     let stub = StubLocalizationDispatcher::success(Vec::new());
@@ -596,6 +608,12 @@ async fn failed_stage_zero_saves_exact_failure_without_model_dispatch() {
         run
     );
     std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: A procedure run starts from a valid OpenSpec change :: Invalid change stops before model use
+#[test]
+fn invalid_change_stops_before_model_use() {
+    run_async_test(invalid_change_stops_before_model_use_case());
 }
 
 #[tokio::test]
@@ -670,8 +688,7 @@ async fn repository_index_overflow_stops_before_model_dispatch() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[tokio::test]
-async fn invalid_first_result_is_retried_with_exact_error_and_valid_second_result_wins() {
+async fn retry_repairs_invalid_output_case() {
     let root = temp_dir("repair");
     let command = write_fixture(&root);
     let invalid_target = LocalizationTarget {
@@ -743,6 +760,12 @@ async fn invalid_first_result_is_retried_with_exact_error_and_valid_second_resul
     assert!(second.get("messages").is_none());
     assert!(!prompts[1].contains("This target is intentionally absent."));
     std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: Invalid localization has one bounded retry :: Retry repairs invalid output
+#[test]
+fn retry_repairs_invalid_output() {
+    run_async_test(retry_repairs_invalid_output_case());
 }
 
 async fn mixed_invalid_result_is_rejected_as_a_whole_with_complete_diagnostics() {
@@ -910,8 +933,7 @@ async fn transport_failure_does_not_consume_the_procedure_repair_attempt() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[tokio::test]
-async fn two_invalid_results_save_both_errors_and_never_make_a_third_call() {
+async fn retry_budget_is_exhausted_case() {
     let root = temp_dir("repair-exhausted");
     let command = write_fixture(&root);
     let stub = StubLocalizationDispatcher::script(vec![
@@ -974,6 +996,12 @@ async fn two_invalid_results_save_both_errors_and_never_make_a_third_call() {
     std::fs::remove_dir_all(root).ok();
 }
 
+// covers: deepseek-custom/procedure-localization :: Invalid localization has one bounded retry :: Retry budget is exhausted
+#[test]
+fn retry_budget_is_exhausted() {
+    run_async_test(retry_budget_is_exhausted_case());
+}
+
 fn panic_if_dispatched() -> Result<LocalizationEnvelope, LocalizationDispatchError> {
     Err(LocalizationDispatchError::Request {
         backend: "third-call-sentinel".to_string(),
@@ -981,8 +1009,7 @@ fn panic_if_dispatched() -> Result<LocalizationEnvelope, LocalizationDispatchErr
     })
 }
 
-#[tokio::test]
-async fn source_hash_is_unchanged_across_success_validation_failure_interruption_and_review() {
+async fn workspace_remains_unchanged_case() {
     let history = MessageHistory::new("chat history sentinel".to_string());
 
     let success_root = temp_dir("hash-success");
@@ -1163,4 +1190,10 @@ async fn source_hash_is_unchanged_across_success_validation_failure_interruption
     std::fs::remove_dir_all(failure_root).ok();
     std::fs::remove_dir_all(rejection_root).ok();
     std::fs::remove_dir_all(interrupted_root).ok();
+}
+
+// covers: deepseek-custom/procedure-localization :: Localization is observable and non-mutating :: Workspace remains unchanged
+#[test]
+fn workspace_remains_unchanged() {
+    run_async_test(workspace_remains_unchanged_case());
 }
