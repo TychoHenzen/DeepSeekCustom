@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use deepseek_custom::config::settings::RepositoryIndexLimits;
 use deepseek_custom::procedure::{
-    LocalizationTarget, RepositoryIndexEntry, build_repository_index, validate_localization_targets,
+    LocalizationTarget, RepositoryIndexEntry, RepositoryIndexError, build_repository_index,
+    validate_localization_targets,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -268,13 +269,16 @@ fn file_count_limit_failure_names_the_first_sorted_overflow() {
     };
 
     let error = build_repository_index(&root, &limits).unwrap_err();
-    let message = error.to_string();
 
-    assert!(
-        message.contains("file limit exceeded at b.txt"),
-        "{message}"
+    assert_eq!(
+        error.to_string(),
+        "repository index file limit exceeded at b.txt: configured max_files is 1"
     );
-    assert!(message.contains("max_files is 1"), "{message}");
+    assert!(matches!(
+        error,
+        RepositoryIndexError::MaxFilesExceeded { limit: 1, path }
+            if path == "b.txt"
+    ));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -289,14 +293,19 @@ fn total_byte_limit_failure_names_the_first_sorted_overflow() {
     };
 
     let error = build_repository_index(&root, &limits).unwrap_err();
-    let message = error.to_string();
 
-    assert!(
-        message.contains("byte limit exceeded at b.txt"),
-        "{message}"
+    assert_eq!(
+        error.to_string(),
+        "repository index byte limit exceeded at b.txt: 7 bytes would exceed configured max_total_bytes 5"
     );
-    assert!(message.contains("7 bytes"), "{message}");
-    assert!(message.contains("max_total_bytes 5"), "{message}");
+    assert!(matches!(
+        error,
+        RepositoryIndexError::MaxTotalBytesExceeded {
+            limit: 5,
+            attempted: 7,
+            path,
+        } if path == "b.txt"
+    ));
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use deepseek_custom::config::settings::{
-    ApiProvider, AutopilotConfig, BackendConfig, PermissionsConfig, ProcedureSettings,
+    ApiProvider, AutopilotConfig, BackendConfig, DEFAULT_PROCEDURE_INDEX_MAX_FILES,
+    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, PermissionsConfig, ProcedureSettings,
     RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
@@ -692,6 +693,33 @@ fn existing_settings_without_procedure_block_still_load() {
             .unwrap()
             .contains("procedure")
     );
+}
+
+#[test]
+fn procedure_block_without_repository_index_uses_named_defaults() {
+    let dir = unique_temp_dir("procedure-index-defaults");
+    std::fs::write(
+        dir.join("settings.json"),
+        r#"{
+            "procedure": {
+                "localization_backend": "ollama"
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let settings = Settings::load(&dir).unwrap();
+    let limits = &settings.procedure().unwrap().repository_index;
+
+    assert_eq!(DEFAULT_PROCEDURE_INDEX_MAX_FILES, 10_000);
+    assert_eq!(DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, 64 * 1024 * 1024);
+    assert_eq!(limits.max_files, DEFAULT_PROCEDURE_INDEX_MAX_FILES);
+    assert_eq!(
+        limits.max_total_bytes,
+        DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

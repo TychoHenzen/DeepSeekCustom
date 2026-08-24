@@ -133,6 +133,12 @@ where
         self
     }
 
+    /// Effective limits retained for the next repository-index build.
+    #[cfg(feature = "test-support")]
+    pub fn index_limits_for_test(&self) -> &RepositoryIndexLimits {
+        &self.index_limits
+    }
+
     /// Validate Stage 0, run bounded localization, and save the terminal report.
     pub async fn run(
         &self,

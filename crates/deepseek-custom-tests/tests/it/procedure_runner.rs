@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepseek_custom::agent::history::MessageHistory;
-use deepseek_custom::config::settings::RepositoryIndexLimits;
+use deepseek_custom::config::settings::{RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope, LocalizationTarget,
     ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore, ProcedureRunRequest,
@@ -95,6 +95,46 @@ fn limits() -> RepositoryIndexLimits {
         max_files: 100,
         max_total_bytes: 1_000_000,
     }
+}
+
+#[test]
+fn configured_index_limits_reach_the_next_runner_without_replacement() {
+    let root = temp_dir("configured-limits");
+    let command = write_fixture(&root);
+    let settings: Settings = serde_json::from_str(
+        r#"{
+            "procedure": {
+                "repository_index": {
+                    "max_files": 321,
+                    "max_total_bytes": 654321
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let configured = settings.procedure().unwrap().repository_index.clone();
+    let runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &root,
+            command.display().to_string(),
+        ),
+        root.clone(),
+        configured.clone(),
+        StubLocalizationDispatcher::success(Vec::new()),
+        ProcedureReportStore::for_project(&root),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    assert_eq!(
+        configured,
+        RepositoryIndexLimits {
+            max_files: 321,
+            max_total_bytes: 654_321,
+        }
+    );
+    assert_eq!(runner.index_limits_for_test(), &configured);
+
+    std::fs::remove_dir_all(root).ok();
 }
 
 fn workspace_hash(root: &Path) -> u64 {
@@ -336,6 +376,40 @@ async fn failed_stage_zero_saves_exact_failure_without_model_dispatch() {
             .unwrap(),
         run
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn repository_index_overflow_stops_before_model_dispatch() {
+    let root = temp_dir("index-overflow");
+    let command = write_fixture(&root);
+    let stub = StubLocalizationDispatcher::success(Vec::new());
+    let runner = ProcedureRunner::new(
+        deepseek_custom::procedure::OpenSpecInput::with_command(
+            &root,
+            command.display().to_string(),
+        ),
+        root.clone(),
+        RepositoryIndexLimits {
+            max_files: 1,
+            max_total_bytes: u64::MAX,
+        },
+        stub.clone(),
+        ProcedureReportStore::for_project(&root),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let run = runner.run(request("fixture-change")).await.unwrap();
+
+    assert_eq!(stub.calls(), 0);
+    assert!(run.attempts.is_empty());
+    assert_eq!(
+        run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::Failed {
+            reason: "repository index file limit exceeded at openspec/changes/fixture-change/proposal.md: configured max_files is 1".to_string(),
+        })
+    );
+
     std::fs::remove_dir_all(root).ok();
 }
 

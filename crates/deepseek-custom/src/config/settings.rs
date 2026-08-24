@@ -645,10 +645,9 @@ pub struct EvolveSettings {
     pub mutation_hints: Option<Vec<String>>,
 }
 
-// ASSUMPTION: The approved design requires bounded indexing but does not
-// specify numeric defaults. These caps keep a normal repository usable while
-// preventing an accidental generated tree from creating an unbounded prompt.
+/// Default maximum number of text files inspected by one procedure index.
 pub const DEFAULT_PROCEDURE_INDEX_MAX_FILES: usize = 10_000;
+/// Default maximum text content inspected by one procedure index, in bytes.
 pub const DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Limits applied while building one procedure's repository index.
