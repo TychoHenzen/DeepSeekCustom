@@ -140,7 +140,7 @@ Run the change coverage report:
 node "$env:USERPROFILE\mcp-servers\dod-guard\packages\dod-guard\dist\bundle.js" cover harden-procedure-localization
 ```
 
-Observed result on 2026-08-24: `17 scenario(s): 17 bound, 0 unwired` and `cover OK - 0 regression(s)`.
+Fresh final result on 2026-08-24: `17 scenario(s): 17 bound, 0 unwired` and `cover OK - 0 regression(s)`.
 
 Dod-guard generated seven distinct commands for the active delta. Each command ran its complete module, printed every bound test name, and passed:
 
@@ -168,7 +168,7 @@ Run repository coverage:
 node "$env:USERPROFILE\mcp-servers\dod-guard\packages\dod-guard\dist\bundle.js" cover --all
 ```
 
-Observed aggregate result: 39 repository scenarios, 12 bound and 27 unwired, with `cover OK - 0 regression(s)`. The aggregate includes other capabilities, so it does not represent procedure-localization completeness.
+Fresh final aggregate result on 2026-08-24: 39 repository scenarios, 12 bound and 27 unwired, with `cover OK - 0 regression(s)`. The 27 aggregate unwired scenarios belong to other repository capabilities. They are not procedure-localization gaps.
 
 The capability-specific structured results are:
 
@@ -178,6 +178,43 @@ The capability-specific structured results are:
 - Effective final procedure-localization spec: 23 of 23 unique scenario IDs bound.
 
 The effective count is `12 + 17 - 6 = 23`. This is also `12` main scenarios plus `7` added-delta scenarios plus `4` new scenarios in modified requirements. The coverage ratchet remained unchanged.
+
+## Final focused integration verification
+
+Fresh focused integration filters ran on 2026-08-24. Each command used the shared `it` integration target:
+
+| Command | Current result |
+|---|---:|
+| `cargo test -p deepseek-custom-tests --test it procedure_input` | 10 passed, 1226 filtered out |
+| `cargo test -p deepseek-custom-tests --test it procedure_index` | 16 passed, 1220 filtered out |
+| `cargo test -p deepseek-custom-tests --test it procedure_runner` | 14 passed, 1222 filtered out |
+| `cargo test -p deepseek-custom-tests --test it procedure_report` | 10 passed, 1226 filtered out |
+| `cargo test -p deepseek-custom-tests --test it gui_procedure_tab` | 11 passed, 1225 filtered out |
+| `cargo test -p deepseek-custom-tests --test it config_settings` | 48 passed, 1188 filtered out |
+| `cargo test -p deepseek-custom-tests --test it procedure_dispatch` | 6 passed, 1230 filtered out |
+
+The `procedure_dispatch` filter includes the captured Ollama structured-response request and the every-effort native-reasoning omission case.
+
+## Final workspace verification
+
+The final Rust workspace gates ran on 2026-08-24:
+
+| Command | Current result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| `cargo check --workspace` | Passed, 2 crates compiled |
+| `cargo clippy --workspace -- -D warnings` | Passed, no issues found |
+| `cargo test --workspace -j 1 -- --test-threads=1` | 1236 passed across 8 suites |
+
+The initial `cargo test --workspace` build ended while compiling the `fake_claude` test binary with Windows status `0xc0000409` (`STATUS_STACK_BUFFER_OVERRUN`). It reported no Rust test failure. The required serialized rerun above passed, using one Cargo build job and one test thread to avoid Windows memory pressure.
+
+The active OpenSpec change also passed its final strict validation:
+
+```powershell
+openspec validate harden-procedure-localization --strict --no-interactive
+```
+
+Observed output: `Change 'harden-procedure-localization' is valid`.
 
 ## Live Ollama smoke
 
@@ -266,3 +303,7 @@ Rejection result:
 - Source aggregate before and after: `25e982dea23d838b7805814fa68a07091892847453fa1f0e998e5b503b3c3225` across 268 files.
 
 The controlled aggregate differs from the earlier live-smoke aggregate because the maintained controlled-review command was added afterward. Each before-and-after comparison is internally identical. Approval and rejection changed only their named files under `.deepseek/procedure-runs/`.
+
+## Evidence lineage
+
+The archived [2026-08-24 localization observation](../openspec/changes/archive/2026-08-24-add-procedure-localization-runner/notes.md) remains unchanged. It records the earlier request-level failure where Ollama rejected a native thinking field before returning targets. This maintained document records the hardened behavior. The current live smoke passed transport and schema decoding, then failed repository structural validation because all proposed Markdown symbols were invented. That result was not eligible for semantic review or approval.

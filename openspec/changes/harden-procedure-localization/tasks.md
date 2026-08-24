@@ -94,12 +94,18 @@
   <!-- status: completed -->
 - [x] 6.4 Hash workspace source files before and after the smoke run and both review decisions, then record the comparison without committing generated run reports.
   <!-- status: completed -->
-- [ ] 6.5 Update maintained procedure documentation with index defaults, the ASCII symbol boundary, report review semantics, Ollama reasoning omission, and the relationship to the archived smoke note.
-- [ ] 6.6 Update active downstream procedure change artifacts so they require approved localization reports, then strictly validate each affected change.
+- [x] 6.5 Update maintained procedure documentation with index defaults, the ASCII symbol boundary, report review semantics, Ollama reasoning omission, and the relationship to the archived smoke note.
+  <!-- status: completed -->
+- [x] 6.6 Update active downstream procedure change artifacts so they require approved localization reports, then strictly validate each affected change.
+  <!-- status: completed -->
 
 ## 7. Verification gates
 
-- [ ] 7.1 Run focused integration filters for procedure input, index, runner, report, GUI, settings, and Ollama request serialization after their matching implementation groups.
-- [ ] 7.2 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
-- [ ] 7.3 Run `openspec validate "harden-procedure-localization" --strict --no-interactive` and save the passing output in the maintained verification record.
-- [ ] 7.4 Run dod-guard coverage for this change and for `--all`, confirm zero regressions, and record actual bound and unwired counts without treating the ratchet result alone as complete coverage.
+- [x] 7.1 Run focused integration filters for procedure input, index, runner, report, GUI, settings, and Ollama request serialization after their matching implementation groups.
+  <!-- status: completed -->
+- [x] 7.2 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+  <!-- status: completed -->
+- [x] 7.3 Run `openspec validate "harden-procedure-localization" --strict --no-interactive` and save the passing output in the maintained verification record.
+  <!-- status: completed -->
+- [x] 7.4 Run dod-guard coverage for this change and for `--all`, confirm zero regressions, and record actual bound and unwired counts without treating the ratchet result alone as complete coverage.
+  <!-- status: completed -->

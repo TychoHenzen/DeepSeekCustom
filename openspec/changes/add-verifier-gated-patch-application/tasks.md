@@ -1,0 +1,59 @@
+## 0. Approved localization input
+
+- [ ] 0.1 Require the Apply request to name an approved, current localization report matching the selected change, task, fingerprints, and preview before verification setup.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification requires its named approved localization report :: Approved matching report enters verification -->
+- [ ] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no snapshot, patch, model, or verifier action occurs.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification requires its named approved localization report :: Untrusted localization input stops verification -->
+
+## 1. Verifier configuration
+
+- [ ] 1.1 Add ordered `procedure.verifier_commands` settings with load, merge, mutation, save, and round-trip coverage.
+- [ ] 1.2 Disable Apply when the command list is empty and show the missing configuration in the Procedure view.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: No verifier is configured -->
+- [ ] 1.3 Show the exact ordered verifier commands and enable Apply for a valid preview with a non-empty list.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: Verifier list is configured -->
+
+## 2. Current-state verification workspace
+
+- [ ] 2.1 Generalize the draft snapshot helper to preserve current tracked, untracked, and uncommitted source bytes in a disposable verification directory.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Uncommitted source is included -->
+- [ ] 2.2 Exclude `.git`, `target`, `.deepseek`, configured output trees, symlink traversal, and Windows reparse-point traversal, with fixture coverage.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Excluded data is not copied -->
+- [ ] 2.3 Add snapshot size limits, copy progress, cleanup on drop, and retained recovery data only when rollback cannot complete.
+
+## 3. Deterministic gate runner
+
+- [ ] 3.1 Run `git apply --check` and `git apply` in the verification workspace before project commands.
+- [ ] 3.2 Implement the ordered command runner with Windows PATH and PATHEXT resolution, process-group adoption, bounded output, durations, and exit codes.
+- [ ] 3.3 Mark a candidate eligible only when patch application and every configured command exit successfully.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: Every gate passes -->
+- [ ] 3.4 Stop at the first failed gate and prove that later commands do not run.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: A gate fails -->
+- [ ] 3.5 Capture command text, exit code, first and last 4 KiB of output, truncation state, duration, and disposition in the report.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Gate evidence is retained :: User inspects a failed run -->
+
+## 4. Failure and interruption isolation
+
+- [ ] 4.1 Add a failing-test fixture and assert that real workspace hashes remain unchanged after verification failure.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Test command fails -->
+- [ ] 4.2 Wire the shared interrupt flag into the active verifier process, kill descendants, clean the snapshot, and prohibit promotion.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Verification is interrupted -->
+
+## 5. Conflict-checked promotion
+
+- [ ] 5.1 Model create, update, delete, and rename targets and compare every real path to its preview baseline before promotion.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: Baseline still matches -->
+- [ ] 5.2 Refuse promotion after a concurrent target edit and list every stale path.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: A target changed during verification -->
+- [ ] 5.3 Stage verified bytes beside targets, back up existing paths, install all results, verify final hashes, then remove backups.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion succeeds -->
+- [ ] 5.4 Inject a mid-promotion failure and prove existing files are restored, created files removed, and recovery data retained only if rollback fails.
+  <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion fails partway -->
+
+## 6. Apply interface and verification
+
+- [ ] 6.1 Add Apply, gate-progress, command-output, conflict, promotion, and terminal-state rendering to the Procedure tab.
+- [ ] 6.2 Add end-to-end temporary-repository tests for passing, failing, interrupted, stale-baseline, create, delete, rename, and rollback runs.
+- [ ] 6.3 Configure the four Rust workspace gates and run one real small mechanical change through isolated verification and promotion.
+- [ ] 6.4 Confirm unrelated pre-existing working-tree changes remain byte-identical after the practical run.
+- [ ] 6.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
