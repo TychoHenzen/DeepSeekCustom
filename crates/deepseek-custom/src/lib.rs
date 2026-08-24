@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod memory;
 pub mod path_repair;
 pub mod plugins;
+pub mod procedure;
 pub mod process_group;
 pub mod search;
 pub mod session;

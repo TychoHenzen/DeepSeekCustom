@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use deepseek_custom::config::settings::{
-    ApiProvider, AutopilotConfig, BackendConfig, PermissionsConfig, Settings, TriggerMode,
-    VoiceConfig,
+    ApiProvider, AutopilotConfig, BackendConfig, PermissionsConfig, ProcedureSettings,
+    RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
 
@@ -152,6 +152,13 @@ fn save_then_load_round_trips_values() {
         style: None,
         cascade: None,
         evolve: None,
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("ollama".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 2_500,
+                max_total_bytes: 8_000_000,
+            },
+        }),
     };
 
     original.save(&dir).unwrap();
@@ -188,6 +195,10 @@ fn save_then_load_round_trips_values() {
     assert_eq!(loaded.autopilot_answerer_model(), "deepseek-v4-pro");
     assert_eq!(loaded.autopilot_task().unwrap(), "do the thing");
     assert_eq!(loaded.subagent_max_depth(), 3);
+    let procedure = loaded.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 2_500);
+    assert_eq!(procedure.repository_index.max_total_bytes, 8_000_000);
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -259,6 +270,7 @@ fn save_omits_none_fields() {
         style: None,
         cascade: None,
         evolve: None,
+        procedure: None,
     };
     s.save(&dir).unwrap();
     let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
@@ -668,6 +680,101 @@ fn subagent_max_depth_takes_part_in_merge() {
     };
     base.merge_for_test(other);
     assert_eq!(base.subagent_max_depth(), 5);
+}
+
+#[test]
+fn existing_settings_without_procedure_block_still_load() {
+    let settings: Settings = serde_json::from_str(r#"{"effort":"medium"}"#).unwrap();
+
+    assert!(settings.procedure().is_none());
+    assert!(
+        !serde_json::to_string(&settings)
+            .unwrap()
+            .contains("procedure")
+    );
+}
+
+#[test]
+fn procedure_block_loads_from_project_settings() {
+    let dir = unique_temp_dir("procedure-settings-load");
+    std::fs::write(
+        dir.join("settings.json"),
+        r#"{
+            "procedure": {
+                "localization_backend": "ollama",
+                "repository_index": {
+                    "max_files": 321,
+                    "max_total_bytes": 654321
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let settings = Settings::load(&dir).unwrap();
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 321);
+    assert_eq!(procedure.repository_index.max_total_bytes, 654_321);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn procedure_settings_take_part_in_merge() {
+    let mut settings = Settings::default();
+    settings.merge_for_test(Settings {
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("localizer".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 100,
+                max_total_bytes: 200,
+            },
+        }),
+        ..Default::default()
+    });
+
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("localizer"));
+    assert_eq!(procedure.repository_index.max_files, 100);
+    assert_eq!(procedure.repository_index.max_total_bytes, 200);
+}
+
+#[test]
+fn procedure_mut_creates_and_updates_the_optional_block() {
+    let mut settings = Settings::default();
+    assert!(settings.procedure().is_none());
+
+    let procedure = settings.procedure_mut();
+    assert!(procedure.localization_backend.is_none());
+    procedure.localization_backend = Some("ollama".into());
+    procedure.repository_index.max_files = 77;
+
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 77);
+}
+
+#[test]
+fn procedure_settings_round_trip_through_json() {
+    let original = Settings {
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("ollama".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 7_500,
+                max_total_bytes: 12_000_000,
+            },
+        }),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: Settings = serde_json::from_str(&json).unwrap();
+
+    let procedure = decoded.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 7_500);
+    assert_eq!(procedure.repository_index.max_total_bytes, 12_000_000);
 }
 
 /// The repo `settings.json` is also the live settings file: the GUI

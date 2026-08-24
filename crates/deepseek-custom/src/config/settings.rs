@@ -35,6 +35,9 @@ pub struct Settings {
     /// The Evolve tab's last-used form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolve: Option<EvolveSettings>,
+    /// The Procedure tab's selected localizer and repository-index caps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<ProcedureSettings>,
     /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
@@ -314,6 +317,12 @@ impl Settings {
         self.evolve.get_or_insert_with(EvolveSettings::default)
     }
 
+    /// The Procedure tab's settings, creating the optional block on demand.
+    pub fn procedure_mut(&mut self) -> &mut ProcedureSettings {
+        self.procedure
+            .get_or_insert_with(ProcedureSettings::default)
+    }
+
     /// The Cascade tab's saved form, if the file carried one.
     pub fn cascade(&self) -> Option<&CascadeSettings> {
         self.cascade.as_ref()
@@ -322,6 +331,11 @@ impl Settings {
     /// The Evolve tab's saved form, if the file carried one.
     pub fn evolve(&self) -> Option<&EvolveSettings> {
         self.evolve.as_ref()
+    }
+
+    /// The Procedure tab's settings, if the file carried a block.
+    pub fn procedure(&self) -> Option<&ProcedureSettings> {
+        self.procedure.as_ref()
     }
 
     /// The configured backends map, if any.
@@ -473,6 +487,9 @@ impl Settings {
         }
         if other.autopilot.is_some() {
             self.autopilot = other.autopilot;
+        }
+        if other.procedure.is_some() {
+            self.procedure = other.procedure;
         }
         if other.context_budget.is_some() {
             self.context_budget = other.context_budget;
@@ -626,6 +643,48 @@ pub struct EvolveSettings {
     pub migration_interval: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutation_hints: Option<Vec<String>>,
+}
+
+// ASSUMPTION: The approved design requires bounded indexing but does not
+// specify numeric defaults. These caps keep a normal repository usable while
+// preventing an accidental generated tree from creating an unbounded prompt.
+pub const DEFAULT_PROCEDURE_INDEX_MAX_FILES: usize = 10_000;
+pub const DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Limits applied while building one procedure's repository index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryIndexLimits {
+    #[serde(default = "default_procedure_index_max_files")]
+    pub max_files: usize,
+    #[serde(default = "default_procedure_index_max_total_bytes")]
+    pub max_total_bytes: u64,
+}
+
+impl Default for RepositoryIndexLimits {
+    fn default() -> Self {
+        Self {
+            max_files: DEFAULT_PROCEDURE_INDEX_MAX_FILES,
+            max_total_bytes: DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES,
+        }
+    }
+}
+
+const fn default_procedure_index_max_files() -> usize {
+    DEFAULT_PROCEDURE_INDEX_MAX_FILES
+}
+
+const fn default_procedure_index_max_total_bytes() -> u64 {
+    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
+}
+
+/// Settings for the staged read-only procedure runner.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureSettings {
+    /// Name of an entry in `Settings::backends`. `None` means unselected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub localization_backend: Option<String>,
+    #[serde(default)]
+    pub repository_index: RepositoryIndexLimits,
 }
 
 /// How voice input is triggered.
