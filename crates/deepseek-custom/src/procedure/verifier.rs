@@ -11,7 +11,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::mpsc;
 
-use super::{AppliedPatchWorkspace, GitApplyResult};
+use super::{
+    AppliedPatchWorkspace, GitApplyResult, PatchGateEvidence, ProcedureTerminalDisposition,
+};
 use crate::mcp::spawn::resolve_command;
 
 /// Maximum bytes retained from either edge of a verifier stream.
@@ -42,7 +44,7 @@ pub struct BoundedVerifierOutput {
 }
 
 impl BoundedVerifierOutput {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             text: String::new(),
             first_edge: String::new(),
@@ -50,6 +52,12 @@ impl BoundedVerifierOutput {
             truncated: false,
             bytes_seen: 0,
         }
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut capture = EdgeCapture::default();
+        capture.push(bytes);
+        capture.finish()
     }
 }
 
@@ -96,6 +104,7 @@ pub enum VerifierGateDisposition {
     SpawnFailed,
     Interrupted,
     NotRun { blocked_by: usize },
+    NotRunAfterPatch { blocked_by: super::GitApplyPhase },
 }
 
 /// One configured gate and its executed or structured not-run disposition.
@@ -123,6 +132,7 @@ impl VerifierRun {
     /// Build the serializable evidence retained by a procedure report.
     pub fn report(&self, eligibility: CandidateEligibility) -> VerifierReport {
         VerifierReport {
+            patch_gates: Vec::new(),
             gates: self
                 .gate_results
                 .iter()
@@ -135,6 +145,7 @@ impl VerifierRun {
             stopped_after_failure: self.stopped_after_failure,
             first_failed_gate: self.first_failed_gate,
             eligibility,
+            terminal_disposition: None,
         }
     }
 }
@@ -156,10 +167,29 @@ pub struct VerifierCommandEvidence {
 /// Serializable verification evidence for one procedure report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifierReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patch_gates: Vec<PatchGateEvidence>,
     pub gates: Vec<VerifierGateEvidence>,
     pub stopped_after_failure: bool,
     pub first_failed_gate: Option<usize>,
     pub eligibility: CandidateEligibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_disposition: Option<ProcedureTerminalDisposition>,
+}
+
+impl VerifierReport {
+    pub fn with_patch_gates(mut self, patch_gates: Vec<PatchGateEvidence>) -> Self {
+        self.patch_gates = patch_gates;
+        self
+    }
+
+    pub fn with_terminal_disposition(
+        mut self,
+        terminal_disposition: ProcedureTerminalDisposition,
+    ) -> Self {
+        self.terminal_disposition = Some(terminal_disposition);
+        self
+    }
 }
 
 /// Serializable evidence for an executed or skipped configured gate.
@@ -168,6 +198,19 @@ pub struct VerifierGateEvidence {
     pub command: String,
     pub disposition: VerifierGateDisposition,
     pub result: Option<VerifierCommandEvidence>,
+}
+
+/// One truthful transition from the ordered verifier command runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifierRunProgress {
+    GateStarted {
+        index: usize,
+        command: String,
+    },
+    GateCompleted {
+        index: usize,
+        evidence: Box<VerifierGateEvidence>,
+    },
 }
 
 /// Runs configured commands in the supplied disposable workspace.
@@ -199,9 +242,23 @@ impl VerifierCommandRunner {
 
     /// Execute each command in order and stop after its first non-success.
     pub async fn run(&self, workspace: &Path, commands: &[String]) -> VerifierRun {
+        self.run_with_progress(workspace, commands, |_| {}).await
+    }
+
+    /// Execute commands and report each actual start and completion in order.
+    pub async fn run_with_progress(
+        &self,
+        workspace: &Path,
+        commands: &[String],
+        mut progress: impl FnMut(VerifierRunProgress),
+    ) -> VerifierRun {
         let mut results = Vec::with_capacity(commands.len());
         let mut gate_results = Vec::with_capacity(commands.len());
         for (index, command) in commands.iter().enumerate() {
+            progress(VerifierRunProgress::GateStarted {
+                index,
+                command: command.clone(),
+            });
             let result = if self.interrupted() {
                 interrupted_result(command)
             } else {
@@ -209,11 +266,20 @@ impl VerifierCommandRunner {
             };
             let failed = !result.success;
             let disposition = gate_disposition(&result);
-            gate_results.push(VerifierGateResult {
+            let gate = VerifierGateResult {
                 command: command.clone(),
                 disposition,
                 result: Some(result.clone()),
+            };
+            progress(VerifierRunProgress::GateCompleted {
+                index,
+                evidence: Box::new(VerifierGateEvidence {
+                    command: gate.command.clone(),
+                    disposition: gate.disposition.clone(),
+                    result: gate.result.as_ref().map(VerifierCommandResult::evidence),
+                }),
             });
+            gate_results.push(gate);
             results.push(result);
             if failed {
                 gate_results.extend(commands[index + 1..].iter().map(|command| {
@@ -638,6 +704,11 @@ fn tokenize_command_line(command: &str) -> Result<Vec<String>, String> {
 pub enum CandidateIneligibility {
     PatchCheckFailed,
     PatchApplyFailed,
+    PatchGateInfrastructureFailed {
+        phase: super::GitApplyPhase,
+        disposition: super::GitApplyDisposition,
+        error: String,
+    },
     NoVerifierCommands,
     VerifierCommandFailed {
         index: usize,

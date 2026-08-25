@@ -13,16 +13,16 @@ use deepseek_custom::gui::procedure_tab::{
     PatchPreviewStatus, ProcedureApplyStatus, ProcedureStatus, ProcedureTab, ProcedureViewState,
 };
 use deepseek_custom::procedure::{
-    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyPhase,
-    GitApplyResult, LocalizationAttempt, LocalizationTarget, MechanicalVerb, OpenSpecValidation,
-    PatchPreview, PatchPreviewStore, ProcedureApplyProgress, ProcedureAttemptDisposition,
-    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, PromotionBaselineComparison,
-    PromotionRecoveryEvidence, PromotionResult, RouteDecision, RouteOverride, RouteSignal,
-    RouteTier, StalePromotionPath, VerifierCommandDisposition, VerifierCommandEvidence,
-    VerifierGateDisposition, VerifierGateEvidence, VerifierReport, apply_review_decision,
-    capture_path_fingerprint,
+    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyDisposition,
+    GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationTarget, MechanicalVerb,
+    OpenSpecValidation, PatchPreview, PatchPreviewStore, ProcedureApplyProgress,
+    ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
+    ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    PromotionBaselineComparison, PromotionRecoveryEvidence, PromotionResult, RouteDecision,
+    RouteOverride, RouteSignal, RouteTier, StalePromotionPath, VerifierCommandDisposition,
+    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
+    apply_review_decision, capture_path_fingerprint,
 };
 use tokio::sync::mpsc;
 
@@ -213,16 +213,26 @@ fn verifier_gate(
 }
 
 fn git_apply_result(phase: GitApplyPhase, success: bool, output: &str) -> GitApplyResult {
+    let output = bounded_output(output);
     GitApplyResult {
         phase,
+        command: phase.to_string(),
+        disposition: if success {
+            GitApplyDisposition::Passed
+        } else {
+            GitApplyDisposition::Rejected
+        },
         success,
         status_code: Some(if success { 0 } else { 1 }),
-        stdout: output.to_string(),
+        stdout: output.clone(),
         stderr: if success {
-            String::new()
+            bounded_output("")
         } else {
-            "patch gate failed".to_string()
+            bounded_output("patch gate failed")
         },
+        combined_output: output,
+        duration_millis: 12,
+        error: None,
     }
 }
 
@@ -624,7 +634,11 @@ fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
         &mut tab,
         run_id,
         ProcedureApplyProgress::PatchGateCompleted {
-            result: git_apply_result(GitApplyPhase::Check, true, "patch check ok"),
+            result: Box::new(git_apply_result(
+                GitApplyPhase::Check,
+                true,
+                "patch check ok",
+            )),
         },
     );
     apply_progress(
@@ -638,7 +652,11 @@ fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
         &mut tab,
         run_id,
         ProcedureApplyProgress::PatchGateCompleted {
-            result: git_apply_result(GitApplyPhase::Apply, true, "patch applied"),
+            result: Box::new(git_apply_result(
+                GitApplyPhase::Apply,
+                true,
+                "patch applied",
+            )),
         },
     );
 
@@ -691,6 +709,7 @@ fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
         run_id,
         ProcedureApplyProgress::VerificationFinished {
             report: VerifierReport {
+                patch_gates: Vec::new(),
                 gates,
                 stopped_after_failure: true,
                 first_failed_gate: Some(2),
@@ -701,6 +720,7 @@ fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
                         disposition: VerifierCommandDisposition::Failed,
                     },
                 ),
+                terminal_disposition: None,
             },
         },
     );
@@ -874,6 +894,72 @@ fn apply_view_renders_promotion_success_and_failure_recovery_evidence() {
             .any(|line| line.contains("Recovery data retained:"))
     );
 
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_specific_terminal_clears_in_flight_and_renders_the_exact_diagnostic() {
+    let root = fixture_root("apply-terminal-diagnostic");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    let run_id = ProcedureRunId::new();
+    apply_progress(&mut tab, run_id, ProcedureApplyProgress::Started);
+    assert!(tab.is_running());
+
+    tab.handle_progress(ProcedureProgress::RunFailed {
+        run_id,
+        message: "localization-shaped failure must not terminate Apply".to_string(),
+    });
+    assert!(tab.is_running());
+
+    let diagnostic = "verification setup rejected: exact typed diagnostic";
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::Finished {
+            disposition: ProcedureTerminalDisposition::Failed {
+                reason: diagnostic.to_string(),
+            },
+        },
+    );
+
+    assert!(!tab.is_running());
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Failed);
+    assert!(
+        tab.apply_render_lines_for_test()
+            .iter()
+            .any(|line| { line == &format!("Apply terminal disposition: failed: {diagnostic}") })
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_view_consumes_truthful_progress_from_the_production_runner() {
+    let root = fixture_root("apply-production-progress");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+
+    for event in super::procedure_apply::successful_production_apply_events_for_gui() {
+        tab.handle_progress(event);
+    }
+
+    assert!(!tab.is_running());
+    assert_eq!(
+        tab.apply_status(),
+        &ProcedureApplyStatus::Terminal(ProcedureTerminalDisposition::Succeeded)
+    );
+    let lines = tab.apply_render_lines_for_test();
+    for expected in [
+        "Snapshotting verification workspace:",
+        "Patch gate git apply --check: passed",
+        "Patch gate git apply: passed",
+        "Verifier gate 1:",
+        "Promotion: succeeded",
+        "Apply terminal disposition: succeeded",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(expected)),
+            "missing `{expected}` in {lines:?}"
+        );
+    }
     std::fs::remove_dir_all(root).ok();
 }
 

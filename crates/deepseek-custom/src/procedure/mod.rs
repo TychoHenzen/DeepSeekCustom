@@ -53,8 +53,9 @@ pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
 };
 pub use patch_apply_check::{
-    AppliedPatchWorkspace, ApplyCheckedPatch, GitApplyPhase, GitApplyResult, PatchApplyCheckError,
-    apply_patch_in_workspace, check_patch_applicability,
+    AppliedPatchWorkspace, ApplyCheckedPatch, GitApplyDisposition, GitApplyPhase, GitApplyResult,
+    PatchApplyCheckError, PatchApplyProgress, PatchGateDisposition, PatchGateEvidence,
+    apply_patch_in_workspace, apply_patch_in_workspace_with_progress, check_patch_applicability,
 };
 pub use patch_boundary::{BoundaryValidatedPatch, PatchBoundaryError, validate_patch_boundary};
 pub use patch_envelope::{
@@ -109,6 +110,7 @@ pub use verifier::{
     BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility,
     VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandEvidence,
     VerifierCommandResult, VerifierCommandRunner, VerifierGateDisposition, VerifierGateEvidence,
-    VerifierGateResult, VerifierReport, VerifierRun, evaluate_applied_patch_eligibility,
-    evaluate_candidate_eligibility, run_verifier_commands, run_verifier_commands_with_interrupt,
+    VerifierGateResult, VerifierReport, VerifierRun, VerifierRunProgress,
+    evaluate_applied_patch_eligibility, evaluate_candidate_eligibility, run_verifier_commands,
+    run_verifier_commands_with_interrupt,
 };

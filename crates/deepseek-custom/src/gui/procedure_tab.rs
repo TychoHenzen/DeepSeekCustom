@@ -156,6 +156,7 @@ pub struct ProcedureTab {
     conflicts: Vec<StalePromotionPath>,
     promotion_result: Option<PromotionResult>,
     promotion_failure: Option<PromotionFailureView>,
+    apply_terminal: Option<ProcedureTerminalDisposition>,
 }
 
 impl ProcedureTab {
@@ -231,6 +232,7 @@ impl ProcedureTab {
             conflicts: Vec::new(),
             promotion_result: None,
             promotion_failure: None,
+            apply_terminal: None,
         };
         tab.spawn_model_fetches(settings);
         tab.refresh_changes(project_root);
@@ -585,6 +587,7 @@ impl ProcedureTab {
             self.conflicts.clear();
             self.promotion_result = None;
             self.promotion_failure = None;
+            self.apply_terminal = None;
             self.apply_status = ProcedureApplyStatus::Snapshotting;
             return;
         }
@@ -605,7 +608,7 @@ impl ProcedureTab {
                 self.apply_status = ProcedureApplyStatus::PatchGate { phase };
             }
             ProcedureApplyProgress::PatchGateCompleted { result } => {
-                self.patch_gate_results.push(result);
+                self.patch_gate_results.push(*result);
             }
             ProcedureApplyProgress::VerifierGateStarted { index, command } => {
                 self.apply_status = ProcedureApplyStatus::Verifying { index, command };
@@ -633,6 +636,7 @@ impl ProcedureTab {
             }
             ProcedureApplyProgress::Finished { disposition } => {
                 self.apply_in_flight = false;
+                self.apply_terminal = Some(disposition.clone());
                 self.apply_status = match disposition {
                     ProcedureTerminalDisposition::Interrupted => ProcedureApplyStatus::Interrupted,
                     ProcedureTerminalDisposition::Failed { .. } => ProcedureApplyStatus::Failed,
@@ -1017,8 +1021,11 @@ impl ProcedureTab {
                 pass_fail(result.success),
                 result.status_code
             ));
-            append_output_line(&mut lines, "Patch gate output", &result.stdout);
-            append_output_line(&mut lines, "Patch gate error", &result.stderr);
+            append_output_line(&mut lines, "Patch gate output", &result.stdout.text);
+            append_output_line(&mut lines, "Patch gate error", &result.stderr.text);
+            if let Some(error) = &result.error {
+                lines.push(format!("Patch gate diagnostic: {error}"));
+            }
         }
         if let Some(report) = &self.verification_report {
             for (index, gate) in report.gates.iter().enumerate() {
@@ -1082,17 +1089,11 @@ impl ProcedureTab {
                 None => {}
             }
         }
-        match &self.apply_status {
-            ProcedureApplyStatus::Interrupted => {
-                lines.push("Apply terminal disposition: interrupted".to_string());
-            }
-            ProcedureApplyStatus::Terminal(disposition) => {
-                lines.push(format!(
-                    "Apply terminal disposition: {}",
-                    terminal_disposition_label(disposition)
-                ));
-            }
-            _ => {}
+        if let Some(disposition) = &self.apply_terminal {
+            lines.push(format!(
+                "Apply terminal disposition: {}",
+                terminal_disposition_label(disposition)
+            ));
         }
         lines
     }
@@ -1271,6 +1272,7 @@ impl ProcedureTab {
         self.conflicts.clear();
         self.promotion_result = None;
         self.promotion_failure = None;
+        self.apply_terminal = None;
     }
 
     fn spawn_model_fetches(&self, settings: &Settings) {
@@ -1611,6 +1613,7 @@ fn verifier_gate_label(disposition: &VerifierGateDisposition) -> &'static str {
         VerifierGateDisposition::SpawnFailed => "spawn failed",
         VerifierGateDisposition::Interrupted => "interrupted",
         VerifierGateDisposition::NotRun { .. } => "not run",
+        VerifierGateDisposition::NotRunAfterPatch { .. } => "not run after patch gate",
     }
 }
 

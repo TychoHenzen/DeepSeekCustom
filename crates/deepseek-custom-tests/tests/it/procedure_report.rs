@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
-    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, LocalizationAttempt,
-    LocalizationTarget, OpenSpecValidation, ProcedureApprovedReportError,
+    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyDisposition,
+    GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationTarget, OpenSpecValidation,
+    PatchGateDisposition, PatchGateEvidence, ProcedureApprovedReportError,
     ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
     ProcedureTask, ProcedureTerminalDisposition, VerifierCommandDisposition,
@@ -469,7 +470,48 @@ fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
         duration_millis: 4_321,
         error: Some("test gate failed: assertion failed".to_string()),
     };
+    let patch_output = BoundedVerifierOutput {
+        text: "patch diagnostic".to_string(),
+        first_edge: "patch diagnostic".to_string(),
+        last_edge: "patch diagnostic".to_string(),
+        truncated: false,
+        bytes_seen: 16,
+    };
+    let patch_result = GitApplyResult {
+        phase: GitApplyPhase::Check,
+        command: "git apply --check".to_string(),
+        disposition: GitApplyDisposition::Rejected,
+        success: false,
+        status_code: Some(1),
+        stdout: BoundedVerifierOutput {
+            text: String::new(),
+            first_edge: String::new(),
+            last_edge: String::new(),
+            truncated: false,
+            bytes_seen: 0,
+        },
+        stderr: patch_output.clone(),
+        combined_output: patch_output,
+        duration_millis: 27,
+        error: None,
+    };
     let verification = VerifierReport {
+        patch_gates: vec![
+            PatchGateEvidence {
+                phase: GitApplyPhase::Check,
+                command: "git apply --check".to_string(),
+                disposition: PatchGateDisposition::Rejected,
+                result: Some(patch_result),
+            },
+            PatchGateEvidence {
+                phase: GitApplyPhase::Apply,
+                command: "git apply".to_string(),
+                disposition: PatchGateDisposition::NotRun {
+                    blocked_by: GitApplyPhase::Check,
+                },
+                result: None,
+            },
+        ],
         gates: vec![
             VerifierGateEvidence {
                 command: command.command.clone(),
@@ -491,6 +533,9 @@ fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
                 disposition: VerifierCommandDisposition::Failed,
             },
         ),
+        terminal_disposition: Some(ProcedureTerminalDisposition::Failed {
+            reason: "test gate failed".to_string(),
+        }),
     };
 
     store.save_verification(&report.id, &verification).unwrap();
@@ -501,10 +546,28 @@ fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
     assert!(json.contains("last diagnostic"));
     assert!(json.contains("duration_millis"));
     assert!(json.contains("test gate failed: assertion failed"));
+    assert!(json.contains("git apply --check"));
+    assert!(json.contains("patch diagnostic"));
+    assert!(json.contains("terminal_disposition"));
 
     let stored = store.load_with_fingerprints(&report.id).unwrap();
     let saved = stored.verification.expect("verification evidence is saved");
     assert_eq!(saved, verification);
+    let patch = saved.patch_gates[0]
+        .result
+        .as_ref()
+        .expect("rejected patch evidence is present");
+    assert_eq!(patch.command, "git apply --check");
+    assert_eq!(patch.status_code, Some(1));
+    assert_eq!(patch.stderr.text, "patch diagnostic");
+    assert_eq!(patch.duration_millis, 27);
+    assert_eq!(patch.disposition, GitApplyDisposition::Rejected);
+    assert_eq!(
+        saved.patch_gates[1].disposition,
+        PatchGateDisposition::NotRun {
+            blocked_by: GitApplyPhase::Check,
+        }
+    );
     let failed = saved.gates[0]
         .result
         .as_ref()

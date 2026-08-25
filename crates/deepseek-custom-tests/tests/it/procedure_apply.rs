@@ -4,12 +4,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use deepseek_custom::procedure::{
-    ApplyRequest, LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreview,
-    PatchPreviewId, PatchPreviewStore, ProcedureApplyProgress, ProcedureApplyRunner,
-    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, PromotionFailureInjection, RouteDecision,
-    RouteOverride, RouteTier, VerificationInputGate, VerifierGateDisposition, sha256_json,
+    ApplyRequest, GitApplyDisposition, GitApplyPhase, LocalizationAttempt, LocalizationTarget,
+    OpenSpecInput, PatchGateDisposition, PatchPreview, PatchPreviewId, PatchPreviewStore,
+    ProcedureApplyProgress, ProcedureApplyRunner, ProcedureAttemptDisposition, ProcedureProgress,
+    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    PromotionFailureInjection, RouteDecision, RouteOverride, RouteTier, VerificationInputGate,
+    VerifierGateDisposition, sha256_json,
 };
 use tokio::sync::mpsc;
 
@@ -345,6 +346,37 @@ fn assert_successful_gates(progress: &[ProcedureApplyProgress], verifier_count: 
     );
 }
 
+fn significant_progress(event: &ProcedureApplyProgress) -> Option<String> {
+    match event {
+        ProcedureApplyProgress::Started => Some("started".to_string()),
+        ProcedureApplyProgress::SnapshotStarted => Some("snapshot_started".to_string()),
+        ProcedureApplyProgress::SnapshotProgress { progress } if progress.files_copied == 0 => {
+            Some("snapshot_progress".to_string())
+        }
+        ProcedureApplyProgress::PatchGateStarted { phase } => {
+            Some(format!("patch_started:{phase}"))
+        }
+        ProcedureApplyProgress::PatchGateCompleted { result } => {
+            Some(format!("patch_completed:{}", result.phase))
+        }
+        ProcedureApplyProgress::VerifierGateStarted { index, .. } => {
+            Some(format!("verifier_started:{index}"))
+        }
+        ProcedureApplyProgress::VerifierGateCompleted { index, .. } => {
+            Some(format!("verifier_completed:{index}"))
+        }
+        ProcedureApplyProgress::VerificationFinished { .. } => {
+            Some("verification_finished".to_string())
+        }
+        ProcedureApplyProgress::PromotionStarted => Some("promotion_started".to_string()),
+        ProcedureApplyProgress::PromotionSucceeded { .. } => {
+            Some("promotion_succeeded".to_string())
+        }
+        ProcedureApplyProgress::Finished { .. } => Some("finished".to_string()),
+        _ => None,
+    }
+}
+
 #[test]
 fn apply_passes_all_gates_and_promotes_only_the_target() {
     run_async(async {
@@ -373,6 +405,32 @@ fn apply_passes_all_gates_and_promotes_only_the_target() {
         assert_eq!(
             std::fs::read(fixture.root.join("unrelated.bin")).unwrap(),
             unrelated
+        );
+        let stored = ProcedureReportStore::for_project(&fixture.root)
+            .load_with_fingerprints(&fixture.report.id)
+            .unwrap();
+        let verification = stored.verification.expect("Apply evidence is persisted");
+        assert_eq!(verification.patch_gates.len(), 2);
+        assert_eq!(verification.patch_gates[0].phase, GitApplyPhase::Check);
+        assert_eq!(verification.patch_gates[1].phase, GitApplyPhase::Apply);
+        assert!(verification.patch_gates.iter().all(|gate| {
+            gate.disposition == PatchGateDisposition::Passed
+                && gate.result.as_ref().is_some_and(|result| {
+                    result.command == result.phase.to_string()
+                        && result.disposition == GitApplyDisposition::Passed
+                        && result.status_code == Some(0)
+                        && result.error.is_none()
+                })
+        }));
+        assert_eq!(verification.gates.len(), 1);
+        let verifier = verification.gates[0]
+            .result
+            .as_ref()
+            .expect("executed verifier evidence is persisted");
+        assert_eq!(verifier.exit_code, Some(0));
+        assert_eq!(
+            verification.terminal_disposition,
+            Some(ProcedureTerminalDisposition::Succeeded)
         );
         std::fs::remove_dir_all(fixture.root).ok();
     });
@@ -412,8 +470,236 @@ fn apply_failing_gate_stops_later_commands_and_preserves_real_bytes() {
             ProcedureApplyProgress::VerificationFinished { report }
                 if report.stopped_after_failure && report.first_failed_gate == Some(0)
         )));
+        let stored = ProcedureReportStore::for_project(&fixture.root)
+            .load_with_fingerprints(&fixture.report.id)
+            .unwrap();
+        let verification = stored
+            .verification
+            .expect("failed Apply evidence is persisted");
+        let failed = verification.gates[0]
+            .result
+            .as_ref()
+            .expect("failed verifier result is persisted");
+        assert_eq!(failed.exit_code, Some(7));
+        assert!(failed.combined_output.text.contains("verifier failed"));
+        assert_eq!(
+            failed.command,
+            command(&fixture.verifier_command, "fail", None)
+        );
+        assert!(matches!(
+            verification.terminal_disposition,
+            Some(ProcedureTerminalDisposition::Failed { .. })
+        ));
         std::fs::remove_dir_all(fixture.root).ok();
     });
+}
+
+#[test]
+fn invalid_patch_persists_deterministic_rejection_and_not_run_gates() {
+    run_async(async {
+        let fixture = save_fixture(
+            "invalid-patch-evidence",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 99 }\n")],
+        );
+        let (terminal, progress) = apply(
+            &fixture,
+            vec![command(&fixture.verifier_command, "pass", None)],
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            terminal,
+            ProcedureTerminalDisposition::Failed { .. }
+        ));
+        assert_eq!(
+            progress
+                .iter()
+                .filter(|event| matches!(event, ProcedureApplyProgress::Finished { .. }))
+                .count(),
+            1
+        );
+        let stored = ProcedureReportStore::for_project(&fixture.root)
+            .load_with_fingerprints(&fixture.report.id)
+            .unwrap();
+        let verification = stored.verification.expect("patch rejection is persisted");
+        assert_eq!(verification.patch_gates.len(), 2);
+        assert_eq!(
+            verification.patch_gates[0].disposition,
+            PatchGateDisposition::Rejected
+        );
+        assert!(verification.patch_gates[0].result.as_ref().is_some_and(
+            |result| result.disposition == GitApplyDisposition::Rejected
+                && !result.success
+                && result.status_code.is_some()
+                && !result.stderr.text.is_empty()
+        ));
+        assert_eq!(
+            verification.patch_gates[1].disposition,
+            PatchGateDisposition::NotRun {
+                blocked_by: GitApplyPhase::Check,
+            }
+        );
+        assert!(matches!(
+            verification.gates[0].disposition,
+            VerifierGateDisposition::NotRunAfterPatch {
+                blocked_by: GitApplyPhase::Check,
+            }
+        ));
+        assert_eq!(
+            verification.eligibility.reason,
+            Some(deepseek_custom::procedure::CandidateIneligibility::PatchCheckFailed)
+        );
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+#[test]
+fn setup_failure_emits_one_apply_terminal_with_the_exact_diagnostic() {
+    run_async(async {
+        let fixture = save_fixture(
+            "setup-terminal",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+        );
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let runner = ProcedureApplyRunner::new(
+            VerificationInputGate::new(
+                OpenSpecInput::with_command(
+                    &fixture.root,
+                    fixture.openspec_command.display().to_string(),
+                ),
+                fixture.root.clone(),
+                ProcedureReportStore::for_project(&fixture.root),
+            ),
+            fixture.root.clone(),
+            interrupt,
+        )
+        .with_progress(sender);
+        let mut invalid_request = request(&fixture);
+        invalid_request.task_id = "9.9".to_string();
+
+        let error = runner
+            .run(
+                ProcedureRunId::new(),
+                invalid_request,
+                &[command(&fixture.verifier_command, "pass", None)],
+            )
+            .await
+            .unwrap_err();
+        let expected = error.to_string();
+        let progress = apply_events(&mut receiver);
+        let terminals = progress
+            .iter()
+            .filter_map(|event| match event {
+                ProcedureApplyProgress::Finished { disposition } => Some(disposition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(
+            terminals[0],
+            &ProcedureTerminalDisposition::Failed {
+                reason: expected.clone(),
+            }
+        );
+        assert!(expected.contains("task mismatch"));
+        assert!(!progress.iter().any(|event| matches!(
+            event,
+            ProcedureApplyProgress::SnapshotStarted
+                | ProcedureApplyProgress::PatchGateStarted { .. }
+                | ProcedureApplyProgress::VerifierGateStarted { .. }
+        )));
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+#[test]
+fn production_apply_progress_matches_the_execution_order() {
+    run_async(async {
+        let fixture = save_fixture(
+            "ordered-progress",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+        );
+        let commands = vec![
+            command(&fixture.verifier_command, "pass", None),
+            command(&fixture.verifier_command, "pass", None),
+        ];
+        let (terminal, progress) = apply(&fixture, commands, None).await;
+        assert_eq!(terminal, ProcedureTerminalDisposition::Succeeded);
+        let significant = progress
+            .iter()
+            .filter_map(significant_progress)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            significant,
+            vec![
+                "started",
+                "snapshot_started",
+                "snapshot_progress",
+                "patch_started:git apply --check",
+                "patch_completed:git apply --check",
+                "patch_started:git apply",
+                "patch_completed:git apply",
+                "verifier_started:0",
+                "verifier_completed:0",
+                "verifier_started:1",
+                "verifier_completed:1",
+                "verification_finished",
+                "promotion_started",
+                "promotion_succeeded",
+                "finished",
+            ]
+        );
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+pub(crate) fn successful_production_apply_events_for_gui() -> Vec<ProcedureProgress> {
+    let fixture = save_fixture(
+        "gui-production-progress",
+        &["src/target.rs"],
+        UPDATE_DIFF,
+        &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+    );
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let runner = ProcedureApplyRunner::new(
+        VerificationInputGate::new(
+            OpenSpecInput::with_command(
+                &fixture.root,
+                fixture.openspec_command.display().to_string(),
+            ),
+            fixture.root.clone(),
+            ProcedureReportStore::for_project(&fixture.root),
+        ),
+        fixture.root.clone(),
+        interrupt,
+    )
+    .with_progress(sender);
+    let command = command(&fixture.verifier_command, "pass", None);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            runner
+                .run(ProcedureRunId::new(), request(&fixture), &[command])
+                .await
+                .unwrap();
+        });
+    let mut events = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        events.push(event);
+    }
+    std::fs::remove_dir_all(fixture.root).ok();
+    events
 }
 
 #[test]

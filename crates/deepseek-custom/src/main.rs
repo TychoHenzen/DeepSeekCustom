@@ -474,10 +474,7 @@ async fn main() {
                             )
                             .with_progress(tx_procedure_progress.clone());
                             if let Err(error) = runner.run(run_id, request, &commands).await {
-                                let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed {
-                                    run_id,
-                                    message: error.to_string(),
-                                });
+                                error!(apply_run_id = %run_id.as_str(), "procedure Apply failed: {error}");
                             }
                         }
                         None => break,

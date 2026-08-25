@@ -82,7 +82,7 @@ pub enum ProcedureApplyProgress {
         phase: GitApplyPhase,
     },
     PatchGateCompleted {
-        result: GitApplyResult,
+        result: Box<GitApplyResult>,
     },
     VerifierGateStarted {
         index: usize,

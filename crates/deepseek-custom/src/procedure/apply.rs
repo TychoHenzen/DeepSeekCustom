@@ -8,12 +8,16 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use super::{
-    ApplyRequest, PatchApplyCheckError, PatchEnvelope, PatchRouteMetadata, ProcedureApplyProgress,
-    ProcedureProgress, ProcedureTerminalDisposition, PromotionBaseline, PromotionError,
-    PromotionTargetError, VerificationInputError, VerificationInputGate, VerifierCommandRunner,
+    ApplyRequest, CandidateEligibility, CandidateIneligibility, GitApplyPhase,
+    PatchApplyCheckError, PatchApplyProgress, PatchEnvelope, PatchGateEvidence, PatchRouteMetadata,
+    ProcedureApplyProgress, ProcedureProgress, ProcedureReportStore, ProcedureTerminalDisposition,
+    PromotionBaseline, PromotionError, PromotionTargetError, VerificationInputError,
+    VerificationInputGate, VerifierCommandRunner, VerifierGateDisposition, VerifierGateEvidence,
+    VerifierReport, VerifierRunProgress, apply_patch_in_workspace_with_progress,
     decode_patch_envelope, evaluate_applied_patch_eligibility, model_promotion_targets,
     promote_verified_workspace, validate_patch_boundary,
 };
+use crate::error::HarnessError;
 
 /// Failure before an Apply run can publish its terminal progress.
 #[derive(Debug, Error)]
@@ -29,15 +33,22 @@ pub enum ProcedureApplyError {
     #[error(transparent)]
     Baseline(#[from] super::ProcedureFingerprintError),
     #[error(transparent)]
-    PatchApply(#[from] PatchApplyCheckError),
+    PatchApply(Box<PatchApplyCheckError>),
     #[error(transparent)]
     Promotion(#[from] PromotionError),
+    #[error("could not save Apply evidence for procedure run {run_id}: {source}")]
+    ReportSave {
+        run_id: String,
+        #[source]
+        source: HarnessError,
+    },
 }
 
 /// Executes the complete isolated verification and promotion transaction.
 pub struct ProcedureApplyRunner {
     input_gate: VerificationInputGate,
     project_root: PathBuf,
+    reports: ProcedureReportStore,
     interrupt: Arc<AtomicBool>,
     progress: Option<mpsc::UnboundedSender<ProcedureProgress>>,
 }
@@ -48,9 +59,11 @@ impl ProcedureApplyRunner {
         project_root: PathBuf,
         interrupt: Arc<AtomicBool>,
     ) -> Self {
+        let reports = ProcedureReportStore::for_project(&project_root);
         Self {
             input_gate,
             project_root,
+            reports,
             interrupt,
             progress: None,
         }
@@ -68,7 +81,7 @@ impl ProcedureApplyRunner {
         request: ApplyRequest,
         verifier_commands: &[String],
     ) -> Result<ProcedureTerminalDisposition, ProcedureApplyError> {
-        self.run_inner(run_id, request, verifier_commands, None)
+        self.run_started(run_id, request, verifier_commands, None)
             .await
     }
 
@@ -80,8 +93,39 @@ impl ProcedureApplyRunner {
         verifier_commands: &[String],
         injection: super::PromotionFailureInjection,
     ) -> Result<ProcedureTerminalDisposition, ProcedureApplyError> {
-        self.run_inner(run_id, request, verifier_commands, Some(injection))
+        self.run_started(run_id, request, verifier_commands, Some(injection))
             .await
+    }
+
+    async fn run_started(
+        &self,
+        run_id: super::ProcedureRunId,
+        request: ApplyRequest,
+        verifier_commands: &[String],
+        #[cfg(feature = "test-support")] injection: Option<super::PromotionFailureInjection>,
+        #[cfg(not(feature = "test-support"))] injection: Option<()>,
+    ) -> Result<ProcedureTerminalDisposition, ProcedureApplyError> {
+        self.emit(run_id, ProcedureApplyProgress::Started);
+        let outcome = self
+            .run_inner(
+                run_id,
+                request,
+                verifier_commands,
+                #[cfg(feature = "test-support")]
+                injection,
+                #[cfg(not(feature = "test-support"))]
+                injection,
+            )
+            .await;
+        if let Err(error) = &outcome {
+            self.finish(
+                run_id,
+                ProcedureTerminalDisposition::Failed {
+                    reason: error.to_string(),
+                },
+            );
+        }
+        outcome
     }
 
     async fn run_inner(
@@ -92,7 +136,6 @@ impl ProcedureApplyRunner {
         #[cfg(feature = "test-support")] injection: Option<super::PromotionFailureInjection>,
         #[cfg(not(feature = "test-support"))] _injection: Option<()>,
     ) -> Result<ProcedureTerminalDisposition, ProcedureApplyError> {
-        self.emit(run_id, ProcedureApplyProgress::Started);
         if self.interrupted() {
             return Ok(self.finish(run_id, ProcedureTerminalDisposition::Interrupted));
         }
@@ -112,24 +155,63 @@ impl ProcedureApplyRunner {
         let baseline = PromotionBaseline::capture(&self.project_root, &targets)?;
 
         self.emit(run_id, ProcedureApplyProgress::SnapshotStarted);
-        let applied = match super::apply_patch_in_workspace(&self.project_root, boundary) {
-            Ok(applied) => applied,
-            Err(error) => {
-                return Err(error.into());
-            }
-        };
-        self.emit(
-            run_id,
-            ProcedureApplyProgress::PatchGateCompleted {
-                result: applied.check_result().clone(),
-            },
-        );
-        self.emit(
-            run_id,
-            ProcedureApplyProgress::PatchGateCompleted {
-                result: applied.apply_result().clone(),
-            },
-        );
+        let mut patch_gates = Vec::with_capacity(2);
+        let applied =
+            match apply_patch_in_workspace_with_progress(&self.project_root, boundary, |progress| {
+                match progress {
+                    PatchApplyProgress::Snapshot(progress) => self.emit(
+                        run_id,
+                        ProcedureApplyProgress::SnapshotProgress { progress },
+                    ),
+                    PatchApplyProgress::GateStarted(phase) => {
+                        self.emit(run_id, ProcedureApplyProgress::PatchGateStarted { phase })
+                    }
+                    PatchApplyProgress::GateCompleted(result) => {
+                        patch_gates.push(result.evidence());
+                        self.emit(
+                            run_id,
+                            ProcedureApplyProgress::PatchGateCompleted { result },
+                        );
+                    }
+                }
+            }) {
+                Ok(applied) => applied,
+                Err(error) => {
+                    if let Some(result) = error.result() {
+                        append_not_run_patch_gates(&mut patch_gates, result.phase);
+                        let eligibility = if error.is_deterministic_rejection() {
+                            CandidateEligibility::ineligible(match result.phase {
+                                GitApplyPhase::Check => CandidateIneligibility::PatchCheckFailed,
+                                GitApplyPhase::Apply => CandidateIneligibility::PatchApplyFailed,
+                            })
+                        } else {
+                            CandidateEligibility::ineligible(
+                                CandidateIneligibility::PatchGateInfrastructureFailed {
+                                    phase: result.phase,
+                                    disposition: result.disposition,
+                                    error: error.to_string(),
+                                },
+                            )
+                        };
+                        let terminal = ProcedureTerminalDisposition::Failed {
+                            reason: error.to_string(),
+                        };
+                        let report = patch_failure_report(
+                            patch_gates,
+                            verifier_commands,
+                            eligibility,
+                            terminal.clone(),
+                        );
+                        self.save_verification(&request.localization_run_id, &report)?;
+                        self.emit(
+                            run_id,
+                            ProcedureApplyProgress::VerificationFinished { report },
+                        );
+                        return Ok(self.finish(run_id, terminal));
+                    }
+                    return Err(error.into());
+                }
+            };
 
         if self.interrupted() {
             drop(applied);
@@ -137,27 +219,26 @@ impl ProcedureApplyRunner {
         }
 
         let verifier = VerifierCommandRunner::with_interrupt(Arc::clone(&self.interrupt));
-        for (index, command) in verifier_commands.iter().enumerate() {
-            self.emit(
-                run_id,
-                ProcedureApplyProgress::VerifierGateStarted {
-                    index,
-                    command: command.clone(),
+        let verifier_run = verifier
+            .run_with_progress(
+                applied.path(),
+                verifier_commands,
+                |progress| match progress {
+                    VerifierRunProgress::GateStarted { index, command } => self.emit(
+                        run_id,
+                        ProcedureApplyProgress::VerifierGateStarted { index, command },
+                    ),
+                    VerifierRunProgress::GateCompleted { index, evidence } => self.emit(
+                        run_id,
+                        ProcedureApplyProgress::VerifierGateCompleted { index, evidence },
+                    ),
                 },
-            );
-        }
-        let verifier_run = verifier.run(applied.path(), verifier_commands).await;
+            )
+            .await;
         let eligibility = evaluate_applied_patch_eligibility(&applied, &verifier_run);
-        let report = verifier_run.report(eligibility.clone());
-        for (index, gate) in report.gates.iter().enumerate() {
-            self.emit(
-                run_id,
-                ProcedureApplyProgress::VerifierGateCompleted {
-                    index,
-                    evidence: Box::new(gate.clone()),
-                },
-            );
-        }
+        let mut report = verifier_run
+            .report(eligibility.clone())
+            .with_patch_gates(patch_gates);
         self.emit(
             run_id,
             ProcedureApplyProgress::VerificationFinished {
@@ -173,13 +254,19 @@ impl ProcedureApplyRunner {
                 )
             })
         {
+            let terminal = ProcedureTerminalDisposition::Interrupted;
+            report.terminal_disposition = Some(terminal.clone());
+            self.save_verification(&request.localization_run_id, &report)?;
             drop(applied);
-            return Ok(self.finish(run_id, ProcedureTerminalDisposition::Interrupted));
+            return Ok(self.finish(run_id, terminal));
         }
         if !eligibility.eligible {
             let reason = format!("verification failed: {:?}", eligibility.reason);
+            let terminal = ProcedureTerminalDisposition::Failed { reason };
+            report.terminal_disposition = Some(terminal.clone());
+            self.save_verification(&request.localization_run_id, &report)?;
             drop(applied);
-            return Ok(self.finish(run_id, ProcedureTerminalDisposition::Failed { reason }));
+            return Ok(self.finish(run_id, terminal));
         }
 
         match self.interruptible_promotion(
@@ -191,29 +278,37 @@ impl ProcedureApplyRunner {
             injection,
         ) {
             Ok(result) => {
+                let terminal = ProcedureTerminalDisposition::Succeeded;
+                report.terminal_disposition = Some(terminal.clone());
+                self.save_verification(&request.localization_run_id, &report)?;
                 drop(applied);
                 self.emit(
                     run_id,
                     ProcedureApplyProgress::PromotionSucceeded { result },
                 );
-                Ok(self.finish(run_id, ProcedureTerminalDisposition::Succeeded))
+                Ok(self.finish(run_id, terminal))
             }
             Err(PromotionError::Baseline(super::PromotionBaselineCheckError::Stale {
                 stale_paths,
             })) => {
+                let terminal = ProcedureTerminalDisposition::Failed {
+                    reason: "promotion baseline is stale".to_string(),
+                };
+                report.terminal_disposition = Some(terminal.clone());
+                self.save_verification(&request.localization_run_id, &report)?;
                 drop(applied);
                 self.emit(
                     run_id,
                     ProcedureApplyProgress::ConflictDetected { paths: stale_paths },
                 );
-                Ok(self.finish(
-                    run_id,
-                    ProcedureTerminalDisposition::Failed {
-                        reason: "promotion baseline is stale".to_string(),
-                    },
-                ))
+                Ok(self.finish(run_id, terminal))
             }
             Err(error) => {
+                let terminal = ProcedureTerminalDisposition::Failed {
+                    reason: error.to_string(),
+                };
+                report.terminal_disposition = Some(terminal.clone());
+                self.save_verification(&request.localization_run_id, &report)?;
                 let recovery = promotion_recovery(&error);
                 self.emit(
                     run_id,
@@ -223,12 +318,7 @@ impl ProcedureApplyRunner {
                     },
                 );
                 drop(applied);
-                Ok(self.finish(
-                    run_id,
-                    ProcedureTerminalDisposition::Failed {
-                        reason: error.to_string(),
-                    },
-                ))
+                Ok(self.finish(run_id, terminal))
             }
         }
     }
@@ -278,6 +368,19 @@ impl ProcedureApplyRunner {
         }
     }
 
+    fn save_verification(
+        &self,
+        localization_run_id: &super::ProcedureRunId,
+        report: &VerifierReport,
+    ) -> Result<(), ProcedureApplyError> {
+        self.reports
+            .save_verification(localization_run_id, report)
+            .map_err(|source| ProcedureApplyError::ReportSave {
+                run_id: localization_run_id.as_str(),
+                source,
+            })
+    }
+
     fn finish(
         &self,
         run_id: super::ProcedureRunId,
@@ -294,6 +397,57 @@ impl ProcedureApplyRunner {
 
     fn interrupted(&self) -> bool {
         self.interrupt.load(Ordering::SeqCst)
+    }
+}
+
+impl From<PatchApplyCheckError> for ProcedureApplyError {
+    fn from(error: PatchApplyCheckError) -> Self {
+        Self::PatchApply(Box::new(error))
+    }
+}
+
+fn append_not_run_patch_gates(patch_gates: &mut Vec<PatchGateEvidence>, failed: GitApplyPhase) {
+    if failed == GitApplyPhase::Check {
+        patch_gates.push(PatchGateEvidence::not_run(
+            GitApplyPhase::Apply,
+            GitApplyPhase::Check,
+        ));
+    }
+}
+
+fn patch_failure_report(
+    patch_gates: Vec<PatchGateEvidence>,
+    verifier_commands: &[String],
+    eligibility: CandidateEligibility,
+    terminal_disposition: ProcedureTerminalDisposition,
+) -> VerifierReport {
+    VerifierReport {
+        patch_gates,
+        gates: verifier_commands
+            .iter()
+            .map(|command| VerifierGateEvidence {
+                command: command.clone(),
+                disposition: VerifierGateDisposition::NotRunAfterPatch {
+                    blocked_by: eligibility_patch_phase(&eligibility),
+                },
+                result: None,
+            })
+            .collect(),
+        stopped_after_failure: true,
+        first_failed_gate: None,
+        eligibility,
+        terminal_disposition: Some(terminal_disposition),
+    }
+}
+
+fn eligibility_patch_phase(eligibility: &CandidateEligibility) -> GitApplyPhase {
+    match eligibility.reason.as_ref() {
+        Some(CandidateIneligibility::PatchApplyFailed)
+        | Some(CandidateIneligibility::PatchGateInfrastructureFailed {
+            phase: GitApplyPhase::Apply,
+            ..
+        }) => GitApplyPhase::Apply,
+        _ => GitApplyPhase::Check,
     }
 }
 

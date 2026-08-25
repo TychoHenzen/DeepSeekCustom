@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use deepseek_custom::procedure::{
-    BoundedVerifierOutput, CandidateIneligibility, GitApplyPhase, GitApplyResult,
-    VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandResult,
+    BoundedVerifierOutput, CandidateIneligibility, GitApplyDisposition, GitApplyPhase,
+    GitApplyResult, VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandResult,
     VerifierCommandRunner, evaluate_candidate_eligibility,
 };
 
@@ -92,12 +92,28 @@ fn run_async(future: impl std::future::Future<Output = ()>) {
 }
 
 fn patch_result(phase: GitApplyPhase, success: bool) -> GitApplyResult {
+    let output = BoundedVerifierOutput {
+        text: String::new(),
+        first_edge: String::new(),
+        last_edge: String::new(),
+        truncated: false,
+        bytes_seen: 0,
+    };
     GitApplyResult {
         phase,
+        command: phase.to_string(),
+        disposition: if success {
+            GitApplyDisposition::Passed
+        } else {
+            GitApplyDisposition::Rejected
+        },
         success,
         status_code: Some(if success { 0 } else { 1 }),
-        stdout: String::new(),
-        stderr: String::new(),
+        stdout: output.clone(),
+        stderr: output.clone(),
+        combined_output: output,
+        duration_millis: 1,
+        error: None,
     }
 }
 
