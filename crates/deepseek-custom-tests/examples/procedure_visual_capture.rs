@@ -281,6 +281,8 @@ fn fixture_settings() -> Settings {
         backends: Some(backends),
         procedure: Some(ProcedureSettings {
             localization_backend: Some("ollama-local".to_string()),
+            local_patch_backend: Some("ollama-local".to_string()),
+            frontier_patch_backend: None,
             repository_index: RepositoryIndexLimits::default(),
         }),
         ..Settings::default()

@@ -15,6 +15,7 @@ mod local_patch_draft;
 mod patch_apply_check;
 mod patch_boundary;
 mod patch_envelope;
+mod patch_preview;
 mod preview_input;
 mod prompt;
 pub mod report;
@@ -48,6 +49,10 @@ pub use patch_boundary::{BoundaryValidatedPatch, PatchBoundaryError, validate_pa
 pub use patch_envelope::{
     PatchCandidate, PatchEnvelope, PatchEnvelopeError, PatchRouteMetadata, decode_patch_envelope,
     patch_envelope_response_format,
+};
+pub use patch_preview::{
+    PatchPreview, PatchPreviewError, PatchPreviewId, PatchPreviewRequest, PatchPreviewRunner,
+    PatchPreviewStore,
 };
 pub use preview_input::{
     PatchPreviewInputError, PatchPreviewInputGate, PatchPreviewInputRequest,

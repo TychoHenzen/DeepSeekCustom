@@ -42,6 +42,10 @@ pub enum ProcedureCommand {
         run_id: ProcedureRunId,
         decision: ProcedureReviewDecision,
     },
+    Preview {
+        preview_id: super::PatchPreviewId,
+        request: super::PatchPreviewRequest,
+    },
 }
 
 /// Terminal decision requested for one awaiting-review run.
@@ -107,6 +111,18 @@ pub enum ProcedureProgress {
         run_id: ProcedureRunId,
         disposition: ProcedureReviewDisposition,
         error: String,
+    },
+    PreviewStarted {
+        preview_id: super::PatchPreviewId,
+    },
+    PreviewFinished {
+        preview_id: super::PatchPreviewId,
+        preview: Box<super::PatchPreview>,
+        report_path: PathBuf,
+    },
+    PreviewFailed {
+        preview_id: super::PatchPreviewId,
+        message: String,
     },
     /// Infrastructure or backend preflight failed before a runner could
     /// produce its normal terminal report.

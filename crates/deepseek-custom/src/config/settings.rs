@@ -682,6 +682,12 @@ pub struct ProcedureSettings {
     /// Name of an entry in `Settings::backends`. `None` means unselected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub localization_backend: Option<String>,
+    /// Ollama backend used when a patch preview routes to the local tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_patch_backend: Option<String>,
+    /// Claude CLI or Codex CLI backend used for frontier patch previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontier_patch_backend: Option<String>,
     #[serde(default)]
     pub repository_index: RepositoryIndexLimits,
 }

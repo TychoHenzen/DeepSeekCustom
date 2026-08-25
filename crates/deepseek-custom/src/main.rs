@@ -19,8 +19,9 @@ use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
 use deepseek_custom::procedure::{
-    LocalizationDispatcher, OpenSpecInput, ProcedureCommand, ProcedureProgress,
-    ProcedureReportStore, ProcedureRunner, apply_review_decision,
+    LocalizationDispatcher, OpenSpecInput, PatchPreviewInputGate, PatchPreviewRunner,
+    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureRunner,
+    apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
@@ -231,6 +232,7 @@ async fn main() {
     // GUI reads.
     let switch_factory = Arc::clone(&factory);
     let search_factory = Arc::clone(&factory);
+    let preview_factory = Arc::clone(&factory);
     let search_interrupt = Arc::clone(&flags.search_interrupt);
     // The same two counters the status bar reads, so its escalation rate
     // covers every run this session made.
@@ -411,6 +413,49 @@ async fn main() {
                                 decision,
                                 &tx_procedure_progress,
                             );
+                        }
+                        Some(ProcedureCommand::Preview {
+                            preview_id,
+                            request,
+                        }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let _ = tx_procedure_progress.send(
+                                ProcedureProgress::PreviewStarted { preview_id },
+                            );
+                            let reports = ProcedureReportStore::for_project(
+                                &procedure_project_root,
+                            );
+                            let runner = PatchPreviewRunner::new(
+                                PatchPreviewInputGate::new(
+                                    OpenSpecInput::new(&procedure_project_root),
+                                    procedure_project_root.clone(),
+                                    reports,
+                                ),
+                                procedure_project_root.clone(),
+                                Arc::clone(&preview_factory),
+                                Arc::clone(&procedure_task_interrupt),
+                                procedure_settings.effort(),
+                                procedure_settings.max_tokens(),
+                            );
+                            match runner.run(preview_id, request).await {
+                                Ok((preview, report_path)) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::PreviewFinished {
+                                            preview_id,
+                                            preview: Box::new(preview),
+                                            report_path,
+                                        },
+                                    );
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::PreviewFailed {
+                                            preview_id,
+                                            message: error.to_string(),
+                                        },
+                                    );
+                                }
+                            }
                         }
                         None => break,
                     }

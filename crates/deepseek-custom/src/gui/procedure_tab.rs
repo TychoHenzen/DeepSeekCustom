@@ -1,5 +1,6 @@
 //! Procedure tab state and rendering.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,12 +9,14 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::api::models::list_models;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
-    OpenSpecChange, OpenSpecInput, ProcedureAttemptDisposition, ProcedureCommand,
-    ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition,
-    ProcedureRun, ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
-    ProcedureTerminalDisposition,
+    OpenSpecChange, OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewRequest,
+    ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
+    ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureRunRequest, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
+    RouteOverride,
 };
 
 use super::cascade_tab::backend_combo;
@@ -24,6 +27,15 @@ pub enum ProcedureStatus {
     Idle,
     Running { message: String },
     Finished(ProcedureTerminalDisposition),
+    Error { message: String },
+}
+
+/// State of the independent patch-preview action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchPreviewStatus {
+    Idle,
+    Running,
+    Finished,
     Error { message: String },
 }
 
@@ -65,6 +77,16 @@ pub struct ProcedureTab {
     selected_task: String,
     backend_names: Vec<String>,
     backend: String,
+    local_backend_names: Vec<String>,
+    frontier_backend_names: Vec<String>,
+    local_backend: String,
+    frontier_backend: String,
+    local_model: String,
+    frontier_model: String,
+    model_options: HashMap<String, Vec<String>>,
+    model_list_tx: mpsc::UnboundedSender<(String, Vec<String>)>,
+    model_list_rx: mpsc::UnboundedReceiver<(String, Vec<String>)>,
+    route_override: RouteOverride,
     status: ProcedureStatus,
     active_run: Option<ProcedureRunId>,
     dispatch_backend: Option<String>,
@@ -75,6 +97,10 @@ pub struct ProcedureTab {
     review_error: Option<String>,
     review_in_flight: bool,
     reports: ProcedureReportStore,
+    preview_status: PatchPreviewStatus,
+    active_preview: Option<PatchPreviewId>,
+    latest_preview: Option<PatchPreview>,
+    preview_report_path: Option<PathBuf>,
 }
 
 impl ProcedureTab {
@@ -88,6 +114,23 @@ impl ProcedureTab {
             .filter(|saved| backend_names.contains(saved))
             .or_else(|| backend_names.first().cloned())
             .unwrap_or_default();
+        let local_backend_names = local_patch_backend_names(settings);
+        let frontier_backend_names = frontier_patch_backend_names(settings);
+        let procedure = settings.procedure();
+        let local_backend = selected_backend(
+            procedure.and_then(|value| value.local_patch_backend.as_deref()),
+            &local_backend_names,
+        );
+        let frontier_backend = selected_backend(
+            procedure.and_then(|value| value.frontier_patch_backend.as_deref()),
+            &frontier_backend_names,
+        );
+        let local_model = configured_model(settings, &local_backend);
+        let frontier_model = configured_model(settings, &frontier_backend);
+        let mut model_options = HashMap::new();
+        seed_model_option(&mut model_options, &local_backend, &local_model);
+        seed_model_option(&mut model_options, &frontier_backend, &frontier_model);
+        let (model_list_tx, model_list_rx) = mpsc::unbounded_channel();
         let mut tab = Self {
             command_tx: None,
             progress_rx: None,
@@ -98,6 +141,16 @@ impl ProcedureTab {
             selected_task: String::new(),
             backend_names,
             backend,
+            local_backend_names,
+            frontier_backend_names,
+            local_backend,
+            frontier_backend,
+            local_model,
+            frontier_model,
+            model_options,
+            model_list_tx,
+            model_list_rx,
+            route_override: RouteOverride::Automatic,
             status: ProcedureStatus::Idle,
             active_run: None,
             dispatch_backend: None,
@@ -108,7 +161,12 @@ impl ProcedureTab {
             review_error: None,
             review_in_flight: false,
             reports: ProcedureReportStore::for_project(project_root),
+            preview_status: PatchPreviewStatus::Idle,
+            active_preview: None,
+            latest_preview: None,
+            preview_report_path: None,
         };
+        tab.spawn_model_fetches(settings);
         tab.refresh_changes(project_root);
         tab
     }
@@ -136,6 +194,7 @@ impl ProcedureTab {
 
     pub fn is_running(&self) -> bool {
         matches!(self.status, ProcedureStatus::Running { .. })
+            || self.preview_status == PatchPreviewStatus::Running
     }
 
     pub fn status(&self) -> &ProcedureStatus {
@@ -148,6 +207,44 @@ impl ProcedureTab {
 
     pub fn backend_names(&self) -> &[String] {
         &self.backend_names
+    }
+
+    pub fn local_backend_names(&self) -> &[String] {
+        &self.local_backend_names
+    }
+
+    pub fn frontier_backend_names(&self) -> &[String] {
+        &self.frontier_backend_names
+    }
+
+    pub fn local_model_options(&self) -> &[String] {
+        self.model_options
+            .get(&self.local_backend)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn frontier_model_options(&self) -> &[String] {
+        self.model_options
+            .get(&self.frontier_backend)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn route_override(&self) -> RouteOverride {
+        self.route_override
+    }
+
+    pub fn preview_status(&self) -> &PatchPreviewStatus {
+        &self.preview_status
+    }
+
+    pub fn latest_preview(&self) -> Option<&PatchPreview> {
+        self.latest_preview.as_ref()
+    }
+
+    pub fn latest_preview_report_path(&self) -> Option<&Path> {
+        self.preview_report_path.as_deref()
     }
 
     pub fn selected_change(&self) -> &str {
@@ -200,6 +297,7 @@ impl ProcedureTab {
 
     /// Receive progress without entering the routed chat event path.
     pub fn drain_progress(&mut self) {
+        self.drain_model_lists();
         let Some(mut receiver) = self.progress_rx.take() else {
             return;
         };
@@ -345,6 +443,34 @@ impl ProcedureTab {
                 self.active_run = None;
                 self.status = ProcedureStatus::Error { message };
             }
+            ProcedureProgress::PreviewStarted { preview_id } => {
+                if self.active_preview == Some(preview_id) {
+                    self.preview_status = PatchPreviewStatus::Running;
+                }
+            }
+            ProcedureProgress::PreviewFinished {
+                preview_id,
+                preview,
+                report_path,
+            } => {
+                if self.active_preview != Some(preview_id) {
+                    return;
+                }
+                self.active_preview = None;
+                self.latest_preview = Some(*preview);
+                self.preview_report_path = Some(report_path);
+                self.preview_status = PatchPreviewStatus::Finished;
+            }
+            ProcedureProgress::PreviewFailed {
+                preview_id,
+                message,
+            } => {
+                if self.active_preview != Some(preview_id) {
+                    return;
+                }
+                self.active_preview = None;
+                self.preview_status = PatchPreviewStatus::Error { message };
+            }
         }
     }
 
@@ -357,7 +483,7 @@ impl ProcedureTab {
     ) -> bool {
         let mut dirty = false;
         ui.heading("Procedure");
-        ui.label("Read-only OpenSpec validation and repository localization.");
+        ui.label("OpenSpec localization and non-mutating patch preview.");
         ui.separator();
 
         ui.add_enabled_ui(!self.is_running(), |ui| {
@@ -373,6 +499,12 @@ impl ProcedureTab {
                 self.start_run();
             }
             if ui
+                .add_enabled(self.can_preview(), egui::Button::new("Preview"))
+                .clicked()
+            {
+                self.start_preview();
+            }
+            if ui
                 .add_enabled(self.is_running(), egui::Button::new("Stop"))
                 .clicked()
             {
@@ -381,6 +513,7 @@ impl ProcedureTab {
         });
         self.render_status(ui);
         self.render_result(ui);
+        self.render_preview(ui);
         dirty
     }
 
@@ -422,6 +555,61 @@ impl ProcedureTab {
             settings.procedure_mut().localization_backend = Some(self.backend.clone());
             dirty = true;
         }
+        ui.separator();
+        ui.label("Patch preview route");
+        if backend_combo(
+            ui,
+            "Local backend",
+            &mut self.local_backend,
+            &self.local_backend_names,
+            false,
+        ) {
+            self.local_model = configured_model(settings, &self.local_backend);
+            seed_model_option(
+                &mut self.model_options,
+                &self.local_backend,
+                &self.local_model,
+            );
+            spawn_model_list_fetch(self.model_list_tx.clone(), &self.local_backend, settings);
+            settings.procedure_mut().local_patch_backend = Some(self.local_backend.clone());
+            dirty = true;
+        }
+        let local_models = self
+            .model_options
+            .get(&self.local_backend)
+            .cloned()
+            .unwrap_or_default();
+        simple_combo(ui, "Local model", &mut self.local_model, &local_models);
+
+        if backend_combo(
+            ui,
+            "Frontier backend",
+            &mut self.frontier_backend,
+            &self.frontier_backend_names,
+            false,
+        ) {
+            self.frontier_model = configured_model(settings, &self.frontier_backend);
+            seed_model_option(
+                &mut self.model_options,
+                &self.frontier_backend,
+                &self.frontier_model,
+            );
+            spawn_model_list_fetch(self.model_list_tx.clone(), &self.frontier_backend, settings);
+            settings.procedure_mut().frontier_patch_backend = Some(self.frontier_backend.clone());
+            dirty = true;
+        }
+        let frontier_models = self
+            .model_options
+            .get(&self.frontier_backend)
+            .cloned()
+            .unwrap_or_default();
+        simple_combo(
+            ui,
+            "Frontier model",
+            &mut self.frontier_model,
+            &frontier_models,
+        );
+        route_override_combo(ui, &mut self.route_override);
         if ui.button("Refresh changes").clicked() {
             self.refresh_changes(project_root);
         }
@@ -525,6 +713,64 @@ impl ProcedureTab {
         }
     }
 
+    fn render_preview(&self, ui: &mut egui::Ui) {
+        match &self.preview_status {
+            PatchPreviewStatus::Idle => {}
+            PatchPreviewStatus::Running => {
+                ui.separator();
+                ui.spinner();
+                ui.label("Patch preview: running");
+            }
+            PatchPreviewStatus::Error { message } => {
+                ui.separator();
+                ui.label(
+                    RichText::new(format!("Patch preview failed: {message}"))
+                        .color(Color32::LIGHT_RED),
+                );
+            }
+            PatchPreviewStatus::Finished => {}
+        }
+        let Some(preview) = &self.latest_preview else {
+            return;
+        };
+        ui.separator();
+        ui.heading("Patch preview");
+        ui.label(format!("Change: {}", preview.change_id));
+        ui.label(format!("Task: {}", preview.task_id));
+        ui.label(format!(
+            "Localization run: {}",
+            preview.localization_run_id.as_str()
+        ));
+        ui.label(format!("Automatic route: {}", preview.route.automatic_tier));
+        ui.label(format!("Override: {}", preview.route.selected_override));
+        ui.label(format!("Effective route: {}", preview.route.effective_tier));
+        ui.label(format!("Backend: {}", preview.backend));
+        ui.label(format!("Model: {}", preview.model));
+        ui.label("Signals:");
+        for signal in &preview.route.signals {
+            ui.label(format!("- {signal}"));
+        }
+        ui.label("Targets:");
+        for target in &preview.targets {
+            ui.label(format!("- {target}"));
+        }
+        ui.label(format!("Rationale: {}", preview.rationale));
+        if let Some(path) = &self.preview_report_path {
+            ui.label(format!("Preview report: {}", path.display()));
+        }
+        ui.label("Complete unified diff:");
+        egui::ScrollArea::vertical()
+            .id_salt("procedure-patch-preview-diff")
+            .max_height(420.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&preview.unified_diff).monospace())
+                        .wrap()
+                        .selectable(true),
+                );
+            });
+    }
+
     fn can_review_latest(&self) -> bool {
         !self.review_in_flight
             && self.view_state() == ProcedureViewState::AwaitingReview
@@ -570,6 +816,20 @@ impl ProcedureTab {
             && !self.backend.is_empty()
     }
 
+    fn can_preview(&self) -> bool {
+        !self.is_running()
+            && self.command_tx.is_some()
+            && !self.local_backend.is_empty()
+            && !self.local_model.is_empty()
+            && !self.frontier_backend.is_empty()
+            && !self.frontier_model.is_empty()
+            && self.latest_run.as_ref().is_some_and(|run| {
+                run.change_id == self.selected_change
+                    && run.selected_task.id == self.selected_task
+                    && run.review_disposition == ProcedureReviewDisposition::Approved
+            })
+    }
+
     fn start_run(&mut self) {
         if !self.can_run() {
             return;
@@ -608,6 +868,66 @@ impl ProcedureTab {
         self.status = ProcedureStatus::Running {
             message: "Queued".to_string(),
         };
+    }
+
+    fn start_preview(&mut self) {
+        if !self.can_preview() {
+            return;
+        }
+        let Some(command_tx) = &self.command_tx else {
+            return;
+        };
+        let localization_run_id = self.latest_run.as_ref().map(|run| run.id).unwrap();
+        let preview_id = PatchPreviewId::new();
+        let command = ProcedureCommand::Preview {
+            preview_id,
+            request: PatchPreviewRequest {
+                localization_run_id,
+                change_id: self.selected_change.clone(),
+                task_id: self.selected_task.clone(),
+                route_override: self.route_override,
+                local_backend: self.local_backend.clone(),
+                local_model: self.local_model.clone(),
+                frontier_backend: self.frontier_backend.clone(),
+                frontier_model: self.frontier_model.clone(),
+            },
+        };
+        if command_tx.send(command).is_err() {
+            self.preview_status = PatchPreviewStatus::Error {
+                message: "procedure executor is unavailable".to_string(),
+            };
+            return;
+        }
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.store(false, Ordering::SeqCst);
+        }
+        self.active_preview = Some(preview_id);
+        self.latest_preview = None;
+        self.preview_report_path = None;
+        self.preview_status = PatchPreviewStatus::Running;
+    }
+
+    fn spawn_model_fetches(&self, settings: &Settings) {
+        spawn_model_list_fetch(self.model_list_tx.clone(), &self.local_backend, settings);
+        spawn_model_list_fetch(self.model_list_tx.clone(), &self.frontier_backend, settings);
+    }
+
+    fn drain_model_lists(&mut self) {
+        while let Ok((backend, mut models)) = self.model_list_rx.try_recv() {
+            let selected = if backend == self.local_backend {
+                Some(self.local_model.clone())
+            } else if backend == self.frontier_backend {
+                Some(self.frontier_model.clone())
+            } else {
+                None
+            };
+            if let Some(selected) = selected
+                && !models.contains(&selected)
+            {
+                models.push(selected);
+            }
+            self.model_options.insert(backend, models);
+        }
     }
 
     fn refresh_changes(&mut self, project_root: &Path) {
@@ -672,6 +992,21 @@ impl ProcedureTab {
     }
 
     #[cfg(feature = "test-support")]
+    pub fn start_preview_for_test(&mut self) {
+        self.start_preview();
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn set_route_override_for_test(&mut self, route_override: RouteOverride) {
+        self.route_override = route_override;
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn send_model_list_for_test(&self, backend: impl Into<String>, models: Vec<String>) {
+        let _ = self.model_list_tx.send((backend.into(), models));
+    }
+
+    #[cfg(feature = "test-support")]
     pub fn review_actions_available_for_test(&self) -> bool {
         self.can_review_latest()
     }
@@ -720,6 +1055,85 @@ pub fn localization_backend_names(settings: &Settings) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Named backends that can enforce the local patch-envelope schema.
+pub fn local_patch_backend_names(settings: &Settings) -> Vec<String> {
+    localization_backend_names(settings)
+}
+
+/// Named CLI backends that can draft inside the disposable frontier workspace.
+pub fn frontier_patch_backend_names(settings: &Settings) -> Vec<String> {
+    let mut names = settings
+        .backends()
+        .into_iter()
+        .flat_map(|backends| backends.iter())
+        .filter_map(|(name, backend)| {
+            matches!(
+                backend,
+                BackendConfig::ClaudeCli { .. } | BackendConfig::CodexCli { .. }
+            )
+            .then_some(name.clone())
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn selected_backend(saved: Option<&str>, available: &[String]) -> String {
+    saved
+        .filter(|name| available.iter().any(|candidate| candidate == name))
+        .map(str::to_string)
+        .or_else(|| available.first().cloned())
+        .unwrap_or_default()
+}
+
+fn configured_model(settings: &Settings, backend: &str) -> String {
+    settings
+        .resolve_backend(backend)
+        .map(|config| config.model().to_string())
+        .unwrap_or_default()
+}
+
+fn seed_model_option(options: &mut HashMap<String, Vec<String>>, backend: &str, model: &str) {
+    if !backend.is_empty() && !model.is_empty() {
+        options
+            .entry(backend.to_string())
+            .or_default()
+            .push(model.to_string());
+    }
+}
+
+fn spawn_model_list_fetch(
+    tx: mpsc::UnboundedSender<(String, Vec<String>)>,
+    backend: &str,
+    settings: &Settings,
+) {
+    let Some(config) = settings.resolve_backend(backend).cloned() else {
+        return;
+    };
+    let backend = backend.to_string();
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let models = list_models(&config).await;
+        let _ = tx.send((backend, models));
+    });
+}
+
+fn route_override_combo(ui: &mut egui::Ui, current: &mut RouteOverride) {
+    egui::ComboBox::from_label("Route override")
+        .selected_text(current.to_string())
+        .show_ui(ui, |ui| {
+            for value in [
+                RouteOverride::Automatic,
+                RouteOverride::ForceLocal,
+                RouteOverride::ForceFrontier,
+            ] {
+                ui.selectable_value(current, value, value.to_string());
+            }
+        });
 }
 
 fn simple_combo(ui: &mut egui::Ui, label: &str, current: &mut String, values: &[String]) -> bool {

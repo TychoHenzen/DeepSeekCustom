@@ -155,6 +155,8 @@ fn save_then_load_round_trips_values() {
         evolve: None,
         procedure: Some(ProcedureSettings {
             localization_backend: Some("ollama".into()),
+            local_patch_backend: Some("ollama".into()),
+            frontier_patch_backend: Some("codex".into()),
             repository_index: RepositoryIndexLimits {
                 max_files: 2_500,
                 max_total_bytes: 8_000_000,
@@ -198,6 +200,8 @@ fn save_then_load_round_trips_values() {
     assert_eq!(loaded.subagent_max_depth(), 3);
     let procedure = loaded.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.local_patch_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.frontier_patch_backend.as_deref(), Some("codex"));
     assert_eq!(procedure.repository_index.max_files, 2_500);
     assert_eq!(procedure.repository_index.max_total_bytes, 8_000_000);
 
@@ -755,6 +759,8 @@ fn procedure_settings_take_part_in_merge() {
     settings.merge_for_test(Settings {
         procedure: Some(ProcedureSettings {
             localization_backend: Some("localizer".into()),
+            local_patch_backend: Some("local-drafter".into()),
+            frontier_patch_backend: Some("frontier-drafter".into()),
             repository_index: RepositoryIndexLimits {
                 max_files: 100,
                 max_total_bytes: 200,
@@ -765,6 +771,14 @@ fn procedure_settings_take_part_in_merge() {
 
     let procedure = settings.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("localizer"));
+    assert_eq!(
+        procedure.local_patch_backend.as_deref(),
+        Some("local-drafter")
+    );
+    assert_eq!(
+        procedure.frontier_patch_backend.as_deref(),
+        Some("frontier-drafter")
+    );
     assert_eq!(procedure.repository_index.max_files, 100);
     assert_eq!(procedure.repository_index.max_total_bytes, 200);
 }
@@ -776,6 +790,8 @@ fn procedure_mut_creates_and_updates_the_optional_block() {
 
     let procedure = settings.procedure_mut();
     assert!(procedure.localization_backend.is_none());
+    assert!(procedure.local_patch_backend.is_none());
+    assert!(procedure.frontier_patch_backend.is_none());
     procedure.localization_backend = Some("ollama".into());
     procedure.repository_index.max_files = 77;
 
@@ -789,6 +805,8 @@ fn procedure_settings_round_trip_through_json() {
     let original = Settings {
         procedure: Some(ProcedureSettings {
             localization_backend: Some("ollama".into()),
+            local_patch_backend: Some("ollama-preview".into()),
+            frontier_patch_backend: Some("codex-preview".into()),
             repository_index: RepositoryIndexLimits {
                 max_files: 7_500,
                 max_total_bytes: 12_000_000,
@@ -802,6 +820,14 @@ fn procedure_settings_round_trip_through_json() {
 
     let procedure = decoded.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(
+        procedure.local_patch_backend.as_deref(),
+        Some("ollama-preview")
+    );
+    assert_eq!(
+        procedure.frontier_patch_backend.as_deref(),
+        Some("codex-preview")
+    );
     assert_eq!(procedure.repository_index.max_files, 7_500);
     assert_eq!(procedure.repository_index.max_total_bytes, 12_000_000);
 }

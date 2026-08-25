@@ -9,12 +9,16 @@ use deepseek_custom::config::settings::{
 };
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
-use deepseek_custom::gui::procedure_tab::{ProcedureStatus, ProcedureTab, ProcedureViewState};
+use deepseek_custom::gui::procedure_tab::{
+    PatchPreviewStatus, ProcedureStatus, ProcedureTab, ProcedureViewState,
+};
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureAttemptDisposition,
-    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, apply_review_decision,
+    LocalizationAttempt, LocalizationTarget, MechanicalVerb, OpenSpecValidation, PatchPreview,
+    PatchPreviewStore, ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress,
+    ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, RouteDecision, RouteOverride, RouteSignal, RouteTier,
+    apply_review_decision,
 };
 use tokio::sync::mpsc;
 
@@ -109,10 +113,21 @@ fn settings() -> Settings {
             models: None,
         },
     );
+    backends.insert(
+        "codex".to_string(),
+        BackendConfig::CodexCli {
+            model: "gpt-5.6".to_string(),
+            sandbox: None,
+            env: None,
+            models: Some(vec!["gpt-5.6".to_string(), "gpt-5.5".to_string()]),
+        },
+    );
     Settings {
         backends: Some(backends),
         procedure: Some(ProcedureSettings {
             localization_backend: Some("deepseek".to_string()),
+            local_patch_backend: Some("ollama-b".to_string()),
+            frontier_patch_backend: Some("claude".to_string()),
             repository_index: RepositoryIndexLimits::default(),
         }),
         ..Settings::default()
@@ -252,6 +267,8 @@ fn tab_lists_pending_tasks_and_only_ollama_backends() {
     let tab = ProcedureTab::new(&settings(), &root);
 
     assert_eq!(tab.backend_names(), ["ollama-a", "ollama-b"]);
+    assert_eq!(tab.local_backend_names(), ["ollama-a", "ollama-b"]);
+    assert_eq!(tab.frontier_backend_names(), ["claude", "codex"]);
     assert_eq!(tab.changes().len(), 1);
     assert_eq!(tab.selected_change(), "a-change");
     assert_eq!(tab.selected_task(), "1.1");
@@ -262,6 +279,121 @@ fn tab_lists_pending_tasks_and_only_ollama_backends() {
             .map(|task| task.id.as_str())
             .collect::<Vec<_>>(),
         vec!["1.1", "1.2"]
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn preview_model_choices_keep_every_discovered_model_for_each_selected_backend() {
+    let root = fixture_root("preview-model-choices");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+
+    tab.send_model_list_for_test(
+        "ollama-b",
+        vec![
+            "qwen-b".to_string(),
+            "codestral-local".to_string(),
+            "small-general".to_string(),
+        ],
+    );
+    tab.send_model_list_for_test(
+        "claude",
+        vec![
+            "opus".to_string(),
+            "sonnet".to_string(),
+            "haiku".to_string(),
+        ],
+    );
+    tab.drain_progress();
+
+    assert_eq!(
+        tab.local_model_options(),
+        ["qwen-b", "codestral-local", "small-general"]
+    );
+    assert_eq!(tab.frontier_model_options(), ["opus", "sonnet", "haiku"]);
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/routed-patch-preview :: Preview exposes the route and does not edit :: User inspects a preview
+#[test]
+fn preview_action_sends_selected_route_and_exposes_complete_evidence() {
+    let root = fixture_root("patch-preview-view");
+    let store = ProcedureReportStore::for_project(&root);
+    let run_id = ProcedureRunId::new();
+    store.save(&completed_run(run_id)).unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    let mut command_rx = attach_tab(&mut tab);
+    tab.set_route_override_for_test(RouteOverride::ForceFrontier);
+    tab.start_preview_for_test();
+
+    let ProcedureCommand::Preview {
+        preview_id,
+        request,
+    } = command_rx.try_recv().unwrap()
+    else {
+        panic!("Preview must send a patch-preview command")
+    };
+    assert_eq!(request.localization_run_id, run_id);
+    assert_eq!(request.change_id, "a-change");
+    assert_eq!(request.task_id, "1.1");
+    assert_eq!(request.route_override, RouteOverride::ForceFrontier);
+    assert_eq!(request.local_backend, "ollama-b");
+    assert_eq!(request.local_model, "qwen-b");
+    assert_eq!(request.frontier_backend, "claude");
+    assert_eq!(request.frontier_model, "opus");
+    assert_eq!(tab.preview_status(), &PatchPreviewStatus::Running);
+
+    let complete_diff = "diff --git a/src/procedure.rs b/src/procedure.rs\n--- a/src/procedure.rs\n+++ b/src/procedure.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let preview = PatchPreview {
+        id: preview_id,
+        localization_run_id: run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+        route: RouteDecision {
+            automatic_tier: RouteTier::Local,
+            effective_tier: RouteTier::Frontier,
+            signals: vec![
+                RouteSignal::MechanicalVerb(MechanicalVerb::Rename),
+                RouteSignal::TargetCount(1),
+            ],
+            selected_override: RouteOverride::ForceFrontier,
+            overridden: true,
+        },
+        backend: "claude".to_string(),
+        model: "opus".to_string(),
+        targets: vec!["src/procedure.rs".to_string()],
+        rationale: "Rename the approved localized symbol.".to_string(),
+        unified_diff: complete_diff.to_string(),
+    };
+    let report_path = PatchPreviewStore::for_project(&root)
+        .save(&preview)
+        .unwrap();
+    let persisted: PatchPreview =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(persisted, preview);
+    tab.handle_progress(ProcedureProgress::PreviewStarted { preview_id });
+    tab.handle_progress(ProcedureProgress::PreviewFinished {
+        preview_id,
+        preview: Box::new(preview.clone()),
+        report_path: report_path.clone(),
+    });
+
+    assert_eq!(tab.preview_status(), &PatchPreviewStatus::Finished);
+    assert_eq!(tab.latest_preview(), Some(&preview));
+    assert_eq!(tab.latest_preview().unwrap().unified_diff, complete_diff);
+    assert_eq!(tab.latest_preview().unwrap().route.signals.len(), 2);
+    assert_eq!(
+        tab.latest_preview_report_path(),
+        Some(report_path.as_path())
     );
     std::fs::remove_dir_all(root).ok();
 }
