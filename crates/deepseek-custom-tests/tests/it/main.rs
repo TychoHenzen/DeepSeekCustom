@@ -91,6 +91,7 @@ mod procedure_index;
 mod procedure_input;
 mod procedure_patch_apply_check;
 mod procedure_patch_envelope;
+mod procedure_patch_preview;
 mod procedure_preview_input;
 mod procedure_prompt;
 mod procedure_report;

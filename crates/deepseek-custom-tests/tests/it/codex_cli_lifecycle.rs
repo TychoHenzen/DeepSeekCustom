@@ -123,10 +123,19 @@ async fn two_turn_resume_interrupt_and_recovery() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(&invocations[0][..2], ["exec", "--json"]);
     assert_eq!(
-        &invocations[1][..4],
-        ["exec", "resume", "fake-thread-42", "--json"]
+        &invocations[0][..3],
+        ["exec", "--json", "--skip-git-repo-check"]
+    );
+    assert_eq!(
+        &invocations[1][..5],
+        [
+            "exec",
+            "resume",
+            "fake-thread-42",
+            "--json",
+            "--skip-git-repo-check"
+        ]
     );
 
     let interrupt = driver.interrupt_flag();

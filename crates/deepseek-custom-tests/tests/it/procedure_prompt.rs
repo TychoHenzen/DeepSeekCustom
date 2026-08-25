@@ -114,7 +114,7 @@ fn target_selection_instruction_is_the_prompt_prefix() {
 
 #[test]
 fn captured_prompt_excludes_unrelated_conversation_history() {
-    let unrelated_conversation_history = vec![
+    let unrelated_conversation_history = [
         format!("user: {UNRELATED_HISTORY_SENTINEL}"),
         "assistant: unrelated answer".to_string(),
     ];

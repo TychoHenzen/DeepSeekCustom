@@ -71,6 +71,7 @@ const EXIT_MARKER: &str = "__FAKE_CLAUDE_EXIT_AFTER_REPLY__";
 const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
 const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
 const SIDE_EFFECT_PATH_KEY: &str = "FAKE_CLI_SIDE_EFFECT_PATH";
+const RESPONSE_KEY: &str = "FAKE_CLI_RESPONSE";
 /// How long a turn carrying `HANG_MARKER` sleeps before replying. Long
 /// enough that a test's interrupt always lands well before it, short
 /// enough that a broken interrupt still fails the test in bounded time
@@ -159,10 +160,11 @@ fn emit_init(out: &mut impl Write, session_id: &str) {
 /// prefixed with `echo: `, and the terminal `result` event
 /// `ClaudeCliDriver::send` waits on.
 fn emit_turn(out: &mut impl Write, session_id: &str, text: &str) {
-    let reply = text
-        .split_once(VERBATIM_MARKER)
-        .map(|(_, response)| response.to_string())
-        .unwrap_or_else(|| format!("echo: {text}"));
+    let reply = std::env::var(RESPONSE_KEY).unwrap_or_else(|_| {
+        text.split_once(VERBATIM_MARKER)
+            .map(|(_, response)| response.to_string())
+            .unwrap_or_else(|| format!("echo: {text}"))
+    });
 
     write_line(
         out,

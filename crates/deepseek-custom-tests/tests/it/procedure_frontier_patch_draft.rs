@@ -52,11 +52,11 @@ fn read_recorded_directory(path: &Path) -> PathBuf {
 }
 
 fn workspace_hash(root: &Path) -> u64 {
-    fn collect(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
+    fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(directory).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
-                collect(root, &path, files);
+                collect(&path, files);
             } else if path.is_file() {
                 files.push(path);
             }
@@ -64,7 +64,7 @@ fn workspace_hash(root: &Path) -> u64 {
     }
 
     let mut files = Vec::new();
-    collect(root, root, &mut files);
+    collect(root, &mut files);
     files.sort();
     let mut hash = 0xcbf29ce484222325_u64;
     for path in files {

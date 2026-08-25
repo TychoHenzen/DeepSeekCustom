@@ -22,6 +22,7 @@ fn fresh_args_use_json_bypass_model_effort_and_final_prompt() {
         vec![
             "exec",
             "--json",
+            "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
             "-m",
             "gpt-5-codex",
@@ -38,7 +39,14 @@ fn explicit_sandbox_replaces_bypass() {
 
     assert_eq!(
         args,
-        vec!["exec", "--json", "--sandbox", "workspace-write", "prompt"]
+        vec![
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+            "prompt"
+        ]
     );
     assert!(!args.iter().any(|arg| arg.contains("bypass")));
 }

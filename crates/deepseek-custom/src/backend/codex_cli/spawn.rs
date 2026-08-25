@@ -34,6 +34,9 @@ pub(super) fn build_args(
         args.push(thread_id.to_owned());
     }
     args.push("--json".to_owned());
+    // Disposable preview snapshots intentionally exclude `.git`. Codex must
+    // still accept them as isolated working directories.
+    args.push("--skip-git-repo-check".to_owned());
 
     if let Some(sandbox) = sandbox {
         args.push("--sandbox".to_owned());

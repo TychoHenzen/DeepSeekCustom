@@ -113,6 +113,8 @@ pub enum PatchPreviewError {
     MissingTargets,
     #[error("could not serialize patch preview context: {0}")]
     Context(#[from] serde_json::Error),
+    #[error("could not read localized target `{path}` for patch context: {message}")]
+    TargetContext { path: String, message: String },
     #[error("could not resolve patch backend `{backend}`: {message}")]
     Backend { backend: String, message: String },
     #[error(transparent)]
@@ -187,7 +189,14 @@ impl PatchPreviewRunner {
             input.route_override,
         );
         let (backend, model) = selected_backend_and_model(&request, route.effective_tier);
-        let prompt = build_patch_prompt(&contract_text, &targets, &route, &backend, &model)?;
+        let prompt = build_patch_prompt(
+            &self.source_root,
+            &contract_text,
+            &targets,
+            &route,
+            &backend,
+            &model,
+        )?;
 
         let candidate = match route.effective_tier {
             RouteTier::Local => {
@@ -304,15 +313,46 @@ fn selected_backend_and_model(request: &PatchPreviewRequest, tier: RouteTier) ->
 }
 
 fn build_patch_prompt(
+    source_root: &Path,
     contract: &str,
     targets: &[String],
     route: &RouteDecision,
     backend: &str,
     model: &str,
-) -> Result<String, serde_json::Error> {
+) -> Result<String, PatchPreviewError> {
     let route = serde_json::to_string_pretty(&PatchRouteMetadata::from(route.clone()))?;
+    let target_context = read_target_context(source_root, targets)?;
     let targets = serde_json::to_string_pretty(targets)?;
     Ok(format!(
-        "Draft a patch preview for the selected OpenSpec task. Return exactly one JSON object and no commentary.\n\nThe object must contain targets, rationale, route, and unified_diff. Copy this route object exactly:\n{route}\n\nOnly these repository paths are allowed, and targets must equal the paths used by the diff:\n{targets}\n\nSelected backend: {backend}\nSelected model: {model}\n\nOpenSpec contract:\n{contract}\n\nThe unified_diff must be a complete git-style unified diff. Do not apply the patch."
+        "Draft a patch preview for the selected OpenSpec task. Return exactly one JSON object and no commentary.\n\nThe object must contain targets, rationale, route, and unified_diff. Copy this route object exactly:\n{route}\n\nOnly these repository paths are allowed, and targets must equal the paths used by the diff:\n{targets}\n\nSelected backend: {backend}\nSelected model: {model}\n\nOpenSpec contract:\n{contract}\n\nCurrent localized target contents:\n{target_context}\n\nThe unified_diff must be a complete git-style unified diff that applies to the current contents above. Its first line must be exactly `diff --git a/<path> b/<path>` with the real allowed path substituted for both placeholders. Follow it immediately with `--- a/<path>`, `+++ b/<path>`, and valid `@@` hunks. Never put a blank line inside a diff section. Every hunk body line must begin with one space, `+`, `-`, or the exact no-newline marker. A one-line replacement has exactly one `-` line and one `+` line after `@@ -1 +1 @@`. The unified_diff string must end with a newline after its final hunk line. Do not wrap the diff in Markdown. Do not apply the patch."
     ))
+}
+
+fn read_target_context(
+    source_root: &Path,
+    targets: &[String],
+) -> Result<String, PatchPreviewError> {
+    let mut context = String::new();
+    for target in targets {
+        let path = source_root.join(target);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                "<path does not exist>\n".to_string()
+            }
+            Err(error) => {
+                return Err(PatchPreviewError::TargetContext {
+                    path: target.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        context.push_str(&format!("--- BEGIN {target} ---\n"));
+        context.push_str(&contents);
+        if !contents.ends_with('\n') {
+            context.push('\n');
+        }
+        context.push_str(&format!("--- END {target} ---\n"));
+    }
+    Ok(context)
 }

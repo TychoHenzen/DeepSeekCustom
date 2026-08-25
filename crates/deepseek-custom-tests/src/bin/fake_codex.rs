@@ -9,6 +9,7 @@ const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
 const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
 const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
 const SIDE_EFFECT_PATH_KEY: &str = "FAKE_CLI_SIDE_EFFECT_PATH";
+const RESPONSE_KEY: &str = "FAKE_CLI_RESPONSE";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -17,10 +18,12 @@ fn main() {
     write_beside_target();
 
     let prompt = args.last().map(String::as_str).unwrap_or_default();
-    let reply = prompt
-        .split_once(VERBATIM_MARKER)
-        .map(|(_, response)| response.to_string())
-        .unwrap_or_else(|| format!("echo: {prompt}"));
+    let reply = std::env::var(RESPONSE_KEY).unwrap_or_else(|_| {
+        prompt
+            .split_once(VERBATIM_MARKER)
+            .map(|(_, response)| response.to_string())
+            .unwrap_or_else(|| format!("echo: {prompt}"))
+    });
     emit(&serde_json::json!({"type":"thread.started","thread_id":THREAD_ID}));
     emit(&serde_json::json!({"type":"turn.started"}));
     if prompt.contains(BLOCK_MARKER) {

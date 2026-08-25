@@ -62,6 +62,9 @@
 - [x] 5.2 Add Preview controls and render the automatic route, override, signals, backend, model, targets, rationale, and complete diff.
   <!-- covers: deepseek-custom/routed-patch-preview :: Preview exposes the route and does not edit :: User inspects a preview -->
   <!-- status: completed -->
-- [ ] 5.3 Add end-to-end tests for a local mechanical preview and a frontier architectural preview, asserting unchanged workspace hashes.
-- [ ] 5.4 Run the two practical preview cases through the real configured backends and record their routes and non-mutation evidence.
-- [ ] 5.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+- [x] 5.3 Add end-to-end tests for a local mechanical preview and a frontier architectural preview, asserting unchanged workspace hashes.
+  <!-- status: completed -->
+- [x] 5.4 Run the two practical preview cases through the real configured backends and record their routes and non-mutation evidence.
+  <!-- status: completed -->
+- [x] 5.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+  <!-- status: completed -->
