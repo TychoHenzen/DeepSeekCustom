@@ -264,7 +264,6 @@ impl ProcedureApplyRunner {
         applied: &super::AppliedPatchWorkspace,
         baseline: &PromotionBaseline,
         targets: &[super::PromotionTarget],
-        _injection: Option<()>,
     ) -> Result<super::PromotionResult, PromotionError> {
         self.emit(run_id, ProcedureApplyProgress::PromotionStarted);
         promote_verified_workspace(&self.project_root, applied.path(), baseline, targets)
