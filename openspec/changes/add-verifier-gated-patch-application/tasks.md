@@ -79,4 +79,5 @@
 <!-- status: completed -->
 - [x] 6.4 Confirm unrelated pre-existing working-tree changes remain byte-identical after the practical run.
 <!-- status: completed -->
-- [ ] 6.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+- [x] 6.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+<!-- status: completed -->

@@ -154,7 +154,7 @@ impl ProcedureApplyRunner {
                 run_id,
                 ProcedureApplyProgress::VerifierGateCompleted {
                     index,
-                    evidence: gate.clone(),
+                    evidence: Box::new(gate.clone()),
                 },
             );
         }
@@ -272,7 +272,10 @@ impl ProcedureApplyRunner {
 
     fn emit(&self, run_id: super::ProcedureRunId, progress: ProcedureApplyProgress) {
         if let Some(sender) = &self.progress {
-            let _ = sender.send(ProcedureProgress::Apply { run_id, progress });
+            let _ = sender.send(ProcedureProgress::Apply {
+                run_id,
+                progress: Box::new(progress),
+            });
         }
     }
 

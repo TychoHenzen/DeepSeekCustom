@@ -90,7 +90,7 @@ pub enum ProcedureApplyProgress {
     },
     VerifierGateCompleted {
         index: usize,
-        evidence: VerifierGateEvidence,
+        evidence: Box<VerifierGateEvidence>,
     },
     VerificationFinished {
         report: VerifierReport,
@@ -179,7 +179,7 @@ pub enum ProcedureProgress {
     },
     Apply {
         run_id: ProcedureRunId,
-        progress: ProcedureApplyProgress,
+        progress: Box<ProcedureApplyProgress>,
     },
 }
 

@@ -271,7 +271,7 @@ fn apply_events(
             progress: event, ..
         } = event
         {
-            progress.push(event);
+            progress.push(*event);
         }
     }
     progress

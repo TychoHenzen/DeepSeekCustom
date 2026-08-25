@@ -58,11 +58,11 @@ pub fn prepare(command: &mut tokio::process::Command) {
 pub fn terminate(child: &mut tokio::process::Child) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        return windows_impl::terminate(child);
+        windows_impl::terminate(child)
     }
     #[cfg(unix)]
     {
-        return unix_impl::terminate(child);
+        unix_impl::terminate(child)
     }
     #[cfg(not(any(windows, unix)))]
     child.start_kill()

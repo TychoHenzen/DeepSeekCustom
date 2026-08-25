@@ -162,7 +162,10 @@ fn apply_progress(
     run_id: ProcedureRunId,
     progress: ProcedureApplyProgress,
 ) {
-    tab.handle_progress(ProcedureProgress::Apply { run_id, progress });
+    tab.handle_progress(ProcedureProgress::Apply {
+        run_id,
+        progress: Box::new(progress),
+    });
 }
 
 fn bounded_output(text: &str) -> BoundedVerifierOutput {
@@ -679,7 +682,7 @@ fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
             run_id,
             ProcedureApplyProgress::VerifierGateCompleted {
                 index,
-                evidence: gate.clone(),
+                evidence: Box::new(gate.clone()),
             },
         );
     }

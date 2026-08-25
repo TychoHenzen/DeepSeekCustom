@@ -565,7 +565,7 @@ impl ProcedureTab {
                 self.preview_status = PatchPreviewStatus::Error { message };
             }
             ProcedureProgress::Apply { run_id, progress } => {
-                self.handle_apply_progress(run_id, progress);
+                self.handle_apply_progress(run_id, *progress);
             }
         }
     }
@@ -611,7 +611,7 @@ impl ProcedureTab {
                 self.apply_status = ProcedureApplyStatus::Verifying { index, command };
             }
             ProcedureApplyProgress::VerifierGateCompleted { index, evidence } => {
-                self.verifier_gate_evidence.push((index, evidence));
+                self.verifier_gate_evidence.push((index, *evidence));
             }
             ProcedureApplyProgress::VerificationFinished { report } => {
                 self.verification_report = Some(report);

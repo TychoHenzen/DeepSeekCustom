@@ -299,7 +299,7 @@ async fn run_one(
     let mut command = Command::new(&resolved.program);
     #[cfg(windows)]
     if resolved.program.eq_ignore_ascii_case("cmd") && resolved.prefix_args.len() >= 2 {
-        command.raw_arg(&raw_cmd_command_line(
+        command.raw_arg(raw_cmd_command_line(
             &resolved.prefix_args[1],
             &arguments[1..],
         ));
