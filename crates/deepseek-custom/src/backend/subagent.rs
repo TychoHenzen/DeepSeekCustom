@@ -334,7 +334,35 @@ impl Dispatch {
         if matches!(backend, Backend::ClaudeCli(_)) {
             return self.run_relayed(backend, rx, req).await;
         }
+        if matches!(backend, Backend::CodexCli(_)) && !req.keep_open {
+            return self.run_completed_relayed(backend, rx, req).await;
+        }
         self.run_streamed(backend, rx, req).await
+    }
+
+    /// A one-shot event-stream backend. Its completed turn has already put
+    /// every event on `rx`, so the final text can be drained and returned.
+    async fn run_completed_relayed(
+        &self,
+        mut backend: Backend,
+        mut rx: mpsc::UnboundedReceiver<RoutedEvent>,
+        req: &SubagentRequest,
+    ) -> Result<RanTurn, String> {
+        let sent = backend.run(&req.prompt).await;
+        let drained = self.drain(&mut rx);
+        if let Err(error) = sent {
+            return Err(drained.error.unwrap_or_else(|| error.to_string()));
+        }
+        if drained.interrupted {
+            return Err(format!(
+                "subagent on backend \"{}\" was interrupted",
+                self.meta.backend
+            ));
+        }
+        if let Some(error) = drained.error {
+            return Err(error);
+        }
+        Ok((self.outcome(drained.text, false), None))
     }
 
     /// A backend whose turn returns its own text. Its events relay upward on

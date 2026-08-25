@@ -20,6 +20,13 @@
 //! Filtering still works, with the target named first:
 //! `cargo test -p deepseek-custom-tests --test it skills`.
 
+use std::sync::OnceLock;
+
+fn process_environment_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 mod agent_agent_loop;
 mod agent_history;
 mod agent_prompt;
@@ -78,6 +85,8 @@ mod memory;
 mod path_repair;
 mod plugins;
 mod procedure_dispatch;
+mod procedure_disposable_workspace;
+mod procedure_frontier_patch_draft;
 mod procedure_index;
 mod procedure_input;
 mod procedure_patch_envelope;

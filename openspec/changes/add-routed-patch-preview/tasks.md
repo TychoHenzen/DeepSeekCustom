@@ -45,8 +45,10 @@
 
 ## 4. Isolated drafting
 
-- [ ] 4.1 Add the disposable draft-workspace helper that copies current source while excluding `.git`, `target`, `.deepseek`, binary outputs, and reparse-point traversal.
-- [ ] 4.2 Run Claude CLI and Codex CLI drafting through `run_subagent` with the disposable directory as their working directory, then discard all workspace edits they made.
+- [x] 4.1 Add the disposable draft-workspace helper that copies current source while excluding `.git`, `target`, `.deepseek`, binary outputs, and reparse-point traversal.
+  <!-- status: completed -->
+- [x] 4.2 Run Claude CLI and Codex CLI drafting through `run_subagent` with the disposable directory as their working directory, then discard all workspace edits they made.
+  <!-- status: completed -->
 - [ ] 4.3 Run `git apply --check` against the disposable workspace to validate patch hunks without applying them to real files.
 - [ ] 4.4 Add fake CLI tests that deliberately write beside the target and prove the real workspace remains unchanged.
   <!-- covers: deepseek-custom/routed-patch-preview :: Preview exposes the route and does not edit :: Preview run leaves no workspace change -->

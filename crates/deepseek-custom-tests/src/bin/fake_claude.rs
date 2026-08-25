@@ -68,6 +68,8 @@ use std::io::{self, BufRead, Write};
 const HANG_MARKER: &str = "__FAKE_CLAUDE_HANG__";
 /// See the module doc comment above.
 const EXIT_MARKER: &str = "__FAKE_CLAUDE_EXIT_AFTER_REPLY__";
+const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
+const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
 /// How long a turn carrying `HANG_MARKER` sleeps before replying. Long
 /// enough that a test's interrupt always lands well before it, short
 /// enough that a broken interrupt still fails the test in bounded time
@@ -78,10 +80,21 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let resume_id = find_flag_value(&args, "--resume");
     let session_id = resume_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    record_working_dir();
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     emit_init(&mut out, &session_id);
+
+    if !args.iter().any(|arg| arg == "--input-format")
+        && let Some(prompt) = find_flag_value(&args, "-p")
+    {
+        if prompt.contains(HANG_MARKER) {
+            std::thread::sleep(std::time::Duration::from_secs(HANG_SLEEP_SECS));
+        }
+        emit_turn(&mut out, &session_id, &prompt);
+        return;
+    }
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -144,7 +157,10 @@ fn emit_init(out: &mut impl Write, session_id: &str) {
 /// prefixed with `echo: `, and the terminal `result` event
 /// `ClaudeCliDriver::send` waits on.
 fn emit_turn(out: &mut impl Write, session_id: &str, text: &str) {
-    let reply = format!("echo: {text}");
+    let reply = text
+        .split_once(VERBATIM_MARKER)
+        .map(|(_, response)| response.to_string())
+        .unwrap_or_else(|| format!("echo: {text}"));
 
     write_line(
         out,
@@ -193,6 +209,15 @@ fn emit_turn(out: &mut impl Write, session_id: &str, text: &str) {
             "result": reply
         }),
     );
+}
+
+fn record_working_dir() {
+    let Some(path) = std::env::var_os(CWD_FILE_KEY) else {
+        return;
+    };
+    if let Ok(directory) = std::env::current_dir() {
+        let _ = std::fs::write(path, directory.to_string_lossy().as_bytes());
+    }
 }
 
 fn write_line(out: &mut impl Write, value: &serde_json::Value) {

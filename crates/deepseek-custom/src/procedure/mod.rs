@@ -5,7 +5,9 @@
 //! short prompt for its current stage.
 
 mod dispatch;
+mod disposable_workspace;
 mod fingerprint;
+mod frontier_patch_draft;
 mod frontier_patch_output;
 mod index;
 mod input;
@@ -22,9 +24,13 @@ mod schema;
 mod validation;
 
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
+pub use disposable_workspace::{DisposableDraftWorkspace, DisposableWorkspaceError};
 pub use fingerprint::{
     ProcedureFingerprintError, ProcedureInputFingerprints, ProcedurePathFingerprint,
     ProcedurePathState, capture_path_fingerprint, capture_path_fingerprints, sha256_json,
+};
+pub use frontier_patch_draft::{
+    FrontierPatchDraftError, FrontierPatchDraftRequest, draft_frontier_patch,
 };
 pub use frontier_patch_output::decode_frontier_patch_output;
 pub use index::{RepositoryIndexError, build_repository_index};

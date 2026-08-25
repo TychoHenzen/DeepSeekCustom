@@ -4,18 +4,13 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
 use deepseek_custom::backend::codex_cli::CodexCliDriver;
 
 const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
-
-fn environment_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 struct TestPath {
     old_path: Option<OsString>,
@@ -94,7 +89,7 @@ fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RoutedEvent>) -> Vec<Stre
 
 #[tokio::test(flavor = "current_thread")]
 async fn two_turn_resume_interrupt_and_recovery() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = super::process_environment_lock().lock().await;
     let path = TestPath::install();
     let (mut driver, mut rx) = driver(&path.args_file);
 

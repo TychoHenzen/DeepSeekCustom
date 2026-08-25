@@ -6,12 +6,19 @@ use std::time::Duration;
 
 const THREAD_ID: &str = "fake-thread-42";
 const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
+const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
+const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     record_args(&args);
+    record_working_dir();
 
     let prompt = args.last().map(String::as_str).unwrap_or_default();
+    let reply = prompt
+        .split_once(VERBATIM_MARKER)
+        .map(|(_, response)| response.to_string())
+        .unwrap_or_else(|| format!("echo: {prompt}"));
     emit(&serde_json::json!({"type":"thread.started","thread_id":THREAD_ID}));
     emit(&serde_json::json!({"type":"turn.started"}));
     if prompt.contains(BLOCK_MARKER) {
@@ -19,12 +26,21 @@ fn main() {
     }
     emit(&serde_json::json!({
         "type":"item.completed",
-        "item":{"id":"reply-1","type":"agent_message","text":format!("echo: {prompt}")}
+        "item":{"id":"reply-1","type":"agent_message","text":reply}
     }));
     emit(&serde_json::json!({
         "type":"turn.completed",
         "usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":2}
     }));
+}
+
+fn record_working_dir() {
+    let Some(path) = std::env::var_os(CWD_FILE_KEY) else {
+        return;
+    };
+    if let Ok(directory) = std::env::current_dir() {
+        let _ = std::fs::write(path, directory.to_string_lossy().as_bytes());
+    }
 }
 
 fn record_args(args: &[String]) {
