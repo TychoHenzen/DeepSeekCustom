@@ -1,8 +1,10 @@
 ## 0. Approved localization input
 
-- [ ] 0.1 Require each repair request to name an approved, current localization report matching the selected change, task, fingerprints, and patch state before creating the attempt state machine.
+- [x] 0.1 Require each repair request to name an approved, current localization report matching the selected change, task, fingerprints, and patch state before creating the attempt state machine.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Repair requires its named approved localization report :: Approved matching report enters the repair ladder -->
-- [ ] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no parser retry, patch, verifier, local-model, or frontier-model action occurs.
+- [x] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no parser retry, patch, verifier, local-model, or frontier-model action occurs.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Repair requires its named approved localization report :: Untrusted localization input stops repair -->
 
 ## 1. Attempt policy and state machine

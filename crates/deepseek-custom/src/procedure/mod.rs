@@ -20,6 +20,7 @@ mod patch_preview;
 mod preview_input;
 mod promotion;
 mod prompt;
+mod repair_input;
 pub mod report;
 mod route;
 mod run;
@@ -82,6 +83,7 @@ pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
     build_localization_prompt,
 };
+pub use repair_input::{RepairInputError, RepairInputGate, RepairRequest, ValidatedRepairInput};
 pub use report::{
     ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
     StoredProcedureReport, require_approved_report,
