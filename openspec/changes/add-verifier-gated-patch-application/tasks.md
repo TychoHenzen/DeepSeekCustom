@@ -59,9 +59,11 @@
 - [x] 5.1 Model create, update, delete, and rename targets and compare every real path to its preview baseline before promotion.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: Baseline still matches -->
-- [ ] 5.2 Refuse promotion after a concurrent target edit and list every stale path.
+- [x] 5.2 Refuse promotion after a concurrent target edit and list every stale path.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: A target changed during verification -->
-- [ ] 5.3 Stage verified bytes beside targets, back up existing paths, install all results, verify final hashes, then remove backups.
+- [x] 5.3 Stage verified bytes beside targets, back up existing paths, install all results, verify final hashes, then remove backups.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion succeeds -->
 - [ ] 5.4 Inject a mid-promotion failure and prove existing files are restored, created files removed, and recovery data retained only if rollback fails.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion fails partway -->

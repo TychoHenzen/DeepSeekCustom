@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use deepseek_custom::procedure::{
     PromotionBaseline, PromotionBaselineCheckError, PromotionTarget, PromotionTargetKind,
-    decode_patch_envelope, model_promotion_targets, validate_patch_boundary,
+    capture_path_fingerprints, decode_patch_envelope, model_promotion_targets,
+    promote_verified_workspace, validate_patch_boundary,
 };
 
 const ALL_ENDPOINTS_DIFF: &str = concat!(
@@ -179,4 +180,55 @@ fn concurrent_edits_report_every_stale_real_endpoint_and_block_promotion() {
     ));
 
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn successful_promotion_installs_all_endpoint_results_and_removes_recovery_files() {
+    let root = source_with_all_baselines("successful transaction");
+    let verified = temp_dir("verified transaction result");
+    write(&verified, "src/updated.rs", "after\n");
+    write(&verified, "src/created.rs", "created\n");
+    write(&verified, "src/new.rs", "renamed\n");
+
+    let targets = all_endpoint_targets();
+    let baseline = PromotionBaseline::capture(&root, &targets).unwrap();
+    let result = promote_verified_workspace(&root, &verified, &baseline, &targets).unwrap();
+
+    assert!(result.baseline.can_promote());
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/updated.rs")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/created.rs")).unwrap(),
+        "created\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/new.rs")).unwrap(),
+        "renamed\n"
+    );
+    assert!(!root.join("src/deleted.rs").exists());
+    assert!(!root.join("src/old.rs").exists());
+
+    let final_fingerprints = capture_path_fingerprints(
+        &root,
+        [
+            "src/created.rs".to_string(),
+            "src/deleted.rs".to_string(),
+            "src/new.rs".to_string(),
+            "src/old.rs".to_string(),
+            "src/updated.rs".to_string(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(result.final_fingerprints, final_fingerprints);
+    let leftovers = std::fs::read_dir(root.join("src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("deepseek-promotion"))
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "promotion leftovers: {leftovers:?}");
+
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(verified).ok();
 }

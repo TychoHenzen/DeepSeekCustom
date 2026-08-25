@@ -1,7 +1,8 @@
 //! Promotion targets and the concurrent-edit baseline gate.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -256,6 +257,482 @@ fn model_section(section: usize, lines: &[&str]) -> Result<PromotionTarget, Prom
             "file endpoints do not describe a create, update, delete, or rename",
         )),
     }
+}
+
+/// The result of a successful verified promotion transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionResult {
+    pub baseline: PromotionBaselineComparison,
+    pub final_fingerprints: Vec<ProcedurePathFingerprint>,
+}
+
+/// Failure while installing verified endpoint results.
+#[derive(Debug, Error)]
+pub enum PromotionError {
+    #[error(transparent)]
+    Baseline(#[from] PromotionBaselineCheckError),
+    #[error("promotion target set is invalid: {reason}")]
+    InvalidTargets { reason: String },
+    #[error("verified promotion result for {path} is invalid: {reason}")]
+    InvalidVerifiedResult { path: String, reason: String },
+    #[error("could not fingerprint the verified promotion result: {source}")]
+    VerifiedFingerprint {
+        #[source]
+        source: ProcedureFingerprintError,
+    },
+    #[error(
+        "could not {action} promotion path {path}: {source}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
+    )]
+    Transaction {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+        rollback_errors: Vec<String>,
+        recovery_paths: Vec<PathBuf>,
+    },
+    #[error(
+        "could not verify final promotion hashes: {source}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
+    )]
+    FinalFingerprint {
+        #[source]
+        source: ProcedureFingerprintError,
+        rollback_errors: Vec<String>,
+        recovery_paths: Vec<PathBuf>,
+    },
+    #[error(
+        "verified promotion result differs from the installed files: {stale_paths:?}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
+    )]
+    FinalMismatch {
+        stale_paths: Vec<StalePromotionPath>,
+        rollback_errors: Vec<String>,
+        recovery_paths: Vec<PathBuf>,
+    },
+    #[error(
+        "could not remove promotion backup {path}: {source}; remaining backups: {remaining_backups:?}"
+    )]
+    Cleanup {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+        remaining_backups: Vec<PathBuf>,
+    },
+}
+
+/// Install all verified endpoint results after the concurrent-edit gate passes.
+///
+/// Every file result is staged beside its real target before existing targets
+/// move to sibling backups. Installed files are fingerprinted before backups
+/// are removed. Any installation or final-hash failure attempts to restore the
+/// original targets and retains recovery paths when that rollback is incomplete.
+pub fn promote_verified_workspace(
+    project_root: &Path,
+    verified_workspace: &Path,
+    baseline: &PromotionBaseline,
+    targets: &[PromotionTarget],
+) -> Result<PromotionResult, PromotionError> {
+    let paths = promotion_paths(targets)?;
+    validate_baseline_paths(baseline, &paths)?;
+    let baseline_comparison = baseline.ensure_current(project_root)?;
+    let verified = capture_path_fingerprints(verified_workspace, paths.iter().cloned())
+        .map_err(|source| PromotionError::VerifiedFingerprint { source })?;
+    validate_verified_results(targets, &verified)?;
+
+    let transaction_id = uuid::Uuid::new_v4().to_string();
+    let mut staged_paths = Vec::new();
+    let prepared = match prepare_targets(
+        project_root,
+        verified_workspace,
+        targets,
+        &transaction_id,
+        &mut staged_paths,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = remove_paths(&staged_paths);
+            return Err(error);
+        }
+    };
+
+    let mut backups = Vec::new();
+    for fingerprint in baseline
+        .fingerprints()
+        .iter()
+        .filter(|fingerprint| fingerprint.state == super::ProcedurePathState::Present)
+    {
+        let original = project_root.join(&fingerprint.path);
+        let backup = sibling_path(&original, "backup", &transaction_id);
+        if let Err(source) = fs::rename(&original, &backup) {
+            return Err(transaction_failure(
+                "back up",
+                original,
+                source,
+                &[],
+                &backups,
+                &staged_paths,
+            ));
+        }
+        backups.push(Backup { original, backup });
+    }
+
+    let mut installed_paths = Vec::new();
+    for target in &prepared {
+        let (action, path, staged) = match target {
+            PreparedTarget::Install { path, staged } => ("install", path, Some(staged)),
+            PreparedTarget::Delete { path } => ("delete", path, None),
+            PreparedTarget::Rename { to, staged } => ("install rename", to, Some(staged)),
+        };
+        let Some(staged) = staged else {
+            continue;
+        };
+        if let Err(source) = fs::rename(staged, path) {
+            return Err(transaction_failure(
+                action,
+                path.clone(),
+                source,
+                &installed_paths,
+                &backups,
+                &staged_paths,
+            ));
+        }
+        installed_paths.push(path.clone());
+    }
+
+    let final_fingerprints = match capture_path_fingerprints(project_root, paths.iter().cloned()) {
+        Ok(fingerprints) => fingerprints,
+        Err(source) => {
+            return Err(final_fingerprint_failure(
+                source,
+                &installed_paths,
+                &backups,
+                &staged_paths,
+            ));
+        }
+    };
+    let stale_paths = mismatched_fingerprints(&verified, &final_fingerprints);
+    if !stale_paths.is_empty() {
+        return Err(final_mismatch_failure(
+            stale_paths,
+            &installed_paths,
+            &backups,
+            &staged_paths,
+        ));
+    }
+
+    for (index, backup) in backups.iter().enumerate() {
+        if let Err(source) = fs::remove_file(&backup.backup) {
+            return Err(PromotionError::Cleanup {
+                path: backup.backup.clone(),
+                source,
+                remaining_backups: backups[index..]
+                    .iter()
+                    .map(|backup| backup.backup.clone())
+                    .collect(),
+            });
+        }
+    }
+
+    Ok(PromotionResult {
+        baseline: baseline_comparison,
+        final_fingerprints,
+    })
+}
+
+#[derive(Debug)]
+enum PreparedTarget {
+    Install { path: PathBuf, staged: PathBuf },
+    Delete { path: PathBuf },
+    Rename { to: PathBuf, staged: PathBuf },
+}
+
+#[derive(Debug)]
+struct Backup {
+    original: PathBuf,
+    backup: PathBuf,
+}
+
+fn promotion_paths(targets: &[PromotionTarget]) -> Result<Vec<String>, PromotionError> {
+    let mut paths = BTreeSet::new();
+    for path in targets.iter().flat_map(PromotionTarget::paths) {
+        if !paths.insert(path.to_string()) {
+            return Err(PromotionError::InvalidTargets {
+                reason: format!("endpoint appears more than once: {path}"),
+            });
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn validate_baseline_paths(
+    baseline: &PromotionBaseline,
+    paths: &[String],
+) -> Result<(), PromotionError> {
+    let baseline_paths = baseline
+        .fingerprints()
+        .iter()
+        .map(|fingerprint| fingerprint.path.clone())
+        .collect::<BTreeSet<_>>();
+    let target_paths = paths.iter().cloned().collect::<BTreeSet<_>>();
+    if baseline_paths != target_paths {
+        return Err(PromotionError::InvalidTargets {
+            reason: "baseline endpoints do not match promotion targets".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_verified_results(
+    targets: &[PromotionTarget],
+    verified: &[ProcedurePathFingerprint],
+) -> Result<(), PromotionError> {
+    let by_path = verified
+        .iter()
+        .map(|fingerprint| (fingerprint.path.as_str(), fingerprint))
+        .collect::<BTreeMap<_, _>>();
+    for target in targets {
+        match target {
+            PromotionTarget::Create { path } | PromotionTarget::Update { path } => {
+                require_state(&by_path, path, super::ProcedurePathState::Present)?;
+            }
+            PromotionTarget::Delete { path } => {
+                require_state(&by_path, path, super::ProcedurePathState::Missing)?;
+            }
+            PromotionTarget::Rename { from, to } => {
+                require_state(&by_path, from, super::ProcedurePathState::Missing)?;
+                require_state(&by_path, to, super::ProcedurePathState::Present)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_state(
+    fingerprints: &BTreeMap<&str, &ProcedurePathFingerprint>,
+    path: &str,
+    expected: super::ProcedurePathState,
+) -> Result<(), PromotionError> {
+    let actual = fingerprints
+        .get(path)
+        .map(|fingerprint| fingerprint.state)
+        .ok_or_else(|| PromotionError::InvalidVerifiedResult {
+            path: path.to_string(),
+            reason: "endpoint fingerprint is missing".to_string(),
+        })?;
+    if actual != expected {
+        return Err(PromotionError::InvalidVerifiedResult {
+            path: path.to_string(),
+            reason: format!("expected {expected:?}, found {actual:?}"),
+        });
+    }
+    Ok(())
+}
+
+fn prepare_targets(
+    project_root: &Path,
+    verified_workspace: &Path,
+    targets: &[PromotionTarget],
+    transaction_id: &str,
+    staged_paths: &mut Vec<PathBuf>,
+) -> Result<Vec<PreparedTarget>, PromotionError> {
+    targets
+        .iter()
+        .map(|target| match target {
+            PromotionTarget::Create { path } | PromotionTarget::Update { path } => {
+                let path = project_root.join(path);
+                let staged = stage_file(
+                    verified_workspace,
+                    path.strip_prefix(project_root).unwrap_or(&path),
+                    &path,
+                    transaction_id,
+                    staged_paths,
+                )?;
+                Ok(PreparedTarget::Install { path, staged })
+            }
+            PromotionTarget::Delete { path } => Ok(PreparedTarget::Delete {
+                path: project_root.join(path),
+            }),
+            PromotionTarget::Rename { to, .. } => {
+                let to = project_root.join(to);
+                let staged = stage_file(
+                    verified_workspace,
+                    to.strip_prefix(project_root).unwrap_or(&to),
+                    &to,
+                    transaction_id,
+                    staged_paths,
+                )?;
+                Ok(PreparedTarget::Rename { to, staged })
+            }
+        })
+        .collect()
+}
+
+fn stage_file(
+    verified_workspace: &Path,
+    relative: &Path,
+    target: &Path,
+    transaction_id: &str,
+    staged_paths: &mut Vec<PathBuf>,
+) -> Result<PathBuf, PromotionError> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| PromotionError::InvalidTargets {
+            reason: format!("target has no valid file name: {}", target.display()),
+        })?;
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| PromotionError::Transaction {
+        action: "create staging directory for",
+        path: parent.to_path_buf(),
+        source,
+        rollback_errors: Vec::new(),
+        recovery_paths: Vec::new(),
+    })?;
+    let staged = parent.join(format!(
+        ".{file_name}.deepseek-promotion-stage-{transaction_id}"
+    ));
+    staged_paths.push(staged.clone());
+    let source = verified_workspace.join(relative);
+    fs::copy(&source, &staged).map_err(|source| PromotionError::Transaction {
+        action: "stage",
+        path: target.to_path_buf(),
+        source,
+        rollback_errors: Vec::new(),
+        recovery_paths: vec![staged.clone()],
+    })?;
+    Ok(staged)
+}
+
+fn sibling_path(path: &Path, kind: &str, transaction_id: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("target");
+    path.with_file_name(format!(
+        ".{name}.deepseek-promotion-{kind}-{transaction_id}"
+    ))
+}
+
+fn transaction_failure(
+    action: &'static str,
+    path: PathBuf,
+    source: std::io::Error,
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+) -> PromotionError {
+    let rollback_errors = rollback(installed_paths, backups, staged_paths);
+    let recovery_paths = recovery_paths(backups, staged_paths);
+    PromotionError::Transaction {
+        action,
+        path,
+        source,
+        rollback_errors,
+        recovery_paths,
+    }
+}
+
+fn final_fingerprint_failure(
+    source: ProcedureFingerprintError,
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+) -> PromotionError {
+    let rollback_errors = rollback(installed_paths, backups, staged_paths);
+    let recovery_paths = recovery_paths(backups, staged_paths);
+    PromotionError::FinalFingerprint {
+        source,
+        rollback_errors,
+        recovery_paths,
+    }
+}
+
+fn final_mismatch_failure(
+    stale_paths: Vec<StalePromotionPath>,
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+) -> PromotionError {
+    let rollback_errors = rollback(installed_paths, backups, staged_paths);
+    let recovery_paths = recovery_paths(backups, staged_paths);
+    PromotionError::FinalMismatch {
+        stale_paths,
+        rollback_errors,
+        recovery_paths,
+    }
+}
+
+fn rollback(
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for path in installed_paths.iter().rev() {
+        if path.exists()
+            && let Err(source) = fs::remove_file(path)
+        {
+            errors.push(format!("remove {}: {source}", path.display()));
+        }
+    }
+    for backup in backups.iter().rev() {
+        if backup.backup.exists() {
+            if backup.original.exists()
+                && let Err(source) = fs::remove_file(&backup.original)
+            {
+                errors.push(format!("remove {}: {source}", backup.original.display()));
+                continue;
+            }
+            if let Err(source) = fs::rename(&backup.backup, &backup.original) {
+                errors.push(format!("restore {}: {source}", backup.original.display()));
+            }
+        }
+    }
+    errors.extend(remove_paths(staged_paths));
+    errors
+}
+
+fn remove_paths(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| {
+            fs::remove_file(path)
+                .err()
+                .map(|source| format!("remove {}: {source}", path.display()))
+        })
+        .collect()
+}
+
+fn recovery_paths(backups: &[Backup], staged_paths: &[PathBuf]) -> Vec<PathBuf> {
+    backups
+        .iter()
+        .map(|backup| backup.backup.clone())
+        .chain(staged_paths.iter().cloned())
+        .filter(|path| path.exists())
+        .collect()
+}
+
+fn mismatched_fingerprints(
+    expected: &[ProcedurePathFingerprint],
+    actual: &[ProcedurePathFingerprint],
+) -> Vec<StalePromotionPath> {
+    let actual_by_path = actual
+        .iter()
+        .map(|fingerprint| (fingerprint.path.as_str(), fingerprint))
+        .collect::<BTreeMap<_, _>>();
+    expected
+        .iter()
+        .filter_map(|expected| {
+            let actual = actual_by_path
+                .get(expected.path.as_str())
+                .expect("final fingerprints contain every expected path");
+            (actual != &expected).then(|| StalePromotionPath {
+                path: expected.path.clone(),
+                expected: expected.clone(),
+                actual: (*actual).clone(),
+            })
+        })
+        .collect()
 }
 
 fn matching_header(

@@ -68,8 +68,9 @@ pub use preview_input::{
     ValidatedPatchPreviewInput,
 };
 pub use promotion::{
-    PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison, PromotionTarget,
-    PromotionTargetError, PromotionTargetKind, StalePromotionPath, model_promotion_targets,
+    PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison, PromotionError,
+    PromotionResult, PromotionTarget, PromotionTargetError, PromotionTargetKind,
+    StalePromotionPath, model_promotion_targets, promote_verified_workspace,
 };
 pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
