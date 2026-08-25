@@ -69,9 +69,11 @@ pub use preview_input::{
 };
 pub use promotion::{
     PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison, PromotionError,
-    PromotionResult, PromotionTarget, PromotionTargetError, PromotionTargetKind,
-    StalePromotionPath, model_promotion_targets, promote_verified_workspace,
+    PromotionRecoveryEvidence, PromotionResult, PromotionTarget, PromotionTargetError,
+    PromotionTargetKind, StalePromotionPath, model_promotion_targets, promote_verified_workspace,
 };
+#[cfg(feature = "test-support")]
+pub use promotion::{PromotionFailureInjection, promote_verified_workspace_with_failure_injection};
 pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
     build_localization_prompt,
@@ -91,8 +93,8 @@ pub use run::{
     ProcedureTask, ProcedureTerminalDisposition,
 };
 pub use runner::{
-    ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunRequest,
-    ProcedureRunner, ProcedureRunnerError, apply_review_decision,
+    ProcedureApplyProgress, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision,
+    ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, apply_review_decision,
 };
 pub use schema::localization_response_format;
 pub use validation::{

@@ -12,11 +12,13 @@ use tracing::info;
 use crate::api::models::list_models;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
-    OpenSpecChange, OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewRequest,
+    BoundedVerifierOutput, GitApplyPhase, GitApplyResult, OpenSpecChange, OpenSpecInput,
+    PatchPreview, PatchPreviewId, PatchPreviewRequest, ProcedureApplyProgress,
     ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
     ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureRunRequest, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    RouteOverride,
+    PromotionRecoveryEvidence, PromotionResult, RouteOverride, SnapshotProgress,
+    StalePromotionPath, VerifierGateDisposition, VerifierReport,
 };
 
 const MISSING_VERIFIER_COMMANDS_MESSAGE: &str =
@@ -40,6 +42,45 @@ pub enum PatchPreviewStatus {
     Running,
     Finished,
     Error { message: String },
+}
+
+/// Current state of the isolated Apply interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcedureApplyStatus {
+    Idle,
+    Snapshotting,
+    PatchGate { phase: GitApplyPhase },
+    Verifying { index: usize, command: String },
+    Conflict,
+    Promoting,
+    Succeeded,
+    Failed,
+    Interrupted,
+    Terminal(ProcedureTerminalDisposition),
+}
+
+impl ProcedureApplyStatus {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "ready",
+            Self::Snapshotting => "snapshotting",
+            Self::PatchGate { .. } => "patch gate",
+            Self::Verifying { .. } => "verifying",
+            Self::Conflict => "stale conflict",
+            Self::Promoting => "promoting",
+            Self::Succeeded => "promotion succeeded",
+            Self::Failed => "promotion failed",
+            Self::Interrupted => "interrupted",
+            Self::Terminal(_) => "terminal",
+        }
+    }
+}
+
+/// Promotion failure evidence retained by the Apply view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionFailureView {
+    pub message: String,
+    pub recovery: Option<PromotionRecoveryEvidence>,
 }
 
 /// Stable presentation states shown by the Procedure view.
@@ -104,6 +145,17 @@ pub struct ProcedureTab {
     active_preview: Option<PatchPreviewId>,
     latest_preview: Option<PatchPreview>,
     preview_report_path: Option<PathBuf>,
+    apply_run_id: Option<ProcedureRunId>,
+    apply_in_flight: bool,
+    apply_requested: bool,
+    apply_status: ProcedureApplyStatus,
+    snapshot_progress: Option<SnapshotProgress>,
+    patch_gate_results: Vec<GitApplyResult>,
+    verifier_gate_evidence: Vec<(usize, crate::procedure::VerifierGateEvidence)>,
+    verification_report: Option<VerifierReport>,
+    conflicts: Vec<StalePromotionPath>,
+    promotion_result: Option<PromotionResult>,
+    promotion_failure: Option<PromotionFailureView>,
 }
 
 impl ProcedureTab {
@@ -168,6 +220,17 @@ impl ProcedureTab {
             active_preview: None,
             latest_preview: None,
             preview_report_path: None,
+            apply_run_id: None,
+            apply_in_flight: false,
+            apply_requested: false,
+            apply_status: ProcedureApplyStatus::Idle,
+            snapshot_progress: None,
+            patch_gate_results: Vec::new(),
+            verifier_gate_evidence: Vec::new(),
+            verification_report: None,
+            conflicts: Vec::new(),
+            promotion_result: None,
+            promotion_failure: None,
         };
         tab.spawn_model_fetches(settings);
         tab.refresh_changes(project_root);
@@ -198,6 +261,7 @@ impl ProcedureTab {
     pub fn is_running(&self) -> bool {
         matches!(self.status, ProcedureStatus::Running { .. })
             || self.preview_status == PatchPreviewStatus::Running
+            || self.apply_in_flight
     }
 
     pub fn status(&self) -> &ProcedureStatus {
@@ -262,7 +326,10 @@ impl ProcedureTab {
     }
 
     fn apply_enabled(&self, settings: &Settings) -> bool {
-        self.has_finished_preview() && !Self::verifier_commands(settings).is_empty()
+        self.has_finished_preview()
+            && !self.is_running()
+            && !self.apply_requested
+            && !Self::verifier_commands(settings).is_empty()
     }
 
     fn apply_missing_configuration(&self, settings: &Settings) -> bool {
@@ -283,6 +350,10 @@ impl ProcedureTab {
 
     pub fn latest_report_path(&self) -> Option<&Path> {
         self.report_path.as_deref()
+    }
+
+    pub fn apply_status(&self) -> &ProcedureApplyStatus {
+        &self.apply_status
     }
 
     /// State label selected from progress and the persisted review decision.
@@ -493,6 +564,81 @@ impl ProcedureTab {
                 self.active_preview = None;
                 self.preview_status = PatchPreviewStatus::Error { message };
             }
+            ProcedureProgress::Apply { run_id, progress } => {
+                self.handle_apply_progress(run_id, progress);
+            }
+        }
+    }
+
+    fn handle_apply_progress(&mut self, run_id: ProcedureRunId, progress: ProcedureApplyProgress) {
+        if matches!(&progress, ProcedureApplyProgress::Started) {
+            if self.apply_in_flight && self.apply_run_id != Some(run_id) {
+                return;
+            }
+            self.apply_run_id = Some(run_id);
+            self.apply_in_flight = true;
+            self.apply_requested = false;
+            self.snapshot_progress = None;
+            self.patch_gate_results.clear();
+            self.verifier_gate_evidence.clear();
+            self.verification_report = None;
+            self.conflicts.clear();
+            self.promotion_result = None;
+            self.promotion_failure = None;
+            self.apply_status = ProcedureApplyStatus::Snapshotting;
+            return;
+        }
+        if self.apply_run_id != Some(run_id) {
+            return;
+        }
+
+        match progress {
+            ProcedureApplyProgress::Started => unreachable!("handled before state matching"),
+            ProcedureApplyProgress::SnapshotStarted => {
+                self.apply_status = ProcedureApplyStatus::Snapshotting;
+            }
+            ProcedureApplyProgress::SnapshotProgress { progress } => {
+                self.snapshot_progress = Some(progress);
+                self.apply_status = ProcedureApplyStatus::Snapshotting;
+            }
+            ProcedureApplyProgress::PatchGateStarted { phase } => {
+                self.apply_status = ProcedureApplyStatus::PatchGate { phase };
+            }
+            ProcedureApplyProgress::PatchGateCompleted { result } => {
+                self.patch_gate_results.push(result);
+            }
+            ProcedureApplyProgress::VerifierGateStarted { index, command } => {
+                self.apply_status = ProcedureApplyStatus::Verifying { index, command };
+            }
+            ProcedureApplyProgress::VerifierGateCompleted { index, evidence } => {
+                self.verifier_gate_evidence.push((index, evidence));
+            }
+            ProcedureApplyProgress::VerificationFinished { report } => {
+                self.verification_report = Some(report);
+            }
+            ProcedureApplyProgress::ConflictDetected { paths } => {
+                self.conflicts = paths;
+                self.apply_status = ProcedureApplyStatus::Conflict;
+            }
+            ProcedureApplyProgress::PromotionStarted => {
+                self.apply_status = ProcedureApplyStatus::Promoting;
+            }
+            ProcedureApplyProgress::PromotionSucceeded { result } => {
+                self.promotion_result = Some(result);
+                self.apply_status = ProcedureApplyStatus::Succeeded;
+            }
+            ProcedureApplyProgress::PromotionFailed { message, recovery } => {
+                self.promotion_failure = Some(PromotionFailureView { message, recovery });
+                self.apply_status = ProcedureApplyStatus::Failed;
+            }
+            ProcedureApplyProgress::Finished { disposition } => {
+                self.apply_in_flight = false;
+                self.apply_status = match disposition {
+                    ProcedureTerminalDisposition::Interrupted => ProcedureApplyStatus::Interrupted,
+                    ProcedureTerminalDisposition::Failed { .. } => ProcedureApplyStatus::Failed,
+                    other => ProcedureApplyStatus::Terminal(other),
+                };
+            }
         }
     }
 
@@ -533,11 +679,17 @@ impl ProcedureTab {
             {
                 self.request_stop();
             }
-            let _ = ui.add_enabled(self.apply_enabled(settings), egui::Button::new("Apply"));
+            if ui
+                .add_enabled(self.apply_enabled(settings), egui::Button::new("Apply"))
+                .clicked()
+            {
+                self.apply_requested = true;
+            }
         });
         self.render_status(ui);
         self.render_result(ui);
         self.render_preview(ui);
+        self.render_apply(ui);
         if self.apply_missing_configuration(settings) {
             ui.label(RichText::new(MISSING_VERIFIER_COMMANDS_MESSAGE).color(Color32::LIGHT_RED));
         }
@@ -818,6 +970,131 @@ impl ProcedureTab {
                         .selectable(true),
                 );
             });
+    }
+
+    fn render_apply(&self, ui: &mut egui::Ui) {
+        if self.latest_preview.is_none()
+            && !self.apply_requested
+            && self.apply_status == ProcedureApplyStatus::Idle
+        {
+            return;
+        }
+        ui.separator();
+        ui.heading("Apply");
+        for line in self.apply_render_lines() {
+            let is_error = line.contains("failed")
+                || line.contains("interrupted")
+                || line.contains("conflict")
+                || line.contains("stale");
+            if is_error {
+                ui.label(RichText::new(line).color(Color32::LIGHT_RED));
+            } else {
+                ui.label(line);
+            }
+        }
+    }
+
+    fn apply_render_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let status = if self.apply_requested {
+            "requested"
+        } else if self.apply_status == ProcedureApplyStatus::Idle && self.has_finished_preview() {
+            "ready"
+        } else {
+            self.apply_status.label()
+        };
+        lines.push(format!("Apply status: {status}"));
+        if let Some(progress) = self.snapshot_progress {
+            lines.push(format!(
+                "Snapshotting verification workspace: {} file(s), {} / {} bytes",
+                progress.files_copied, progress.bytes_copied, progress.total_bytes
+            ));
+        }
+        for result in &self.patch_gate_results {
+            lines.push(format!(
+                "Patch gate {}: {} (exit {:?})",
+                result.phase,
+                pass_fail(result.success),
+                result.status_code
+            ));
+            append_output_line(&mut lines, "Patch gate output", &result.stdout);
+            append_output_line(&mut lines, "Patch gate error", &result.stderr);
+        }
+        if let Some(report) = &self.verification_report {
+            for (index, gate) in report.gates.iter().enumerate() {
+                append_verifier_gate_lines(
+                    &mut lines,
+                    index,
+                    gate.command.as_str(),
+                    &gate.disposition,
+                    gate.result.as_ref().map(|result| &result.combined_output),
+                );
+            }
+            lines.push(format!(
+                "Verification eligibility: {}",
+                pass_fail(report.eligibility.eligible)
+            ));
+            if let Some(reason) = &report.eligibility.reason {
+                lines.push(format!("Verification failure evidence: {reason:?}"));
+            }
+            if report.stopped_after_failure {
+                lines.push(format!(
+                    "Verification stopped after gate {:?}",
+                    report.first_failed_gate
+                ));
+            }
+        } else {
+            for (index, gate) in &self.verifier_gate_evidence {
+                append_verifier_gate_lines(
+                    &mut lines,
+                    *index,
+                    gate.command.as_str(),
+                    &gate.disposition,
+                    gate.result.as_ref().map(|result| &result.combined_output),
+                );
+            }
+        }
+        for conflict in &self.conflicts {
+            lines.push(format!(
+                "Stale conflict: {} (expected {:?}, actual {:?})",
+                conflict.path, conflict.expected, conflict.actual
+            ));
+        }
+        if let Some(result) = &self.promotion_result {
+            lines.push(format!(
+                "Promotion: succeeded ({} final path hash(es) verified)",
+                result.final_fingerprints.len()
+            ));
+        }
+        if let Some(failure) = &self.promotion_failure {
+            lines.push(format!("Promotion: failed: {}", failure.message));
+            match &failure.recovery {
+                Some(recovery) if recovery.requires_recovery() => lines.push(format!(
+                    "Recovery data retained: {}",
+                    recovery
+                        .recovery_paths
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                Some(_) => lines.push("Rollback complete: recovery data removed".to_string()),
+                None => {}
+            }
+        }
+        match &self.apply_status {
+            ProcedureApplyStatus::Interrupted => {
+                lines.push("Apply terminal disposition: interrupted".to_string());
+            }
+            ProcedureApplyStatus::Terminal(disposition) => {
+                lines.push(format!(
+                    "Apply terminal disposition: {}",
+                    terminal_disposition_label(disposition)
+                ));
+            }
+            _ => {}
+        }
+        lines
     }
 
     fn can_review_latest(&self) -> bool {
@@ -1102,6 +1379,11 @@ impl ProcedureTab {
     ) -> bool {
         self.render(ui, settings, project_root)
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn apply_render_lines_for_test(&self) -> Vec<String> {
+        self.apply_render_lines()
+    }
 }
 
 impl Drop for ProcedureTab {
@@ -1246,4 +1528,57 @@ fn stage_label(stage: ProcedureStage, suffix: &str) -> String {
         ProcedureStage::Finished => "Procedure",
     };
     format!("{name} {suffix}")
+}
+
+fn pass_fail(success: bool) -> &'static str {
+    if success { "passed" } else { "failed" }
+}
+
+fn append_output_line(lines: &mut Vec<String>, label: &str, output: &str) {
+    if !output.is_empty() {
+        lines.push(format!("{label}: {output}"));
+    }
+}
+
+fn append_verifier_gate_lines(
+    lines: &mut Vec<String>,
+    index: usize,
+    command: &str,
+    disposition: &VerifierGateDisposition,
+    output: Option<&BoundedVerifierOutput>,
+) {
+    lines.push(format!(
+        "Verifier gate {}: {} ({})",
+        index + 1,
+        command,
+        verifier_gate_label(disposition)
+    ));
+    if let Some(output) = output {
+        append_output_line(lines, "Command output", &output.text);
+        if output.truncated {
+            lines.push(format!(
+                "Command output was truncated after {} byte(s)",
+                output.bytes_seen
+            ));
+        }
+    }
+}
+
+fn verifier_gate_label(disposition: &VerifierGateDisposition) -> &'static str {
+    match disposition {
+        VerifierGateDisposition::Passed => "passed",
+        VerifierGateDisposition::Failed => "failed",
+        VerifierGateDisposition::SpawnFailed => "spawn failed",
+        VerifierGateDisposition::Interrupted => "interrupted",
+        VerifierGateDisposition::NotRun { .. } => "not run",
+    }
+}
+
+fn terminal_disposition_label(disposition: &ProcedureTerminalDisposition) -> String {
+    match disposition {
+        ProcedureTerminalDisposition::Succeeded => "succeeded".to_string(),
+        ProcedureTerminalDisposition::AwaitingReview => "awaiting review".to_string(),
+        ProcedureTerminalDisposition::Interrupted => "interrupted".to_string(),
+        ProcedureTerminalDisposition::Failed { reason } => format!("failed: {reason}"),
+    }
 }

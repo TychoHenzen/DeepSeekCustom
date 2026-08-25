@@ -65,12 +65,14 @@
 - [x] 5.3 Stage verified bytes beside targets, back up existing paths, install all results, verify final hashes, then remove backups.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion succeeds -->
-- [ ] 5.4 Inject a mid-promotion failure and prove existing files are restored, created files removed, and recovery data retained only if rollback fails.
+- [x] 5.4 Inject a mid-promotion failure and prove existing files are restored, created files removed, and recovery data retained only if rollback fails.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion is all or nothing :: Promotion fails partway -->
 
 ## 6. Apply interface and verification
 
-- [ ] 6.1 Add Apply, gate-progress, command-output, conflict, promotion, and terminal-state rendering to the Procedure tab.
+- [x] 6.1 Add Apply, gate-progress, command-output, conflict, promotion, and terminal-state rendering to the Procedure tab.
+<!-- status: completed -->
 - [ ] 6.2 Add end-to-end temporary-repository tests for passing, failing, interrupted, stale-baseline, create, delete, rename, and rollback runs.
 - [ ] 6.3 Configure the four Rust workspace gates and run one real small mechanical change through isolated verification and promotion.
 - [ ] 6.4 Confirm unrelated pre-existing working-tree changes remain byte-identical after the practical run.

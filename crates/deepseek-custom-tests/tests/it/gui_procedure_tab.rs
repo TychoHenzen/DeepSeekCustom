@@ -10,15 +10,19 @@ use deepseek_custom::config::settings::{
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::gui::procedure_tab::{
-    PatchPreviewStatus, ProcedureStatus, ProcedureTab, ProcedureViewState,
+    PatchPreviewStatus, ProcedureApplyStatus, ProcedureStatus, ProcedureTab, ProcedureViewState,
 };
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, MechanicalVerb, OpenSpecValidation, PatchPreview,
-    PatchPreviewStore, ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress,
-    ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition, RouteDecision, RouteOverride, RouteSignal, RouteTier,
-    apply_review_decision,
+    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyPhase,
+    GitApplyResult, LocalizationAttempt, LocalizationTarget, MechanicalVerb, OpenSpecValidation,
+    PatchPreview, PatchPreviewStore, ProcedureApplyProgress, ProcedureAttemptDisposition,
+    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition, PromotionBaselineComparison,
+    PromotionRecoveryEvidence, PromotionResult, RouteDecision, RouteOverride, RouteSignal,
+    RouteTier, StalePromotionPath, VerifierCommandDisposition, VerifierCommandEvidence,
+    VerifierGateDisposition, VerifierGateEvidence, VerifierReport, apply_review_decision,
+    capture_path_fingerprint,
 };
 use tokio::sync::mpsc;
 
@@ -151,6 +155,72 @@ fn attach_tab(tab: &mut ProcedureTab) -> mpsc::UnboundedReceiver<ProcedureComman
     let (_progress_tx, progress_rx) = mpsc::unbounded_channel();
     tab.attach(command_tx, progress_rx, Arc::new(AtomicBool::new(false)));
     command_rx
+}
+
+fn apply_progress(
+    tab: &mut ProcedureTab,
+    run_id: ProcedureRunId,
+    progress: ProcedureApplyProgress,
+) {
+    tab.handle_progress(ProcedureProgress::Apply { run_id, progress });
+}
+
+fn bounded_output(text: &str) -> BoundedVerifierOutput {
+    BoundedVerifierOutput {
+        text: text.to_string(),
+        first_edge: text.to_string(),
+        last_edge: text.to_string(),
+        truncated: false,
+        bytes_seen: text.len() as u64,
+    }
+}
+
+fn verifier_command_evidence(
+    command: &str,
+    disposition: VerifierCommandDisposition,
+    output: &str,
+) -> VerifierCommandEvidence {
+    let success = disposition == VerifierCommandDisposition::Passed;
+    let bounded = bounded_output(output);
+    VerifierCommandEvidence {
+        command: command.to_string(),
+        disposition,
+        success,
+        exit_code: Some(if success { 0 } else { 1 }),
+        stdout: bounded.clone(),
+        stderr: bounded.clone(),
+        combined_output: bounded,
+        duration_millis: 12,
+        error: (!success).then(|| "command failed".to_string()),
+    }
+}
+
+fn verifier_gate(
+    command: &str,
+    gate_disposition: VerifierGateDisposition,
+    command_disposition: Option<VerifierCommandDisposition>,
+    output: &str,
+) -> VerifierGateEvidence {
+    VerifierGateEvidence {
+        command: command.to_string(),
+        disposition: gate_disposition,
+        result: command_disposition
+            .map(|disposition| verifier_command_evidence(command, disposition, output)),
+    }
+}
+
+fn git_apply_result(phase: GitApplyPhase, success: bool, output: &str) -> GitApplyResult {
+    GitApplyResult {
+        phase,
+        success,
+        status_code: Some(if success { 0 } else { 1 }),
+        stdout: output.to_string(),
+        stderr: if success {
+            String::new()
+        } else {
+            "patch gate failed".to_string()
+        },
+    }
 }
 
 fn finish_review_command(
@@ -517,6 +587,290 @@ fn apply_is_enabled_and_lists_verifier_commands_in_execution_order() {
         ]
     );
     assert_eq!(tab.apply_missing_configuration_for_test(&settings), None);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_view_renders_snapshot_patch_gates_and_each_command_output() {
+    let root = fixture_root("apply-progress");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    let run_id = ProcedureRunId::new();
+
+    apply_progress(&mut tab, run_id, ProcedureApplyProgress::Started);
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Snapshotting);
+    apply_progress(&mut tab, run_id, ProcedureApplyProgress::SnapshotStarted);
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::SnapshotProgress {
+            progress: deepseek_custom::procedure::SnapshotProgress {
+                files_copied: 3,
+                bytes_copied: 128,
+                total_bytes: 256,
+            },
+        },
+    );
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::PatchGateStarted {
+            phase: GitApplyPhase::Check,
+        },
+    );
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::PatchGateCompleted {
+            result: git_apply_result(GitApplyPhase::Check, true, "patch check ok"),
+        },
+    );
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::PatchGateStarted {
+            phase: GitApplyPhase::Apply,
+        },
+    );
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::PatchGateCompleted {
+            result: git_apply_result(GitApplyPhase::Apply, true, "patch applied"),
+        },
+    );
+
+    let gates = vec![
+        verifier_gate(
+            "cargo fmt --all -- --check",
+            VerifierGateDisposition::Passed,
+            Some(VerifierCommandDisposition::Passed),
+            "format ok",
+        ),
+        verifier_gate(
+            "cargo check --workspace",
+            VerifierGateDisposition::Passed,
+            Some(VerifierCommandDisposition::Passed),
+            "compile ok",
+        ),
+        verifier_gate(
+            "cargo clippy --workspace -- -D warnings",
+            VerifierGateDisposition::Failed,
+            Some(VerifierCommandDisposition::Failed),
+            "lint diagnostic",
+        ),
+        verifier_gate(
+            "cargo test --workspace -- --test-threads=1",
+            VerifierGateDisposition::NotRun { blocked_by: 2 },
+            None,
+            "",
+        ),
+    ];
+    for (index, gate) in gates.iter().enumerate() {
+        apply_progress(
+            &mut tab,
+            run_id,
+            ProcedureApplyProgress::VerifierGateStarted {
+                index,
+                command: gate.command.clone(),
+            },
+        );
+        apply_progress(
+            &mut tab,
+            run_id,
+            ProcedureApplyProgress::VerifierGateCompleted {
+                index,
+                evidence: gate.clone(),
+            },
+        );
+    }
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::VerificationFinished {
+            report: VerifierReport {
+                gates,
+                stopped_after_failure: true,
+                first_failed_gate: Some(2),
+                eligibility: CandidateEligibility::ineligible(
+                    CandidateIneligibility::VerifierCommandFailed {
+                        index: 2,
+                        command: "cargo clippy --workspace -- -D warnings".to_string(),
+                        disposition: VerifierCommandDisposition::Failed,
+                    },
+                ),
+            },
+        },
+    );
+
+    let lines = tab.apply_render_lines_for_test();
+    for expected in [
+        "Snapshotting verification workspace: 3 file(s), 128 / 256 bytes",
+        "Patch gate git apply --check: passed",
+        "Patch gate git apply: passed",
+        "Verifier gate 1: cargo fmt --all -- --check (passed)",
+        "Verifier gate 2: cargo check --workspace (passed)",
+        "Verifier gate 3: cargo clippy --workspace -- -D warnings (failed)",
+        "Verifier gate 4: cargo test --workspace -- --test-threads=1 (not run)",
+        "Command output: lint diagnostic",
+        "Verification failure evidence:",
+        "Verification stopped after gate Some(2)",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(expected)),
+            "missing `{expected}` in {lines:?}"
+        );
+    }
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_view_renders_stale_conflict_and_interruption_terminal_state() {
+    let root = fixture_root("apply-conflict");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    let run_id = ProcedureRunId::new();
+    let expected = capture_path_fingerprint(&root, "src/stale.rs").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/stale.rs"), "changed during verification\n").unwrap();
+    let actual = capture_path_fingerprint(&root, "src/stale.rs").unwrap();
+
+    apply_progress(&mut tab, run_id, ProcedureApplyProgress::Started);
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::ConflictDetected {
+            paths: vec![StalePromotionPath {
+                path: "src/stale.rs".to_string(),
+                expected,
+                actual,
+            }],
+        },
+    );
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Conflict);
+    let conflict_lines = tab.apply_render_lines_for_test();
+    assert!(
+        conflict_lines
+            .iter()
+            .any(|line| line.contains("Stale conflict: src/stale.rs"))
+    );
+
+    apply_progress(
+        &mut tab,
+        run_id,
+        ProcedureApplyProgress::Finished {
+            disposition: ProcedureTerminalDisposition::Failed {
+                reason: "stale baseline".to_string(),
+            },
+        },
+    );
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Failed);
+
+    let interrupted_id = ProcedureRunId::new();
+    apply_progress(&mut tab, interrupted_id, ProcedureApplyProgress::Started);
+    apply_progress(
+        &mut tab,
+        interrupted_id,
+        ProcedureApplyProgress::Finished {
+            disposition: ProcedureTerminalDisposition::Interrupted,
+        },
+    );
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Interrupted);
+    assert!(
+        tab.apply_render_lines_for_test()
+            .iter()
+            .any(|line| line.contains("Apply terminal disposition: interrupted"))
+    );
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_view_renders_promotion_success_and_failure_recovery_evidence() {
+    let root = fixture_root("apply-promotion");
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    let success_id = ProcedureRunId::new();
+    apply_progress(&mut tab, success_id, ProcedureApplyProgress::Started);
+    apply_progress(
+        &mut tab,
+        success_id,
+        ProcedureApplyProgress::PromotionStarted,
+    );
+    apply_progress(
+        &mut tab,
+        success_id,
+        ProcedureApplyProgress::PromotionSucceeded {
+            result: PromotionResult {
+                baseline: PromotionBaselineComparison {
+                    checked_paths: vec!["src/a.rs".to_string()],
+                    stale_paths: Vec::new(),
+                },
+                final_fingerprints: Vec::new(),
+            },
+        },
+    );
+    apply_progress(
+        &mut tab,
+        success_id,
+        ProcedureApplyProgress::Finished {
+            disposition: ProcedureTerminalDisposition::Succeeded,
+        },
+    );
+    assert_eq!(
+        tab.apply_status(),
+        &ProcedureApplyStatus::Terminal(ProcedureTerminalDisposition::Succeeded)
+    );
+    let success_lines = tab.apply_render_lines_for_test();
+    assert!(
+        success_lines
+            .iter()
+            .any(|line| line.contains("Promotion: succeeded"))
+    );
+    assert!(
+        success_lines
+            .iter()
+            .any(|line| line.contains("Apply terminal disposition: succeeded"))
+    );
+
+    let failure_id = ProcedureRunId::new();
+    apply_progress(&mut tab, failure_id, ProcedureApplyProgress::Started);
+    apply_progress(
+        &mut tab,
+        failure_id,
+        ProcedureApplyProgress::PromotionStarted,
+    );
+    apply_progress(
+        &mut tab,
+        failure_id,
+        ProcedureApplyProgress::PromotionFailed {
+            message: "could not install src/b.rs".to_string(),
+            recovery: Some(PromotionRecoveryEvidence {
+                rollback_errors: vec!["restore failed".to_string()],
+                recovery_paths: vec![PathBuf::from("src/.b.rs.deepseek-promotion-backup")],
+            }),
+        },
+    );
+    apply_progress(
+        &mut tab,
+        failure_id,
+        ProcedureApplyProgress::Finished {
+            disposition: ProcedureTerminalDisposition::Failed {
+                reason: "promotion failed".to_string(),
+            },
+        },
+    );
+    assert_eq!(tab.apply_status(), &ProcedureApplyStatus::Failed);
+    let failure_lines = tab.apply_render_lines_for_test();
+    assert!(
+        failure_lines
+            .iter()
+            .any(|line| line.contains("Promotion: failed: could not install src/b.rs"))
+    );
+    assert!(
+        failure_lines
+            .iter()
+            .any(|line| line.contains("Recovery data retained:"))
+    );
+
     std::fs::remove_dir_all(root).ok();
 }
 

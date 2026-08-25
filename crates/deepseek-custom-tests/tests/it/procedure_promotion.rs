@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use deepseek_custom::procedure::{
-    PromotionBaseline, PromotionBaselineCheckError, PromotionTarget, PromotionTargetKind,
-    capture_path_fingerprints, decode_patch_envelope, model_promotion_targets,
-    promote_verified_workspace, validate_patch_boundary,
+    PromotionBaseline, PromotionBaselineCheckError, PromotionFailureInjection,
+    PromotionRecoveryEvidence, PromotionTarget, PromotionTargetKind, capture_path_fingerprints,
+    decode_patch_envelope, model_promotion_targets, promote_verified_workspace,
+    promote_verified_workspace_with_failure_injection, validate_patch_boundary,
 };
 
 const ALL_ENDPOINTS_DIFF: &str = concat!(
@@ -228,6 +229,113 @@ fn successful_promotion_installs_all_endpoint_results_and_removes_recovery_files
         .filter(|name| name.contains("deepseek-promotion"))
         .collect::<Vec<_>>();
     assert!(leftovers.is_empty(), "promotion leftovers: {leftovers:?}");
+
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(verified).ok();
+}
+
+fn update_and_create_targets() -> Vec<PromotionTarget> {
+    vec![
+        PromotionTarget::Update {
+            path: "src/updated.rs".to_string(),
+        },
+        PromotionTarget::Create {
+            path: "src/created.rs".to_string(),
+        },
+    ]
+}
+
+fn assert_complete_rollback(error: deepseek_custom::procedure::PromotionError) {
+    let deepseek_custom::procedure::PromotionError::Transaction { recovery, .. } = error else {
+        panic!("mid-promotion failure must report a transaction error");
+    };
+    assert_complete_recovery(&recovery);
+}
+
+fn assert_complete_recovery(recovery: &PromotionRecoveryEvidence) {
+    assert!(
+        recovery.rollback_succeeded(),
+        "recovery evidence: {recovery:?}"
+    );
+    assert!(!recovery.requires_recovery());
+    assert!(recovery.rollback_errors.is_empty());
+    assert!(recovery.recovery_paths.is_empty());
+}
+
+#[test]
+fn injected_mid_promotion_failure_restores_existing_and_removes_created_paths() {
+    let root = temp_dir("injected install failure");
+    let verified = temp_dir("injected install result");
+    write(&root, "src/updated.rs", "before\n");
+    write(&verified, "src/updated.rs", "after\n");
+    write(&verified, "src/created.rs", "created\n");
+    let targets = update_and_create_targets();
+    let baseline = PromotionBaseline::capture(&root, &targets).unwrap();
+
+    let error = promote_verified_workspace_with_failure_injection(
+        &root,
+        &verified,
+        &baseline,
+        &targets,
+        PromotionFailureInjection {
+            fail_install_at: Some(1),
+            fail_rollback_at: None,
+        },
+    )
+    .unwrap_err();
+    assert_complete_rollback(error);
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/updated.rs")).unwrap(),
+        "before\n"
+    );
+    assert!(!root.join("src/created.rs").exists());
+    let leftovers = std::fs::read_dir(root.join("src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("deepseek-promotion"))
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "promotion leftovers: {leftovers:?}");
+
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(verified).ok();
+}
+
+#[test]
+fn injected_rollback_failure_retains_recovery_data_and_reports_it() {
+    let root = temp_dir("injected rollback failure");
+    let verified = temp_dir("injected rollback result");
+    write(&root, "src/updated.rs", "before\n");
+    write(&verified, "src/updated.rs", "after\n");
+    write(&verified, "src/created.rs", "created\n");
+    let targets = update_and_create_targets();
+    let baseline = PromotionBaseline::capture(&root, &targets).unwrap();
+
+    let error = promote_verified_workspace_with_failure_injection(
+        &root,
+        &verified,
+        &baseline,
+        &targets,
+        PromotionFailureInjection {
+            fail_install_at: Some(1),
+            fail_rollback_at: Some(1),
+        },
+    )
+    .unwrap_err();
+    let deepseek_custom::procedure::PromotionError::Transaction { recovery, .. } = error else {
+        panic!("mid-promotion failure must report a transaction error");
+    };
+    assert!(!recovery.rollback_succeeded());
+    assert!(recovery.requires_recovery());
+    assert!(!recovery.rollback_errors.is_empty());
+    assert!(recovery.recovery_paths.iter().all(|path| path.exists()));
+    assert!(
+        recovery
+            .recovery_paths
+            .iter()
+            .any(|path| path.to_string_lossy().contains("updated.rs"))
+    );
+    assert!(!root.join("src/created.rs").exists());
 
     std::fs::remove_dir_all(root).ok();
     std::fs::remove_dir_all(verified).ok();

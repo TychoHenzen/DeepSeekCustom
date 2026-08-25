@@ -266,6 +266,32 @@ pub struct PromotionResult {
     pub final_fingerprints: Vec<ProcedurePathFingerprint>,
 }
 
+/// Evidence describing whether a failed promotion was rolled back completely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionRecoveryEvidence {
+    pub rollback_errors: Vec<String>,
+    pub recovery_paths: Vec<PathBuf>,
+}
+
+impl PromotionRecoveryEvidence {
+    pub fn rollback_succeeded(&self) -> bool {
+        self.rollback_errors.is_empty() && self.recovery_paths.is_empty()
+    }
+
+    pub fn requires_recovery(&self) -> bool {
+        !self.recovery_paths.is_empty()
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PromotionFailureInjection {
+    /// Fail before installing the zero-based staged-file index.
+    pub fail_install_at: Option<usize>,
+    /// Fail before the zero-based rollback operation.
+    pub fail_rollback_at: Option<usize>,
+}
+
 /// Failure while installing verified endpoint results.
 #[derive(Debug, Error)]
 pub enum PromotionError {
@@ -280,33 +306,26 @@ pub enum PromotionError {
         #[source]
         source: ProcedureFingerprintError,
     },
-    #[error(
-        "could not {action} promotion path {path}: {source}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
-    )]
+    #[error("could not {action} promotion path {path}: {source}; recovery: {recovery:?}")]
     Transaction {
         action: &'static str,
         path: PathBuf,
         #[source]
         source: std::io::Error,
-        rollback_errors: Vec<String>,
-        recovery_paths: Vec<PathBuf>,
+        recovery: PromotionRecoveryEvidence,
     },
-    #[error(
-        "could not verify final promotion hashes: {source}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
-    )]
+    #[error("could not verify final promotion hashes: {source}; recovery: {recovery:?}")]
     FinalFingerprint {
         #[source]
         source: ProcedureFingerprintError,
-        rollback_errors: Vec<String>,
-        recovery_paths: Vec<PathBuf>,
+        recovery: PromotionRecoveryEvidence,
     },
     #[error(
-        "verified promotion result differs from the installed files: {stale_paths:?}; rollback errors: {rollback_errors:?}; recovery paths: {recovery_paths:?}"
+        "verified promotion result differs from the installed files: {stale_paths:?}; recovery: {recovery:?}"
     )]
     FinalMismatch {
         stale_paths: Vec<StalePromotionPath>,
-        rollback_errors: Vec<String>,
-        recovery_paths: Vec<PathBuf>,
+        recovery: PromotionRecoveryEvidence,
     },
     #[error(
         "could not remove promotion backup {path}: {source}; remaining backups: {remaining_backups:?}"
@@ -330,6 +349,48 @@ pub fn promote_verified_workspace(
     verified_workspace: &Path,
     baseline: &PromotionBaseline,
     targets: &[PromotionTarget],
+) -> Result<PromotionResult, PromotionError> {
+    promote_verified_workspace_inner(
+        project_root,
+        verified_workspace,
+        baseline,
+        targets,
+        FailureInjection::default(),
+    )
+}
+
+#[cfg(feature = "test-support")]
+pub fn promote_verified_workspace_with_failure_injection(
+    project_root: &Path,
+    verified_workspace: &Path,
+    baseline: &PromotionBaseline,
+    targets: &[PromotionTarget],
+    injection: PromotionFailureInjection,
+) -> Result<PromotionResult, PromotionError> {
+    promote_verified_workspace_inner(
+        project_root,
+        verified_workspace,
+        baseline,
+        targets,
+        FailureInjection {
+            fail_install_at: injection.fail_install_at,
+            fail_rollback_at: injection.fail_rollback_at,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FailureInjection {
+    fail_install_at: Option<usize>,
+    fail_rollback_at: Option<usize>,
+}
+
+fn promote_verified_workspace_inner(
+    project_root: &Path,
+    verified_workspace: &Path,
+    baseline: &PromotionBaseline,
+    targets: &[PromotionTarget],
+    injection: FailureInjection,
 ) -> Result<PromotionResult, PromotionError> {
     let paths = promotion_paths(targets)?;
     validate_baseline_paths(baseline, &paths)?;
@@ -370,12 +431,14 @@ pub fn promote_verified_workspace(
                 &[],
                 &backups,
                 &staged_paths,
+                injection,
             ));
         }
         backups.push(Backup { original, backup });
     }
 
     let mut installed_paths = Vec::new();
+    let mut install_index = 0;
     for target in &prepared {
         let (action, path, staged) = match target {
             PreparedTarget::Install { path, staged } => ("install", path, Some(staged)),
@@ -385,6 +448,19 @@ pub fn promote_verified_workspace(
         let Some(staged) = staged else {
             continue;
         };
+        if injection.fail_install_at == Some(install_index) {
+            return Err(transaction_failure(
+                action,
+                path.clone(),
+                std::io::Error::other(format!(
+                    "injected promotion install failure at index {install_index}"
+                )),
+                &installed_paths,
+                &backups,
+                &staged_paths,
+                injection,
+            ));
+        }
         if let Err(source) = fs::rename(staged, path) {
             return Err(transaction_failure(
                 action,
@@ -393,9 +469,11 @@ pub fn promote_verified_workspace(
                 &installed_paths,
                 &backups,
                 &staged_paths,
+                injection,
             ));
         }
         installed_paths.push(path.clone());
+        install_index += 1;
     }
 
     let final_fingerprints = match capture_path_fingerprints(project_root, paths.iter().cloned()) {
@@ -406,6 +484,7 @@ pub fn promote_verified_workspace(
                 &installed_paths,
                 &backups,
                 &staged_paths,
+                injection,
             ));
         }
     };
@@ -416,6 +495,7 @@ pub fn promote_verified_workspace(
             &installed_paths,
             &backups,
             &staged_paths,
+            injection,
         ));
     }
 
@@ -584,8 +664,10 @@ fn stage_file(
         action: "create staging directory for",
         path: parent.to_path_buf(),
         source,
-        rollback_errors: Vec::new(),
-        recovery_paths: Vec::new(),
+        recovery: PromotionRecoveryEvidence {
+            rollback_errors: Vec::new(),
+            recovery_paths: Vec::new(),
+        },
     })?;
     let staged = parent.join(format!(
         ".{file_name}.deepseek-promotion-stage-{transaction_id}"
@@ -596,8 +678,10 @@ fn stage_file(
         action: "stage",
         path: target.to_path_buf(),
         source,
-        rollback_errors: Vec::new(),
-        recovery_paths: vec![staged.clone()],
+        recovery: PromotionRecoveryEvidence {
+            rollback_errors: Vec::new(),
+            recovery_paths: vec![staged.clone()],
+        },
     })?;
     Ok(staged)
 }
@@ -619,15 +703,14 @@ fn transaction_failure(
     installed_paths: &[PathBuf],
     backups: &[Backup],
     staged_paths: &[PathBuf],
+    injection: FailureInjection,
 ) -> PromotionError {
-    let rollback_errors = rollback(installed_paths, backups, staged_paths);
-    let recovery_paths = recovery_paths(backups, staged_paths);
+    let recovery = rollback_and_collect(installed_paths, backups, staged_paths, injection);
     PromotionError::Transaction {
         action,
         path,
         source,
-        rollback_errors,
-        recovery_paths,
+        recovery,
     }
 }
 
@@ -636,14 +719,10 @@ fn final_fingerprint_failure(
     installed_paths: &[PathBuf],
     backups: &[Backup],
     staged_paths: &[PathBuf],
+    injection: FailureInjection,
 ) -> PromotionError {
-    let rollback_errors = rollback(installed_paths, backups, staged_paths);
-    let recovery_paths = recovery_paths(backups, staged_paths);
-    PromotionError::FinalFingerprint {
-        source,
-        rollback_errors,
-        recovery_paths,
-    }
+    let recovery = rollback_and_collect(installed_paths, backups, staged_paths, injection);
+    PromotionError::FinalFingerprint { source, recovery }
 }
 
 fn final_mismatch_failure(
@@ -651,11 +730,24 @@ fn final_mismatch_failure(
     installed_paths: &[PathBuf],
     backups: &[Backup],
     staged_paths: &[PathBuf],
+    injection: FailureInjection,
 ) -> PromotionError {
-    let rollback_errors = rollback(installed_paths, backups, staged_paths);
-    let recovery_paths = recovery_paths(backups, staged_paths);
+    let recovery = rollback_and_collect(installed_paths, backups, staged_paths, injection);
     PromotionError::FinalMismatch {
         stale_paths,
+        recovery,
+    }
+}
+
+fn rollback_and_collect(
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+    injection: FailureInjection,
+) -> PromotionRecoveryEvidence {
+    let rollback_errors = rollback(installed_paths, backups, staged_paths, injection);
+    let recovery_paths = recovery_paths(backups, staged_paths);
+    PromotionRecoveryEvidence {
         rollback_errors,
         recovery_paths,
     }
@@ -665,16 +757,35 @@ fn rollback(
     installed_paths: &[PathBuf],
     backups: &[Backup],
     staged_paths: &[PathBuf],
+    injection: FailureInjection,
 ) -> Vec<String> {
     let mut errors = Vec::new();
+    let mut rollback_index = 0;
     for path in installed_paths.iter().rev() {
+        if injection.fail_rollback_at == Some(rollback_index) {
+            errors.push(format!(
+                "injected rollback failure before removing {}",
+                path.display()
+            ));
+            rollback_index += 1;
+            continue;
+        }
         if path.exists()
             && let Err(source) = fs::remove_file(path)
         {
             errors.push(format!("remove {}: {source}", path.display()));
         }
+        rollback_index += 1;
     }
     for backup in backups.iter().rev() {
+        if injection.fail_rollback_at == Some(rollback_index) {
+            errors.push(format!(
+                "injected rollback failure before restoring {}",
+                backup.original.display()
+            ));
+            rollback_index += 1;
+            continue;
+        }
         if backup.backup.exists() {
             if backup.original.exists()
                 && let Err(source) = fs::remove_file(&backup.original)
@@ -686,6 +797,7 @@ fn rollback(
                 errors.push(format!("restore {}: {source}", backup.original.display()));
             }
         }
+        rollback_index += 1;
     }
     errors.extend(remove_paths(staged_paths));
     errors

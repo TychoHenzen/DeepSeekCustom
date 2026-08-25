@@ -10,11 +10,13 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use super::{
-    LocalizationAttempt, LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope,
-    LocalizationPromptInput, ProcedureAttemptDisposition, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, RepositoryIndexEntry, build_localization_prompt,
-    build_repository_index, sha256_json, validate_localization_targets,
+    GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationDispatch,
+    LocalizationDispatchError, LocalizationEnvelope, LocalizationPromptInput,
+    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, PromotionRecoveryEvidence, PromotionResult, RepositoryIndexEntry,
+    SnapshotProgress, StalePromotionPath, VerifierGateEvidence, VerifierReport,
+    build_localization_prompt, build_repository_index, sha256_json, validate_localization_targets,
 };
 use crate::config::settings::RepositoryIndexLimits;
 use crate::error::HarnessError;
@@ -62,6 +64,47 @@ impl ProcedureReviewDecision {
             Self::Reject => ProcedureReviewDisposition::Rejected,
         }
     }
+}
+
+/// Ordered progress emitted by an isolated Apply operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcedureApplyProgress {
+    Started,
+    SnapshotStarted,
+    SnapshotProgress {
+        progress: SnapshotProgress,
+    },
+    PatchGateStarted {
+        phase: GitApplyPhase,
+    },
+    PatchGateCompleted {
+        result: GitApplyResult,
+    },
+    VerifierGateStarted {
+        index: usize,
+        command: String,
+    },
+    VerifierGateCompleted {
+        index: usize,
+        evidence: VerifierGateEvidence,
+    },
+    VerificationFinished {
+        report: VerifierReport,
+    },
+    ConflictDetected {
+        paths: Vec<StalePromotionPath>,
+    },
+    PromotionStarted,
+    PromotionSucceeded {
+        result: PromotionResult,
+    },
+    PromotionFailed {
+        message: String,
+        recovery: Option<PromotionRecoveryEvidence>,
+    },
+    Finished {
+        disposition: ProcedureTerminalDisposition,
+    },
 }
 
 /// Small procedure-only events emitted in execution order.
@@ -129,6 +172,10 @@ pub enum ProcedureProgress {
     RunFailed {
         run_id: ProcedureRunId,
         message: String,
+    },
+    Apply {
+        run_id: ProcedureRunId,
+        progress: ProcedureApplyProgress,
     },
 }
 
