@@ -93,6 +93,7 @@ mod procedure_patch_apply_check;
 mod procedure_patch_envelope;
 mod procedure_patch_preview;
 mod procedure_preview_input;
+mod procedure_promotion;
 mod procedure_prompt;
 mod procedure_report;
 mod procedure_route;

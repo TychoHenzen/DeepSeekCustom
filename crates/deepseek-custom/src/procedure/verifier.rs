@@ -316,6 +316,7 @@ async fn run_one(
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
+    crate::process_group::prepare(&mut command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -441,7 +442,7 @@ async fn collect_output(
     let mut stderr_capture = EdgeCapture::default();
     let mut combined_capture = EdgeCapture::default();
 
-    while status.is_none() || closed_streams < 2 {
+    while !(interrupted && status.is_some()) && (status.is_none() || closed_streams < 2) {
         tokio::select! {
             message = receiver.recv(), if closed_streams < 2 => {
                 match message {
@@ -465,16 +466,16 @@ async fn collect_output(
                 }
             }
             _ = tokio::time::sleep(INTERRUPT_POLL_INTERVAL), if status.is_none() => {
+                if interrupt.load(Ordering::SeqCst) && !interrupted {
+                    interrupted = true;
+                    if let Err(kill_error) = crate::process_group::terminate(child) {
+                        error.get_or_insert_with(|| format!("could not stop interrupted verifier: {kill_error}"));
+                    }
+                    break;
+                }
                 match child.try_wait() {
                     Ok(Some(exit_status)) => status = Some(exit_status),
-                    Ok(None) => {
-                        if interrupt.load(Ordering::SeqCst) && !interrupted {
-                            interrupted = true;
-                            if let Err(kill_error) = child.start_kill() {
-                                error.get_or_insert_with(|| format!("could not stop interrupted verifier: {kill_error}"));
-                            }
-                        }
-                    }
+                    Ok(None) => {}
                     Err(wait_error) => {
                         error.get_or_insert_with(|| wait_error.to_string());
                     }
@@ -483,7 +484,7 @@ async fn collect_output(
         }
     }
 
-    if status.is_none() {
+    if !interrupted && status.is_none() {
         match child.wait().await {
             Ok(exit_status) => status = Some(exit_status),
             Err(wait_error) => {
@@ -492,8 +493,13 @@ async fn collect_output(
         }
     }
 
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    if interrupted {
+        stdout_task.abort();
+        stderr_task.abort();
+    } else {
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+    }
     CollectedOutput {
         status,
         interrupted,

@@ -17,6 +17,7 @@ mod patch_boundary;
 mod patch_envelope;
 mod patch_preview;
 mod preview_input;
+mod promotion;
 mod prompt;
 pub mod report;
 mod route;
@@ -65,6 +66,10 @@ pub use patch_preview::{
 pub use preview_input::{
     PatchPreviewInputError, PatchPreviewInputGate, PatchPreviewInputRequest,
     ValidatedPatchPreviewInput,
+};
+pub use promotion::{
+    PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison, PromotionTarget,
+    PromotionTargetError, PromotionTargetKind, StalePromotionPath, model_promotion_targets,
 };
 pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,

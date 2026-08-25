@@ -42,15 +42,42 @@ pub fn adopt(child: &tokio::process::Child) {
     let _ = child;
 }
 
+/// Configure a child so that interruption can terminate its descendants.
+///
+/// Windows uses the process tree command in [`terminate`]. Unix platforms
+/// place the child in its own process group, which lets [`terminate`] signal
+/// the group rather than only the direct child.
+pub fn prepare(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    unix_impl::prepare(command);
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Stop a child and the descendants it owns.
+pub fn terminate(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        return windows_impl::terminate(child);
+    }
+    #[cfg(unix)]
+    {
+        return unix_impl::terminate(child);
+    }
+    #[cfg(not(any(windows, unix)))]
+    child.start_kill()
+}
+
 #[cfg(windows)]
 mod windows_impl {
+    use std::process::Command;
     use std::sync::OnceLock;
 
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        SetInformationJobObject, TerminateJobObject,
     };
 
     /// The process-wide job, as a raw pointer value. `HANDLE` is neither
@@ -105,5 +132,77 @@ mod windows_impl {
         // it has not reaped, and `job` is the handle created above. The
         // call borrows neither past its return.
         unsafe { AssignProcessToJobObject(job, HANDLE(raw)) }
+    }
+
+    pub fn terminate(child: &mut tokio::process::Child) -> std::io::Result<()> {
+        let Some(job) = job() else {
+            return terminate_fallback(child);
+        };
+        // SAFETY: `job` is the process-wide job handle created and retained
+        // by this module. The termination call does not retain any pointer.
+        if let Err(error) = unsafe { TerminateJobObject(job, 1) } {
+            tracing::warn!("process group: could not terminate verifier job: {error}");
+            return terminate_fallback(child);
+        }
+        child.start_kill()
+    }
+
+    fn terminate_fallback(child: &mut tokio::process::Child) -> std::io::Result<()> {
+        if let Some(pid) = child.id() {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .spawn();
+        }
+        child.start_kill()
+    }
+}
+
+#[cfg(unix)]
+mod unix_impl {
+    use std::io;
+    use std::os::unix::process::CommandExt;
+
+    const SIGKILL: i32 = 9;
+
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+        fn setpgid(pid: i32, process_group: i32) -> i32;
+    }
+
+    pub fn prepare(command: &mut tokio::process::Command) {
+        // SAFETY: The closure runs in the child between fork and exec. It
+        // calls only the async-signal-safe setpgid operation and allocates no
+        // Rust state.
+        unsafe {
+            command.as_std_mut().pre_exec(|| {
+                if setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            });
+        }
+    }
+
+    pub fn terminate(child: &mut tokio::process::Child) -> io::Result<()> {
+        let Some(pid) = child.id() else {
+            return Ok(());
+        };
+        // SAFETY: The child placed itself in a process group whose id is its
+        // own positive pid. A negative pid addresses that group only.
+        let group_result = unsafe { kill(-(pid as i32), SIGKILL) };
+        let direct_result = child.start_kill();
+        if group_result == 0 {
+            return direct_result;
+        }
+        direct_result.map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "could not terminate verifier process group (errno: {}): {error}",
+                    io::Error::last_os_error()
+                ),
+            )
+        })
     }
 }

@@ -50,12 +50,14 @@
 - [x] 4.1 Add a failing-test fixture and assert that real workspace hashes remain unchanged after verification failure.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Test command fails -->
-- [ ] 4.2 Wire the shared interrupt flag into the active verifier process, kill descendants, clean the snapshot, and prohibit promotion.
+- [x] 4.2 Wire the shared interrupt flag into the active verifier process, kill descendants, clean the snapshot, and prohibit promotion.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Verification is interrupted -->
 
 ## 5. Conflict-checked promotion
 
-- [ ] 5.1 Model create, update, delete, and rename targets and compare every real path to its preview baseline before promotion.
+- [x] 5.1 Model create, update, delete, and rename targets and compare every real path to its preview baseline before promotion.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: Baseline still matches -->
 - [ ] 5.2 Refuse promotion after a concurrent target edit and list every stale path.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Promotion checks for concurrent edits :: A target changed during verification -->
