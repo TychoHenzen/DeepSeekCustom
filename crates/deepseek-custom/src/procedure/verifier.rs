@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::mpsc;
@@ -21,7 +22,8 @@ const OUTPUT_BUFFER_BYTES: usize = VERIFIER_OUTPUT_EDGE_BYTES * 2;
 const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// The terminal state of one configured verifier command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VerifierCommandDisposition {
     Passed,
     Failed,
@@ -30,9 +32,11 @@ pub enum VerifierCommandDisposition {
 }
 
 /// First and last output edges retained from one command stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundedVerifierOutput {
     pub text: String,
+    pub first_edge: String,
+    pub last_edge: String,
     pub truncated: bool,
     pub bytes_seen: u64,
 }
@@ -41,6 +45,8 @@ impl BoundedVerifierOutput {
     fn empty() -> Self {
         Self {
             text: String::new(),
+            first_edge: String::new(),
+            last_edge: String::new(),
             truncated: false,
             bytes_seen: 0,
         }
@@ -65,19 +71,103 @@ impl VerifierCommandResult {
     pub fn is_success(&self) -> bool {
         self.success
     }
+
+    fn evidence(&self) -> VerifierCommandEvidence {
+        VerifierCommandEvidence {
+            command: self.command.clone(),
+            disposition: self.disposition,
+            success: self.success,
+            exit_code: self.exit_code,
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
+            combined_output: self.combined_output.clone(),
+            duration_millis: self.duration.as_millis().min(u64::MAX as u128) as u64,
+            error: self.error.clone(),
+        }
+    }
+}
+
+/// The disposition of one configured gate, including gates skipped after a failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierGateDisposition {
+    Passed,
+    Failed,
+    SpawnFailed,
+    Interrupted,
+    NotRun { blocked_by: usize },
+}
+
+/// One configured gate and its executed or structured not-run disposition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifierGateResult {
+    pub command: String,
+    pub disposition: VerifierGateDisposition,
+    pub result: Option<VerifierCommandResult>,
 }
 
 /// Results from the ordered verifier command sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierRun {
     pub commands: Vec<VerifierCommandResult>,
+    pub gate_results: Vec<VerifierGateResult>,
     pub stopped_after_failure: bool,
+    pub first_failed_gate: Option<usize>,
 }
 
 impl VerifierRun {
     pub fn all_commands_succeeded(&self) -> bool {
         !self.commands.is_empty() && self.commands.iter().all(VerifierCommandResult::is_success)
     }
+
+    /// Build the serializable evidence retained by a procedure report.
+    pub fn report(&self, eligibility: CandidateEligibility) -> VerifierReport {
+        VerifierReport {
+            gates: self
+                .gate_results
+                .iter()
+                .map(|gate| VerifierGateEvidence {
+                    command: gate.command.clone(),
+                    disposition: gate.disposition.clone(),
+                    result: gate.result.as_ref().map(VerifierCommandResult::evidence),
+                })
+                .collect(),
+            stopped_after_failure: self.stopped_after_failure,
+            first_failed_gate: self.first_failed_gate,
+            eligibility,
+        }
+    }
+}
+
+/// Serializable evidence for one executed verifier command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierCommandEvidence {
+    pub command: String,
+    pub disposition: VerifierCommandDisposition,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: BoundedVerifierOutput,
+    pub stderr: BoundedVerifierOutput,
+    pub combined_output: BoundedVerifierOutput,
+    pub duration_millis: u64,
+    pub error: Option<String>,
+}
+
+/// Serializable verification evidence for one procedure report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierReport {
+    pub gates: Vec<VerifierGateEvidence>,
+    pub stopped_after_failure: bool,
+    pub first_failed_gate: Option<usize>,
+    pub eligibility: CandidateEligibility,
+}
+
+/// Serializable evidence for an executed or skipped configured gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierGateEvidence {
+    pub command: String,
+    pub disposition: VerifierGateDisposition,
+    pub result: Option<VerifierCommandEvidence>,
 }
 
 /// Runs configured commands in the supplied disposable workspace.
@@ -110,29 +200,56 @@ impl VerifierCommandRunner {
     /// Execute each command in order and stop after its first non-success.
     pub async fn run(&self, workspace: &Path, commands: &[String]) -> VerifierRun {
         let mut results = Vec::with_capacity(commands.len());
-        for command in commands {
+        let mut gate_results = Vec::with_capacity(commands.len());
+        for (index, command) in commands.iter().enumerate() {
             let result = if self.interrupted() {
                 interrupted_result(command)
             } else {
                 run_one(workspace, command, &self.interrupt).await
             };
             let failed = !result.success;
+            let disposition = gate_disposition(&result);
+            gate_results.push(VerifierGateResult {
+                command: command.clone(),
+                disposition,
+                result: Some(result.clone()),
+            });
             results.push(result);
             if failed {
+                gate_results.extend(commands[index + 1..].iter().map(|command| {
+                    VerifierGateResult {
+                        command: command.clone(),
+                        disposition: VerifierGateDisposition::NotRun { blocked_by: index },
+                        result: None,
+                    }
+                }));
                 return VerifierRun {
                     commands: results,
+                    gate_results,
                     stopped_after_failure: true,
+                    first_failed_gate: Some(index),
                 };
             }
         }
         VerifierRun {
             commands: results,
+            gate_results,
             stopped_after_failure: false,
+            first_failed_gate: None,
         }
     }
 
     fn interrupted(&self) -> bool {
         self.interrupt.load(Ordering::SeqCst)
+    }
+}
+
+fn gate_disposition(result: &VerifierCommandResult) -> VerifierGateDisposition {
+    match result.disposition {
+        VerifierCommandDisposition::Passed => VerifierGateDisposition::Passed,
+        VerifierCommandDisposition::Failed => VerifierGateDisposition::Failed,
+        VerifierCommandDisposition::SpawnFailed => VerifierGateDisposition::SpawnFailed,
+        VerifierCommandDisposition::Interrupted => VerifierGateDisposition::Interrupted,
     }
 }
 
@@ -458,6 +575,9 @@ impl EdgeCapture {
 
     fn finish(self) -> BoundedVerifierOutput {
         let truncated = self.total > OUTPUT_BUFFER_BYTES as u64;
+        let first_edge = String::from_utf8_lossy(&self.first).into_owned();
+        let last_edge =
+            String::from_utf8_lossy(&self.tail.iter().copied().collect::<Vec<_>>()).into_owned();
         let bytes = if truncated {
             let mut bytes = self.first;
             bytes.extend_from_slice(b"\n...[output truncated]...\n");
@@ -468,6 +588,8 @@ impl EdgeCapture {
         };
         BoundedVerifierOutput {
             text: String::from_utf8_lossy(&bytes).into_owned(),
+            first_edge,
+            last_edge,
             truncated,
             bytes_seen: self.total,
         }
@@ -505,7 +627,8 @@ fn tokenize_command_line(command: &str) -> Result<Vec<String>, String> {
 }
 
 /// The reason a candidate cannot be promoted after verification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CandidateIneligibility {
     PatchCheckFailed,
     PatchApplyFailed,
@@ -518,7 +641,7 @@ pub enum CandidateIneligibility {
 }
 
 /// Deterministic eligibility from patch and command results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateEligibility {
     pub eligible: bool,
     pub reason: Option<CandidateIneligibility>,

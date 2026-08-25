@@ -38,14 +38,17 @@
 - [x] 3.3 Mark a candidate eligible only when patch application and every configured command exit successfully.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: Every gate passes -->
-- [ ] 3.4 Stop at the first failed gate and prove that later commands do not run.
+- [x] 3.4 Stop at the first failed gate and prove that later commands do not run.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: A gate fails -->
-- [ ] 3.5 Capture command text, exit code, first and last 4 KiB of output, truncation state, duration, and disposition in the report.
+- [x] 3.5 Capture command text, exit code, first and last 4 KiB of output, truncation state, duration, and disposition in the report.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Gate evidence is retained :: User inspects a failed run -->
 
 ## 4. Failure and interruption isolation
 
-- [ ] 4.1 Add a failing-test fixture and assert that real workspace hashes remain unchanged after verification failure.
+- [x] 4.1 Add a failing-test fixture and assert that real workspace hashes remain unchanged after verification failure.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Test command fails -->
 - [ ] 4.2 Wire the shared interrupt flag into the active verifier process, kill descendants, clean the snapshot, and prohibit promotion.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Failed verification cannot change the real workspace :: Verification is interrupted -->

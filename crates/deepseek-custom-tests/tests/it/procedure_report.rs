@@ -3,10 +3,13 @@ use std::path::PathBuf;
 
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
-    LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureApprovedReportError,
+    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, LocalizationAttempt,
+    LocalizationTarget, OpenSpecValidation, ProcedureApprovedReportError,
     ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, capture_path_fingerprint, require_approved_report,
+    ProcedureTask, ProcedureTerminalDisposition, VerifierCommandDisposition,
+    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
+    capture_path_fingerprint, require_approved_report,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -437,6 +440,91 @@ fn approved_report_round_trip_preserves_targets_dispatch_and_structural_validati
         "qwen2.5-coder:7b-instruct-q4_K_M"
     );
     assert_eq!(approved.attempts[1].targets, vec![target]);
+
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
+    let reports_dir = temp_path("verification-round-trip");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let report = completed_run();
+    store.save(&report).unwrap();
+
+    let output = BoundedVerifierOutput {
+        text: "first diagnostic\n...[output truncated]...\nlast diagnostic".to_string(),
+        first_edge: "first diagnostic".to_string(),
+        last_edge: "last diagnostic".to_string(),
+        truncated: true,
+        bytes_seen: 12_345,
+    };
+    let command = VerifierCommandEvidence {
+        command: "cargo test --workspace".to_string(),
+        disposition: VerifierCommandDisposition::Failed,
+        success: false,
+        exit_code: Some(17),
+        stdout: output.clone(),
+        stderr: output.clone(),
+        combined_output: output,
+        duration_millis: 4_321,
+        error: Some("test gate failed: assertion failed".to_string()),
+    };
+    let verification = VerifierReport {
+        gates: vec![
+            VerifierGateEvidence {
+                command: command.command.clone(),
+                disposition: VerifierGateDisposition::Failed,
+                result: Some(command),
+            },
+            VerifierGateEvidence {
+                command: "cargo clippy --workspace".to_string(),
+                disposition: VerifierGateDisposition::NotRun { blocked_by: 0 },
+                result: None,
+            },
+        ],
+        stopped_after_failure: true,
+        first_failed_gate: Some(0),
+        eligibility: CandidateEligibility::ineligible(
+            CandidateIneligibility::VerifierCommandFailed {
+                index: 0,
+                command: "cargo test --workspace".to_string(),
+                disposition: VerifierCommandDisposition::Failed,
+            },
+        ),
+    };
+
+    store.save_verification(&report.id, &verification).unwrap();
+
+    let json = std::fs::read_to_string(store.report_path(&report.id)).unwrap();
+    assert!(json.contains("cargo test --workspace"));
+    assert!(json.contains("first diagnostic"));
+    assert!(json.contains("last diagnostic"));
+    assert!(json.contains("duration_millis"));
+    assert!(json.contains("test gate failed: assertion failed"));
+
+    let stored = store.load_with_fingerprints(&report.id).unwrap();
+    let saved = stored.verification.expect("verification evidence is saved");
+    assert_eq!(saved, verification);
+    let failed = saved.gates[0]
+        .result
+        .as_ref()
+        .expect("failed command evidence is present");
+    assert_eq!(failed.command, "cargo test --workspace");
+    assert_eq!(failed.exit_code, Some(17));
+    assert_eq!(failed.stdout.first_edge, "first diagnostic");
+    assert_eq!(failed.stdout.last_edge, "last diagnostic");
+    assert!(failed.stdout.truncated);
+    assert_eq!(failed.duration_millis, 4_321);
+    assert_eq!(failed.disposition, VerifierCommandDisposition::Failed);
+    assert_eq!(
+        failed.error.as_deref(),
+        Some("test gate failed: assertion failed")
+    );
+    assert_eq!(
+        saved.gates[1].disposition,
+        VerifierGateDisposition::NotRun { blocked_by: 0 }
+    );
+    assert!(saved.gates[1].result.is_none());
 
     std::fs::remove_dir_all(reports_dir).ok();
 }

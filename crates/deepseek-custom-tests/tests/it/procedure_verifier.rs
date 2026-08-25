@@ -79,6 +79,8 @@ fn command_result(
 ) -> VerifierCommandResult {
     let output = BoundedVerifierOutput {
         text: String::new(),
+        first_edge: String::new(),
+        last_edge: String::new(),
         truncated: false,
         bytes_seen: 0,
     };
@@ -146,10 +148,17 @@ fn failed_command_has_exit_evidence_and_later_commands_do_not_run() {
 
         assert_eq!(run.commands.len(), 1);
         assert!(run.stopped_after_failure);
+        assert_eq!(run.first_failed_gate, Some(0));
+        assert_eq!(run.gate_results.len(), 2);
         assert_eq!(
             run.commands[0].disposition,
             VerifierCommandDisposition::Failed
         );
+        assert_eq!(
+            run.gate_results[1].disposition,
+            deepseek_custom::procedure::VerifierGateDisposition::NotRun { blocked_by: 0 }
+        );
+        assert!(run.gate_results[1].result.is_none());
         assert!(!run.commands[0].success);
         assert_eq!(run.commands[0].exit_code, Some(7));
         assert!(!marker.exists());
@@ -179,6 +188,18 @@ fn output_keeps_both_edges_and_reports_truncation() {
         assert!(result.combined_output.text.contains("output truncated"));
         assert!(result.combined_output.text.len() <= VERIFIER_OUTPUT_EDGE_BYTES * 2 + 64);
         assert!(result.combined_output.bytes_seen > (VERIFIER_OUTPUT_EDGE_BYTES * 2) as u64);
+        assert!(result.stdout.first_edge.starts_with('a'));
+        assert!(result.stdout.last_edge.starts_with('a'));
+        assert!(result.stderr.first_edge.starts_with('b'));
+        assert!(result.stderr.last_edge.starts_with('b'));
+        assert_eq!(
+            result.combined_output.first_edge.chars().count(),
+            VERIFIER_OUTPUT_EDGE_BYTES
+        );
+        assert_eq!(
+            result.combined_output.last_edge.chars().count(),
+            VERIFIER_OUTPUT_EDGE_BYTES
+        );
         std::fs::remove_dir_all(root).ok();
     });
 }

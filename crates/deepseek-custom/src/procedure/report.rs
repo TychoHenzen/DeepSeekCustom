@@ -9,7 +9,7 @@ use tracing::debug;
 
 use super::{
     ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureTerminalDisposition, capture_path_fingerprints,
+    ProcedureTerminalDisposition, VerifierReport, capture_path_fingerprints,
 };
 use crate::error::{HarnessError, Result};
 
@@ -28,6 +28,7 @@ pub struct ProcedureReportStore {
 pub struct StoredProcedureReport {
     pub run: ProcedureRun,
     pub input_fingerprints: ProcedureInputFingerprints,
+    pub verification: Option<VerifierReport>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -36,6 +37,8 @@ struct ProcedureReportDocument {
     run: ProcedureRun,
     #[serde(default, skip_serializing_if = "ProcedureInputFingerprints::is_empty")]
     input_fingerprints: ProcedureInputFingerprints,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verification: Option<VerifierReport>,
 }
 
 /// Failure to record a semantic review decision for one saved run.
@@ -122,6 +125,7 @@ impl ProcedureReportStore {
         let document = StoredProcedureReport {
             run: report.clone(),
             input_fingerprints: self.capture_input_fingerprints(report)?,
+            verification: None,
         };
         self.save_document(&document)
     }
@@ -150,7 +154,19 @@ impl ProcedureReportStore {
         Ok(StoredProcedureReport {
             run: document.run,
             input_fingerprints: document.input_fingerprints,
+            verification: document.verification,
         })
+    }
+
+    /// Save deterministic verifier evidence beside an existing procedure run.
+    pub fn save_verification(
+        &self,
+        id: &ProcedureRunId,
+        verification: &VerifierReport,
+    ) -> Result<()> {
+        let mut stored = self.load_with_fingerprints(id)?;
+        stored.verification = Some(verification.clone());
+        self.save_document(&stored)
     }
 
     /// Reject one structurally valid report by its immutable run identifier.
@@ -257,6 +273,7 @@ impl ProcedureReportStore {
         let document = ProcedureReportDocument {
             run: report.run.clone(),
             input_fingerprints: report.input_fingerprints.clone(),
+            verification: report.verification.clone(),
         };
         let json = serde_json::to_string_pretty(&document).map_err(|error| {
             HarnessError::Parse(format!("could not serialize procedure report: {error}"))

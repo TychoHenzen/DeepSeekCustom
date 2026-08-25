@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use deepseek_custom::procedure::{
-    PatchApplyCheckError, apply_patch_in_workspace, check_patch_applicability,
+    PatchApplyCheckError, VerifierCommandDisposition, VerifierCommandRunner,
+    apply_patch_in_workspace, capture_path_fingerprints, check_patch_applicability,
     decode_patch_envelope, validate_patch_boundary,
 };
 
@@ -34,6 +35,42 @@ fn init_repository(root: &Path) {
         "git init failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn write_failing_test_fixture(root: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path = root.join("fixtures/failing-test.cmd");
+        write(
+            root,
+            "fixtures/failing-test.cmd",
+            "@echo off\r\necho failing test fixture 1>&2\r\nexit /b 23\r\n",
+        );
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join("fixtures/failing-test.sh");
+        write(
+            root,
+            "fixtures/failing-test.sh",
+            "#!/bin/sh\nprintf '%s\\n' 'failing test fixture' >&2\nexit 23\n",
+        );
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+}
+
+fn run_async(future: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future);
 }
 
 fn boundary_patch(diff: &str) -> deepseek_custom::procedure::BoundaryValidatedPatch {
@@ -142,4 +179,58 @@ fn invalid_patch_is_rejected_before_apply_and_real_repository_stays_unchanged() 
     assert!(matches!(error, PatchApplyCheckError::Rejected { .. }));
     assert_eq!(std::fs::read(source.join("src/lib.rs")).unwrap(), before);
     std::fs::remove_dir_all(source).ok();
+}
+
+#[test]
+fn failing_test_like_verification_preserves_real_workspace_hashes() {
+    run_async(async {
+        let source = temp_dir("failing test hash isolation");
+        init_repository(&source);
+        write(&source, "src/lib.rs", "pub fn old() {}\n");
+        write(
+            &source,
+            "tests/failing_test_fixture.rs",
+            "#[test]\nfn fixture() {}\n",
+        );
+        let failing_test = write_failing_test_fixture(&source);
+        let hashed_paths = vec![
+            "src/lib.rs".to_string(),
+            "tests/failing_test_fixture.rs".to_string(),
+            failing_test
+                .strip_prefix(&source)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+        ];
+        let before = capture_path_fingerprints(&source, hashed_paths.clone()).unwrap();
+        let patch = boundary_patch(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn old() {}\n+pub fn new() {}\n",
+        );
+
+        let applied = apply_patch_in_workspace(&source, patch).unwrap();
+        let fixture_relative = failing_test.strip_prefix(&source).unwrap();
+        let command = format!("\"{}\"", applied.path().join(fixture_relative).display());
+        let run = VerifierCommandRunner::new()
+            .run(&applied.path().to_path_buf(), &[command])
+            .await;
+
+        assert_eq!(run.commands.len(), 1);
+        assert_eq!(
+            run.commands[0].disposition,
+            VerifierCommandDisposition::Failed
+        );
+        assert_eq!(run.commands[0].exit_code, Some(23));
+        assert!(!run.all_commands_succeeded());
+        assert_eq!(
+            capture_path_fingerprints(&source, hashed_paths).unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::read_to_string(applied.path().join("src/lib.rs")).unwrap(),
+            "pub fn new() {}\n"
+        );
+
+        drop(applied);
+        std::fs::remove_dir_all(source).ok();
+    });
 }

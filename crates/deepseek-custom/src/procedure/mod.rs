@@ -97,7 +97,8 @@ pub use verification_input::{
 };
 pub use verifier::{
     BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility,
-    VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandResult,
-    VerifierCommandRunner, VerifierRun, evaluate_applied_patch_eligibility,
+    VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandEvidence,
+    VerifierCommandResult, VerifierCommandRunner, VerifierGateDisposition, VerifierGateEvidence,
+    VerifierGateResult, VerifierReport, VerifierRun, evaluate_applied_patch_eligibility,
     evaluate_candidate_eligibility, run_verifier_commands, run_verifier_commands_with_interrupt,
 };
