@@ -14,6 +14,12 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "pdf", "png", "pyc", "so", "tar", "ttf", "wav", "webm", "webp", "woff", "woff2", "xz", "zip",
 ];
 
+#[derive(Debug, Clone, Copy)]
+enum SnapshotContents {
+    DraftText,
+    CurrentState,
+}
+
 /// Failure while creating or removing an isolated source snapshot.
 #[derive(Debug, Error)]
 pub enum DisposableWorkspaceError {
@@ -39,13 +45,25 @@ pub struct DisposableDraftWorkspace {
 impl DisposableDraftWorkspace {
     /// Copy the current source state into a new directory under the system temp directory.
     pub fn create(source_root: &Path) -> Result<Self, DisposableWorkspaceError> {
+        Self::create_with_contents(source_root, SnapshotContents::DraftText)
+    }
+
+    /// Copy every regular file from the current source state into a disposable directory.
+    pub fn create_current_state(source_root: &Path) -> Result<Self, DisposableWorkspaceError> {
+        Self::create_with_contents(source_root, SnapshotContents::CurrentState)
+    }
+
+    fn create_with_contents(
+        source_root: &Path,
+        contents: SnapshotContents,
+    ) -> Result<Self, DisposableWorkspaceError> {
         validate_source_root(source_root)?;
         let root =
             std::env::temp_dir().join(format!("deepseek-draft-workspace-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).map_err(|source| file_error("create", &root, source))?;
 
         let workspace = Self { root: Some(root) };
-        copy_directory(source_root, workspace.path())?;
+        copy_directory(source_root, workspace.path(), contents)?;
         Ok(workspace)
     }
 
@@ -96,7 +114,11 @@ fn validate_source_root(source_root: &Path) -> Result<(), DisposableWorkspaceErr
     Ok(())
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), DisposableWorkspaceError> {
+fn copy_directory(
+    source: &Path,
+    destination: &Path,
+    contents: SnapshotContents,
+) -> Result<(), DisposableWorkspaceError> {
     let mut entries = fs::read_dir(source)
         .map_err(|error| file_error("read", source, error))?
         .collect::<Result<Vec<_>, _>>()
@@ -119,8 +141,11 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), DisposableWor
         if metadata.is_dir() {
             fs::create_dir(&destination_path)
                 .map_err(|error| file_error("create", &destination_path, error))?;
-            copy_directory(&source_path, &destination_path)?;
-        } else if metadata.is_file() && !is_binary_file(&source_path)? {
+            copy_directory(&source_path, &destination_path, contents)?;
+        } else if metadata.is_file()
+            && (matches!(contents, SnapshotContents::CurrentState)
+                || !is_binary_file(&source_path)?)
+        {
             fs::copy(&source_path, &destination_path)
                 .map_err(|error| file_error("copy", &source_path, error))?;
         }

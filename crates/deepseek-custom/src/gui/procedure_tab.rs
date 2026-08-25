@@ -513,6 +513,7 @@ impl ProcedureTab {
         });
 
         ui.add_space(8.0);
+        self.render_verifier_commands(ui, settings);
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(self.can_run(), egui::Button::new("Run"))
@@ -541,6 +542,28 @@ impl ProcedureTab {
             ui.label(RichText::new(MISSING_VERIFIER_COMMANDS_MESSAGE).color(Color32::LIGHT_RED));
         }
         dirty
+    }
+
+    fn render_verifier_commands(&self, ui: &mut egui::Ui, settings: &Settings) {
+        if !self.has_finished_preview() {
+            return;
+        }
+        let commands = Self::verifier_commands(settings);
+        if commands.is_empty() {
+            return;
+        }
+        ui.label("Verifier commands in execution order:");
+        for command in Self::ordered_verifier_command_labels(settings) {
+            ui.label(command);
+        }
+    }
+
+    fn ordered_verifier_command_labels(settings: &Settings) -> Vec<String> {
+        Self::verifier_commands(settings)
+            .iter()
+            .enumerate()
+            .map(|(index, command)| format!("{}. {command}", index + 1))
+            .collect()
     }
 
     fn render_selection(
@@ -1059,6 +1082,14 @@ impl ProcedureTab {
     ) -> Option<&'static str> {
         self.apply_missing_configuration(settings)
             .then_some(MISSING_VERIFIER_COMMANDS_MESSAGE)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn verifier_command_labels_for_test(&self, settings: &Settings) -> Vec<String> {
+        if !self.has_finished_preview() {
+            return Vec::new();
+        }
+        Self::ordered_verifier_command_labels(settings)
     }
 
     /// Render the production Procedure view for deterministic external visual evidence.

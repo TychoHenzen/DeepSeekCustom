@@ -455,6 +455,72 @@ fn apply_is_disabled_without_verifier_commands_and_explains_missing_configuratio
 }
 
 #[test]
+fn apply_is_enabled_and_lists_verifier_commands_in_execution_order() {
+    let root = fixture_root("apply-verifier-list");
+    let mut settings = settings();
+    settings.procedure_mut().verifier_commands = vec![
+        "cargo fmt --all -- --check".to_string(),
+        "cargo check --workspace".to_string(),
+        "cargo clippy --workspace -- -D warnings".to_string(),
+        "cargo test --workspace -- --test-threads=1".to_string(),
+    ];
+    let run_id = ProcedureRunId::new();
+    ProcedureReportStore::for_project(&root)
+        .save(&completed_run(run_id))
+        .unwrap();
+    let mut tab = ProcedureTab::new(&settings, &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    let mut command_rx = attach_tab(&mut tab);
+    tab.start_preview_for_test();
+    let ProcedureCommand::Preview { preview_id, .. } = command_rx.try_recv().unwrap() else {
+        panic!("Preview must send a patch-preview command")
+    };
+    tab.handle_progress(ProcedureProgress::PreviewFinished {
+        preview_id,
+        preview: Box::new(PatchPreview {
+            id: preview_id,
+            localization_run_id: run_id,
+            change_id: "a-change".to_string(),
+            task_id: "1.1".to_string(),
+            route: RouteDecision {
+                automatic_tier: RouteTier::Local,
+                effective_tier: RouteTier::Local,
+                signals: vec![RouteSignal::TargetCount(1)],
+                selected_override: RouteOverride::Automatic,
+                overridden: false,
+            },
+            backend: "ollama-b".to_string(),
+            model: "qwen-b".to_string(),
+            targets: vec!["src/procedure.rs".to_string()],
+            rationale: "Keep the approved localized target.".to_string(),
+            unified_diff: String::new(),
+        }),
+        report_path: root.join("preview.json"),
+    });
+
+    assert!(tab.apply_enabled_for_test(&settings));
+    assert_eq!(
+        tab.verifier_command_labels_for_test(&settings),
+        vec![
+            "1. cargo fmt --all -- --check",
+            "2. cargo check --workspace",
+            "3. cargo clippy --workspace -- -D warnings",
+            "4. cargo test --workspace -- --test-threads=1",
+        ]
+    );
+    assert_eq!(tab.apply_missing_configuration_for_test(&settings), None);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn run_sends_one_command_and_disables_a_second_start() {
     let root = fixture_root("command");
     let mut tab = ProcedureTab::new(&settings(), &root);

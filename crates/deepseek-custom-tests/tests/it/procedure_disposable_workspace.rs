@@ -54,6 +54,36 @@ fn snapshot_copies_nested_source_with_spaces_and_excludes_generated_and_binary_o
 }
 
 #[test]
+fn current_state_snapshot_copies_tracked_untracked_and_uncommitted_source_bytes() {
+    let source = temp_dir("current state");
+    write(&source, "src/tracked.rs", "initial source\n");
+    write(&source, "src/untracked.rs", "untracked source\n");
+    std::fs::write(
+        source.join("src/tracked.rs"),
+        "current uncommitted source\n",
+    )
+    .unwrap();
+    write(&source, "assets/source.bin", [0x00, 0xff, 0x10, 0x80]);
+
+    let workspace = DisposableDraftWorkspace::create_current_state(&source).unwrap();
+
+    assert_eq!(
+        std::fs::read(workspace.path().join("src/tracked.rs")).unwrap(),
+        b"current uncommitted source\n"
+    );
+    assert_eq!(
+        std::fs::read(workspace.path().join("src/untracked.rs")).unwrap(),
+        b"untracked source\n"
+    );
+    assert_eq!(
+        std::fs::read(workspace.path().join("assets/source.bin")).unwrap(),
+        [0x00, 0xff, 0x10, 0x80]
+    );
+
+    std::fs::remove_dir_all(source).ok();
+}
+
+#[test]
 fn snapshot_never_copies_or_traverses_a_directory_link() {
     let source = temp_dir("link root");
     let outside = temp_dir("link target");

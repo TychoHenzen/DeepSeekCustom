@@ -14,12 +14,14 @@
 - [x] 1.2 Disable Apply when the command list is empty and show the missing configuration in the Procedure view.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: No verifier is configured -->
-- [ ] 1.3 Show the exact ordered verifier commands and enable Apply for a valid preview with a non-empty list.
+- [x] 1.3 Show the exact ordered verifier commands and enable Apply for a valid preview with a non-empty list.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: Verifier list is configured -->
 
 ## 2. Current-state verification workspace
 
-- [ ] 2.1 Generalize the draft snapshot helper to preserve current tracked, untracked, and uncommitted source bytes in a disposable verification directory.
+- [x] 2.1 Generalize the draft snapshot helper to preserve current tracked, untracked, and uncommitted source bytes in a disposable verification directory.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Uncommitted source is included -->
 - [ ] 2.2 Exclude `.git`, `target`, `.deepseek`, configured output trees, symlink traversal, and Windows reparse-point traversal, with fixture coverage.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Excluded data is not copied -->
