@@ -1,5 +1,5 @@
 //! The settings sidebar (`Tab` toggles it): backend picker, model picker
-//! with its background fetch, effort combo box, working directory field,
+//! with its background fetch, effort combo box, working directory picker,
 //! voice controls, and the Experimental section's context budget slider.
 //!
 //! The `apply_*` functions below write one control's value into `Settings`.
@@ -11,13 +11,46 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use eframe::egui::{self, Color32, RichText, TextEdit};
+use eframe::egui::{self, Color32, RichText};
 use tracing::{info, warn};
 
 use crate::config::settings::Settings;
 use crate::effort::Effort;
 
 use super::DeepSeekGui;
+
+/// A folder-picker request prepared from the active working directory.
+///
+/// Keeping the validated seed separate from the native dialog lets external
+/// tests verify the request without opening an interactive OS window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderPickerRequest {
+    initial_directory: Option<PathBuf>,
+}
+
+impl FolderPickerRequest {
+    /// Prepare a folder-only picker. A missing or invalid current directory
+    /// leaves the native dialog free to choose its platform default location.
+    pub fn for_working_directory(current: &Path) -> Self {
+        Self {
+            initial_directory: current.is_dir().then(|| current.to_path_buf()),
+        }
+    }
+
+    /// The directory used to seed the native dialog, when one is available.
+    pub fn initial_directory(&self) -> Option<&Path> {
+        self.initial_directory.as_deref()
+    }
+
+    fn pick_folder(self) -> Option<PathBuf> {
+        let dialog = rfd::FileDialog::new();
+        let dialog = match self.initial_directory {
+            Some(directory) => dialog.set_directory(directory),
+            None => dialog,
+        };
+        dialog.pick_folder()
+    }
+}
 
 impl DeepSeekGui {
     /// Render the settings sidebar, if it is currently toggled open.
@@ -85,19 +118,12 @@ impl DeepSeekGui {
                     RichText::new("Working directory")
                         .color(Color32::from_rgb(180, 220, 255)),
                 );
-                let dir_response = ui.add(
-                    TextEdit::singleline(&mut self.working_dir_buffer)
-                        .hint_text("path where Bash, Read, Write, and Cd act"),
-                );
-                if dir_response.lost_focus() {
-                    self.commit_working_dir_change();
-                }
-                if !Path::new(&self.working_dir_buffer).is_dir() {
-                    ui.label(
-                        RichText::new("  Not a directory - change not applied")
-                            .color(Color32::from_rgb(255, 120, 120))
-                            .small(),
-                    );
+                ui.label(&self.working_dir_display);
+                if ui.button("Choose folder...").clicked() {
+                    let request = FolderPickerRequest::for_working_directory(Path::new(
+                        &self.working_dir_display,
+                    ));
+                    self.apply_working_dir_selection(request.pick_folder());
                 }
 
                 ui.add_space(8.0);
@@ -229,32 +255,34 @@ impl DeepSeekGui {
             });
     }
 
-    /// Apply the sidebar's working-directory text field, if it names a
-    /// real, existing directory. Writes the shared `working_dir_flag`, so
+    /// Apply a folder picker result when it names a real, existing directory.
+    /// Writes the shared `working_dir_flag`, so
     /// the next `Bash`, `Read`, `Write`, or `Cd` call acts there and the
     /// next turn's system prompt reports it, then persists the change.
     /// `project_root` is never touched: it stays the fixed anchor for
     /// `settings.json` itself.
     ///
-    /// A path that does not exist or is not a directory is left alone: the
-    /// shared handle keeps whatever it last held, and nothing is saved.
-    /// The invalid text stays in the buffer so the user can see and fix it.
-    pub(super) fn commit_working_dir_change(&mut self) {
-        let candidate = PathBuf::from(&self.working_dir_buffer);
+    /// Cancellation and invalid paths are no-ops. The display, shared handle,
+    /// settings value, and persisted file all keep their previous state.
+    pub(super) fn apply_working_dir_selection(&mut self, selection: Option<PathBuf>) {
+        let Some(candidate) = selection else {
+            return;
+        };
         if !candidate.is_dir() {
             warn!(
-                path = %self.working_dir_buffer,
+                path = %candidate.display(),
                 "rejected working directory change: not a directory"
             );
             return;
         }
+        let display_path = candidate.display().to_string();
         *self.handles.working_dir.lock().unwrap() = candidate;
+        self.working_dir_display = display_path.clone();
         info!(
-            path = %self.working_dir_buffer,
+            path = %display_path,
             "working directory changed via settings panel"
         );
-        let dir = self.working_dir_buffer.clone();
-        apply_working_dir(&mut self.settings, &dir);
+        apply_working_dir(&mut self.settings, &display_path);
         self.persist_settings();
     }
 }
@@ -295,7 +323,7 @@ pub fn apply_target_grade(settings: &mut Settings, grade: f32) {
     settings.style_mut().target_grade = Some(grade);
 }
 
-/// Store the working-directory sidebar field's value.
+/// Store the selected working directory in the existing settings field.
 pub fn apply_working_dir(settings: &mut Settings, dir: &str) {
     settings.working_dir = Some(dir.to_string());
 }

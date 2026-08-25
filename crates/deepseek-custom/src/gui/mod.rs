@@ -121,7 +121,7 @@ pub struct DeepSeekGui {
     pub(super) plain_language: bool,
     /// Target Flesch-Kincaid grade for that gate, as a whole number.
     pub(super) plain_language_grade: u8,
-    pub(super) working_dir_buffer: String,
+    pub(super) working_dir_display: String,
     pub(super) token_count: String,
     pub(super) total_cache_hit_tokens: u32,
     pub(super) total_cache_miss_tokens: u32,
@@ -153,7 +153,7 @@ impl DeepSeekGui {
         // before the GUI exists, so the flag is the one source of truth.
         let plain_language = handles.style_plain_language.load(Ordering::SeqCst);
         let plain_language_grade = handles.style_target_grade.load(Ordering::SeqCst);
-        let working_dir_buffer = handles.working_dir.lock().unwrap().display().to_string();
+        let working_dir_display = handles.working_dir.lock().unwrap().display().to_string();
         let show_raw = settings.show_raw_output();
         let store = SessionStore::for_project(&project_root);
         let origin = SessionOrigin {
@@ -184,7 +184,7 @@ impl DeepSeekGui {
             context_budget,
             plain_language,
             plain_language_grade,
-            working_dir_buffer,
+            working_dir_display,
             token_count: "0".into(),
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,

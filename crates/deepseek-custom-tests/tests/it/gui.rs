@@ -22,8 +22,8 @@ use deepseek_custom::gui::autopilot_tab::{
 };
 use deepseek_custom::gui::backend_picker::apply_default_backend;
 use deepseek_custom::gui::settings_panel::{
-    apply_context_budget, apply_effort, apply_plain_language, apply_show_raw_output,
-    apply_target_grade, apply_working_dir,
+    FolderPickerRequest, apply_context_budget, apply_effort, apply_plain_language,
+    apply_show_raw_output, apply_target_grade, apply_working_dir,
 };
 use deepseek_custom::gui::transcript::{
     Block, BlockKind, Severity, Span, SubagentState, Transcript,
@@ -1442,7 +1442,7 @@ fn new_gui_seeds_the_plain_language_controls_from_the_flags() {
 }
 
 #[test]
-fn new_gui_seeds_working_dir_buffer_from_the_flag() {
+fn new_gui_seeds_working_dir_display_from_the_flag() {
     let (_tx_events, rx_events) = mpsc::unbounded_channel();
     let (tx_input, _rx_input) = mpsc::unbounded_channel();
     let seeded_dir = unique_temp_dir("seed-workdir");
@@ -1465,9 +1465,19 @@ fn new_gui_seeds_working_dir_buffer_from_the_flag() {
         unique_temp_dir("ctor"),
     );
     assert_eq!(
-        gui.working_dir_buffer_for_test(),
+        gui.working_dir_display_for_test(),
         seeded_dir.display().to_string()
     );
+}
+
+// covers: deepseek-custom/working-directory-selection :: Settings provide folder-based working-directory selection :: User opens the folder picker
+#[test]
+fn folder_picker_request_is_seeded_from_the_current_working_directory() {
+    let current = unique_temp_dir("picker-seed");
+
+    let request = FolderPickerRequest::for_working_directory(&current);
+
+    assert_eq!(request.initial_directory(), Some(current.as_path()));
 }
 
 #[test]
@@ -1477,33 +1487,82 @@ fn working_dir_change_survives_a_save_and_a_load() {
     assert_eq!(loaded.working_dir(), Some(dir.display().to_string()));
 }
 
+// covers: deepseek-custom/working-directory-selection :: Settings provide folder-based working-directory selection :: User selects a folder
 #[test]
-fn commit_working_dir_change_writes_a_valid_directory_to_the_shared_flag() {
-    let mut gui = make_gui();
-    let dir = unique_temp_dir("commit-valid");
-    gui.set_working_dir_buffer_for_test(&dir.display().to_string());
+fn confirmed_folder_selection_updates_active_display_and_persisted_directory() {
+    let project_root = unique_temp_dir("folder-selection-project");
+    let selected = unique_temp_dir("folder-selection-selected");
+    let mut gui = make_gui_in(&Settings::default(), project_root.clone());
 
-    gui.commit_working_dir_change_for_test();
+    gui.apply_working_dir_selection_for_test(Some(selected.clone()));
 
-    assert_eq!(*gui.handles_for_test().working_dir.lock().unwrap(), dir);
+    let selected_display = selected.display().to_string();
+    assert_eq!(
+        *gui.handles_for_test().working_dir.lock().unwrap(),
+        selected
+    );
+    assert_eq!(gui.working_dir_display_for_test(), selected_display);
     assert_eq!(
         gui.settings_mut_for_test().working_dir(),
-        Some(dir.display().to_string())
+        Some(selected_display.clone())
     );
+    let persisted: Settings =
+        serde_json::from_str(&std::fs::read_to_string(project_root.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted.working_dir(), Some(selected_display));
 }
 
+// covers: deepseek-custom/working-directory-selection :: Settings provide folder-based working-directory selection :: User cancels folder selection
 #[test]
-fn commit_working_dir_change_rejects_a_path_that_is_not_a_directory() {
-    let mut gui = make_gui();
+fn cancelled_folder_selection_changes_and_persists_nothing() {
+    let project_root = unique_temp_dir("folder-cancel-project");
+    let mut gui = make_gui_in(&Settings::default(), project_root.clone());
     let original = gui.handles_for_test().working_dir.lock().unwrap().clone();
-    gui.set_working_dir_buffer_for_test("Z:/definitely/does/not/exist/anywhere");
+    let original_display = gui.working_dir_display_for_test().to_string();
 
-    gui.commit_working_dir_change_for_test();
+    gui.apply_working_dir_selection_for_test(None);
 
     assert_eq!(
         *gui.handles_for_test().working_dir.lock().unwrap(),
         original
     );
+    assert_eq!(gui.working_dir_display_for_test(), original_display);
+    assert!(gui.settings_mut_for_test().working_dir().is_none());
+    assert!(!project_root.join("settings.json").exists());
+}
+
+// covers: deepseek-custom/working-directory-selection :: Folder selection preserves working-directory boundaries :: Selected directory differs from the project root
+#[test]
+fn selected_directory_changes_agent_operations_but_not_the_settings_root() {
+    let project_root = unique_temp_dir("folder-boundary-project");
+    let selected = unique_temp_dir("folder-boundary-selected");
+    let mut gui = make_gui_in(&Settings::default(), project_root.clone());
+
+    gui.apply_working_dir_selection_for_test(Some(selected.clone()));
+
+    assert_eq!(
+        *gui.handles_for_test().working_dir.lock().unwrap(),
+        selected
+    );
+    assert!(project_root.join("settings.json").exists());
+    assert!(!selected.join("settings.json").exists());
+}
+
+#[test]
+fn folder_selection_rejects_a_path_that_is_not_a_directory() {
+    let mut gui = make_gui();
+    let original = gui.handles_for_test().working_dir.lock().unwrap().clone();
+    let original_display = gui.working_dir_display_for_test().to_string();
+
+    gui.apply_working_dir_selection_for_test(Some(PathBuf::from(
+        "Z:/definitely/does/not/exist/anywhere",
+    )));
+
+    assert_eq!(
+        *gui.handles_for_test().working_dir.lock().unwrap(),
+        original
+    );
+    assert_eq!(gui.working_dir_display_for_test(), original_display);
     assert!(gui.settings_mut_for_test().working_dir().is_none());
 }
 

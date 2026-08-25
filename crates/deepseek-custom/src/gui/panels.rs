@@ -39,7 +39,7 @@ impl DeepSeekGui {
             let model = self.backends.model();
             ui.label(format!("Backend: {back} ({model})"));
             ui.separator();
-            ui.label(format!("Dir: {}", self.working_dir_buffer));
+            ui.label(format!("Dir: {}", self.working_dir_display));
             ui.separator();
             ui.label(format!("Effort: {:?}", self.effort));
             let cascade_total = self.handles.cascade_total.load(Ordering::SeqCst);

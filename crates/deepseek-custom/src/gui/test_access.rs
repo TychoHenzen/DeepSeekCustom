@@ -137,16 +137,12 @@ impl DeepSeekGui {
         self.persist_settings();
     }
 
-    pub fn working_dir_buffer_for_test(&self) -> &str {
-        &self.working_dir_buffer
+    pub fn working_dir_display_for_test(&self) -> &str {
+        &self.working_dir_display
     }
 
-    pub fn set_working_dir_buffer_for_test(&mut self, dir: &str) {
-        self.working_dir_buffer = dir.to_string();
-    }
-
-    pub fn commit_working_dir_change_for_test(&mut self) {
-        self.commit_working_dir_change();
+    pub fn apply_working_dir_selection_for_test(&mut self, selection: Option<std::path::PathBuf>) {
+        self.apply_working_dir_selection(selection);
     }
 
     pub fn active_tab_for_test(&self) -> ActiveTab {
