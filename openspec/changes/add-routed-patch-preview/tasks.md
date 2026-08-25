@@ -1,12 +1,16 @@
 ## 1. Preview state and fingerprints
 
-- [ ] 1.1 Add SHA-256 target and OpenSpec fingerprints to localization reports, including create, delete, and rename path identities.
-- [ ] 1.2 Load the explicitly named run through the approved-report guard. Reject pending, rejected, legacy-unreviewed, missing, or change- or task-mismatched reports before route evaluation, workspace creation, or model dispatch.
+- [x] 1.1 Add SHA-256 target and OpenSpec fingerprints to localization reports, including create, delete, and rename path identities.
+  <!-- status: completed -->
+- [x] 1.2 Load the explicitly named run through the approved-report guard. Reject pending, rejected, legacy-unreviewed, missing, or change- or task-mismatched reports before route evaluation, workspace creation, or model dispatch.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch preview requires a current localization report :: Current report is accepted -->
-- [ ] 1.3 Add disposition and run-mismatch fixtures that assert the complete pre-dispatch diagnostic.
+  <!-- status: completed -->
+- [x] 1.3 Add disposition and run-mismatch fixtures that assert the complete pre-dispatch diagnostic.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch preview requires a current localization report :: Unapproved or missing report is rejected -->
-- [ ] 1.4 Show the stale input paths and require a new localization run without dispatching a drafting model.
+  <!-- status: completed -->
+- [x] 1.4 Show the stale input paths and require a new localization run without dispatching a drafting model.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch preview requires a current localization report :: Localization report is stale -->
+  <!-- status: completed -->
 
 ## 2. Deterministic difficulty router
 

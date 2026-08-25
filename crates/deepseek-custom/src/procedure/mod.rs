@@ -5,8 +5,10 @@
 //! short prompt for its current stage.
 
 mod dispatch;
+mod fingerprint;
 mod index;
 mod input;
+mod preview_input;
 mod prompt;
 pub mod report;
 mod run;
@@ -15,11 +17,19 @@ mod schema;
 mod validation;
 
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
+pub use fingerprint::{
+    ProcedureFingerprintError, ProcedureInputFingerprints, ProcedurePathFingerprint,
+    ProcedurePathState, capture_path_fingerprint, capture_path_fingerprints, sha256_json,
+};
 pub use index::{RepositoryIndexError, build_repository_index};
 pub use input::{
     CapabilityDeltaSlice, ContractSelection, OpenSpecChange, OpenSpecCommandFailure, OpenSpecInput,
     OpenSpecInputError, OpenSpecValidation, ProposalScope, RequirementSlice, ScenarioSlice,
     SelectedContractSlice, ValidatedContractInput,
+};
+pub use preview_input::{
+    PatchPreviewInputError, PatchPreviewInputGate, PatchPreviewInputRequest,
+    ValidatedPatchPreviewInput,
 };
 pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
@@ -27,7 +37,7 @@ pub use prompt::{
 };
 pub use report::{
     ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
-    require_approved_report,
+    StoredProcedureReport, require_approved_report,
 };
 
 pub use run::{

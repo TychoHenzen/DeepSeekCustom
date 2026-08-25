@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecValidation, ProcedureApprovedReportError,
-    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition, require_approved_report,
+    ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
+    ProcedureTask, ProcedureTerminalDisposition, capture_path_fingerprint, require_approved_report,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -141,6 +141,87 @@ fn report_without_review_disposition_loads_as_legacy_unreviewed() {
         ProcedureReviewDisposition::Approved
     );
     std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn legacy_report_without_input_fingerprints_remains_readable() {
+    let reports_dir = temp_path("legacy-fingerprints");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let report = completed_run();
+    std::fs::create_dir_all(&reports_dir).unwrap();
+    std::fs::write(
+        store.report_path(&report.id),
+        serde_json::to_string_pretty(&report).unwrap(),
+    )
+    .unwrap();
+
+    let stored = store.load_with_fingerprints(&report.id).unwrap();
+
+    assert_eq!(stored.run, report);
+    assert!(stored.input_fingerprints.is_empty());
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn path_identity_is_stable_for_create_delete_and_rename_endpoints() {
+    let root = temp_path("path-identities");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/delete.rs"), "delete source\n").unwrap();
+    std::fs::write(root.join("src/rename_from.rs"), "rename source\n").unwrap();
+
+    let create_missing = capture_path_fingerprint(&root, "src/create.rs").unwrap();
+    let delete_present = capture_path_fingerprint(&root, "src/delete.rs").unwrap();
+    let rename_from_present = capture_path_fingerprint(&root, "src/rename_from.rs").unwrap();
+    let rename_to_missing = capture_path_fingerprint(&root, "src/rename_to.rs").unwrap();
+
+    std::fs::write(root.join("src/create.rs"), "created\n").unwrap();
+    std::fs::remove_file(root.join("src/delete.rs")).unwrap();
+    std::fs::rename(
+        root.join("src/rename_from.rs"),
+        root.join("src/rename_to.rs"),
+    )
+    .unwrap();
+
+    let create_present = capture_path_fingerprint(&root, "src\\create.rs").unwrap();
+    let delete_missing = capture_path_fingerprint(&root, "src/delete.rs").unwrap();
+    let rename_from_missing = capture_path_fingerprint(&root, "src/rename_from.rs").unwrap();
+    let rename_to_present = capture_path_fingerprint(&root, "src/rename_to.rs").unwrap();
+
+    assert_eq!(create_missing.path, "src/create.rs");
+    assert_eq!(
+        create_missing.identity_sha256,
+        create_present.identity_sha256
+    );
+    assert_eq!(
+        delete_present.identity_sha256,
+        delete_missing.identity_sha256
+    );
+    assert_eq!(
+        rename_from_present.identity_sha256,
+        rename_from_missing.identity_sha256
+    );
+    assert_eq!(
+        rename_to_missing.identity_sha256,
+        rename_to_present.identity_sha256
+    );
+    assert_eq!(create_missing.state, ProcedurePathState::Missing);
+    assert_eq!(create_present.state, ProcedurePathState::Present);
+    assert_eq!(delete_present.state, ProcedurePathState::Present);
+    assert_eq!(delete_missing.state, ProcedurePathState::Missing);
+    assert!(
+        [
+            &create_missing,
+            &delete_present,
+            &rename_from_present,
+            &rename_to_missing,
+        ]
+        .into_iter()
+        .all(
+            |fingerprint| fingerprint.identity_sha256.starts_with("sha256:")
+                && fingerprint.identity_sha256.len() == 71
+        )
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

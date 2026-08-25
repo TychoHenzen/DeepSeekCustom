@@ -140,7 +140,9 @@ pub struct ProcedureRun {
     pub id: ProcedureRunId,
     pub change_id: String,
     pub selected_task: ProcedureTask,
+    #[serde(default)]
     pub spec_fingerprint: Option<String>,
+    #[serde(default)]
     pub repository_fingerprint: Option<String>,
     /// Exact successful Stage 0 command evidence, when validation completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

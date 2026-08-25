@@ -80,6 +80,7 @@ mod plugins;
 mod procedure_dispatch;
 mod procedure_index;
 mod procedure_input;
+mod procedure_preview_input;
 mod procedure_prompt;
 mod procedure_report;
 mod procedure_run;

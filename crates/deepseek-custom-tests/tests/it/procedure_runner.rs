@@ -319,7 +319,7 @@ async fn valid_change_starts_localization_case() {
         run.spec_fingerprint
             .as_deref()
             .unwrap()
-            .starts_with("fnv1a64:")
+            .starts_with("sha256:")
     );
     assert!(
         run.repository_fingerprint
@@ -340,6 +340,21 @@ async fn valid_change_starts_localization_case() {
     );
     let saved = store.load(&run.id).unwrap();
     assert_eq!(saved, run);
+    let stored = store.load_with_fingerprints(&run.id).unwrap();
+    assert_eq!(stored.input_fingerprints.openspec.len(), 3);
+    assert_eq!(stored.input_fingerprints.targets.len(), 1);
+    assert_eq!(stored.input_fingerprints.targets[0].path, "src/lib.rs");
+    assert!(
+        stored
+            .input_fingerprints
+            .openspec
+            .iter()
+            .chain(&stored.input_fingerprints.targets)
+            .all(|fingerprint| fingerprint
+                .content_sha256
+                .as_deref()
+                .is_some_and(|hash| hash.starts_with("sha256:") && hash.len() == 71))
+    );
     assert_eq!(
         saved.review_disposition,
         ProcedureReviewDisposition::Pending
@@ -1075,10 +1090,21 @@ async fn workspace_remains_unchanged_case() {
         success
     );
     let success_store = ProcedureReportStore::for_project(&success_root);
+    let fingerprints_before_review = success_store
+        .load_with_fingerprints(&success.id)
+        .unwrap()
+        .input_fingerprints;
     let approved = success_store.approve(&success.id).unwrap();
     assert_eq!(
         approved.review_disposition,
         ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(
+        success_store
+            .load_with_fingerprints(&success.id)
+            .unwrap()
+            .input_fingerprints,
+        fingerprints_before_review
     );
     assert_eq!(workspace_hash(&success_root), success_before);
 

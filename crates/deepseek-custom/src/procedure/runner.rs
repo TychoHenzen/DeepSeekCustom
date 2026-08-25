@@ -14,7 +14,7 @@ use super::{
     LocalizationPromptInput, ProcedureAttemptDisposition, ProcedureReportStore,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
     ProcedureTask, ProcedureTerminalDisposition, RepositoryIndexEntry, build_localization_prompt,
-    build_repository_index, validate_localization_targets,
+    build_repository_index, sha256_json, validate_localization_targets,
 };
 use crate::config::settings::RepositoryIndexLimits;
 use crate::error::HarnessError;
@@ -261,7 +261,7 @@ where
         };
         run.selected_task = validated.contract.task.clone();
         run.validation = Some(validated.validation);
-        run.spec_fingerprint = match content_fingerprint(&validated.contract) {
+        run.spec_fingerprint = match sha256_json(&validated.contract) {
             Ok(fingerprint) => Some(fingerprint),
             Err(error) => {
                 return self.finish(

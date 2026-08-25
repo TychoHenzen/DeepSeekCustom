@@ -3,11 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::debug;
 
 use super::{
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureTerminalDisposition,
+    ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureTerminalDisposition, capture_path_fingerprints,
 };
 use crate::error::{HarnessError, Result};
 
@@ -17,6 +19,22 @@ static REVIEW_DECISION_LOCK: Mutex<()> = Mutex::new(());
 /// Stores one complete `ProcedureRun` per JSON file.
 pub struct ProcedureReportStore {
     reports_dir: PathBuf,
+    project_root: Option<PathBuf>,
+}
+
+/// One persisted run plus the immutable inputs captured at localization time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProcedureReport {
+    pub run: ProcedureRun,
+    pub input_fingerprints: ProcedureInputFingerprints,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProcedureReportDocument {
+    #[serde(flatten)]
+    run: ProcedureRun,
+    #[serde(default, skip_serializing_if = "ProcedureInputFingerprints::is_empty")]
+    input_fingerprints: ProcedureInputFingerprints,
 }
 
 /// Failure to record a semantic review decision for one saved run.
@@ -79,12 +97,18 @@ pub fn require_approved_report(
 impl ProcedureReportStore {
     /// Create a store rooted directly at `reports_dir`.
     pub fn new(reports_dir: PathBuf) -> Self {
-        Self { reports_dir }
+        Self {
+            reports_dir,
+            project_root: None,
+        }
     }
 
     /// Create a store at `<project_root>/.deepseek/procedure-runs/`.
     pub fn for_project(project_root: &Path) -> Self {
-        Self::new(project_root.join(PROCEDURE_RUNS_SUBDIR))
+        Self {
+            reports_dir: project_root.join(PROCEDURE_RUNS_SUBDIR),
+            project_root: Some(project_root.to_path_buf()),
+        }
     }
 
     /// Path used by one run report.
@@ -94,25 +118,11 @@ impl ProcedureReportStore {
 
     /// Save a complete run report, creating the report directory as needed.
     pub fn save(&self, report: &ProcedureRun) -> Result<()> {
-        std::fs::create_dir_all(&self.reports_dir)?;
-
-        let target = self.report_path(&report.id);
-        let temporary = self
-            .reports_dir
-            .join(format!("{}.json.tmp", report.id.as_str()));
-        let json = serde_json::to_string_pretty(report).map_err(|error| {
-            HarnessError::Parse(format!("could not serialize procedure report: {error}"))
-        })?;
-
-        std::fs::write(&temporary, &json)?;
-        replace_file(&temporary, &target)?;
-        debug!(
-            run_id = report.id.as_str(),
-            bytes = json.len(),
-            path = %target.display(),
-            "procedure report store: wrote report"
-        );
-        Ok(())
+        let document = StoredProcedureReport {
+            run: report.clone(),
+            input_fingerprints: self.capture_input_fingerprints(report)?,
+        };
+        self.save_document(&document)
     }
 
     /// Load one run report.
@@ -120,13 +130,25 @@ impl ProcedureReportStore {
     /// A missing report returns an IO error with `ErrorKind::NotFound`. A
     /// present report with invalid JSON returns a parse error naming its path.
     pub fn load(&self, id: &ProcedureRunId) -> Result<ProcedureRun> {
+        Ok(self.load_with_fingerprints(id)?.run)
+    }
+
+    /// Load one run together with its captured preview-input fingerprints.
+    ///
+    /// Reports written before fingerprint capture deserialize with an empty
+    /// fingerprint set. They remain inspectable but cannot pass the preview gate.
+    pub fn load_with_fingerprints(&self, id: &ProcedureRunId) -> Result<StoredProcedureReport> {
         let path = self.report_path(id);
         let json = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&json).map_err(|error| {
+        let document: ProcedureReportDocument = serde_json::from_str(&json).map_err(|error| {
             HarnessError::Parse(format!(
                 "could not parse procedure report {}: {error}",
                 path.display()
             ))
+        })?;
+        Ok(StoredProcedureReport {
+            run: document.run,
+            input_fingerprints: document.input_fingerprints,
         })
     }
 
@@ -155,38 +177,140 @@ impl ProcedureReportStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let run_id = id.as_str();
-        let mut report = self
-            .load(id)
-            .map_err(|source| ProcedureReviewError::ReportLoad {
-                run_id: run_id.clone(),
-                source,
-            })?;
+        let mut report =
+            self.load_with_fingerprints(id)
+                .map_err(|source| ProcedureReviewError::ReportLoad {
+                    run_id: run_id.clone(),
+                    source,
+                })?;
 
-        if report.terminal_disposition != Some(ProcedureTerminalDisposition::AwaitingReview) {
+        if report.run.terminal_disposition != Some(ProcedureTerminalDisposition::AwaitingReview) {
             return Err(ProcedureReviewError::NotAwaitingReview {
                 run_id,
                 requested,
-                actual: terminal_disposition_name(report.terminal_disposition.as_ref()),
+                actual: terminal_disposition_name(report.run.terminal_disposition.as_ref()),
             });
         }
-        if report.review_disposition == requested {
-            return Ok(report);
+        if report.run.review_disposition == requested {
+            return Ok(report.run);
         }
-        if report.review_disposition != ProcedureReviewDisposition::Pending {
+        if report.run.review_disposition != ProcedureReviewDisposition::Pending {
             return Err(ProcedureReviewError::DecisionConflict {
                 run_id,
                 requested,
-                actual: report.review_disposition,
+                actual: report.run.review_disposition,
             });
         }
 
-        report.review_disposition = requested;
-        self.save(&report)
+        report.run.review_disposition = requested;
+        self.save_document(&report)
             .map_err(|source| ProcedureReviewError::ReportSave {
-                run_id: report.id.as_str(),
+                run_id: report.run.id.as_str(),
                 source,
             })?;
-        Ok(report)
+        Ok(report.run)
+    }
+
+    fn capture_input_fingerprints(
+        &self,
+        report: &ProcedureRun,
+    ) -> Result<ProcedureInputFingerprints> {
+        let Some(project_root) = &self.project_root else {
+            return Ok(ProcedureInputFingerprints::default());
+        };
+        if !report
+            .spec_fingerprint
+            .as_deref()
+            .is_some_and(|value| value.starts_with("sha256:"))
+        {
+            return Ok(ProcedureInputFingerprints::default());
+        }
+
+        let openspec =
+            capture_path_fingerprints(project_root, openspec_artifact_paths(project_root, report))
+                .map_err(|error| HarnessError::Parse(error.to_string()))?;
+        let target_paths = report
+            .attempts
+            .iter()
+            .rev()
+            .find(|attempt| attempt.disposition == super::ProcedureAttemptDisposition::Accepted)
+            .map(|attempt| {
+                attempt
+                    .targets
+                    .iter()
+                    .map(|target| target.path.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let targets = capture_path_fingerprints(project_root, target_paths)
+            .map_err(|error| HarnessError::Parse(error.to_string()))?;
+        Ok(ProcedureInputFingerprints { openspec, targets })
+    }
+
+    fn save_document(&self, report: &StoredProcedureReport) -> Result<()> {
+        std::fs::create_dir_all(&self.reports_dir)?;
+        let target = self.report_path(&report.run.id);
+        let temporary = self
+            .reports_dir
+            .join(format!("{}.json.tmp", report.run.id.as_str()));
+        let document = ProcedureReportDocument {
+            run: report.run.clone(),
+            input_fingerprints: report.input_fingerprints.clone(),
+        };
+        let json = serde_json::to_string_pretty(&document).map_err(|error| {
+            HarnessError::Parse(format!("could not serialize procedure report: {error}"))
+        })?;
+        std::fs::write(&temporary, &json)?;
+        replace_file(&temporary, &target)?;
+        debug!(
+            run_id = report.run.id.as_str(),
+            bytes = json.len(),
+            path = %target.display(),
+            "procedure report store: wrote report"
+        );
+        Ok(())
+    }
+}
+
+fn openspec_artifact_paths(project_root: &Path, report: &ProcedureRun) -> Vec<String> {
+    let prefix = format!("openspec/changes/{}", report.change_id);
+    let mut paths = vec![
+        format!("{prefix}/proposal.md"),
+        format!("{prefix}/tasks.md"),
+    ];
+    if let Some(binding) = report.selected_task.covers.as_deref() {
+        if let Some(capability) = binding.split("::").next().map(str::trim)
+            && !capability.is_empty()
+        {
+            paths.push(format!("{prefix}/specs/{capability}/spec.md"));
+        }
+    } else {
+        collect_spec_paths(
+            project_root,
+            &project_root.join(&prefix).join("specs"),
+            &mut paths,
+        );
+    }
+    paths
+}
+
+fn collect_spec_paths(project_root: &Path, directory: &Path, paths: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries
+        .filter_map(std::result::Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(std::fs::DirEntry::path);
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_spec_paths(project_root, &path, paths);
+        } else if path.file_name().is_some_and(|name| name == "spec.md")
+            && let Ok(relative) = path.strip_prefix(project_root)
+        {
+            paths.push(relative.to_string_lossy().replace('\\', "/"));
+        }
     }
 }
 
