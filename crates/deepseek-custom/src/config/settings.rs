@@ -649,6 +649,18 @@ pub struct EvolveSettings {
 pub const DEFAULT_PROCEDURE_INDEX_MAX_FILES: usize = 10_000;
 /// Default maximum text content inspected by one procedure index, in bytes.
 pub const DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Default number of local structural retries after the first invalid candidate.
+pub const DEFAULT_PROCEDURE_STRUCTURAL_RETRIES: u8 = 1;
+/// Hard cap for local structural retries.
+pub const MAX_PROCEDURE_STRUCTURAL_RETRIES: u8 = 1;
+/// Default total number of local candidates that may reach verification.
+pub const DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS: u8 = 3;
+/// Hard cap for total local candidates that may reach verification.
+pub const MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS: u8 = 4;
+/// Default total number of frontier candidates that may reach verification.
+pub const DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
+/// Hard cap for total frontier candidates that may reach verification.
+pub const MAX_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
 
 /// Limits applied while building one procedure's repository index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,8 +688,20 @@ const fn default_procedure_index_max_total_bytes() -> u64 {
     DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
 }
 
+const fn default_procedure_structural_retries() -> u8 {
+    DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+}
+
+const fn default_procedure_local_verifier_attempts() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+}
+
+const fn default_procedure_frontier_attempts() -> u8 {
+    DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+}
+
 /// Settings for the staged read-only procedure runner.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureSettings {
     /// Name of an entry in `Settings::backends`. `None` means unselected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -693,6 +717,114 @@ pub struct ProcedureSettings {
     /// Ordered project commands that must pass before Apply can proceed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verifier_commands: Vec<String>,
+    /// Structural retries after the first invalid local candidate.
+    #[serde(default = "default_procedure_structural_retries")]
+    pub structural_retries: u8,
+    /// Total local candidates that may reach deterministic verification.
+    #[serde(default = "default_procedure_local_verifier_attempts")]
+    pub local_verifier_attempts: u8,
+    /// Total frontier candidates that may reach deterministic verification.
+    /// Zero disables escalation and permits `frontier_patch_backend` to be absent.
+    #[serde(default = "default_procedure_frontier_attempts")]
+    pub frontier_attempts: u8,
+}
+
+impl Default for ProcedureSettings {
+    fn default() -> Self {
+        Self {
+            localization_backend: None,
+            local_patch_backend: None,
+            frontier_patch_backend: None,
+            repository_index: RepositoryIndexLimits::default(),
+            verifier_commands: Vec::new(),
+            structural_retries: DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
+            local_verifier_attempts: DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+            frontier_attempts: DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
+        }
+    }
+}
+
+/// Finite repair policy accepted for dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedProcedureRepairPolicy {
+    structural_retries: u8,
+    local_verifier_attempts: u8,
+    frontier_backend: Option<String>,
+    frontier_attempts: u8,
+}
+
+impl ValidatedProcedureRepairPolicy {
+    pub fn structural_retries(&self) -> u8 {
+        self.structural_retries
+    }
+
+    pub fn local_verifier_attempts(&self) -> u8 {
+        self.local_verifier_attempts
+    }
+
+    pub fn frontier_backend(&self) -> Option<&str> {
+        self.frontier_backend.as_deref()
+    }
+
+    pub fn frontier_attempts(&self) -> u8 {
+        self.frontier_attempts
+    }
+}
+
+impl Settings {
+    /// Validate the bounded repair policy before any local or frontier dispatch.
+    pub fn validated_procedure_repair_policy(
+        &self,
+    ) -> std::result::Result<ValidatedProcedureRepairPolicy, String> {
+        let procedure = self.procedure.as_ref().cloned().unwrap_or_default();
+
+        if procedure.structural_retries > MAX_PROCEDURE_STRUCTURAL_RETRIES {
+            return Err(format!(
+                "procedure.structural_retries must be between 0 and {MAX_PROCEDURE_STRUCTURAL_RETRIES}, got {}",
+                procedure.structural_retries
+            ));
+        }
+        if !(1..=MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS).contains(&procedure.local_verifier_attempts)
+        {
+            return Err(format!(
+                "procedure.local_verifier_attempts must be between 1 and {MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS}, got {}",
+                procedure.local_verifier_attempts
+            ));
+        }
+        if procedure.frontier_attempts > MAX_PROCEDURE_FRONTIER_ATTEMPTS {
+            return Err(format!(
+                "procedure.frontier_attempts must be between 0 and {MAX_PROCEDURE_FRONTIER_ATTEMPTS}, got {}",
+                procedure.frontier_attempts
+            ));
+        }
+
+        let frontier_backend = procedure.frontier_patch_backend;
+        if let Some(name) = frontier_backend.as_deref()
+            && name.trim().is_empty()
+        {
+            return Err("procedure.frontier_patch_backend must not be blank".to_string());
+        }
+        if procedure.frontier_attempts > 0 && frontier_backend.is_none() {
+            return Err(
+                "procedure.frontier_patch_backend is required when procedure.frontier_attempts is greater than 0"
+                    .to_string(),
+            );
+        }
+        if let Some(name) = frontier_backend.as_deref()
+            && self.resolve_backend(name).is_none()
+        {
+            return Err(format!(
+                "procedure.frontier_patch_backend `{name}` names no configured backend"
+            ));
+        }
+
+        Ok(ValidatedProcedureRepairPolicy {
+            structural_retries: procedure.structural_retries,
+            local_verifier_attempts: procedure.local_verifier_attempts,
+            frontier_backend,
+            frontier_attempts: procedure.frontier_attempts,
+        })
+    }
 }
 
 /// How voice input is triggered.

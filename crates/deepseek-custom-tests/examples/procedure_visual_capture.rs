@@ -285,6 +285,7 @@ fn fixture_settings() -> Settings {
             frontier_patch_backend: None,
             repository_index: RepositoryIndexLimits::default(),
             verifier_commands: Vec::new(),
+            ..ProcedureSettings::default()
         }),
         ..Settings::default()
     }

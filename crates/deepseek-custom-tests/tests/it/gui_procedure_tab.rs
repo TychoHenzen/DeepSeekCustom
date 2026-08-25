@@ -134,6 +134,7 @@ fn settings() -> Settings {
             frontier_patch_backend: Some("claude".to_string()),
             repository_index: RepositoryIndexLimits::default(),
             verifier_commands: Vec::new(),
+            ..ProcedureSettings::default()
         }),
         ..Settings::default()
     }

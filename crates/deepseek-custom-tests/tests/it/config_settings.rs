@@ -5,9 +5,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use deepseek_custom::config::settings::{
-    ApiProvider, AutopilotConfig, BackendConfig, DEFAULT_PROCEDURE_INDEX_MAX_FILES,
-    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, PermissionsConfig, ProcedureSettings,
-    RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
+    ApiProvider, AutopilotConfig, BackendConfig, DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
+    DEFAULT_PROCEDURE_INDEX_MAX_FILES, DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES,
+    DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
+    MAX_PROCEDURE_FRONTIER_ATTEMPTS, MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+    MAX_PROCEDURE_STRUCTURAL_RETRIES, PermissionsConfig, ProcedureSettings, RepositoryIndexLimits,
+    Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
 
@@ -165,6 +168,9 @@ fn save_then_load_round_trips_values() {
                 "cargo fmt --all -- --check".into(),
                 "cargo test --workspace".into(),
             ],
+            structural_retries: 0,
+            local_verifier_attempts: 2,
+            frontier_attempts: 1,
         }),
     };
 
@@ -208,6 +214,9 @@ fn save_then_load_round_trips_values() {
     assert_eq!(procedure.frontier_patch_backend.as_deref(), Some("codex"));
     assert_eq!(procedure.repository_index.max_files, 2_500);
     assert_eq!(procedure.repository_index.max_total_bytes, 8_000_000);
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 2);
+    assert_eq!(procedure.frontier_attempts, 1);
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -776,6 +785,9 @@ fn procedure_settings_take_part_in_merge() {
                 max_total_bytes: 200,
             },
             verifier_commands: vec!["first-gate".into(), "second-gate".into()],
+            structural_retries: 0,
+            local_verifier_attempts: 1,
+            frontier_attempts: 0,
         }),
         ..Default::default()
     });
@@ -796,6 +808,9 @@ fn procedure_settings_take_part_in_merge() {
         procedure.verifier_commands,
         vec!["first-gate", "second-gate"]
     );
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 1);
+    assert_eq!(procedure.frontier_attempts, 0);
 }
 
 #[test]
@@ -807,14 +822,32 @@ fn procedure_mut_creates_and_updates_the_optional_block() {
     assert!(procedure.localization_backend.is_none());
     assert!(procedure.local_patch_backend.is_none());
     assert!(procedure.frontier_patch_backend.is_none());
+    assert_eq!(
+        procedure.structural_retries,
+        DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+    );
+    assert_eq!(
+        procedure.local_verifier_attempts,
+        DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+    );
+    assert_eq!(
+        procedure.frontier_attempts,
+        DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+    );
     procedure.localization_backend = Some("ollama".into());
     procedure.repository_index.max_files = 77;
     procedure.verifier_commands = vec!["format".into(), "test".into()];
+    procedure.structural_retries = 0;
+    procedure.local_verifier_attempts = 2;
+    procedure.frontier_attempts = 0;
 
     let procedure = settings.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
     assert_eq!(procedure.repository_index.max_files, 77);
     assert_eq!(procedure.verifier_commands, vec!["format", "test"]);
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 2);
+    assert_eq!(procedure.frontier_attempts, 0);
 }
 
 #[test]
@@ -829,6 +862,9 @@ fn procedure_settings_round_trip_through_json() {
                 max_total_bytes: 12_000_000,
             },
             verifier_commands: vec!["format".into(), "compile".into(), "test".into()],
+            structural_retries: 0,
+            local_verifier_attempts: 4,
+            frontier_attempts: 1,
         }),
         ..Default::default()
     };
@@ -852,6 +888,178 @@ fn procedure_settings_round_trip_through_json() {
         procedure.verifier_commands,
         vec!["format", "compile", "test"]
     );
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 4);
+    assert_eq!(procedure.frontier_attempts, 1);
+}
+
+fn frontier_backend() -> BackendConfig {
+    BackendConfig::CodexCli {
+        model: "gpt-5".to_string(),
+        sandbox: Some("workspace-write".to_string()),
+        env: None,
+        models: None,
+    }
+}
+
+fn settings_with_repair_policy(
+    structural_retries: u8,
+    local_verifier_attempts: u8,
+    frontier_backend_name: Option<&str>,
+    frontier_attempts: u8,
+) -> Settings {
+    let backends = frontier_backend_name
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| HashMap::from([(name.to_string(), frontier_backend())]));
+    Settings {
+        procedure: Some(ProcedureSettings {
+            frontier_patch_backend: frontier_backend_name.map(str::to_string),
+            structural_retries,
+            local_verifier_attempts,
+            frontier_attempts,
+            ..ProcedureSettings::default()
+        }),
+        backends,
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn procedure_repair_policy_uses_documented_defaults() {
+    let settings: Settings = serde_json::from_str(
+        r#"{
+            "procedure": { "frontier_patch_backend": "frontier" },
+            "backends": {
+                "frontier": { "kind": "codex_cli", "model": "gpt-5" }
+            }
+        }"#,
+    )
+    .unwrap();
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(DEFAULT_PROCEDURE_STRUCTURAL_RETRIES, 1);
+    assert_eq!(DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, 3);
+    assert_eq!(DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS, 2);
+    assert_eq!(
+        procedure.structural_retries,
+        DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+    );
+    assert_eq!(
+        procedure.local_verifier_attempts,
+        DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+    );
+    assert_eq!(
+        procedure.frontier_attempts,
+        DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+    );
+
+    let policy = settings.validated_procedure_repair_policy().unwrap();
+    assert_eq!(policy.structural_retries(), 1);
+    assert_eq!(policy.local_verifier_attempts(), 3);
+    assert_eq!(policy.frontier_backend(), Some("frontier"));
+    assert_eq!(policy.frontier_attempts(), 2);
+}
+
+#[test]
+fn procedure_repair_policy_accepts_downward_and_maximum_budgets() {
+    let disabled = settings_with_repair_policy(0, 1, None, 0)
+        .validated_procedure_repair_policy()
+        .unwrap();
+    assert_eq!(disabled.structural_retries(), 0);
+    assert_eq!(disabled.local_verifier_attempts(), 1);
+    assert_eq!(disabled.frontier_backend(), None);
+    assert_eq!(disabled.frontier_attempts(), 0);
+
+    let maximum = settings_with_repair_policy(
+        MAX_PROCEDURE_STRUCTURAL_RETRIES,
+        MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+        Some("frontier"),
+        MAX_PROCEDURE_FRONTIER_ATTEMPTS,
+    )
+    .validated_procedure_repair_policy()
+    .unwrap();
+    assert_eq!(maximum.structural_retries(), 1);
+    assert_eq!(maximum.local_verifier_attempts(), 4);
+    assert_eq!(maximum.frontier_backend(), Some("frontier"));
+    assert_eq!(maximum.frontier_attempts(), 2);
+}
+
+#[test]
+fn procedure_repair_policy_rejects_every_budget_outside_its_range() {
+    let cases = [
+        (
+            settings_with_repair_policy(2, 3, Some("frontier"), 2),
+            "procedure.structural_retries must be between 0 and 1, got 2",
+        ),
+        (
+            settings_with_repair_policy(1, 0, Some("frontier"), 2),
+            "procedure.local_verifier_attempts must be between 1 and 4, got 0",
+        ),
+        (
+            settings_with_repair_policy(1, 5, Some("frontier"), 2),
+            "procedure.local_verifier_attempts must be between 1 and 4, got 5",
+        ),
+        (
+            settings_with_repair_policy(1, 3, Some("frontier"), 3),
+            "procedure.frontier_attempts must be between 0 and 2, got 3",
+        ),
+    ];
+
+    for (settings, expected) in cases {
+        assert_eq!(
+            settings.validated_procedure_repair_policy().unwrap_err(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn procedure_repair_policy_rejects_invalid_frontier_backend_names() {
+    let blank = settings_with_repair_policy(1, 3, Some("   "), 0);
+    assert_eq!(
+        blank.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend must not be blank"
+    );
+
+    let missing = settings_with_repair_policy(1, 3, None, 2);
+    assert_eq!(
+        missing.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend is required when procedure.frontier_attempts is greater than 0"
+    );
+
+    let unknown = Settings {
+        procedure: Some(ProcedureSettings {
+            frontier_patch_backend: Some("unknown".to_string()),
+            frontier_attempts: 0,
+            ..ProcedureSettings::default()
+        }),
+        ..Settings::default()
+    };
+    assert_eq!(
+        unknown.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend `unknown` names no configured backend"
+    );
+}
+
+#[test]
+fn procedure_repair_policy_saves_and_loads_all_fields() {
+    let dir = unique_temp_dir("procedure-repair-policy");
+    let original = settings_with_repair_policy(0, 2, Some("frontier"), 1);
+    original.save(&dir).unwrap();
+
+    let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+    assert!(text.contains("\"structural_retries\": 0"));
+    assert!(text.contains("\"local_verifier_attempts\": 2"));
+    assert!(text.contains("\"frontier_patch_backend\": \"frontier\""));
+    assert!(text.contains("\"frontier_attempts\": 1"));
+
+    let loaded = Settings::load(&dir).unwrap();
+    let policy = loaded.validated_procedure_repair_policy().unwrap();
+    assert_eq!(policy.structural_retries(), 0);
+    assert_eq!(policy.local_verifier_attempts(), 2);
+    assert_eq!(policy.frontier_backend(), Some("frontier"));
+    assert_eq!(policy.frontier_attempts(), 1);
+
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// The repo `settings.json` is also the live settings file: the GUI

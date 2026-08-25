@@ -9,9 +9,12 @@
 
 ## 1. Attempt policy and state machine
 
-- [ ] 1.1 Add validated procedure settings for local structural retries, total local verifier attempts, frontier backend, and total frontier attempts, with defaults and hard caps from design.md.
-- [ ] 1.2 Implement the explicit attempt transition table and reject any dispatch from a terminal state.
-- [ ] 1.3 Add table-driven tests for every local, frontier, blocked, promoted, failed, and interrupted transition.
+- [x] 1.1 Add validated procedure settings for local structural retries, total local verifier attempts, frontier backend, and total frontier attempts, with defaults and hard caps from design.md.
+<!-- status: completed -->
+- [x] 1.2 Implement the explicit attempt transition table and reject any dispatch from a terminal state.
+<!-- status: completed -->
+- [x] 1.3 Add table-driven tests for every local, frontier, blocked, promoted, failed, and interrupted transition.
+<!-- status: completed -->
 
 ## 2. Structural retry
 

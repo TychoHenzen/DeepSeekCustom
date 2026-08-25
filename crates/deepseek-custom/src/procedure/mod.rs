@@ -21,6 +21,7 @@ mod preview_input;
 mod promotion;
 mod prompt;
 mod repair_input;
+mod repair_state;
 pub mod report;
 mod route;
 mod run;
@@ -84,6 +85,10 @@ pub use prompt::{
     build_localization_prompt,
 };
 pub use repair_input::{RepairInputError, RepairInputGate, RepairRequest, ValidatedRepairInput};
+pub use repair_state::{
+    AttemptDisposition, AttemptFailure, AttemptFailureEvidence, AttemptFailureKind, AttemptState,
+    AttemptTransitionError, RepairCandidateId, RepairTier,
+};
 pub use report::{
     ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
     StoredProcedureReport, require_approved_report,
