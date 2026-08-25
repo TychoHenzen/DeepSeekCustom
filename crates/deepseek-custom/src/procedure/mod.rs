@@ -11,6 +11,7 @@ mod input;
 mod preview_input;
 mod prompt;
 pub mod report;
+mod route;
 mod run;
 mod runner;
 mod schema;
@@ -38,6 +39,10 @@ pub use prompt::{
 pub use report::{
     ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
     StoredProcedureReport, require_approved_report,
+};
+pub use route::{
+    DifficultyAssessment, MechanicalVerb, RouteDecision, RouteOverride, RouteSignal, RouteTier,
+    apply_route_override, assess_route,
 };
 
 pub use run::{

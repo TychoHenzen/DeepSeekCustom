@@ -14,13 +14,17 @@
 
 ## 2. Deterministic difficulty router
 
-- [ ] 2.1 Define route tiers and an ordered route-signal enum for mechanical verbs, target count, architecture, cross-cutting behavior, concurrency, security, migration, public API, subtle bugs, and substantive logic.
-- [ ] 2.2 Implement the pure conservative rule table and cover a one-file mechanical local route.
+- [x] 2.1 Define route tiers and an ordered route-signal enum for mechanical verbs, target count, architecture, cross-cutting behavior, concurrency, security, migration, public API, subtle bugs, and substantive logic.
+  <!-- status: completed -->
+- [x] 2.2 Implement the pure conservative rule table and cover a one-file mechanical local route.
   <!-- covers: deepseek-custom/routed-patch-preview :: Route decisions use deterministic difficulty signals :: Mechanical single-file step routes locally -->
-- [ ] 2.3 Cover every frontier signal, conflicting signals, and unknown wording, including an assertion that token confidence is not an input.
+  <!-- status: completed -->
+- [x] 2.3 Cover every frontier signal, conflicting signals, and unknown wording, including an assertion that token confidence is not an input.
   <!-- covers: deepseek-custom/routed-patch-preview :: Route decisions use deterministic difficulty signals :: Higher-risk step routes to frontier -->
-- [ ] 2.4 Add Automatic, Force local, and Force frontier run overrides while retaining the automatic decision in the report.
+  <!-- status: completed -->
+- [x] 2.4 Add Automatic, Force local, and Force frontier run overrides while retaining the automatic decision in the report.
   <!-- covers: deepseek-custom/routed-patch-preview :: A user can override the automatic route :: Local override is selected -->
+  <!-- status: completed -->
 
 ## 3. Patch envelope and validation
 

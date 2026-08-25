@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::{
     ContractSelection, OpenSpecInput, ProcedureReportStore, ProcedureReviewDisposition,
-    ProcedureRun, ProcedureRunId, StoredProcedureReport, ValidatedContractInput,
+    ProcedureRun, ProcedureRunId, RouteOverride, StoredProcedureReport, ValidatedContractInput,
     capture_path_fingerprints, require_approved_report, sha256_json,
 };
 use crate::error::HarnessError;
@@ -17,6 +17,7 @@ pub struct PatchPreviewInputRequest {
     pub localization_run_id: ProcedureRunId,
     pub change_id: String,
     pub task_id: String,
+    pub route_override: RouteOverride,
 }
 
 /// Current, approved input that a route evaluator may consume.
@@ -24,6 +25,7 @@ pub struct PatchPreviewInputRequest {
 pub struct ValidatedPatchPreviewInput {
     pub report: ProcedureRun,
     pub contract: ValidatedContractInput,
+    pub route_override: RouteOverride,
 }
 
 /// Refusal from the preview gate before routing, workspace creation, or dispatch.
@@ -180,6 +182,7 @@ impl PatchPreviewInputGate {
         Ok(ValidatedPatchPreviewInput {
             report: stored.run,
             contract,
+            route_override: request.route_override,
         })
     }
 

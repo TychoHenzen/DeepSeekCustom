@@ -83,6 +83,7 @@ mod procedure_input;
 mod procedure_preview_input;
 mod procedure_prompt;
 mod procedure_report;
+mod procedure_route;
 mod procedure_run;
 mod procedure_runner;
 mod process_group;

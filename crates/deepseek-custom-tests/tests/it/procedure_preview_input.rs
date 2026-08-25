@@ -5,7 +5,7 @@ use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreviewInputError,
     PatchPreviewInputGate, PatchPreviewInputRequest, ProcedureAttemptDisposition,
     ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, sha256_json,
+    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, RouteOverride, sha256_json,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -116,6 +116,7 @@ fn request(run_id: ProcedureRunId, change_id: &str, task_id: &str) -> PatchPrevi
         localization_run_id: run_id,
         change_id: change_id.to_string(),
         task_id: task_id.to_string(),
+        route_override: RouteOverride::Automatic,
     }
 }
 
