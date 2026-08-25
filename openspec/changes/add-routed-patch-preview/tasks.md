@@ -49,9 +49,11 @@
   <!-- status: completed -->
 - [x] 4.2 Run Claude CLI and Codex CLI drafting through `run_subagent` with the disposable directory as their working directory, then discard all workspace edits they made.
   <!-- status: completed -->
-- [ ] 4.3 Run `git apply --check` against the disposable workspace to validate patch hunks without applying them to real files.
-- [ ] 4.4 Add fake CLI tests that deliberately write beside the target and prove the real workspace remains unchanged.
+- [x] 4.3 Run `git apply --check` against the disposable workspace to validate patch hunks without applying them to real files.
+  <!-- status: completed -->
+- [x] 4.4 Add fake CLI tests that deliberately write beside the target and prove the real workspace remains unchanged.
   <!-- covers: deepseek-custom/routed-patch-preview :: Preview exposes the route and does not edit :: Preview run leaves no workspace change -->
+  <!-- status: completed -->
 
 ## 5. Preview interface and verification
 

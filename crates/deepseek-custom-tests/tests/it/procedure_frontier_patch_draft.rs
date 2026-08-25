@@ -7,9 +7,13 @@ use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::config::settings::{BackendConfig, Settings};
 use deepseek_custom::effort::Effort;
-use deepseek_custom::procedure::{FrontierPatchDraftRequest, draft_frontier_patch};
+use deepseek_custom::procedure::{
+    FrontierPatchDraftRequest, check_patch_applicability, draft_frontier_patch,
+    validate_patch_boundary,
+};
 
 const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
+const SIDE_EFFECT_PATH: &str = "src/preview-side-effect.txt";
 
 fn temp_dir(tag: &str) -> PathBuf {
     let root =
@@ -29,7 +33,7 @@ fn valid_envelope() -> String {
         },
         "targets": ["src/lib.rs"],
         "rationale": "Use the isolated CLI draft.",
-        "unified_diff": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn old() {}\n+pub fn new() {}"
+        "unified_diff": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn old() {}\n+pub fn new() {}\n"
     })
     .to_string()
 }
@@ -45,6 +49,53 @@ fn request(backend: &str) -> FrontierPatchDraftRequest {
 
 fn read_recorded_directory(path: &Path) -> PathBuf {
     PathBuf::from(std::fs::read_to_string(path).unwrap())
+}
+
+fn workspace_hash(root: &Path) -> u64 {
+    fn collect(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(root, root, &mut files);
+    files.sort();
+    let mut hash = 0xcbf29ce484222325_u64;
+    for path in files {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        for byte in relative
+            .bytes()
+            .chain([0])
+            .chain(std::fs::read(path).unwrap())
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+fn side_effect_env(cwd_file: &Path) -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "FAKE_CLI_CWD_FILE".to_string(),
+            cwd_file.display().to_string(),
+        ),
+        (
+            "FAKE_CLI_SIDE_EFFECT_PATH".to_string(),
+            SIDE_EFFECT_PATH.to_string(),
+        ),
+    ])
 }
 
 fn assert_isolated_directory_was_discarded(record_file: &Path, source: &Path) {
@@ -113,6 +164,7 @@ async fn claude_and_codex_drafts_run_in_disposable_directories_and_return_only_v
     let source = temp_dir("source with spaces");
     std::fs::create_dir_all(source.join("src")).unwrap();
     std::fs::write(source.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+    let source_hash = workspace_hash(&source);
     let evidence = temp_dir("cwd evidence");
     let claude_cwd = evidence.join("claude.txt");
     let codex_cwd = evidence.join("codex.txt");
@@ -123,16 +175,15 @@ async fn claude_and_codex_drafts_run_in_disposable_directories_and_return_only_v
             BackendConfig::ClaudeCli {
                 model: "test-claude".to_string(),
                 permission_mode: None,
-                env: Some(HashMap::from([
-                    (
-                        "CLAUDE_CLI_PATH".to_string(),
-                        env!("CARGO_BIN_EXE_fake_claude").to_string(),
-                    ),
-                    (
-                        "FAKE_CLI_CWD_FILE".to_string(),
-                        claude_cwd.display().to_string(),
-                    ),
-                ])),
+                env: Some(
+                    side_effect_env(&claude_cwd)
+                        .into_iter()
+                        .chain([(
+                            "CLAUDE_CLI_PATH".to_string(),
+                            env!("CARGO_BIN_EXE_fake_claude").to_string(),
+                        )])
+                        .collect(),
+                ),
                 models: None,
             },
         ),
@@ -141,10 +192,7 @@ async fn claude_and_codex_drafts_run_in_disposable_directories_and_return_only_v
             BackendConfig::CodexCli {
                 model: "test-codex".to_string(),
                 sandbox: Some("workspace-write".to_string()),
-                env: Some(HashMap::from([(
-                    "FAKE_CLI_CWD_FILE".to_string(),
-                    codex_cwd.display().to_string(),
-                )])),
+                env: Some(side_effect_env(&codex_cwd)),
                 models: None,
             },
         ),
@@ -172,8 +220,12 @@ async fn claude_and_codex_drafts_run_in_disposable_directories_and_return_only_v
         .await
         .unwrap();
 
-        assert_eq!(candidate.envelope().targets, ["src/lib.rs"]);
+        let boundary = validate_patch_boundary(candidate, ["src/lib.rs"]).unwrap();
+        let checked = check_patch_applicability(&source, boundary).unwrap();
+        assert_eq!(checked.envelope().targets, ["src/lib.rs"]);
         assert_isolated_directory_was_discarded(cwd_file, &source);
+        assert_eq!(workspace_hash(&source), source_hash);
+        assert!(!source.join(SIDE_EFFECT_PATH).exists());
     }
 
     std::fs::remove_dir_all(source).ok();
@@ -183,7 +235,9 @@ async fn claude_and_codex_drafts_run_in_disposable_directories_and_return_only_v
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_frontier_output_still_discards_the_cli_working_directory() {
     let source = temp_dir("malformed source");
-    std::fs::write(source.join("input.txt"), "input").unwrap();
+    std::fs::create_dir_all(source.join("src")).unwrap();
+    std::fs::write(source.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+    let source_hash = workspace_hash(&source);
     let evidence = temp_dir("malformed evidence");
     let cwd_file = evidence.join("claude.txt");
     let settings = Settings {
@@ -192,16 +246,15 @@ async fn malformed_frontier_output_still_discards_the_cli_working_directory() {
             BackendConfig::ClaudeCli {
                 model: "test-claude".to_string(),
                 permission_mode: None,
-                env: Some(HashMap::from([
-                    (
-                        "CLAUDE_CLI_PATH".to_string(),
-                        env!("CARGO_BIN_EXE_fake_claude").to_string(),
-                    ),
-                    (
-                        "FAKE_CLI_CWD_FILE".to_string(),
-                        cwd_file.display().to_string(),
-                    ),
-                ])),
+                env: Some(
+                    side_effect_env(&cwd_file)
+                        .into_iter()
+                        .chain([(
+                            "CLAUDE_CLI_PATH".to_string(),
+                            env!("CARGO_BIN_EXE_fake_claude").to_string(),
+                        )])
+                        .collect(),
+                ),
                 models: None,
             },
         )])),
@@ -224,6 +277,8 @@ async fn malformed_frontier_output_still_discards_the_cli_working_directory() {
         .is_err()
     );
     assert_isolated_directory_was_discarded(&cwd_file, &source);
+    assert_eq!(workspace_hash(&source), source_hash);
+    assert!(!source.join(SIDE_EFFECT_PATH).exists());
 
     std::fs::remove_dir_all(source).ok();
     std::fs::remove_dir_all(evidence).ok();
@@ -234,7 +289,9 @@ async fn cancelled_codex_dispatch_drops_its_disposable_working_directory() {
     let _environment = super::process_environment_lock().lock().await;
     let _codex_path = FakeCodexPath::install();
     let source = temp_dir("cancelled source");
-    std::fs::write(source.join("input.txt"), "input").unwrap();
+    std::fs::create_dir_all(source.join("src")).unwrap();
+    std::fs::write(source.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+    let source_hash = workspace_hash(&source);
     let evidence = temp_dir("cancelled evidence");
     let cwd_file = evidence.join("codex.txt");
     let settings = Settings {
@@ -243,10 +300,7 @@ async fn cancelled_codex_dispatch_drops_its_disposable_working_directory() {
             BackendConfig::CodexCli {
                 model: "test-codex".to_string(),
                 sandbox: Some("workspace-write".to_string()),
-                env: Some(HashMap::from([(
-                    "FAKE_CLI_CWD_FILE".to_string(),
-                    cwd_file.display().to_string(),
-                )])),
+                env: Some(side_effect_env(&cwd_file)),
                 models: None,
             },
         )])),
@@ -277,10 +331,16 @@ async fn cancelled_codex_dispatch_drops_its_disposable_working_directory() {
     .expect("fake Codex should record its isolated working directory");
     let disposable_path = read_recorded_directory(&cwd_file);
     assert!(disposable_path.exists());
+    assert_eq!(
+        std::fs::read_to_string(disposable_path.join(SIDE_EFFECT_PATH)).unwrap(),
+        "fake Codex workspace side effect\n"
+    );
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert!(!disposable_path.exists());
+    assert_eq!(workspace_hash(&source), source_hash);
+    assert!(!source.join(SIDE_EFFECT_PATH).exists());
 
     std::fs::remove_dir_all(source).ok();
     std::fs::remove_dir_all(evidence).ok();

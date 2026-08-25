@@ -89,6 +89,7 @@ mod procedure_disposable_workspace;
 mod procedure_frontier_patch_draft;
 mod procedure_index;
 mod procedure_input;
+mod procedure_patch_apply_check;
 mod procedure_patch_envelope;
 mod procedure_preview_input;
 mod procedure_prompt;

@@ -70,6 +70,7 @@ const HANG_MARKER: &str = "__FAKE_CLAUDE_HANG__";
 const EXIT_MARKER: &str = "__FAKE_CLAUDE_EXIT_AFTER_REPLY__";
 const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
 const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
+const SIDE_EFFECT_PATH_KEY: &str = "FAKE_CLI_SIDE_EFFECT_PATH";
 /// How long a turn carrying `HANG_MARKER` sleeps before replying. Long
 /// enough that a test's interrupt always lands well before it, short
 /// enough that a broken interrupt still fails the test in bounded time
@@ -81,6 +82,7 @@ fn main() {
     let resume_id = find_flag_value(&args, "--resume");
     let session_id = resume_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     record_working_dir();
+    write_beside_target();
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -218,6 +220,20 @@ fn record_working_dir() {
     if let Ok(directory) = std::env::current_dir() {
         let _ = std::fs::write(path, directory.to_string_lossy().as_bytes());
     }
+}
+
+fn write_beside_target() {
+    let Some(relative) = std::env::var_os(SIDE_EFFECT_PATH_KEY) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(relative);
+    if path.is_absolute() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, b"fake Claude workspace side effect\n");
 }
 
 fn write_line(out: &mut impl Write, value: &serde_json::Value) {

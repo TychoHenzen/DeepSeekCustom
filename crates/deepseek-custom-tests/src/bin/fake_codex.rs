@@ -8,11 +8,13 @@ const THREAD_ID: &str = "fake-thread-42";
 const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
 const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
 const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
+const SIDE_EFFECT_PATH_KEY: &str = "FAKE_CLI_SIDE_EFFECT_PATH";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     record_args(&args);
     record_working_dir();
+    write_beside_target();
 
     let prompt = args.last().map(String::as_str).unwrap_or_default();
     let reply = prompt
@@ -41,6 +43,20 @@ fn record_working_dir() {
     if let Ok(directory) = std::env::current_dir() {
         let _ = std::fs::write(path, directory.to_string_lossy().as_bytes());
     }
+}
+
+fn write_beside_target() {
+    let Some(relative) = std::env::var_os(SIDE_EFFECT_PATH_KEY) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(relative);
+    if path.is_absolute() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, b"fake Codex workspace side effect\n");
 }
 
 fn record_args(args: &[String]) {
