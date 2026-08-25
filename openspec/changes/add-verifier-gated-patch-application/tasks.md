@@ -23,13 +23,16 @@
 - [x] 2.1 Generalize the draft snapshot helper to preserve current tracked, untracked, and uncommitted source bytes in a disposable verification directory.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Uncommitted source is included -->
-- [ ] 2.2 Exclude `.git`, `target`, `.deepseek`, configured output trees, symlink traversal, and Windows reparse-point traversal, with fixture coverage.
+- [x] 2.2 Exclude `.git`, `target`, `.deepseek`, configured output trees, symlink traversal, and Windows reparse-point traversal, with fixture coverage.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification uses a disposable current-state snapshot :: Excluded data is not copied -->
-- [ ] 2.3 Add snapshot size limits, copy progress, cleanup on drop, and retained recovery data only when rollback cannot complete.
+- [x] 2.3 Add snapshot size limits, copy progress, cleanup on drop, and retained recovery data only when rollback cannot complete.
+<!-- status: completed -->
 
 ## 3. Deterministic gate runner
 
-- [ ] 3.1 Run `git apply --check` and `git apply` in the verification workspace before project commands.
+- [x] 3.1 Run `git apply --check` and `git apply` in the verification workspace before project commands.
+<!-- status: completed -->
 - [ ] 3.2 Implement the ordered command runner with Windows PATH and PATHEXT resolution, process-group adoption, bounded output, durations, and exit codes.
 - [ ] 3.3 Mark a candidate eligible only when patch application and every configured command exit successfully.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: Every gate passes -->

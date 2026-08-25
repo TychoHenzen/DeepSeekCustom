@@ -8,11 +8,40 @@ use thiserror::Error;
 
 const EXCLUDED_NAMES: &[&str] = &[".git", "target", ".deepseek"];
 const BINARY_SCAN_BUFFER_BYTES: usize = 8 * 1024;
+/// Default maximum number of bytes copied into one disposable workspace.
+pub const DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const BINARY_EXTENSIONS: &[&str] = &[
     "7z", "a", "avi", "bin", "bmp", "class", "dll", "dylib", "exe", "flac", "gif", "gz", "ico",
     "jar", "jpeg", "jpg", "lib", "mkv", "mov", "mp3", "mp4", "o", "obj", "onnx", "otf", "pdb",
     "pdf", "png", "pyc", "so", "tar", "ttf", "wav", "webm", "webp", "woff", "woff2", "xz", "zip",
 ];
+
+/// Extra source-relative trees that a disposable snapshot must not copy.
+///
+/// The built-in exclusions remain active for every snapshot. These paths let
+/// a caller add project-specific output trees such as `dist` or `coverage`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisposableWorkspaceOptions {
+    pub excluded_paths: Vec<PathBuf>,
+    pub max_bytes: u64,
+}
+
+/// Progress emitted after each copied regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotProgress {
+    pub files_copied: u64,
+    pub bytes_copied: u64,
+    pub total_bytes: u64,
+}
+
+impl Default for DisposableWorkspaceOptions {
+    fn default() -> Self {
+        Self {
+            excluded_paths: Vec::new(),
+            max_bytes: DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum SnapshotContents {
@@ -27,6 +56,12 @@ pub enum DisposableWorkspaceError {
     SourceNotDirectory(PathBuf),
     #[error("draft workspace source must not be a link or reparse point: {0}")]
     LinkedSource(PathBuf),
+    #[error("draft workspace exclusion must be a relative path without `.` or `..`: {0}")]
+    InvalidExclusion(PathBuf),
+    #[error(
+        "draft workspace source is {required_bytes} bytes, which exceeds the {max_bytes}-byte limit"
+    )]
+    SnapshotTooLarge { max_bytes: u64, required_bytes: u64 },
     #[error("could not {action} draft workspace path {path}: {source}")]
     FileSystem {
         action: &'static str,
@@ -42,29 +77,138 @@ pub struct DisposableDraftWorkspace {
     root: Option<PathBuf>,
 }
 
+/// Snapshot data intentionally retained after rollback could not complete.
+///
+/// Ordinary disposable workspaces do not become this type. A caller should
+/// retain one only after a rollback failure so recovery files remain inspectable.
+#[derive(Debug)]
+pub struct RetainedRecoveryWorkspace {
+    root: PathBuf,
+}
+
+impl RetainedRecoveryWorkspace {
+    pub fn path(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn cleanup(self) -> Result<(), DisposableWorkspaceError> {
+        remove_workspace(&self.root)
+    }
+}
+
 impl DisposableDraftWorkspace {
     /// Copy the current source state into a new directory under the system temp directory.
     pub fn create(source_root: &Path) -> Result<Self, DisposableWorkspaceError> {
-        Self::create_with_contents(source_root, SnapshotContents::DraftText)
+        let mut progress = |_| {};
+        Self::create_with_contents(
+            source_root,
+            SnapshotContents::DraftText,
+            &DisposableWorkspaceOptions::default(),
+            &mut progress,
+        )
     }
 
     /// Copy every regular file from the current source state into a disposable directory.
     pub fn create_current_state(source_root: &Path) -> Result<Self, DisposableWorkspaceError> {
-        Self::create_with_contents(source_root, SnapshotContents::CurrentState)
+        Self::create_current_state_with_options(source_root, &DisposableWorkspaceOptions::default())
+    }
+
+    /// Copy the current source state with project-specific output exclusions.
+    pub fn create_current_state_with_options(
+        source_root: &Path,
+        options: &DisposableWorkspaceOptions,
+    ) -> Result<Self, DisposableWorkspaceError> {
+        let mut progress = |_| {};
+        Self::create_with_contents(
+            source_root,
+            SnapshotContents::CurrentState,
+            options,
+            &mut progress,
+        )
+    }
+
+    /// Copy the current source state and report bounded copy progress.
+    pub fn create_current_state_with_progress(
+        source_root: &Path,
+        options: &DisposableWorkspaceOptions,
+        progress: &mut impl FnMut(SnapshotProgress),
+    ) -> Result<Self, DisposableWorkspaceError> {
+        Self::create_with_contents(
+            source_root,
+            SnapshotContents::CurrentState,
+            options,
+            progress,
+        )
+    }
+
+    /// Copy draft text with project-specific output exclusions.
+    pub fn create_draft_with_options(
+        source_root: &Path,
+        options: &DisposableWorkspaceOptions,
+    ) -> Result<Self, DisposableWorkspaceError> {
+        let mut progress = |_| {};
+        Self::create_with_contents(
+            source_root,
+            SnapshotContents::DraftText,
+            options,
+            &mut progress,
+        )
     }
 
     fn create_with_contents(
         source_root: &Path,
         contents: SnapshotContents,
+        options: &DisposableWorkspaceOptions,
+        progress: &mut impl FnMut(SnapshotProgress),
     ) -> Result<Self, DisposableWorkspaceError> {
         validate_source_root(source_root)?;
+        let exclusions = SnapshotExclusions::new(options)?;
+        let total_bytes = snapshot_size(source_root, contents, &exclusions, &mut Vec::new())?;
+        if total_bytes > options.max_bytes {
+            return Err(DisposableWorkspaceError::SnapshotTooLarge {
+                max_bytes: options.max_bytes,
+                required_bytes: total_bytes,
+            });
+        }
         let root =
             std::env::temp_dir().join(format!("deepseek-draft-workspace-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).map_err(|source| file_error("create", &root, source))?;
 
         let workspace = Self { root: Some(root) };
-        copy_directory(source_root, workspace.path(), contents)?;
+        progress(SnapshotProgress {
+            files_copied: 0,
+            bytes_copied: 0,
+            total_bytes,
+        });
+        let mut copy_state = CopyState {
+            files_copied: 0,
+            bytes_copied: 0,
+            total_bytes,
+            max_bytes: options.max_bytes,
+            progress,
+        };
+        if let Err(error) = copy_directory(
+            source_root,
+            workspace.path(),
+            contents,
+            &exclusions,
+            &mut Vec::new(),
+            &mut copy_state,
+        ) {
+            drop(workspace);
+            return Err(error);
+        }
         Ok(workspace)
+    }
+
+    /// Transfer ownership without cleanup for rollback recovery inspection.
+    pub fn retain_for_recovery(mut self) -> RetainedRecoveryWorkspace {
+        RetainedRecoveryWorkspace {
+            root: self
+                .root
+                .take()
+                .expect("a live disposable workspace always has a root"),
+        }
     }
 
     /// Root directory supplied as the drafting subagent's working directory.
@@ -118,6 +262,9 @@ fn copy_directory(
     source: &Path,
     destination: &Path,
     contents: SnapshotContents,
+    exclusions: &SnapshotExclusions,
+    relative: &mut Vec<String>,
+    copy_state: &mut CopyState<'_>,
 ) -> Result<(), DisposableWorkspaceError> {
     let mut entries = fs::read_dir(source)
         .map_err(|error| file_error("read", source, error))?
@@ -130,10 +277,17 @@ fn copy_directory(
         if is_excluded_name(&name) {
             continue;
         }
+        let component = name.to_string_lossy().into_owned();
+        relative.push(component);
+        if exclusions.matches(relative) {
+            relative.pop();
+            continue;
+        }
         let source_path = entry.path();
         let metadata = fs::symlink_metadata(&source_path)
             .map_err(|error| file_error("inspect", &source_path, error))?;
         if metadata.file_type().is_symlink() || is_reparse_point_from_metadata(&metadata) {
+            relative.pop();
             continue;
         }
 
@@ -141,16 +295,163 @@ fn copy_directory(
         if metadata.is_dir() {
             fs::create_dir(&destination_path)
                 .map_err(|error| file_error("create", &destination_path, error))?;
-            copy_directory(&source_path, &destination_path, contents)?;
+            copy_directory(
+                &source_path,
+                &destination_path,
+                contents,
+                exclusions,
+                relative,
+                copy_state,
+            )?;
         } else if metadata.is_file()
             && (matches!(contents, SnapshotContents::CurrentState)
                 || !is_binary_file(&source_path)?)
         {
-            fs::copy(&source_path, &destination_path)
+            let copied_bytes = fs::copy(&source_path, &destination_path)
                 .map_err(|error| file_error("copy", &source_path, error))?;
+            copy_state.record_file(copied_bytes)?;
         }
+        relative.pop();
     }
     Ok(())
+}
+
+struct CopyState<'a> {
+    files_copied: u64,
+    bytes_copied: u64,
+    total_bytes: u64,
+    max_bytes: u64,
+    progress: &'a mut dyn FnMut(SnapshotProgress),
+}
+
+impl CopyState<'_> {
+    fn record_file(&mut self, bytes: u64) -> Result<(), DisposableWorkspaceError> {
+        self.bytes_copied = self.bytes_copied.checked_add(bytes).ok_or(
+            DisposableWorkspaceError::SnapshotTooLarge {
+                max_bytes: self.max_bytes,
+                required_bytes: u64::MAX,
+            },
+        )?;
+        if self.bytes_copied > self.max_bytes {
+            return Err(DisposableWorkspaceError::SnapshotTooLarge {
+                max_bytes: self.max_bytes,
+                required_bytes: self.bytes_copied,
+            });
+        }
+        self.files_copied += 1;
+        (self.progress)(SnapshotProgress {
+            files_copied: self.files_copied,
+            bytes_copied: self.bytes_copied,
+            total_bytes: self.total_bytes,
+        });
+        Ok(())
+    }
+}
+
+fn snapshot_size(
+    source: &Path,
+    contents: SnapshotContents,
+    exclusions: &SnapshotExclusions,
+    relative: &mut Vec<String>,
+) -> Result<u64, DisposableWorkspaceError> {
+    let mut total = 0_u64;
+    let mut entries = fs::read_dir(source)
+        .map_err(|error| file_error("read", source, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| file_error("read", source, error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let name = entry.file_name();
+        if is_excluded_name(&name) {
+            continue;
+        }
+        relative.push(name.to_string_lossy().into_owned());
+        if exclusions.matches(relative) {
+            relative.pop();
+            continue;
+        }
+        let source_path = entry.path();
+        let metadata = fs::symlink_metadata(&source_path)
+            .map_err(|error| file_error("inspect", &source_path, error))?;
+        if metadata.file_type().is_symlink() || is_reparse_point_from_metadata(&metadata) {
+            relative.pop();
+            continue;
+        }
+        if metadata.is_dir() {
+            total = checked_snapshot_size_add(
+                total,
+                snapshot_size(&source_path, contents, exclusions, relative)?,
+                u64::MAX,
+            )?;
+        } else if metadata.is_file()
+            && (matches!(contents, SnapshotContents::CurrentState)
+                || !is_binary_file(&source_path)?)
+        {
+            total = checked_snapshot_size_add(total, metadata.len(), u64::MAX)?;
+        }
+        relative.pop();
+    }
+    Ok(total)
+}
+
+fn checked_snapshot_size_add(
+    current: u64,
+    additional: u64,
+    max_bytes: u64,
+) -> Result<u64, DisposableWorkspaceError> {
+    let total =
+        current
+            .checked_add(additional)
+            .ok_or(DisposableWorkspaceError::SnapshotTooLarge {
+                max_bytes,
+                required_bytes: u64::MAX,
+            })?;
+    if total > max_bytes {
+        return Err(DisposableWorkspaceError::SnapshotTooLarge {
+            max_bytes,
+            required_bytes: total,
+        });
+    }
+    Ok(total)
+}
+
+#[derive(Debug)]
+struct SnapshotExclusions {
+    paths: Vec<Vec<String>>,
+}
+
+impl SnapshotExclusions {
+    fn new(options: &DisposableWorkspaceOptions) -> Result<Self, DisposableWorkspaceError> {
+        options
+            .excluded_paths
+            .iter()
+            .map(|path| normalize_exclusion(path))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|paths| Self { paths })
+    }
+
+    fn matches(&self, relative: &[String]) -> bool {
+        self.paths
+            .iter()
+            .any(|excluded| relative.starts_with(excluded))
+    }
+}
+
+fn normalize_exclusion(path: &Path) -> Result<Vec<String>, DisposableWorkspaceError> {
+    let components = path
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    match components {
+        Some(components) if !components.is_empty() => Ok(components),
+        _ => Err(DisposableWorkspaceError::InvalidExclusion(
+            path.to_path_buf(),
+        )),
+    }
 }
 
 fn is_excluded_name(name: &std::ffi::OsStr) -> bool {

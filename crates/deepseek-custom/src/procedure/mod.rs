@@ -27,7 +27,10 @@ mod validation;
 mod verification_input;
 
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
-pub use disposable_workspace::{DisposableDraftWorkspace, DisposableWorkspaceError};
+pub use disposable_workspace::{
+    DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,
+    DisposableWorkspaceOptions, RetainedRecoveryWorkspace, SnapshotProgress,
+};
 pub use fingerprint::{
     ProcedureFingerprintError, ProcedureInputFingerprints, ProcedurePathFingerprint,
     ProcedurePathState, capture_path_fingerprint, capture_path_fingerprints, sha256_json,
@@ -45,7 +48,10 @@ pub use input::{
 pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
 };
-pub use patch_apply_check::{ApplyCheckedPatch, PatchApplyCheckError, check_patch_applicability};
+pub use patch_apply_check::{
+    AppliedPatchWorkspace, ApplyCheckedPatch, GitApplyPhase, GitApplyResult, PatchApplyCheckError,
+    apply_patch_in_workspace, check_patch_applicability,
+};
 pub use patch_boundary::{BoundaryValidatedPatch, PatchBoundaryError, validate_patch_boundary};
 pub use patch_envelope::{
     PatchCandidate, PatchEnvelope, PatchEnvelopeError, PatchRouteMetadata, decode_patch_envelope,

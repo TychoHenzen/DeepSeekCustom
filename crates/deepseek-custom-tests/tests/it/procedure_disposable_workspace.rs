@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use deepseek_custom::procedure::DisposableDraftWorkspace;
+use deepseek_custom::procedure::{
+    DisposableDraftWorkspace, DisposableWorkspaceError, DisposableWorkspaceOptions,
+    SnapshotProgress,
+};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -90,10 +93,12 @@ fn snapshot_never_copies_or_traverses_a_directory_link() {
     write(&source, "kept.txt", "kept");
     write(&outside, "escaped.txt", "outside");
     let link = source.join("linked");
+    let file_link = source.join("linked-file");
     assert!(
         create_directory_link(&outside, &link),
         "test platform must support a directory link or junction"
     );
+    let file_link_created = create_file_link(&outside.join("escaped.txt"), &file_link);
 
     let workspace = DisposableDraftWorkspace::create(&source).unwrap();
 
@@ -102,10 +107,85 @@ fn snapshot_never_copies_or_traverses_a_directory_link() {
         "kept"
     );
     assert!(!workspace.path().join("linked").exists());
+    if file_link_created {
+        assert!(!workspace.path().join("linked-file").exists());
+    }
 
     std::fs::remove_dir(&link).ok();
+    std::fs::remove_file(&file_link).ok();
     std::fs::remove_dir_all(source).ok();
     std::fs::remove_dir_all(outside).ok();
+}
+
+#[test]
+fn configured_output_trees_are_excluded_by_relative_prefix() {
+    let source = temp_dir("configured exclusions");
+    write(&source, "src/kept.rs", "kept\n");
+    write(&source, "dist/bundle.js", "generated\n");
+    write(&source, "reports/coverage/index.html", "generated\n");
+    write(&source, "reports/kept.txt", "kept\n");
+    let options = DisposableWorkspaceOptions {
+        excluded_paths: vec!["dist".into(), "reports/coverage".into()],
+        max_bytes: DisposableWorkspaceOptions::default().max_bytes,
+    };
+
+    let workspace =
+        DisposableDraftWorkspace::create_current_state_with_options(&source, &options).unwrap();
+
+    assert!(workspace.path().join("src/kept.rs").is_file());
+    assert!(!workspace.path().join("dist").exists());
+    assert!(!workspace.path().join("reports/coverage").exists());
+    assert!(workspace.path().join("reports/kept.txt").is_file());
+
+    std::fs::remove_dir_all(source).ok();
+}
+
+#[test]
+fn snapshot_rejects_oversized_input_before_creating_workspace() {
+    let source = temp_dir("size limit");
+    write(&source, "src/large.rs", "0123456789");
+    let options = DisposableWorkspaceOptions {
+        excluded_paths: Vec::new(),
+        max_bytes: 5,
+    };
+
+    let error =
+        DisposableDraftWorkspace::create_current_state_with_options(&source, &options).unwrap_err();
+
+    assert!(matches!(
+        error,
+        DisposableWorkspaceError::SnapshotTooLarge {
+            max_bytes: 5,
+            required_bytes: 10
+        }
+    ));
+    std::fs::remove_dir_all(source).ok();
+}
+
+#[test]
+fn snapshot_reports_copy_progress_and_recovery_retention_is_explicit() {
+    let source = temp_dir("progress and recovery");
+    write(&source, "a.txt", "one");
+    write(&source, "nested/b.txt", "two");
+    let options = DisposableWorkspaceOptions::default();
+    let mut progress = Vec::<SnapshotProgress>::new();
+
+    let workspace = DisposableDraftWorkspace::create_current_state_with_progress(
+        &source,
+        &options,
+        &mut |event| progress.push(event),
+    )
+    .unwrap();
+    assert_eq!(progress.first().unwrap().bytes_copied, 0);
+    assert_eq!(progress.last().unwrap().files_copied, 2);
+    assert_eq!(progress.last().unwrap().bytes_copied, 6);
+    let recovery = workspace.retain_for_recovery();
+    let recovery_path = recovery.path().to_path_buf();
+    assert!(recovery_path.is_dir());
+    recovery.cleanup().unwrap();
+    assert!(!recovery_path.exists());
+
+    std::fs::remove_dir_all(source).ok();
 }
 
 #[test]
@@ -138,6 +218,21 @@ fn create_directory_link(target: &Path, link: &Path) -> bool {
         .arg(target)
         .output()
         .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(windows)]
+fn create_file_link(target: &Path, link: &Path) -> bool {
+    std::os::windows::fs::symlink_file(target, link).is_ok()
+}
+
+#[cfg(unix)]
+fn create_file_link(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(not(any(windows, unix)))]
+fn create_file_link(_target: &Path, _link: &Path) -> bool {
+    false
 }
 
 #[cfg(unix)]
