@@ -28,11 +28,14 @@
 
 ## 3. Patch envelope and validation
 
-- [ ] 3.1 Define the patch-envelope schema and typed decoder for targets, rationale, route metadata, and unified diff.
-- [ ] 3.2 Use structured output for local drafting and pass valid output through the shared envelope and diff parser.
+- [x] 3.1 Define the patch-envelope schema and typed decoder for targets, rationale, route metadata, and unified diff.
+  <!-- status: completed -->
+- [x] 3.2 Use structured output for local drafting and pass valid output through the shared envelope and diff parser.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch output has one validated envelope :: Valid local envelope -->
-- [ ] 3.3 Require exactly one JSON envelope from frontier output and report deterministic parse errors without extracting guessed patches.
+  <!-- status: completed -->
+- [x] 3.3 Require exactly one JSON envelope from frontier output and report deterministic parse errors without extracting guessed patches.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch output has one validated envelope :: Frontier output is malformed -->
+  <!-- status: completed -->
 - [ ] 3.4 Normalize diff paths and accept create, update, delete, and rename hunks only when every endpoint is localized.
   <!-- covers: deepseek-custom/routed-patch-preview :: A patch stays inside the localization boundary :: Patch touches only localized files -->
 - [ ] 3.5 Reject absolute paths, traversal, malformed headers, and any path outside the localization allowlist, listing all violations.

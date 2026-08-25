@@ -6,8 +6,11 @@
 
 mod dispatch;
 mod fingerprint;
+mod frontier_patch_output;
 mod index;
 mod input;
+mod local_patch_draft;
+mod patch_envelope;
 mod preview_input;
 mod prompt;
 pub mod report;
@@ -22,11 +25,19 @@ pub use fingerprint::{
     ProcedureFingerprintError, ProcedureInputFingerprints, ProcedurePathFingerprint,
     ProcedurePathState, capture_path_fingerprint, capture_path_fingerprints, sha256_json,
 };
+pub use frontier_patch_output::decode_frontier_patch_output;
 pub use index::{RepositoryIndexError, build_repository_index};
 pub use input::{
     CapabilityDeltaSlice, ContractSelection, OpenSpecChange, OpenSpecCommandFailure, OpenSpecInput,
     OpenSpecInputError, OpenSpecValidation, ProposalScope, RequirementSlice, ScenarioSlice,
     SelectedContractSlice, ValidatedContractInput,
+};
+pub use local_patch_draft::{
+    LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
+};
+pub use patch_envelope::{
+    PatchCandidate, PatchEnvelope, PatchEnvelopeError, PatchRouteMetadata, decode_patch_envelope,
+    patch_envelope_response_format,
 };
 pub use preview_input::{
     PatchPreviewInputError, PatchPreviewInputGate, PatchPreviewInputRequest,
