@@ -71,7 +71,7 @@ impl DeepSeekGui {
                 }
                 ui.label(
                     RichText::new(
-                        "Effort changes apply next turn (DeepSeek, Ollama). Claude respawns its child.",
+                        "Effort applies to DeepSeek, Claude, and Codex. Ollama uses model defaults.",
                     )
                     .color(Color32::GRAY)
                     .small(),

@@ -23,7 +23,7 @@
     "ollama": {
       "kind": "api",
       "provider": "ollama",
-      "model": "qwen2.5-coder:7b-instruct-q4_K_M"
+      "model": "hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M"
     },
     "codex": {
       "kind": "codex_cli",
