@@ -1,7 +1,7 @@
 use deepseek_custom::procedure::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, MechanicalVerb, PatchEnvelopeError,
     RouteSignal, decode_frontier_patch_output, decode_patch_envelope,
-    patch_envelope_response_format,
+    patch_envelope_response_format, validate_patch_boundary,
 };
 use deepseek_custom::{
     api::provider::Provider, backend::resolved::ResolvedBackend, effort::Effort,
@@ -147,6 +147,222 @@ fn pure_rename_diff_is_a_valid_single_file_candidate() {
             .unwrap()
             .file_count(),
         1
+    );
+}
+
+// covers: deepseek-custom/routed-patch-preview :: A patch stays inside the localization boundary :: Patch touches only localized files
+#[test]
+fn create_update_delete_and_rename_are_eligible_when_every_endpoint_is_localized() {
+    let mut envelope = valid_envelope();
+    envelope["targets"] = serde_json::json!([
+        "src/created.rs",
+        "src/deleted.rs",
+        "src/new.rs",
+        "src/old.rs",
+        "src/updated.rs"
+    ]);
+    envelope["unified_diff"] = serde_json::json!(concat!(
+        "diff --git a/src/updated.rs b/src/updated.rs\n",
+        "--- a/src/updated.rs\n",
+        "+++ b/src/updated.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n",
+        "diff --git a/src/created.rs b/src/created.rs\n",
+        "new file mode 100644\n",
+        "--- /dev/null\n",
+        "+++ b/src/created.rs\n",
+        "@@ -0,0 +1 @@\n",
+        "+created\n",
+        "diff --git a/src/deleted.rs b/src/deleted.rs\n",
+        "deleted file mode 100644\n",
+        "--- a/src/deleted.rs\n",
+        "+++ /dev/null\n",
+        "@@ -1 +0,0 @@\n",
+        "-deleted\n",
+        "diff --git a/src/old.rs b/src/new.rs\n",
+        "similarity index 100%\n",
+        "rename from src/old.rs\n",
+        "rename to src/new.rs\n"
+    ));
+    let allowlist = [
+        "src/created.rs",
+        "src/deleted.rs",
+        "src/new.rs",
+        "src/old.rs",
+        "src/updated.rs",
+    ];
+
+    let eligible = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        allowlist,
+    )
+    .unwrap();
+
+    assert_eq!(eligible.file_count(), 4);
+    assert_eq!(eligible.paths(), allowlist);
+    assert_eq!(eligible.envelope().targets.len(), 5);
+}
+
+#[test]
+fn standard_prefixes_and_windows_separators_normalize_before_comparison() {
+    let mut envelope = valid_envelope();
+    envelope["unified_diff"] = serde_json::json!(
+        "diff --git a/src\\lib.rs b/src\\lib.rs\n--- a/src\\lib.rs\n+++ b/src\\lib.rs\n@@ -1 +1 @@\n-old_name\n+new_name\n"
+    );
+
+    let eligible = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        ["src/lib.rs"],
+    )
+    .unwrap();
+
+    assert_eq!(eligible.paths(), ["src/lib.rs"]);
+}
+
+// covers: deepseek-custom/routed-patch-preview :: A patch stays inside the localization boundary :: Patch reaches an unlocalized file
+#[test]
+fn mixed_valid_and_invalid_paths_reject_the_whole_patch_and_list_every_violation() {
+    let mut envelope = valid_envelope();
+    envelope["targets"] = serde_json::json!(["src/lib.rs", "src/outside.rs"]);
+    envelope["unified_diff"] = serde_json::json!(concat!(
+        "diff --git a/src/lib.rs b/src/lib.rs\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n",
+        "diff --git a/src/outside.rs b/src/outside.rs\n",
+        "--- a/src/outside.rs\n",
+        "+++ b/src/outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n"
+    ));
+
+    let error = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        ["src/lib.rs"],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.violations(),
+        ["unexpected path `src/outside.rs` is outside the localization allowlist"]
+    );
+}
+
+#[test]
+fn absolute_traversal_and_unlocalized_paths_are_aggregated_and_sorted() {
+    let mut envelope = valid_envelope();
+    envelope["targets"] = serde_json::json!(["src/lib.rs"]);
+    envelope["unified_diff"] = serde_json::json!(concat!(
+        "diff --git a/src/lib.rs b/src/lib.rs\n",
+        "--- /etc/passwd\n",
+        "+++ C:\\outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n",
+        "diff --git a/../escape.rs b/src/outside.rs\n",
+        "--- a/../escape.rs\n",
+        "+++ b/src/outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n"
+    ));
+
+    let error = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        ["src/lib.rs"],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.violations(),
+        [
+            "invalid new path `C:\\outside.rs` at line 3: absolute paths are not allowed",
+            "invalid old path `/etc/passwd` at line 2: absolute paths are not allowed",
+            "invalid old path `a/../escape.rs` at line 7: path traversal is not allowed",
+            "invalid old path `a/../escape.rs` at line 8: path traversal is not allowed",
+            "unexpected path `src/outside.rs` is outside the localization allowlist",
+        ]
+    );
+    assert_eq!(
+        error.to_string(),
+        concat!(
+            "patch violates the localization boundary:\n",
+            "- invalid new path `C:\\outside.rs` at line 3: absolute paths are not allowed\n",
+            "- invalid old path `/etc/passwd` at line 2: absolute paths are not allowed\n",
+            "- invalid old path `a/../escape.rs` at line 7: path traversal is not allowed\n",
+            "- invalid old path `a/../escape.rs` at line 8: path traversal is not allowed\n",
+            "- unexpected path `src/outside.rs` is outside the localization allowlist"
+        )
+    );
+}
+
+#[test]
+fn malformed_and_mismatched_headers_report_together() {
+    let mut envelope = valid_envelope();
+    envelope["targets"] = serde_json::json!(["src/lib.rs", "src/other.rs"]);
+    envelope["unified_diff"] = serde_json::json!(concat!(
+        "diff --git a/src/lib.rs\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n",
+        "diff --git a/src/other.rs b/src/other.rs\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-old\n",
+        "+new\n"
+    ));
+
+    let error = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        ["src/lib.rs", "src/other.rs"],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.violations(),
+        [
+            "malformed diff header at line 1: expected two path endpoints",
+            "mismatched new file header in section at line 7: diff header has `src/other.rs`, metadata has `src/outside.rs`",
+            "mismatched old file header in section at line 7: diff header has `src/other.rs`, metadata has `src/lib.rs`",
+            "unexpected path `src/outside.rs` is outside the localization allowlist",
+        ]
+    );
+}
+
+#[test]
+fn duplicate_unexpected_paths_are_listed_once() {
+    let mut envelope = valid_envelope();
+    envelope["unified_diff"] = serde_json::json!(concat!(
+        "diff --git a/src/outside.rs b/src/outside.rs\n",
+        "--- a/src/outside.rs\n",
+        "+++ b/src/outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-one\n",
+        "+two\n",
+        "diff --git a/src/outside.rs b/src/outside.rs\n",
+        "--- a/src/outside.rs\n",
+        "+++ b/src/outside.rs\n",
+        "@@ -1 +1 @@\n",
+        "-two\n",
+        "+three\n"
+    ));
+
+    let error = validate_patch_boundary(
+        decode_patch_envelope(&envelope.to_string()).unwrap(),
+        ["src/lib.rs"],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.violations(),
+        ["unexpected path `src/outside.rs` is outside the localization allowlist"]
     );
 }
 

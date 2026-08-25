@@ -10,6 +10,7 @@ mod frontier_patch_output;
 mod index;
 mod input;
 mod local_patch_draft;
+mod patch_boundary;
 mod patch_envelope;
 mod preview_input;
 mod prompt;
@@ -35,6 +36,7 @@ pub use input::{
 pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
 };
+pub use patch_boundary::{BoundaryValidatedPatch, PatchBoundaryError, validate_patch_boundary};
 pub use patch_envelope::{
     PatchCandidate, PatchEnvelope, PatchEnvelopeError, PatchRouteMetadata, decode_patch_envelope,
     patch_envelope_response_format,

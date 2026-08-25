@@ -36,10 +36,12 @@
 - [x] 3.3 Require exactly one JSON envelope from frontier output and report deterministic parse errors without extracting guessed patches.
   <!-- covers: deepseek-custom/routed-patch-preview :: Patch output has one validated envelope :: Frontier output is malformed -->
   <!-- status: completed -->
-- [ ] 3.4 Normalize diff paths and accept create, update, delete, and rename hunks only when every endpoint is localized.
+- [x] 3.4 Normalize diff paths and accept create, update, delete, and rename hunks only when every endpoint is localized.
   <!-- covers: deepseek-custom/routed-patch-preview :: A patch stays inside the localization boundary :: Patch touches only localized files -->
-- [ ] 3.5 Reject absolute paths, traversal, malformed headers, and any path outside the localization allowlist, listing all violations.
+  <!-- status: completed -->
+- [x] 3.5 Reject absolute paths, traversal, malformed headers, and any path outside the localization allowlist, listing all violations.
   <!-- covers: deepseek-custom/routed-patch-preview :: A patch stays inside the localization boundary :: Patch reaches an unlocalized file -->
+  <!-- status: completed -->
 
 ## 4. Isolated drafting
 
