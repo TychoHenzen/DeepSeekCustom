@@ -71,9 +71,10 @@ pub use preview_input::{
     ValidatedPatchPreviewInput,
 };
 pub use promotion::{
-    PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison, PromotionError,
-    PromotionRecoveryEvidence, PromotionResult, PromotionTarget, PromotionTargetError,
-    PromotionTargetKind, StalePromotionPath, model_promotion_targets, promote_verified_workspace,
+    PromotionBaseline, PromotionBaselineCheckError, PromotionBaselineComparison,
+    PromotionCleanupEvidence, PromotionError, PromotionRecoveryEvidence, PromotionResult,
+    PromotionTarget, PromotionTargetError, PromotionTargetKind, StalePromotionPath,
+    model_promotion_targets, promote_verified_workspace,
 };
 #[cfg(feature = "test-support")]
 pub use promotion::{PromotionFailureInjection, promote_verified_workspace_with_failure_injection};

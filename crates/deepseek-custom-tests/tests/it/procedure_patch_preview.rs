@@ -77,6 +77,10 @@ fn write_fixture(root: &Path, task_text: &str, requirement_text: &str) -> PathBu
 }
 
 fn approved_report(root: &Path, command: &Path) -> ProcedureRun {
+    approved_report_with_targets(root, command, &[TARGET])
+}
+
+fn approved_report_with_targets(root: &Path, command: &Path, targets: &[&str]) -> ProcedureRun {
     let input = OpenSpecInput::with_command(root, command.display().to_string());
     let validated = input.validate_and_select_task(CHANGE_ID, TASK_ID).unwrap();
     let report = ProcedureRun {
@@ -93,11 +97,15 @@ fn approved_report(root: &Path, command: &Path) -> ProcedureRun {
             backend: "fixture-localizer".to_string(),
             model: "fixture-model".to_string(),
             disposition: ProcedureAttemptDisposition::Accepted,
-            targets: vec![LocalizationTarget {
-                path: TARGET.to_string(),
-                symbol: Some("target_symbol".to_string()),
-                evidence: "The selected function owns the requested edit.".to_string(),
-            }],
+            targets: targets
+                .iter()
+                .map(|path| LocalizationTarget {
+                    path: (*path).to_string(),
+                    symbol: None,
+                    evidence: "The selected file owns one endpoint of the requested edit."
+                        .to_string(),
+                })
+                .collect(),
             validation_error: None,
         }],
         review_disposition: ProcedureReviewDisposition::Approved,
@@ -108,6 +116,31 @@ fn approved_report(root: &Path, command: &Path) -> ProcedureRun {
         .unwrap();
     report
 }
+
+const ALL_ENDPOINTS_DIFF: &str = concat!(
+    "diff --git a/src/updated.rs b/src/updated.rs\n",
+    "--- a/src/updated.rs\n",
+    "+++ b/src/updated.rs\n",
+    "@@ -1 +1 @@\n",
+    "-before\n",
+    "+after\n",
+    "diff --git a/src/created.rs b/src/created.rs\n",
+    "new file mode 100644\n",
+    "--- /dev/null\n",
+    "+++ b/src/created.rs\n",
+    "@@ -0,0 +1 @@\n",
+    "+created\n",
+    "diff --git a/src/deleted.rs b/src/deleted.rs\n",
+    "deleted file mode 100644\n",
+    "--- a/src/deleted.rs\n",
+    "+++ /dev/null\n",
+    "@@ -1 +0,0 @@\n",
+    "-deleted\n",
+    "diff --git a/src/old.rs b/src/new.rs\n",
+    "similarity index 100%\n",
+    "rename from src/old.rs\n",
+    "rename to src/new.rs\n",
+);
 
 fn source_hashes(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn collect(root: &Path, directory: &Path, hashes: &mut BTreeMap<String, Vec<u8>>) {
@@ -272,6 +305,100 @@ async fn local_mechanical_preview_runs_end_to_end_without_changing_source_hashes
     assert!(prompt.contains("--- BEGIN src/lib.rs ---"));
     assert!(prompt.contains("pub fn target_symbol() {}"));
     assert!(prompt.contains("must end with a newline"));
+    server.verify().await;
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn persisted_preview_baseline_covers_create_update_delete_and_rename_endpoints() {
+    let root = temp_dir("all endpoint baseline");
+    let command = write_fixture(
+        &root,
+        "Rename all endpoint fixtures",
+        "rename fixture files",
+    );
+    std::fs::write(root.join("src/updated.rs"), "before\n").unwrap();
+    std::fs::write(root.join("src/deleted.rs"), "deleted\n").unwrap();
+    std::fs::write(root.join("src/old.rs"), "renamed\n").unwrap();
+    let targets = [
+        "src/created.rs",
+        "src/deleted.rs",
+        "src/new.rs",
+        "src/old.rs",
+        "src/updated.rs",
+    ];
+    let report = approved_report_with_targets(&root, &command, &targets);
+    let server = MockServer::start().await;
+    let model = "qwen-baseline-test";
+    let response = serde_json::json!({
+        "route": {
+            "automatic_tier": "frontier",
+            "effective_tier": "local",
+            "selected_override": "force_local",
+            "overridden": true,
+            "signals": [
+                {"kind": "mechanical_verb", "value": "rename"},
+                {"kind": "target_count", "value": 5}
+            ]
+        },
+        "targets": targets,
+        "rationale": "Exercise every promotion endpoint kind.",
+        "unified_diff": ALL_ENDPOINTS_DIFF
+    })
+    .to_string();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(response, model)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let settings = Settings {
+        backends: Some(HashMap::from([(
+            "local-ollama".to_string(),
+            BackendConfig::Api {
+                provider: ApiProvider::Ollama,
+                model: model.to_string(),
+                base_url: Some(server.uri()),
+                api_key: None,
+                models: None,
+            },
+        )])),
+        ..Settings::default()
+    };
+    let mut request = request(report.id, model);
+    request.route_override = RouteOverride::ForceLocal;
+
+    let (preview, _) = runner(&root, &command, settings)
+        .run(deepseek_custom::procedure::PatchPreviewId::new(), request)
+        .await
+        .unwrap();
+    let (_, baseline) = deepseek_custom::procedure::PatchPreviewStore::for_project(&root)
+        .load_with_baseline(preview.id)
+        .unwrap();
+    let baseline = baseline.expect("new previews persist their endpoint baseline");
+
+    assert_eq!(
+        baseline
+            .fingerprints()
+            .iter()
+            .map(|fingerprint| fingerprint.path.as_str())
+            .collect::<Vec<_>>(),
+        targets
+    );
+    assert_eq!(
+        baseline
+            .fingerprints()
+            .iter()
+            .map(|fingerprint| fingerprint.state)
+            .collect::<Vec<_>>(),
+        [
+            deepseek_custom::procedure::ProcedurePathState::Missing,
+            deepseek_custom::procedure::ProcedurePathState::Present,
+            deepseek_custom::procedure::ProcedurePathState::Missing,
+            deepseek_custom::procedure::ProcedurePathState::Present,
+            deepseek_custom::procedure::ProcedurePathState::Present,
+        ]
+    );
     server.verify().await;
     std::fs::remove_dir_all(root).ok();
 }

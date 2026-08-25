@@ -130,10 +130,53 @@ fn save_preview(root: &Path, report: &ProcedureRun) -> PatchPreview {
         model: "fixture-model".to_string(),
         targets: vec!["src/lib.rs".to_string()],
         rationale: "The fixture target is localized.".to_string(),
-        unified_diff: String::new(),
+        unified_diff: concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -1 +1 @@\n",
+            "-pub fn target_symbol() {}\n",
+            "+pub fn renamed_symbol() {}\n",
+        )
+        .to_string(),
     };
     PatchPreviewStore::for_project(root).save(&preview).unwrap();
     preview
+}
+
+#[test]
+fn legacy_preview_without_promotion_baseline_is_rejected_exactly() {
+    let root = temp_dir("legacy-preview-baseline");
+    let command = setup_fixture(&root);
+    let report = save_report(
+        &root,
+        &command,
+        ProcedureReviewDisposition::Approved,
+        "fixture-change",
+        "1.1",
+    );
+    let preview = save_preview(&root, &report);
+    let path = PatchPreviewStore::for_project(&root).report_path(preview.id);
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    document
+        .as_object_mut()
+        .unwrap()
+        .remove("promotion_baseline");
+    std::fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+
+    let error = gate(&root, &command)
+        .load(&request(&report, &preview))
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "verification setup rejected for patch preview {}: preview has no promotion baseline; generate a new preview before applying",
+            preview.id.as_str()
+        )
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 fn gate(root: &Path, command: &Path) -> VerificationInputGate {

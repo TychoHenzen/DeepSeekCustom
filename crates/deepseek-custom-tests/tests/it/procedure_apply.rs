@@ -619,6 +619,135 @@ fn setup_failure_emits_one_apply_terminal_with_the_exact_diagnostic() {
 }
 
 #[test]
+fn legacy_preview_without_baseline_fails_before_snapshot_creation() {
+    run_async(async {
+        let fixture = save_fixture(
+            "legacy-baseline",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+        );
+        let preview_path =
+            PatchPreviewStore::for_project(&fixture.root).report_path(fixture.preview.id);
+        let mut document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&preview_path).unwrap()).unwrap();
+        document
+            .as_object_mut()
+            .unwrap()
+            .remove("promotion_baseline");
+        std::fs::write(&preview_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let runner = ProcedureApplyRunner::new(
+            VerificationInputGate::new(
+                OpenSpecInput::with_command(
+                    &fixture.root,
+                    fixture.openspec_command.display().to_string(),
+                ),
+                fixture.root.clone(),
+                ProcedureReportStore::for_project(&fixture.root),
+            ),
+            fixture.root.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_progress(sender);
+
+        let error = runner
+            .run(
+                ProcedureRunId::new(),
+                request(&fixture),
+                &[command(&fixture.verifier_command, "pass", None)],
+            )
+            .await
+            .unwrap_err();
+        let progress = apply_events(&mut receiver);
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "verification setup rejected for patch preview {}: preview has no promotion baseline; generate a new preview before applying",
+                fixture.preview.id.as_str()
+            )
+        );
+        assert!(!progress.iter().any(|event| matches!(
+            event,
+            ProcedureApplyProgress::SnapshotStarted
+                | ProcedureApplyProgress::PatchGateStarted { .. }
+                | ProcedureApplyProgress::VerifierGateStarted { .. }
+                | ProcedureApplyProgress::PromotionStarted
+        )));
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("src/target.rs")).unwrap(),
+            "pub fn value() -> i32 { 1 }\n"
+        );
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+#[test]
+fn stale_preview_baseline_fails_before_snapshot_creation() {
+    run_async(async {
+        let fixture = save_fixture(
+            "pre-apply-stale-baseline",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+        );
+        write_file(
+            &fixture.root,
+            "src/target.rs",
+            b"pub fn value() -> i32 { 99 }\n",
+        );
+        ProcedureReportStore::for_project(&fixture.root)
+            .save(&fixture.report)
+            .unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let runner = ProcedureApplyRunner::new(
+            VerificationInputGate::new(
+                OpenSpecInput::with_command(
+                    &fixture.root,
+                    fixture.openspec_command.display().to_string(),
+                ),
+                fixture.root.clone(),
+                ProcedureReportStore::for_project(&fixture.root),
+            ),
+            fixture.root.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_progress(sender);
+
+        let error = runner
+            .run(
+                ProcedureRunId::new(),
+                request(&fixture),
+                &[command(&fixture.verifier_command, "pass", None)],
+            )
+            .await
+            .unwrap_err();
+        let progress = apply_events(&mut receiver);
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "verification setup rejected for patch preview {}: promotion baseline is stale for paths: [\"src/target.rs\"]",
+                fixture.preview.id.as_str()
+            )
+        );
+        assert!(!progress.iter().any(|event| matches!(
+            event,
+            ProcedureApplyProgress::SnapshotStarted
+                | ProcedureApplyProgress::PatchGateStarted { .. }
+                | ProcedureApplyProgress::VerifierGateStarted { .. }
+                | ProcedureApplyProgress::PromotionStarted
+        )));
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("src/target.rs")).unwrap(),
+            "pub fn value() -> i32 { 99 }\n"
+        );
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+#[test]
 fn production_apply_progress_matches_the_execution_order() {
     run_async(async {
         let fixture = save_fixture(
@@ -895,6 +1024,8 @@ fn apply_rollback_restores_existing_and_removes_created_paths() {
             Some(PromotionFailureInjection {
                 fail_install_at: Some(1),
                 fail_rollback_at: None,
+                edit_endpoint_at: None,
+                fail_cleanup_at: None,
             }),
         )
         .await;
@@ -912,6 +1043,57 @@ fn apply_rollback_restores_existing_and_removes_created_paths() {
             ProcedureApplyProgress::PromotionFailed { recovery: Some(recovery), .. }
                 if recovery.rollback_succeeded()
         )));
+        std::fs::remove_dir_all(fixture.root).ok();
+    });
+}
+
+#[test]
+fn apply_reports_success_when_post_commit_backup_cleanup_is_retained() {
+    run_async(async {
+        let fixture = save_fixture(
+            "retained-cleanup",
+            &["src/target.rs"],
+            UPDATE_DIFF,
+            &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
+        );
+        let (terminal, progress) = apply(
+            &fixture,
+            vec![command(&fixture.verifier_command, "pass", None)],
+            Some(PromotionFailureInjection {
+                fail_install_at: None,
+                fail_rollback_at: None,
+                edit_endpoint_at: None,
+                fail_cleanup_at: Some(0),
+            }),
+        )
+        .await;
+
+        assert_eq!(terminal, ProcedureTerminalDisposition::Succeeded);
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("src/target.rs")).unwrap(),
+            "pub fn value() -> i32 { 2 }\n"
+        );
+        let cleanup = progress
+            .iter()
+            .find_map(|event| match event {
+                ProcedureApplyProgress::PromotionSucceeded { result } => Some(&result.cleanup),
+                _ => None,
+            })
+            .expect("successful promotion publishes cleanup evidence");
+        assert_eq!(cleanup.errors.len(), 1);
+        assert_eq!(cleanup.retained_paths.len(), 1);
+        assert!(cleanup.retained_paths[0].exists());
+        assert_eq!(
+            std::fs::read_to_string(&cleanup.retained_paths[0]).unwrap(),
+            "pub fn value() -> i32 { 1 }\n"
+        );
+        let stored = ProcedureReportStore::for_project(&fixture.root)
+            .load_with_fingerprints(&fixture.report.id)
+            .unwrap();
+        assert_eq!(
+            stored.verification.unwrap().terminal_disposition,
+            Some(ProcedureTerminalDisposition::Succeeded)
+        );
         std::fs::remove_dir_all(fixture.root).ok();
     });
 }

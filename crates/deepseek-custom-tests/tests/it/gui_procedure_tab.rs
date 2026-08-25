@@ -19,10 +19,10 @@ use deepseek_custom::procedure::{
     ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
     ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    PromotionBaselineComparison, PromotionRecoveryEvidence, PromotionResult, RouteDecision,
-    RouteOverride, RouteSignal, RouteTier, StalePromotionPath, VerifierCommandDisposition,
-    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
-    apply_review_decision, capture_path_fingerprint,
+    PromotionBaselineComparison, PromotionCleanupEvidence, PromotionRecoveryEvidence,
+    PromotionResult, RouteDecision, RouteOverride, RouteSignal, RouteTier, StalePromotionPath,
+    VerifierCommandDisposition, VerifierCommandEvidence, VerifierGateDisposition,
+    VerifierGateEvidence, VerifierReport, apply_review_decision, capture_path_fingerprint,
 };
 use tokio::sync::mpsc;
 
@@ -828,6 +828,10 @@ fn apply_view_renders_promotion_success_and_failure_recovery_evidence() {
                     stale_paths: Vec::new(),
                 },
                 final_fingerprints: Vec::new(),
+                cleanup: PromotionCleanupEvidence {
+                    errors: vec!["remove retained backup: access denied".to_string()],
+                    retained_paths: vec![PathBuf::from("src/.a.rs.deepseek-promotion-backup")],
+                },
             },
         },
     );
@@ -852,6 +856,15 @@ fn apply_view_renders_promotion_success_and_failure_recovery_evidence() {
         success_lines
             .iter()
             .any(|line| line.contains("Apply terminal disposition: succeeded"))
+    );
+    assert!(success_lines.iter().any(|line| {
+        line.contains("Promotion cleanup retained recovery data:")
+            && line.contains(".a.rs.deepseek-promotion-backup")
+    }));
+    assert!(
+        success_lines
+            .iter()
+            .any(|line| line.contains("Promotion cleanup warning: remove retained backup"))
     );
 
     let failure_id = ProcedureRunId::new();

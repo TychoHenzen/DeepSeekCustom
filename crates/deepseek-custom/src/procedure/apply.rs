@@ -152,7 +152,7 @@ impl ProcedureApplyRunner {
         let patch = decode_preview_patch(&input.preview)?;
         let boundary = validate_patch_boundary(patch, &input.preview.targets)?;
         let targets = model_promotion_targets(&boundary)?;
-        let baseline = PromotionBaseline::capture(&self.project_root, &targets)?;
+        let baseline = input.promotion_baseline;
 
         self.emit(run_id, ProcedureApplyProgress::SnapshotStarted);
         let mut patch_gates = Vec::with_capacity(2);
@@ -293,6 +293,22 @@ impl ProcedureApplyRunner {
             })) => {
                 let terminal = ProcedureTerminalDisposition::Failed {
                     reason: "promotion baseline is stale".to_string(),
+                };
+                report.terminal_disposition = Some(terminal.clone());
+                self.save_verification(&request.localization_run_id, &report)?;
+                drop(applied);
+                self.emit(
+                    run_id,
+                    ProcedureApplyProgress::ConflictDetected { paths: stale_paths },
+                );
+                Ok(self.finish(run_id, terminal))
+            }
+            Err(PromotionError::ConcurrentEdit {
+                stale_paths,
+                recovery,
+            }) if recovery.rollback_succeeded() => {
+                let terminal = ProcedureTerminalDisposition::Failed {
+                    reason: "promotion endpoint became stale".to_string(),
                 };
                 report.terminal_disposition = Some(terminal.clone());
                 self.save_verification(&request.localization_run_id, &report)?;
@@ -470,11 +486,12 @@ fn promotion_recovery(error: &PromotionError) -> Option<super::PromotionRecovery
     match error {
         PromotionError::Transaction { recovery, .. }
         | PromotionError::FinalFingerprint { recovery, .. }
-        | PromotionError::FinalMismatch { recovery, .. } => Some(recovery.clone()),
+        | PromotionError::FinalMismatch { recovery, .. }
+        | PromotionError::ConcurrentEdit { recovery, .. }
+        | PromotionError::EndpointFingerprint { recovery, .. } => Some(recovery.clone()),
         PromotionError::Baseline(_)
         | PromotionError::InvalidTargets { .. }
         | PromotionError::InvalidVerifiedResult { .. }
-        | PromotionError::VerifiedFingerprint { .. }
-        | PromotionError::Cleanup { .. } => None,
+        | PromotionError::VerifiedFingerprint { .. } => None,
     }
 }

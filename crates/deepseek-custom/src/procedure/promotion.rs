@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use super::{
     BoundaryValidatedPatch, ProcedureFingerprintError, ProcedurePathFingerprint,
-    capture_path_fingerprints,
+    capture_path_fingerprint, capture_path_fingerprints,
 };
 
 /// The file operation represented by one promotion target.
@@ -264,6 +264,24 @@ fn model_section(section: usize, lines: &[&str]) -> Result<PromotionTarget, Prom
 pub struct PromotionResult {
     pub baseline: PromotionBaselineComparison,
     pub final_fingerprints: Vec<ProcedurePathFingerprint>,
+    pub cleanup: PromotionCleanupEvidence,
+}
+
+/// Post-commit cleanup evidence returned without changing promotion success.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromotionCleanupEvidence {
+    pub errors: Vec<String>,
+    pub retained_paths: Vec<PathBuf>,
+}
+
+impl PromotionCleanupEvidence {
+    pub fn completed(&self) -> bool {
+        self.errors.is_empty() && self.retained_paths.is_empty()
+    }
+
+    pub fn retained_recovery_data(&self) -> bool {
+        !self.retained_paths.is_empty()
+    }
 }
 
 /// Evidence describing whether a failed promotion was rolled back completely.
@@ -290,6 +308,10 @@ pub struct PromotionFailureInjection {
     pub fail_install_at: Option<usize>,
     /// Fail before the zero-based rollback operation.
     pub fail_rollback_at: Option<usize>,
+    /// Edit the endpoint at this zero-based first-destructive-check index.
+    pub edit_endpoint_at: Option<usize>,
+    /// Retain the backup at this zero-based post-commit cleanup index.
+    pub fail_cleanup_at: Option<usize>,
 }
 
 /// Failure while installing verified endpoint results.
@@ -327,14 +349,17 @@ pub enum PromotionError {
         stale_paths: Vec<StalePromotionPath>,
         recovery: PromotionRecoveryEvidence,
     },
-    #[error(
-        "could not remove promotion backup {path}: {source}; remaining backups: {remaining_backups:?}"
-    )]
-    Cleanup {
-        path: PathBuf,
+    #[error("promotion endpoint became stale: {stale_paths:?}; recovery: {recovery:?}")]
+    ConcurrentEdit {
+        stale_paths: Vec<StalePromotionPath>,
+        recovery: PromotionRecoveryEvidence,
+    },
+    #[error("could not recheck promotion endpoint {path}: {source}; recovery: {recovery:?}")]
+    EndpointFingerprint {
+        path: String,
         #[source]
-        source: std::io::Error,
-        remaining_backups: Vec<PathBuf>,
+        source: ProcedureFingerprintError,
+        recovery: PromotionRecoveryEvidence,
     },
 }
 
@@ -375,6 +400,8 @@ pub fn promote_verified_workspace_with_failure_injection(
         FailureInjection {
             fail_install_at: injection.fail_install_at,
             fail_rollback_at: injection.fail_rollback_at,
+            edit_endpoint_at: injection.edit_endpoint_at,
+            fail_cleanup_at: injection.fail_cleanup_at,
         },
     )
 }
@@ -383,6 +410,9 @@ pub fn promote_verified_workspace_with_failure_injection(
 struct FailureInjection {
     fail_install_at: Option<usize>,
     fail_rollback_at: Option<usize>,
+    #[cfg(feature = "test-support")]
+    edit_endpoint_at: Option<usize>,
+    fail_cleanup_at: Option<usize>,
 }
 
 fn promote_verified_workspace_inner(
@@ -416,12 +446,25 @@ fn promote_verified_workspace_inner(
     };
 
     let mut backups = Vec::new();
+    let mut touched_paths = BTreeSet::new();
+    let mut endpoint_check_index = 0;
     for fingerprint in baseline
         .fingerprints()
         .iter()
         .filter(|fingerprint| fingerprint.state == super::ProcedurePathState::Present)
     {
         let original = project_root.join(&fingerprint.path);
+        check_endpoint_before_destructive_operation(
+            project_root,
+            baseline,
+            &fingerprint.path,
+            &touched_paths,
+            &mut endpoint_check_index,
+            &[],
+            &backups,
+            &staged_paths,
+            injection,
+        )?;
         let backup = sibling_path(&original, "backup", &transaction_id);
         if let Err(source) = fs::rename(&original, &backup) {
             return Err(transaction_failure(
@@ -435,6 +478,7 @@ fn promote_verified_workspace_inner(
             ));
         }
         backups.push(Backup { original, backup });
+        touched_paths.insert(fingerprint.path.clone());
     }
 
     let mut installed_paths = Vec::new();
@@ -448,6 +492,24 @@ fn promote_verified_workspace_inner(
         let Some(staged) = staged else {
             continue;
         };
+        let relative = path
+            .strip_prefix(project_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !touched_paths.contains(&relative) {
+            check_endpoint_before_destructive_operation(
+                project_root,
+                baseline,
+                &relative,
+                &touched_paths,
+                &mut endpoint_check_index,
+                &installed_paths,
+                &backups,
+                &staged_paths,
+                injection,
+            )?;
+        }
         if injection.fail_install_at == Some(install_index) {
             return Err(transaction_failure(
                 action,
@@ -473,6 +535,7 @@ fn promote_verified_workspace_inner(
             ));
         }
         installed_paths.push(path.clone());
+        touched_paths.insert(relative);
         install_index += 1;
     }
 
@@ -499,23 +562,135 @@ fn promote_verified_workspace_inner(
         ));
     }
 
-    for (index, backup) in backups.iter().enumerate() {
-        if let Err(source) = fs::remove_file(&backup.backup) {
-            return Err(PromotionError::Cleanup {
-                path: backup.backup.clone(),
-                source,
-                remaining_backups: backups[index..]
-                    .iter()
-                    .map(|backup| backup.backup.clone())
-                    .collect(),
-            });
-        }
-    }
+    let cleanup = cleanup_after_commit(&backups, &staged_paths, injection);
 
     Ok(PromotionResult {
         baseline: baseline_comparison,
         final_fingerprints,
+        cleanup,
     })
+}
+
+fn cleanup_after_commit(
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+    injection: FailureInjection,
+) -> PromotionCleanupEvidence {
+    let mut errors = Vec::new();
+    for (index, backup) in backups.iter().enumerate() {
+        if injection.fail_cleanup_at == Some(index) {
+            errors.push(format!(
+                "injected post-commit cleanup failure for {}",
+                backup.backup.display()
+            ));
+            continue;
+        }
+        if backup.backup.exists()
+            && let Err(source) = fs::remove_file(&backup.backup)
+        {
+            errors.push(format!("remove {}: {source}", backup.backup.display()));
+        }
+    }
+    errors.extend(remove_paths(staged_paths));
+    let retained_paths = backups
+        .iter()
+        .map(|backup| backup.backup.clone())
+        .chain(staged_paths.iter().cloned())
+        .filter(|path| path.exists())
+        .collect();
+    PromotionCleanupEvidence {
+        errors,
+        retained_paths,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_endpoint_before_destructive_operation(
+    project_root: &Path,
+    baseline: &PromotionBaseline,
+    relative: &str,
+    touched_paths: &BTreeSet<String>,
+    endpoint_check_index: &mut usize,
+    installed_paths: &[PathBuf],
+    backups: &[Backup],
+    staged_paths: &[PathBuf],
+    injection: FailureInjection,
+) -> Result<(), PromotionError> {
+    #[cfg(feature = "test-support")]
+    if injection.edit_endpoint_at == Some(*endpoint_check_index) {
+        let path = project_root.join(relative);
+        if let Some(parent) = path.parent()
+            && let Err(source) = fs::create_dir_all(parent)
+        {
+            return Err(transaction_failure(
+                "inject a concurrent edit for",
+                path,
+                source,
+                installed_paths,
+                backups,
+                staged_paths,
+                injection,
+            ));
+        }
+        if let Err(source) = fs::write(
+            &path,
+            b"injected concurrent edit after initial promotion validation\n",
+        ) {
+            return Err(transaction_failure(
+                "inject a concurrent edit for",
+                path,
+                source,
+                installed_paths,
+                backups,
+                staged_paths,
+                injection,
+            ));
+        }
+    }
+    *endpoint_check_index += 1;
+
+    let expected = baseline
+        .fingerprints()
+        .iter()
+        .find(|fingerprint| fingerprint.path == relative)
+        .expect("validated baseline contains every promotion endpoint");
+    let actual = capture_path_fingerprint(project_root, relative).map_err(|source| {
+        PromotionError::EndpointFingerprint {
+            path: relative.to_string(),
+            source,
+            recovery: rollback_and_collect(installed_paths, backups, staged_paths, injection),
+        }
+    })?;
+    if actual == *expected {
+        return Ok(());
+    }
+
+    let stale_paths = known_stale_untouched_paths(project_root, baseline, touched_paths);
+    let recovery = rollback_and_collect(installed_paths, backups, staged_paths, injection);
+    Err(PromotionError::ConcurrentEdit {
+        stale_paths,
+        recovery,
+    })
+}
+
+fn known_stale_untouched_paths(
+    project_root: &Path,
+    baseline: &PromotionBaseline,
+    touched_paths: &BTreeSet<String>,
+) -> Vec<StalePromotionPath> {
+    baseline
+        .fingerprints()
+        .iter()
+        .filter(|expected| !touched_paths.contains(&expected.path))
+        .filter_map(|expected| {
+            let actual = capture_path_fingerprint(project_root, &expected.path).ok()?;
+            (actual != *expected).then(|| StalePromotionPath {
+                path: expected.path.clone(),
+                expected: expected.clone(),
+                actual,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug)]

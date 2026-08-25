@@ -280,6 +280,8 @@ fn injected_mid_promotion_failure_restores_existing_and_removes_created_paths() 
         PromotionFailureInjection {
             fail_install_at: Some(1),
             fail_rollback_at: None,
+            edit_endpoint_at: None,
+            fail_cleanup_at: None,
         },
     )
     .unwrap_err();
@@ -319,6 +321,8 @@ fn injected_rollback_failure_retains_recovery_data_and_reports_it() {
         PromotionFailureInjection {
             fail_install_at: Some(1),
             fail_rollback_at: Some(1),
+            edit_endpoint_at: None,
+            fail_cleanup_at: None,
         },
     )
     .unwrap_err();
@@ -336,6 +340,110 @@ fn injected_rollback_failure_retains_recovery_data_and_reports_it() {
             .any(|path| path.to_string_lossy().contains("updated.rs"))
     );
     assert!(!root.join("src/created.rs").exists());
+
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(verified).ok();
+}
+
+#[test]
+fn later_endpoint_race_is_detected_before_touch_and_rolls_back_earlier_work() {
+    let root = temp_dir("later endpoint race");
+    let verified = temp_dir("later endpoint race result");
+    write(&root, "src/updated.rs", "before\n");
+    write(&verified, "src/updated.rs", "after\n");
+    write(&verified, "src/created.rs", "verified create\n");
+    let targets = update_and_create_targets();
+    let baseline = PromotionBaseline::capture(&root, &targets).unwrap();
+
+    let error = promote_verified_workspace_with_failure_injection(
+        &root,
+        &verified,
+        &baseline,
+        &targets,
+        PromotionFailureInjection {
+            fail_install_at: None,
+            fail_rollback_at: None,
+            edit_endpoint_at: Some(1),
+            fail_cleanup_at: None,
+        },
+    )
+    .unwrap_err();
+    let deepseek_custom::procedure::PromotionError::ConcurrentEdit {
+        stale_paths,
+        recovery,
+    } = error
+    else {
+        panic!("the ordinary endpoint fingerprint must detect the injected edit")
+    };
+
+    assert_eq!(
+        stale_paths
+            .iter()
+            .map(|stale| stale.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/created.rs"]
+    );
+    assert_complete_recovery(&recovery);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/updated.rs")).unwrap(),
+        "before\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/created.rs")).unwrap(),
+        "injected concurrent edit after initial promotion validation\n"
+    );
+
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(verified).ok();
+}
+
+#[test]
+fn post_commit_cleanup_failure_returns_success_with_retained_backup_evidence() {
+    let root = temp_dir("post commit cleanup failure");
+    let verified = temp_dir("post commit cleanup result");
+    write(&root, "src/updated.rs", "before\n");
+    write(&verified, "src/updated.rs", "after\n");
+    let targets = vec![PromotionTarget::Update {
+        path: "src/updated.rs".to_string(),
+    }];
+    let baseline = PromotionBaseline::capture(&root, &targets).unwrap();
+
+    let result = promote_verified_workspace_with_failure_injection(
+        &root,
+        &verified,
+        &baseline,
+        &targets,
+        PromotionFailureInjection {
+            fail_install_at: None,
+            fail_rollback_at: None,
+            edit_endpoint_at: None,
+            fail_cleanup_at: Some(0),
+        },
+    )
+    .expect("cleanup occurs after the verified promotion commit");
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/updated.rs")).unwrap(),
+        "after\n"
+    );
+    assert!(!result.cleanup.completed());
+    assert!(result.cleanup.retained_recovery_data());
+    assert_eq!(result.cleanup.errors.len(), 1);
+    assert_eq!(result.cleanup.retained_paths.len(), 1);
+    assert!(result.cleanup.retained_paths[0].exists());
+    assert_eq!(
+        std::fs::read_to_string(&result.cleanup.retained_paths[0]).unwrap(),
+        "before\n"
+    );
+    let staged_leftovers = std::fs::read_dir(root.join("src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("deepseek-promotion-stage"))
+        .collect::<Vec<_>>();
+    assert!(
+        staged_leftovers.is_empty(),
+        "staged leftovers: {staged_leftovers:?}"
+    );
 
     std::fs::remove_dir_all(root).ok();
     std::fs::remove_dir_all(verified).ok();

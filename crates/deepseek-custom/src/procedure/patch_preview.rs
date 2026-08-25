@@ -79,12 +79,22 @@ pub struct PatchPreview {
 #[derive(Debug, Clone)]
 pub struct PatchPreviewStore {
     directory: PathBuf,
+    project_root: PathBuf,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PatchPreviewDocument {
+    #[serde(flatten)]
+    preview: PatchPreview,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    promotion_baseline: Option<super::PromotionBaseline>,
 }
 
 impl PatchPreviewStore {
     pub fn for_project(project_root: &Path) -> Self {
         Self {
             directory: project_root.join(".deepseek/procedure/previews"),
+            project_root: project_root.to_path_buf(),
         }
     }
 
@@ -95,7 +105,13 @@ impl PatchPreviewStore {
     pub fn save(&self, preview: &PatchPreview) -> Result<PathBuf, HarnessError> {
         std::fs::create_dir_all(&self.directory)?;
         let path = self.report_path(preview.id);
-        let bytes = serde_json::to_vec_pretty(preview)
+        let promotion_baseline =
+            capture_preview_baseline(&self.project_root, preview).map_err(HarnessError::Parse)?;
+        let document = PatchPreviewDocument {
+            preview: preview.clone(),
+            promotion_baseline: Some(promotion_baseline),
+        };
+        let bytes = serde_json::to_vec_pretty(&document)
             .map_err(|error| HarnessError::Parse(error.to_string()))?;
         std::fs::write(&path, bytes)?;
         Ok(path)
@@ -103,15 +119,49 @@ impl PatchPreviewStore {
 
     /// Load one persisted preview by its explicit identity.
     pub fn load(&self, id: PatchPreviewId) -> Result<PatchPreview, HarnessError> {
+        Ok(self.load_with_baseline(id)?.0)
+    }
+
+    /// Load a preview together with the endpoint state captured when it was saved.
+    ///
+    /// Pre-baseline documents remain readable for inspection. Apply rejects the
+    /// missing evidence through `VerificationInputGate`.
+    pub fn load_with_baseline(
+        &self,
+        id: PatchPreviewId,
+    ) -> Result<(PatchPreview, Option<super::PromotionBaseline>), HarnessError> {
         let path = self.report_path(id);
         let json = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&json).map_err(|error| {
+        let document: PatchPreviewDocument = serde_json::from_str(&json).map_err(|error| {
             HarnessError::Parse(format!(
                 "could not parse patch preview {}: {error}",
                 path.display()
             ))
-        })
+        })?;
+        Ok((document.preview, document.promotion_baseline))
     }
+}
+
+fn capture_preview_baseline(
+    project_root: &Path,
+    preview: &PatchPreview,
+) -> Result<super::PromotionBaseline, String> {
+    let envelope = super::PatchEnvelope {
+        targets: preview.targets.clone(),
+        rationale: preview.rationale.clone(),
+        route: super::PatchRouteMetadata::from(preview.route.clone()),
+        unified_diff: preview.unified_diff.clone(),
+    };
+    let encoded = serde_json::to_string(&envelope)
+        .map_err(|error| format!("could not encode patch preview baseline input: {error}"))?;
+    let candidate = super::decode_patch_envelope(&encoded)
+        .map_err(|error| format!("could not decode patch preview baseline input: {error}"))?;
+    let boundary = super::validate_patch_boundary(candidate, &preview.targets)
+        .map_err(|error| format!("could not validate patch preview baseline input: {error}"))?;
+    let targets = super::model_promotion_targets(&boundary)
+        .map_err(|error| format!("could not model patch preview endpoints: {error}"))?;
+    super::PromotionBaseline::capture(project_root, &targets)
+        .map_err(|error| format!("could not capture patch preview endpoint baseline: {error}"))
 }
 
 /// Failure before a preview is eligible for display.

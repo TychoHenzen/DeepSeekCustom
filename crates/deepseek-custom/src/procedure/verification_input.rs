@@ -1,5 +1,6 @@
 //! Preflight validation for the future isolated Apply path.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -24,6 +25,7 @@ pub struct ApplyRequest {
 pub struct ValidatedApplyInput {
     pub report: StoredProcedureReport,
     pub preview: PatchPreview,
+    pub promotion_baseline: super::PromotionBaseline,
 }
 
 /// Refusal before snapshot creation, patch application, model work, or verifier work.
@@ -56,6 +58,22 @@ pub enum VerificationInputError {
         preview_id: String,
         expected: Vec<String>,
         actual: Vec<String>,
+    },
+    PreviewBaselineMissing {
+        preview_id: String,
+    },
+    PreviewBaselineTargetsMismatch {
+        preview_id: String,
+        expected: Vec<String>,
+        actual: Vec<String>,
+    },
+    PreviewBaselineStale {
+        preview_id: String,
+        paths: Vec<String>,
+    },
+    PreviewBaselineRead {
+        preview_id: String,
+        reason: String,
     },
 }
 
@@ -103,6 +121,26 @@ impl fmt::Display for VerificationInputError {
                 formatter,
                 "verification setup rejected for patch preview {preview_id}: preview targets do not match the approved localization report; expected {expected:?}, actual {actual:?}"
             ),
+            Self::PreviewBaselineMissing { preview_id } => write!(
+                formatter,
+                "verification setup rejected for patch preview {preview_id}: preview has no promotion baseline; generate a new preview before applying"
+            ),
+            Self::PreviewBaselineTargetsMismatch {
+                preview_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "verification setup rejected for patch preview {preview_id}: promotion baseline endpoints do not match preview targets; expected {expected:?}, actual {actual:?}"
+            ),
+            Self::PreviewBaselineStale { preview_id, paths } => write!(
+                formatter,
+                "verification setup rejected for patch preview {preview_id}: promotion baseline is stale for paths: {paths:?}"
+            ),
+            Self::PreviewBaselineRead { preview_id, reason } => write!(
+                formatter,
+                "verification setup rejected for patch preview {preview_id}: could not validate promotion baseline: {reason}"
+            ),
         }
     }
 }
@@ -114,6 +152,7 @@ pub struct VerificationInputGate {
     localization: PatchPreviewInputGate,
     reports: ProcedureReportStore,
     previews: PatchPreviewStore,
+    project_root: PathBuf,
 }
 
 impl VerificationInputGate {
@@ -122,6 +161,7 @@ impl VerificationInputGate {
             localization: PatchPreviewInputGate::new(input, project_root.clone(), reports.clone()),
             reports,
             previews: PatchPreviewStore::for_project(&project_root),
+            project_root,
         }
     }
 
@@ -140,7 +180,7 @@ impl VerificationInputGate {
             })
             .map_err(VerificationInputError::Localization)?;
 
-        let preview = self.load_preview(request.preview_id)?;
+        let (preview, promotion_baseline) = self.load_preview(request.preview_id)?;
         let preview_id = request.preview_id.as_str();
         let actual_run_id = preview.localization_run_id.as_str();
         if actual_run_id != request.localization_run_id.as_str() {
@@ -174,26 +214,68 @@ impl VerificationInputGate {
             });
         }
 
+        let promotion_baseline =
+            promotion_baseline.ok_or_else(|| VerificationInputError::PreviewBaselineMissing {
+                preview_id: preview_id.clone(),
+            })?;
+        let expected_baseline_paths = preview.targets.iter().cloned().collect::<BTreeSet<_>>();
+        let actual_baseline_paths = promotion_baseline
+            .fingerprints()
+            .iter()
+            .map(|fingerprint| fingerprint.path.clone())
+            .collect::<BTreeSet<_>>();
+        if actual_baseline_paths != expected_baseline_paths {
+            return Err(VerificationInputError::PreviewBaselineTargetsMismatch {
+                preview_id,
+                expected: expected_baseline_paths.into_iter().collect(),
+                actual: actual_baseline_paths.into_iter().collect(),
+            });
+        }
+        match promotion_baseline.ensure_current(&self.project_root) {
+            Ok(_) => {}
+            Err(super::PromotionBaselineCheckError::Stale { stale_paths }) => {
+                return Err(VerificationInputError::PreviewBaselineStale {
+                    preview_id,
+                    paths: stale_paths.into_iter().map(|stale| stale.path).collect(),
+                });
+            }
+            Err(super::PromotionBaselineCheckError::Fingerprint(error)) => {
+                return Err(VerificationInputError::PreviewBaselineRead {
+                    preview_id,
+                    reason: error.to_string(),
+                });
+            }
+        }
+
         let report = self
             .reports
             .load_with_fingerprints(&request.localization_run_id)
             .map_err(|error| {
                 VerificationInputError::Localization(load_error(request.localization_run_id, error))
             })?;
-        Ok(ValidatedApplyInput { report, preview })
+        Ok(ValidatedApplyInput {
+            report,
+            preview,
+            promotion_baseline,
+        })
     }
 
-    fn load_preview(&self, id: PatchPreviewId) -> Result<PatchPreview, VerificationInputError> {
+    fn load_preview(
+        &self,
+        id: PatchPreviewId,
+    ) -> Result<(PatchPreview, Option<super::PromotionBaseline>), VerificationInputError> {
         let preview_id = id.as_str();
-        self.previews.load(id).map_err(|error| match error {
-            HarnessError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                VerificationInputError::PreviewMissing { preview_id }
-            }
-            error => VerificationInputError::PreviewLoad {
-                preview_id,
-                reason: error.to_string(),
-            },
-        })
+        self.previews
+            .load_with_baseline(id)
+            .map_err(|error| match error {
+                HarnessError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                    VerificationInputError::PreviewMissing { preview_id }
+                }
+                error => VerificationInputError::PreviewLoad {
+                    preview_id,
+                    reason: error.to_string(),
+                },
+            })
     }
 }
 

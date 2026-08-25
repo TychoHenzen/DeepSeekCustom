@@ -1072,6 +1072,21 @@ impl ProcedureTab {
                 "Promotion: succeeded ({} final path hash(es) verified)",
                 result.final_fingerprints.len()
             ));
+            if result.cleanup.retained_recovery_data() {
+                lines.push(format!(
+                    "Promotion cleanup retained recovery data: {}",
+                    result
+                        .cleanup
+                        .retained_paths
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            for error in &result.cleanup.errors {
+                lines.push(format!("Promotion cleanup warning: {error}"));
+            }
         }
         if let Some(failure) = &self.promotion_failure {
             lines.push(format!("Promotion: failed: {}", failure.message));
