@@ -4,6 +4,7 @@
 //! subsystem. Each run carries the complete typed state needed to rebuild a
 //! short prompt for its current stage.
 
+mod apply;
 mod dispatch;
 mod disposable_workspace;
 mod fingerprint;
@@ -28,6 +29,7 @@ mod validation;
 mod verification_input;
 mod verifier;
 
+pub use apply::{ProcedureApplyError, ProcedureApplyRunner};
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,

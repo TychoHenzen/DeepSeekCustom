@@ -48,6 +48,10 @@ pub enum ProcedureCommand {
         preview_id: super::PatchPreviewId,
         request: super::PatchPreviewRequest,
     },
+    Apply {
+        run_id: ProcedureRunId,
+        request: super::ApplyRequest,
+    },
 }
 
 /// Terminal decision requested for one awaiting-review run.

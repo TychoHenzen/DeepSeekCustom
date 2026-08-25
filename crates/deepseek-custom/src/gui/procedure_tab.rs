@@ -683,7 +683,7 @@ impl ProcedureTab {
                 .add_enabled(self.apply_enabled(settings), egui::Button::new("Apply"))
                 .clicked()
             {
-                self.apply_requested = true;
+                self.start_apply(settings);
             }
         });
         self.render_status(ui);
@@ -1231,6 +1231,46 @@ impl ProcedureTab {
         self.latest_preview = None;
         self.preview_report_path = None;
         self.preview_status = PatchPreviewStatus::Running;
+    }
+
+    fn start_apply(&mut self, settings: &Settings) {
+        if !self.apply_enabled(settings) {
+            return;
+        }
+        let Some(command_tx) = &self.command_tx else {
+            return;
+        };
+        let Some(preview) = self.latest_preview.as_ref() else {
+            return;
+        };
+        let request = crate::procedure::ApplyRequest {
+            localization_run_id: preview.localization_run_id,
+            preview_id: preview.id,
+            change_id: preview.change_id.clone(),
+            task_id: preview.task_id.clone(),
+        };
+        let run_id = ProcedureRunId::new();
+        if command_tx
+            .send(ProcedureCommand::Apply { run_id, request })
+            .is_err()
+        {
+            self.apply_status = ProcedureApplyStatus::Failed;
+            return;
+        }
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.store(false, Ordering::SeqCst);
+        }
+        self.apply_run_id = Some(run_id);
+        self.apply_in_flight = true;
+        self.apply_requested = true;
+        self.apply_status = ProcedureApplyStatus::Idle;
+        self.snapshot_progress = None;
+        self.patch_gate_results.clear();
+        self.verifier_gate_evidence.clear();
+        self.verification_report = None;
+        self.conflicts.clear();
+        self.promotion_result = None;
+        self.promotion_failure = None;
     }
 
     fn spawn_model_fetches(&self, settings: &Settings) {

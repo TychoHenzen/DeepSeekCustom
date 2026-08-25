@@ -73,7 +73,10 @@
 
 - [x] 6.1 Add Apply, gate-progress, command-output, conflict, promotion, and terminal-state rendering to the Procedure tab.
 <!-- status: completed -->
-- [ ] 6.2 Add end-to-end temporary-repository tests for passing, failing, interrupted, stale-baseline, create, delete, rename, and rollback runs.
-- [ ] 6.3 Configure the four Rust workspace gates and run one real small mechanical change through isolated verification and promotion.
-- [ ] 6.4 Confirm unrelated pre-existing working-tree changes remain byte-identical after the practical run.
+- [x] 6.2 Add end-to-end temporary-repository tests for passing, failing, interrupted, stale-baseline, create, delete, rename, and rollback runs.
+<!-- status: completed -->
+- [x] 6.3 Configure the four Rust workspace gates and run one real small mechanical change through isolated verification and promotion.
+<!-- status: completed -->
+- [x] 6.4 Confirm unrelated pre-existing working-tree changes remain byte-identical after the practical run.
+<!-- status: completed -->
 - [ ] 6.5 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.

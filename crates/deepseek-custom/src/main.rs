@@ -20,8 +20,8 @@ use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
 use deepseek_custom::procedure::{
     LocalizationDispatcher, OpenSpecInput, PatchPreviewInputGate, PatchPreviewRunner,
-    ProcedureCommand, ProcedureProgress, ProcedureReportStore, ProcedureRunner,
-    apply_review_decision,
+    ProcedureApplyRunner, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
+    ProcedureRunner, VerificationInputGate, apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
@@ -455,6 +455,29 @@ async fn main() {
                                         },
                                     );
                                 }
+                            }
+                        }
+                        Some(ProcedureCommand::Apply { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let commands = procedure_settings
+                                .procedure()
+                                .map(|procedure| procedure.verifier_commands.clone())
+                                .unwrap_or_default();
+                            let runner = ProcedureApplyRunner::new(
+                                VerificationInputGate::new(
+                                    OpenSpecInput::new(&procedure_project_root),
+                                    procedure_project_root.clone(),
+                                    ProcedureReportStore::for_project(&procedure_project_root),
+                                ),
+                                procedure_project_root.clone(),
+                                Arc::clone(&procedure_task_interrupt),
+                            )
+                            .with_progress(tx_procedure_progress.clone());
+                            if let Err(error) = runner.run(run_id, request, &commands).await {
+                                let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed {
+                                    run_id,
+                                    message: error.to_string(),
+                                });
                             }
                         }
                         None => break,

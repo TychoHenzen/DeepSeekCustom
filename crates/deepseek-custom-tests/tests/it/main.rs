@@ -84,6 +84,7 @@ mod mcp_tool;
 mod memory;
 mod path_repair;
 mod plugins;
+mod procedure_apply;
 mod procedure_dispatch;
 mod procedure_disposable_workspace;
 mod procedure_frontier_patch_draft;
