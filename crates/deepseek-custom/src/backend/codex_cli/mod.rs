@@ -32,6 +32,8 @@ use self::map::EventMapper;
 use self::spawn::{build_args, spawn_codex};
 
 const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DROP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const DROP_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Holds conversation identity and the shared controls for Codex CLI turns.
 pub struct CodexCliDriver {
@@ -254,5 +256,44 @@ impl CodexCliDriver {
 
     pub async fn shutdown(&mut self) {
         self.kill_child().await;
+    }
+}
+
+impl Drop for CodexCliDriver {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if let Err(error) = child.start_kill() {
+            tracing::warn!("codex_cli: failed to kill dropped child: {error}");
+        }
+
+        // Dropping a tokio Child with kill_on_drop sends termination but does
+        // not wait for Windows to release the child's current directory. A
+        // disposable preview workspace is dropped immediately afterward, so
+        // that asynchronous release raced its recursive deletion. Poll the
+        // actual process state and reap it before ownership returns to the
+        // workspace guard. This is condition-based cleanup, not a timing
+        // delay in the caller or test.
+        let deadline = std::time::Instant::now() + DROP_REAP_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(DROP_REAP_POLL_INTERVAL);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "codex_cli: dropped child did not exit within {:?}",
+                        DROP_REAP_TIMEOUT
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!("codex_cli: failed to reap dropped child: {error}");
+                    return;
+                }
+            }
+        }
     }
 }
