@@ -100,6 +100,18 @@ impl PatchPreviewStore {
         std::fs::write(&path, bytes)?;
         Ok(path)
     }
+
+    /// Load one persisted preview by its explicit identity.
+    pub fn load(&self, id: PatchPreviewId) -> Result<PatchPreview, HarnessError> {
+        let path = self.report_path(id);
+        let json = std::fs::read_to_string(&path)?;
+        serde_json::from_str(&json).map_err(|error| {
+            HarnessError::Parse(format!(
+                "could not parse patch preview {}: {error}",
+                path.display()
+            ))
+        })
+    }
 }
 
 /// Failure before a preview is eligible for display.

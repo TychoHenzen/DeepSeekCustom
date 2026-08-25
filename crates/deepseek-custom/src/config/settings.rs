@@ -690,6 +690,9 @@ pub struct ProcedureSettings {
     pub frontier_patch_backend: Option<String>,
     #[serde(default)]
     pub repository_index: RepositoryIndexLimits,
+    /// Ordered project commands that must pass before Apply can proceed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_commands: Vec<String>,
 }
 
 /// How voice input is triggered.

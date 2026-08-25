@@ -161,6 +161,10 @@ fn save_then_load_round_trips_values() {
                 max_files: 2_500,
                 max_total_bytes: 8_000_000,
             },
+            verifier_commands: vec![
+                "cargo fmt --all -- --check".into(),
+                "cargo test --workspace".into(),
+            ],
         }),
     };
 
@@ -723,6 +727,7 @@ fn procedure_block_without_repository_index_uses_named_defaults() {
         limits.max_total_bytes,
         DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
     );
+    assert!(settings.procedure().unwrap().verifier_commands.is_empty());
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -738,7 +743,8 @@ fn procedure_block_loads_from_project_settings() {
                 "repository_index": {
                     "max_files": 321,
                     "max_total_bytes": 654321
-                }
+                },
+                "verifier_commands": ["format", "compile", "test"]
             }
         }"#,
     )
@@ -749,6 +755,10 @@ fn procedure_block_loads_from_project_settings() {
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
     assert_eq!(procedure.repository_index.max_files, 321);
     assert_eq!(procedure.repository_index.max_total_bytes, 654_321);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["format", "compile", "test"]
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -765,6 +775,7 @@ fn procedure_settings_take_part_in_merge() {
                 max_files: 100,
                 max_total_bytes: 200,
             },
+            verifier_commands: vec!["first-gate".into(), "second-gate".into()],
         }),
         ..Default::default()
     });
@@ -781,6 +792,10 @@ fn procedure_settings_take_part_in_merge() {
     );
     assert_eq!(procedure.repository_index.max_files, 100);
     assert_eq!(procedure.repository_index.max_total_bytes, 200);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["first-gate", "second-gate"]
+    );
 }
 
 #[test]
@@ -794,10 +809,12 @@ fn procedure_mut_creates_and_updates_the_optional_block() {
     assert!(procedure.frontier_patch_backend.is_none());
     procedure.localization_backend = Some("ollama".into());
     procedure.repository_index.max_files = 77;
+    procedure.verifier_commands = vec!["format".into(), "test".into()];
 
     let procedure = settings.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
     assert_eq!(procedure.repository_index.max_files, 77);
+    assert_eq!(procedure.verifier_commands, vec!["format", "test"]);
 }
 
 #[test]
@@ -811,6 +828,7 @@ fn procedure_settings_round_trip_through_json() {
                 max_files: 7_500,
                 max_total_bytes: 12_000_000,
             },
+            verifier_commands: vec!["format".into(), "compile".into(), "test".into()],
         }),
         ..Default::default()
     };
@@ -830,6 +848,10 @@ fn procedure_settings_round_trip_through_json() {
     );
     assert_eq!(procedure.repository_index.max_files, 7_500);
     assert_eq!(procedure.repository_index.max_total_bytes, 12_000_000);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["format", "compile", "test"]
+    );
 }
 
 /// The repo `settings.json` is also the live settings file: the GUI

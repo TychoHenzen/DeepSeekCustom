@@ -24,6 +24,7 @@ mod run;
 mod runner;
 mod schema;
 mod validation;
+mod verification_input;
 
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{DisposableDraftWorkspace, DisposableWorkspaceError};
@@ -83,4 +84,7 @@ pub use runner::{
 pub use schema::localization_response_format;
 pub use validation::{
     LocalizationTargetRejection, LocalizationTargetValidationError, validate_localization_targets,
+};
+pub use verification_input::{
+    ApplyRequest, ValidatedApplyInput, VerificationInputError, VerificationInputGate,
 };

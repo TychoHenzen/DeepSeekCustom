@@ -19,6 +19,9 @@ use crate::procedure::{
     RouteOverride,
 };
 
+const MISSING_VERIFIER_COMMANDS_MESSAGE: &str =
+    "Apply unavailable: configure at least one command in procedure.verifier_commands.";
+
 use super::cascade_tab::backend_combo;
 
 /// Current procedure-only UI state.
@@ -245,6 +248,25 @@ impl ProcedureTab {
 
     pub fn latest_preview_report_path(&self) -> Option<&Path> {
         self.preview_report_path.as_deref()
+    }
+
+    fn verifier_commands(settings: &Settings) -> &[String] {
+        settings
+            .procedure()
+            .map(|procedure| procedure.verifier_commands.as_slice())
+            .unwrap_or_default()
+    }
+
+    fn has_finished_preview(&self) -> bool {
+        self.preview_status == PatchPreviewStatus::Finished && self.latest_preview.is_some()
+    }
+
+    fn apply_enabled(&self, settings: &Settings) -> bool {
+        self.has_finished_preview() && !Self::verifier_commands(settings).is_empty()
+    }
+
+    fn apply_missing_configuration(&self, settings: &Settings) -> bool {
+        self.has_finished_preview() && Self::verifier_commands(settings).is_empty()
     }
 
     pub fn selected_change(&self) -> &str {
@@ -510,10 +532,14 @@ impl ProcedureTab {
             {
                 self.request_stop();
             }
+            let _ = ui.add_enabled(self.apply_enabled(settings), egui::Button::new("Apply"));
         });
         self.render_status(ui);
         self.render_result(ui);
         self.render_preview(ui);
+        if self.apply_missing_configuration(settings) {
+            ui.label(RichText::new(MISSING_VERIFIER_COMMANDS_MESSAGE).color(Color32::LIGHT_RED));
+        }
         dirty
     }
 
@@ -1019,6 +1045,20 @@ impl ProcedureTab {
     #[cfg(feature = "test-support")]
     pub fn reject_for_test(&mut self) {
         self.apply_review(ProcedureReviewDecision::Reject);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn apply_enabled_for_test(&self, settings: &Settings) -> bool {
+        self.apply_enabled(settings)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn apply_missing_configuration_for_test(
+        &self,
+        settings: &Settings,
+    ) -> Option<&'static str> {
+        self.apply_missing_configuration(settings)
+            .then_some(MISSING_VERIFIER_COMMANDS_MESSAGE)
     }
 
     /// Render the production Procedure view for deterministic external visual evidence.

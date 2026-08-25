@@ -17,6 +17,7 @@ const PROCEDURE_RUNS_SUBDIR: &str = ".deepseek/procedure-runs";
 static REVIEW_DECISION_LOCK: Mutex<()> = Mutex::new(());
 
 /// Stores one complete `ProcedureRun` per JSON file.
+#[derive(Debug, Clone)]
 pub struct ProcedureReportStore {
     reports_dir: PathBuf,
     project_root: Option<PathBuf>,

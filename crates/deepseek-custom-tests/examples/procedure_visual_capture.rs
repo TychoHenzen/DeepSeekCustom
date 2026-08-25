@@ -284,6 +284,7 @@ fn fixture_settings() -> Settings {
             local_patch_backend: Some("ollama-local".to_string()),
             frontier_patch_backend: None,
             repository_index: RepositoryIndexLimits::default(),
+            verifier_commands: Vec::new(),
         }),
         ..Settings::default()
     }

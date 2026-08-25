@@ -129,6 +129,7 @@ fn settings() -> Settings {
             local_patch_backend: Some("ollama-b".to_string()),
             frontier_patch_backend: Some("claude".to_string()),
             repository_index: RepositoryIndexLimits::default(),
+            verifier_commands: Vec::new(),
         }),
         ..Settings::default()
     }
@@ -394,6 +395,61 @@ fn preview_action_sends_selected_route_and_exposes_complete_evidence() {
     assert_eq!(
         tab.latest_preview_report_path(),
         Some(report_path.as_path())
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn apply_is_disabled_without_verifier_commands_and_explains_missing_configuration() {
+    let root = fixture_root("apply-missing-verifiers");
+    let run_id = ProcedureRunId::new();
+    ProcedureReportStore::for_project(&root)
+        .save(&completed_run(run_id))
+        .unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    let mut command_rx = attach_tab(&mut tab);
+    tab.start_preview_for_test();
+    let ProcedureCommand::Preview { preview_id, .. } = command_rx.try_recv().unwrap() else {
+        panic!("Preview must send a patch-preview command")
+    };
+    let preview = PatchPreview {
+        id: preview_id,
+        localization_run_id: run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+        route: RouteDecision {
+            automatic_tier: RouteTier::Local,
+            effective_tier: RouteTier::Local,
+            signals: vec![RouteSignal::TargetCount(1)],
+            selected_override: RouteOverride::Automatic,
+            overridden: false,
+        },
+        backend: "ollama-b".to_string(),
+        model: "qwen-b".to_string(),
+        targets: vec!["src/procedure.rs".to_string()],
+        rationale: "Keep the approved localized target.".to_string(),
+        unified_diff: String::new(),
+    };
+    tab.handle_progress(ProcedureProgress::PreviewFinished {
+        preview_id,
+        preview: Box::new(preview),
+        report_path: root.join("preview.json"),
+    });
+
+    let settings = settings();
+    assert!(!tab.apply_enabled_for_test(&settings));
+    assert_eq!(
+        tab.apply_missing_configuration_for_test(&settings),
+        Some("Apply unavailable: configure at least one command in procedure.verifier_commands.")
     );
     std::fs::remove_dir_all(root).ok();
 }

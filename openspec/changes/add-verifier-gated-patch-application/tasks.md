@@ -1,14 +1,18 @@
 ## 0. Approved localization input
 
-- [ ] 0.1 Require the Apply request to name an approved, current localization report matching the selected change, task, fingerprints, and preview before verification setup.
+- [x] 0.1 Require the Apply request to name an approved, current localization report matching the selected change, task, fingerprints, and preview before verification setup.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification requires its named approved localization report :: Approved matching report enters verification -->
-- [ ] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no snapshot, patch, model, or verifier action occurs.
+- [x] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no snapshot, patch, model, or verifier action occurs.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Verification requires its named approved localization report :: Untrusted localization input stops verification -->
 
 ## 1. Verifier configuration
 
-- [ ] 1.1 Add ordered `procedure.verifier_commands` settings with load, merge, mutation, save, and round-trip coverage.
-- [ ] 1.2 Disable Apply when the command list is empty and show the missing configuration in the Procedure view.
+- [x] 1.1 Add ordered `procedure.verifier_commands` settings with load, merge, mutation, save, and round-trip coverage.
+<!-- status: completed -->
+- [x] 1.2 Disable Apply when the command list is empty and show the missing configuration in the Procedure view.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: No verifier is configured -->
 - [ ] 1.3 Show the exact ordered verifier commands and enable Apply for a valid preview with a non-empty list.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Apply requires configured verifier gates :: Verifier list is configured -->
