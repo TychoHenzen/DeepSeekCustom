@@ -99,6 +99,7 @@ mod procedure_route;
 mod procedure_run;
 mod procedure_runner;
 mod procedure_verification_input;
+mod procedure_verifier;
 mod process_group;
 mod search_cascade;
 mod search_evolve;

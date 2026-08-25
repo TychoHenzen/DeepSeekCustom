@@ -25,6 +25,7 @@ mod runner;
 mod schema;
 mod validation;
 mod verification_input;
+mod verifier;
 
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
@@ -93,4 +94,10 @@ pub use validation::{
 };
 pub use verification_input::{
     ApplyRequest, ValidatedApplyInput, VerificationInputError, VerificationInputGate,
+};
+pub use verifier::{
+    BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility,
+    VERIFIER_OUTPUT_EDGE_BYTES, VerifierCommandDisposition, VerifierCommandResult,
+    VerifierCommandRunner, VerifierRun, evaluate_applied_patch_eligibility,
+    evaluate_candidate_eligibility, run_verifier_commands, run_verifier_commands_with_interrupt,
 };

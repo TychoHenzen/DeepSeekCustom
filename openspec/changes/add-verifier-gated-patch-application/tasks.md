@@ -33,8 +33,10 @@
 
 - [x] 3.1 Run `git apply --check` and `git apply` in the verification workspace before project commands.
 <!-- status: completed -->
-- [ ] 3.2 Implement the ordered command runner with Windows PATH and PATHEXT resolution, process-group adoption, bounded output, durations, and exit codes.
-- [ ] 3.3 Mark a candidate eligible only when patch application and every configured command exit successfully.
+- [x] 3.2 Implement the ordered command runner with Windows PATH and PATHEXT resolution, process-group adoption, bounded output, durations, and exit codes.
+<!-- status: completed -->
+- [x] 3.3 Mark a candidate eligible only when patch application and every configured command exit successfully.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: Every gate passes -->
 - [ ] 3.4 Stop at the first failed gate and prove that later commands do not run.
   <!-- covers: deepseek-custom/verifier-gated-patch-application :: Deterministic gates decide success :: A gate fails -->
