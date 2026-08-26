@@ -159,9 +159,8 @@ async fn query_deepseek_models(
     base_url: Option<&str>,
     config_api_key: Option<&str>,
 ) -> Vec<String> {
-    let key = match resolve_deepseek_key(config_api_key) {
-        Some(k) => k,
-        None => return Vec::new(),
+    let Some(key) = resolve_deepseek_key(config_api_key) else {
+        return Vec::new();
     };
 
     let host = base_url
@@ -240,9 +239,8 @@ pub fn claude_cli_aliases() -> Vec<String> {
 /// discovered full model IDs. Falls back to aliases alone on any
 /// failure: missing credentials, network error, bad response.
 async fn query_anthropic_models() -> Vec<String> {
-    let token = match read_oauth_token() {
-        Some(t) => t,
-        None => return claude_cli_aliases(),
+    let Some(token) = read_oauth_token() else {
+        return claude_cli_aliases();
     };
 
     let client = match reqwest::Client::builder()

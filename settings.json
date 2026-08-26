@@ -1,5 +1,5 @@
 {
-  "effort": "medium",
+  "effort": "high",
   "voice": {
     "enabled": true,
     "stt_enabled": false,
@@ -48,17 +48,17 @@
       "provider": "deepseek",
       "model": "deepseek-v4-pro"
     },
+    "claude": {
+      "kind": "claude_cli",
+      "model": "haiku"
+    },
     "codex": {
       "kind": "codex_cli",
       "model": "gpt-5.6-sol",
       "sandbox": "workspace-write"
-    },
-    "claude": {
-      "kind": "claude_cli",
-      "model": "claude-sonnet-4-6"
     }
   },
-  "default_backend": "claude",
+  "default_backend": "deepseek",
   "working_dir": "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom",
   "style": {
     "plain_language_enabled": false
