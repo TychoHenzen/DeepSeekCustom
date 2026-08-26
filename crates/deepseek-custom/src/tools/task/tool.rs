@@ -178,11 +178,10 @@ impl Tool for TaskTool {
         )
         .await
         {
-            Ok(outcome) => Ok(ToolOutput {
-                content: format_success(outcome.text, outcome.session_id),
-                is_error: false,
-                image: None,
-            }),
+            Ok(outcome) => Ok(ToolOutput::ok(format_success(
+                outcome.text,
+                outcome.session_id,
+            ))),
             Err(e) => Ok(ToolOutput::error(format!("Task dispatch failed: {e}"))),
         }
     }
