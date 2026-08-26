@@ -1,13 +1,16 @@
 ## 0. Approved localization input
 
-- [ ] 0.1 Require the completed-procedure request to name an approved, current baseline localization report matching the selected change, task, fingerprints, and downstream state before sampling starts.
+- [x] 0.1 Require the completed-procedure request to name an approved, current baseline localization report matching the selected change, task, fingerprints, and downstream state before sampling starts.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Sampling requires its named approved localization report :: Approved matching report enters sampling -->
-- [ ] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no sampling, candidate, patch, verifier, or model action occurs.
+- [x] 0.2 Reject pending, rejected, legacy-unreviewed, missing, stale, and mismatched reports with exact diagnostics. Assert that no sampling, candidate, patch, verifier, or model action occurs.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Sampling requires its named approved localization report :: Untrusted localization input stops sampling -->
 
 ## 1. Sampling settings and normalization
 
-- [ ] 1.1 Add bounded settings for localization sample count, agreement quorum, local patch candidate count, metric window, and review thresholds, with load and round-trip coverage.
+- [x] 1.1 Add bounded settings for localization sample count, agreement quorum, local patch candidate count, metric window, and review thresholds, with load and round-trip coverage.
+<!-- status: completed -->
 - [ ] 1.2 Reject localization and candidate counts outside 3 through 5, and reject quorum outside 2 through the localization sample count before dispatch.
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are outside bounds -->
 - [ ] 1.3 Normalize each accepted localization result into a sorted, deduplicated set of repository path and symbol identities.

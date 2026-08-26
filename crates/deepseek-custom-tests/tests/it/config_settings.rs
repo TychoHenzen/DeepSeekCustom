@@ -6,8 +6,11 @@ use std::path::Path;
 
 use deepseek_custom::config::settings::{
     ApiProvider, AutopilotConfig, BackendConfig, DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
-    DEFAULT_PROCEDURE_INDEX_MAX_FILES, DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES,
-    DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
+    DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT, DEFAULT_PROCEDURE_INDEX_MAX_FILES,
+    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT, DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+    DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM, DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
+    DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS, DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
     MAX_PROCEDURE_FRONTIER_ATTEMPTS, MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
     MAX_PROCEDURE_STRUCTURAL_RETRIES, PermissionsConfig, ProcedureSettings, RepositoryIndexLimits,
     Settings, TriggerMode, VoiceConfig,
@@ -171,6 +174,12 @@ fn save_then_load_round_trips_values() {
             structural_retries: 0,
             local_verifier_attempts: 2,
             frontier_attempts: 1,
+            localization_sample_count: 4,
+            localization_agreement_quorum: 3,
+            local_patch_candidate_count: 5,
+            metrics_window_runs: 25,
+            local_success_warning_percent: 65,
+            frontier_escalation_warning_percent: 20,
         }),
     };
 
@@ -217,6 +226,12 @@ fn save_then_load_round_trips_values() {
     assert_eq!(procedure.structural_retries, 0);
     assert_eq!(procedure.local_verifier_attempts, 2);
     assert_eq!(procedure.frontier_attempts, 1);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -788,6 +803,12 @@ fn procedure_settings_take_part_in_merge() {
             structural_retries: 0,
             local_verifier_attempts: 1,
             frontier_attempts: 0,
+            localization_sample_count: 4,
+            localization_agreement_quorum: 3,
+            local_patch_candidate_count: 5,
+            metrics_window_runs: 25,
+            local_success_warning_percent: 65,
+            frontier_escalation_warning_percent: 20,
         }),
         ..Default::default()
     });
@@ -810,6 +831,13 @@ fn procedure_settings_take_part_in_merge() {
     );
     assert_eq!(procedure.structural_retries, 0);
     assert_eq!(procedure.local_verifier_attempts, 1);
+    assert_eq!(procedure.frontier_attempts, 0);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
     assert_eq!(procedure.frontier_attempts, 0);
 }
 
@@ -834,12 +862,42 @@ fn procedure_mut_creates_and_updates_the_optional_block() {
         procedure.frontier_attempts,
         DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
     );
+    assert_eq!(
+        procedure.localization_sample_count,
+        DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+    );
+    assert_eq!(
+        procedure.localization_agreement_quorum,
+        DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+    );
+    assert_eq!(
+        procedure.local_patch_candidate_count,
+        DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+    );
+    assert_eq!(
+        procedure.metrics_window_runs,
+        DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS
+    );
+    assert_eq!(
+        procedure.local_success_warning_percent,
+        DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT
+    );
+    assert_eq!(
+        procedure.frontier_escalation_warning_percent,
+        DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT
+    );
     procedure.localization_backend = Some("ollama".into());
     procedure.repository_index.max_files = 77;
     procedure.verifier_commands = vec!["format".into(), "test".into()];
     procedure.structural_retries = 0;
     procedure.local_verifier_attempts = 2;
     procedure.frontier_attempts = 0;
+    procedure.localization_sample_count = 4;
+    procedure.localization_agreement_quorum = 3;
+    procedure.local_patch_candidate_count = 5;
+    procedure.metrics_window_runs = 25;
+    procedure.local_success_warning_percent = 65;
+    procedure.frontier_escalation_warning_percent = 20;
 
     let procedure = settings.procedure().unwrap();
     assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
@@ -848,6 +906,12 @@ fn procedure_mut_creates_and_updates_the_optional_block() {
     assert_eq!(procedure.structural_retries, 0);
     assert_eq!(procedure.local_verifier_attempts, 2);
     assert_eq!(procedure.frontier_attempts, 0);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
 }
 
 #[test]
@@ -865,6 +929,12 @@ fn procedure_settings_round_trip_through_json() {
             structural_retries: 0,
             local_verifier_attempts: 4,
             frontier_attempts: 1,
+            localization_sample_count: 5,
+            localization_agreement_quorum: 4,
+            local_patch_candidate_count: 4,
+            metrics_window_runs: 50,
+            local_success_warning_percent: 60,
+            frontier_escalation_warning_percent: 25,
         }),
         ..Default::default()
     };
@@ -891,6 +961,12 @@ fn procedure_settings_round_trip_through_json() {
     assert_eq!(procedure.structural_retries, 0);
     assert_eq!(procedure.local_verifier_attempts, 4);
     assert_eq!(procedure.frontier_attempts, 1);
+    assert_eq!(procedure.localization_sample_count, 5);
+    assert_eq!(procedure.localization_agreement_quorum, 4);
+    assert_eq!(procedure.local_patch_candidate_count, 4);
+    assert_eq!(procedure.metrics_window_runs, 50);
+    assert_eq!(procedure.local_success_warning_percent, 60);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 25);
 }
 
 fn frontier_backend() -> BackendConfig {

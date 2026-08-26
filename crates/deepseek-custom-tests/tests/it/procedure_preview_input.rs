@@ -5,7 +5,8 @@ use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreviewInputError,
     PatchPreviewInputGate, PatchPreviewInputRequest, ProcedureAttemptDisposition,
     ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, RouteOverride, sha256_json,
+    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, RouteOverride,
+    SamplingInputError, SamplingInputGate, SamplingInputRequest, sha256_json,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -128,6 +129,26 @@ fn gate(root: &Path, command: &Path) -> PatchPreviewInputGate {
     )
 }
 
+fn sampling_request(
+    run_id: ProcedureRunId,
+    change_id: &str,
+    task_id: &str,
+) -> SamplingInputRequest {
+    SamplingInputRequest {
+        baseline_localization_run_id: run_id,
+        change_id: change_id.to_string(),
+        task_id: task_id.to_string(),
+    }
+}
+
+fn sampling_gate(root: &Path, command: &Path) -> SamplingInputGate {
+    SamplingInputGate::new(
+        OpenSpecInput::with_command(root, command.display().to_string()),
+        root.to_path_buf(),
+        ProcedureReportStore::for_project(root),
+    )
+}
+
 #[derive(Default)]
 struct DownstreamCalls {
     route: AtomicUsize,
@@ -151,6 +172,190 @@ fn assert_downstream_untouched(calls: &DownstreamCalls) {
     assert_eq!(calls.route.load(Ordering::SeqCst), 0);
     assert_eq!(calls.workspace.load(Ordering::SeqCst), 0);
     assert_eq!(calls.dispatch.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct SamplingCalls {
+    sampling: AtomicUsize,
+    candidate: AtomicUsize,
+    patch: AtomicUsize,
+    verifier: AtomicUsize,
+    model: AtomicUsize,
+}
+
+fn pass_sampling_gate_then_start_sampling(
+    gate: &SamplingInputGate,
+    request: &SamplingInputRequest,
+    calls: &SamplingCalls,
+) -> Result<(), SamplingInputError> {
+    let input = gate.load(request)?;
+    assert_eq!(input.report.id, request.baseline_localization_run_id);
+    assert_eq!(input.report.change_id, request.change_id);
+    assert_eq!(input.report.selected_task.id, request.task_id);
+    calls.sampling.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+fn assert_sampling_work_untouched(calls: &SamplingCalls) {
+    assert_eq!(calls.sampling.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.candidate.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.patch.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.verifier.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.model.load(Ordering::SeqCst), 0);
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Sampling requires its named approved localization report :: Approved matching report enters sampling
+#[test]
+fn current_named_approved_report_enters_sampling() {
+    let root = temp_dir("sampling-approved");
+    let command = write_fixture(&root);
+    let report = save_report(
+        &root,
+        &command,
+        ProcedureReviewDisposition::Approved,
+        "fixture-change",
+        "1.1",
+    );
+    let calls = SamplingCalls::default();
+
+    pass_sampling_gate_then_start_sampling(
+        &sampling_gate(&root, &command),
+        &sampling_request(report.id, "fixture-change", "1.1"),
+        &calls,
+    )
+    .unwrap();
+
+    assert_eq!(calls.sampling.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.candidate.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.patch.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.verifier.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.model.load(Ordering::SeqCst), 0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Sampling requires its named approved localization report :: Untrusted localization input stops sampling
+#[test]
+fn untrusted_named_report_stops_before_sampling_or_downstream_work() {
+    let root = temp_dir("sampling-rejections");
+    let command = write_fixture(&root);
+
+    for disposition in [
+        ProcedureReviewDisposition::Pending,
+        ProcedureReviewDisposition::Rejected,
+        ProcedureReviewDisposition::LegacyUnreviewed,
+    ] {
+        let report = save_report(&root, &command, disposition, "fixture-change", "1.1");
+        let calls = SamplingCalls::default();
+        let error = pass_sampling_gate_then_start_sampling(
+            &sampling_gate(&root, &command),
+            &sampling_request(report.id, "fixture-change", "1.1"),
+            &calls,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "sampling rejected for localization run {}: review disposition is {}",
+                report.id.as_str(),
+                disposition
+            )
+        );
+        assert_sampling_work_untouched(&calls);
+    }
+
+    let missing_id = ProcedureRunId::new();
+    let missing_calls = SamplingCalls::default();
+    let missing = pass_sampling_gate_then_start_sampling(
+        &sampling_gate(&root, &command),
+        &sampling_request(missing_id, "fixture-change", "1.1"),
+        &missing_calls,
+    )
+    .unwrap_err();
+    assert_eq!(
+        missing.to_string(),
+        format!(
+            "sampling rejected for localization run {}: report is missing",
+            missing_id.as_str()
+        )
+    );
+    assert_sampling_work_untouched(&missing_calls);
+
+    let wrong_change = save_report(
+        &root,
+        &command,
+        ProcedureReviewDisposition::Approved,
+        "other-change",
+        "1.1",
+    );
+    let wrong_change_calls = SamplingCalls::default();
+    let wrong_change_error = pass_sampling_gate_then_start_sampling(
+        &sampling_gate(&root, &command),
+        &sampling_request(wrong_change.id, "fixture-change", "1.1"),
+        &wrong_change_calls,
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_change_error.to_string(),
+        format!(
+            "sampling rejected for localization run {}: change mismatch; requested `fixture-change`, report belongs to `other-change`",
+            wrong_change.id.as_str()
+        )
+    );
+    assert_sampling_work_untouched(&wrong_change_calls);
+
+    let wrong_task = save_report(
+        &root,
+        &command,
+        ProcedureReviewDisposition::Approved,
+        "fixture-change",
+        "9.9",
+    );
+    let wrong_task_calls = SamplingCalls::default();
+    let wrong_task_error = pass_sampling_gate_then_start_sampling(
+        &sampling_gate(&root, &command),
+        &sampling_request(wrong_task.id, "fixture-change", "1.1"),
+        &wrong_task_calls,
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_task_error.to_string(),
+        format!(
+            "sampling rejected for localization run {}: task mismatch; requested `1.1`, report belongs to `9.9`",
+            wrong_task.id.as_str()
+        )
+    );
+    assert_sampling_work_untouched(&wrong_task_calls);
+
+    let stale = save_report(
+        &root,
+        &command,
+        ProcedureReviewDisposition::Approved,
+        "fixture-change",
+        "1.1",
+    );
+    std::fs::write(
+        root.join("openspec/changes/fixture-change/proposal.md"),
+        "## Why\n\nThe selected proposal changed.\n\n## What Changes\n\n- Add sampling.\n",
+    )
+    .unwrap();
+    let stale_calls = SamplingCalls::default();
+    let stale_error = pass_sampling_gate_then_start_sampling(
+        &sampling_gate(&root, &command),
+        &sampling_request(stale.id, "fixture-change", "1.1"),
+        &stale_calls,
+    )
+    .unwrap_err();
+    assert_eq!(
+        stale_error.to_string(),
+        format!(
+            "sampling rejected for localization run {}: localization input is stale:\n- openspec/changes/fixture-change/proposal.md\nrun localization again before sampling",
+            stale.id.as_str()
+        )
+    );
+    assert_sampling_work_untouched(&stale_calls);
+
+    std::fs::remove_dir_all(root).ok();
 }
 
 // covers: deepseek-custom/routed-patch-preview :: Patch preview requires a current localization report :: Current report is accepted

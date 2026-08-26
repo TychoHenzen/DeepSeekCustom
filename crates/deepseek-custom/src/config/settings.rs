@@ -661,6 +661,18 @@ pub const MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS: u8 = 4;
 pub const DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
 /// Hard cap for total frontier candidates that may reach verification.
 pub const MAX_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
+/// Default number of bounded local localization samples.
+pub const DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 3;
+/// Default number of identical normalized samples required to continue locally.
+pub const DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM: u8 = 2;
+/// Default number of local patch candidates generated before repair escalation.
+pub const DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 3;
+/// Default number of completed procedure reports included in recent metrics.
+pub const DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS: usize = 20;
+/// Default local mechanical success percentage below which the view warns.
+pub const DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT: u8 = 70;
+/// Default frontier escalation percentage above which the view warns.
+pub const DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT: u8 = 15;
 
 /// Limits applied while building one procedure's repository index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,6 +712,30 @@ const fn default_procedure_frontier_attempts() -> u8 {
     DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
 }
 
+const fn default_procedure_localization_sample_count() -> u8 {
+    DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+}
+
+const fn default_procedure_localization_agreement_quorum() -> u8 {
+    DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+}
+
+const fn default_procedure_local_patch_candidate_count() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+}
+
+const fn default_procedure_metrics_window_runs() -> usize {
+    DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS
+}
+
+const fn default_procedure_local_success_warning_percent() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT
+}
+
+const fn default_procedure_frontier_escalation_warning_percent() -> u8 {
+    DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT
+}
+
 /// Settings for the staged read-only procedure runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureSettings {
@@ -727,6 +763,24 @@ pub struct ProcedureSettings {
     /// Zero disables escalation and permits `frontier_patch_backend` to be absent.
     #[serde(default = "default_procedure_frontier_attempts")]
     pub frontier_attempts: u8,
+    /// Number of agreement samples requested from the local localization backend.
+    #[serde(default = "default_procedure_localization_sample_count")]
+    pub localization_sample_count: u8,
+    /// Matching normalized localization results required to continue locally.
+    #[serde(default = "default_procedure_localization_agreement_quorum")]
+    pub localization_agreement_quorum: u8,
+    /// Number of distinct local patch candidates generated before repair escalation.
+    #[serde(default = "default_procedure_local_patch_candidate_count")]
+    pub local_patch_candidate_count: u8,
+    /// Completed-report count included in the recent metrics aggregate.
+    #[serde(default = "default_procedure_metrics_window_runs")]
+    pub metrics_window_runs: usize,
+    /// Warn when local mechanical success falls below this percentage.
+    #[serde(default = "default_procedure_local_success_warning_percent")]
+    pub local_success_warning_percent: u8,
+    /// Warn when frontier escalation rises above this percentage.
+    #[serde(default = "default_procedure_frontier_escalation_warning_percent")]
+    pub frontier_escalation_warning_percent: u8,
 }
 
 impl Default for ProcedureSettings {
@@ -740,6 +794,13 @@ impl Default for ProcedureSettings {
             structural_retries: DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
             local_verifier_attempts: DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
             frontier_attempts: DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
+            localization_sample_count: DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
+            localization_agreement_quorum: DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM,
+            local_patch_candidate_count: DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+            metrics_window_runs: DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS,
+            local_success_warning_percent: DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT,
+            frontier_escalation_warning_percent:
+                DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT,
         }
     }
 }
