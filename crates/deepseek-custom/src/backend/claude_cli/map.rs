@@ -86,7 +86,7 @@ impl EventMapper {
                 // for one drew an empty "Reasoning" fold in the
                 // transcript, promising content that does not exist. The
                 // spawn flags cover the other cause of an empty field:
-                // see `--thinking-display` in `process.rs`'s `build_args`.
+                // see `--thinking-display` in `args.rs`'s `build_args`.
                 ContentDelta::ThinkingDelta { thinking } if thinking.is_empty() => Vec::new(),
                 ContentDelta::ThinkingDelta { thinking } => vec![StreamEvent::Reasoning {
                     turn: self.turn,
