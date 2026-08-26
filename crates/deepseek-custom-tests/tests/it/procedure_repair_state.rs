@@ -39,6 +39,7 @@ fn validated_input() -> ValidatedRepairInput {
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
             repair_events: Vec::new(),
+            metrics: None,
         },
         contract: SelectedContractSlice {
             change_id: "change".to_string(),

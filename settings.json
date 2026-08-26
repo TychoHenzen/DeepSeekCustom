@@ -10,41 +10,55 @@
     "tts_speed": 1.01
   },
   "autopilot": {
-    "iterations": 15,
-    "task": "Refactor exactly one file toward the project's code quality bounds. Do the whole job for\nthat one file, then stop. Do not start a second file.\n\n1. Read docs/notes/quality-checklist.md. Take the first unchecked box under\n   \"Production files\". If that section has none left, take the first unchecked box under\n   \"Test files\". If both sections are fully checked, write \"checklist complete\" and stop\n   without changing anything.\n\n2. Read the file you picked, plus its row in the \"Detail\" table at the bottom of the\n   checklist. The row names which rules it breaks and its worst measurements.\n\n3. Rescan it to see the exact violations, with line numbers:\n\n   node C:\\Users\\siriu\\.claude\\plugins\\cache\\dod-guard\\quality-guard\\037c77ae9669\\skills\\quality-refactor\\scripts\\quality-scan.mjs <path> --root=.\n\n4. Fix the violations. The bounds are: line 120 characters, file 300 lines, function 60\n   lines, cyclomatic complexity 10, 7 parameters, nesting depth 5, one type per file, no\n   unnamed tuple, no unused local, no commented-out code, no duplicated block. Prefer the\n   tighter targets where they cost nothing: line 80, file 100 lines, function 30 lines,\n   complexity 5, 3 parameters, nesting depth 3.\n\n   Rules of the refactor:\n   - Behavior must not change. This is a structural pass, not a bug fix and not a feature.\n   - Splitting a file means creating new files by responsibility, and moving code into\n     them. It does not mean deleting code or trimming the line count.\n   - A new file goes in the same module directory, and gets a `mod` or `pub mod` line in\n     that directory's mod.rs. Keep the module's public surface identical.\n   - When a production file splits, its test file in\n     crates/deepseek-custom-tests/tests/it/ splits the same way, following the naming rule\n     in CLAUDE.md: the module path under crates/deepseek-custom/src/ with segments joined\n     by underscores. Declare each new test module in tests/it/main.rs.\n   - Replace an else branch with a guard clause or an early return.\n   - Turn a duplicated block into one shared function or a helper, including in tests.\n   - A stateless method becomes a free function.\n   - An unnamed tuple becomes a named struct.\n   - Never add a backward-compatibility shim, a re-export of a moved item, a feature flag,\n     or a deprecated alias. Move the item and update every caller.\n   - Delete dead exports the scanner names rather than making them public API.\n\n5. Verify, in this order. Every command must pass before you check the box:\n\n   cargo fmt --all\n   cargo check --workspace\n   cargo clippy --workspace -- -D warnings\n   cargo test --workspace\n\n   A failing test means the refactor changed behavior. Fix the code, not the test. Never\n   delete, skip, or weaken a test to get green.\n\n6. Rescan the file, and each new file the split produced. Every one must be at or under\n   the bounds in step 4. If a file still breaks a rule, keep working rather than checking\n   the box.\n\n7. Update docs/notes/quality-checklist.md in two steps. First change that file's `- [ ]`\n   to `- [x]` and append `- done: <one line saying what changed>` under it. Then rescan\n   every crate and regenerate the whole checklist:\n\n   node C:\\Users\\siriu\\.claude\\plugins\\cache\\dod-guard\\quality-guard\\037c77ae9669\\skills\\quality-refactor\\scripts\\quality-scan.mjs crates --root=. --format=units > .quality/units.json\n   node scripts/quality-checklist.mjs .quality/units.json\n\n   Regenerating carries your tick and your note forward, and it is how a new file the\n   split produced enters the list, at its real score and in the right place. Do not add a\n   box for a new file by hand. A hand-added row lands where you typed it rather than where\n   its score puts it, and that is what used to leave the list out of order.\n\n8. Update CLAUDE.md when the split changed the architecture a reader needs to know: a new\n   module, a moved type, a changed public surface. Keep AGENTS.md in step with it.\n\n9. Commit with a message shaped `refactor(<module>): <what moved where>`. Do not push.\n\nConstraints for the whole iteration:\n- Touch only what this one file's refactor forces you to touch: the file you picked, the\n  files its split produced, the mod.rs that declares them, its tests and tests/it/main.rs,\n  every call site an item's move breaks, the checklist, and the two guide documents. In a\n  call site, change the import or the path and nothing else. Leave every other file alone.\n- No em-dash or en-dash anywhere you write. ASCII punctuation only.\n- If the file needs a design change rather than a structural one, say so in the checklist\n  entry instead of checking the box, leave the code alone, and stop."
+    "iterations": 100,
+    "task": "You are performing exactly one iteration in a 100-iteration repository cleanup campaign.\n\nEach iteration receives fresh context. The Git history is the durable record between iterations.\n\nGoal\n\nIncrementally streamline and clean up the entire DeepSeekCustom repository without changing intended behavior.\n\nComplete one small, coherent batch containing 1 to 5 closely related fixes. Keep the entire iteration below 100,000 tokens. Prefer a smaller finished batch over a larger partial batch.\n\nA successful iteration ends with exactly one new local commit. Do not push.\n\nRepository rules\n\n1. Read AGENTS.md before acting.\n2. Read only the architecture documentation needed for the selected area.\n3. Follow the repository's Rust, testing, backend, process, and production-test separation rules.\n4. Preserve all pre-existing and unrelated working-tree changes.\n5. Do not stash, reset, rebase, switch branches, amend earlier commits, or rewrite history.\n6. Do not use subagents. This Autopilot run is already the fresh execution context.\n\nDiscover the next cleanup\n\n1. Inspect:\n   - git status\n   - recent commits\n   - recent commits whose subject contains `(streamline)`\n   - the repository structure\n   - relevant tests and documentation\n   - compiler, Clippy, or test findings when available\n2. Use recent `(streamline)` commits as the progress record.\n3. Avoid repeatedly cleaning the same module while other eligible areas remain untouched.\n4. Prefer the least recently streamlined area that contains a clear, evidence-backed improvement.\n5. Select one coherent batch with 1 to 5 items.\n\nGood cleanup candidates include:\n\n- Removing dead, duplicate, obsolete, or unreachable code with evidence.\n- Simplifying control flow or data flow.\n- Reducing unnecessary indirection or abstraction.\n- Consolidating genuine repeated logic.\n- Improving names or module boundaries when the current structure causes confusion.\n- Removing stale comments or documentation.\n- Tightening error handling without changing the public contract.\n- Simplifying tests while preserving their behavioral coverage.\n- Fixing a small verified defect discovered during cleanup.\n\nSelection constraints\n\n- Keep intended behavior unchanged unless a failing test or direct code evidence proves a defect.\n- Prefer deletion and direct code over new abstraction.\n- Do not introduce an abstraction for a single speculative future use.\n- Do not perform broad formatting, line-ending, or import-order churn.\n- Do not upgrade dependencies unless required to complete a verified cleanup.\n- Do not change public APIs, file formats, persisted data, protocols, or configuration contracts without direct evidence that the change is safe.\n- Do not weaken tests, assertions, validation, error handling, or security boundaries.\n- Do not add compatibility layers for hypothetical consumers.\n- Do not optimize performance without a measured or structurally clear reason.\n- Do not modify unrelated active OpenSpec changes.\n- Do not create a cleanup ledger. Git history is the campaign record.\n- If existing uncommitted changes overlap a candidate, choose another area.\n- If no safe and useful batch exists, stop without changing files or creating a commit.\n\nImplementation\n\nUse the `streamline` skill to analyze the selected area.\n\nBefore editing, state internally:\n\n- The selected area.\n- The concrete problem.\n- The evidence that it is real.\n- The intended behavior that must remain unchanged.\n- The focused verification command.\n- The expected files.\n\nImplement only the selected batch.\n\nAdd or update external integration tests when behavior needs protection. Do not add inline test modules to the production crate.\n\nVerification\n\nRun the narrowest relevant check after each coherent edit.\n\nBefore committing, run all applicable repository gates:\n\n1. The focused tests for the changed area.\n2. `cargo fmt --all -- --check`\n3. `cargo clippy --workspace -- -D warnings`\n4. `cargo test --workspace -j 1 -- --test-threads=1`\n5. `git diff --check`\n\nUse the `verify-before-claiming` skill before declaring success.\n\nIf a check fails:\n\n- Determine whether this iteration caused the failure.\n- Repair iteration-caused failures within the same scope.\n- Do not hide, skip, or weaken a failing check.\n- If repair would exceed the token or scope limit, do not commit.\n- When safe, restore only edits created by this run.\n- Preserve every pre-existing change.\n- Report the exact failing command and stop.\n\nCommit\n\nAfter every required check passes:\n\n1. Review the complete diff.\n2. Confirm that it contains only this iteration's cleanup.\n3. Stage only files changed by this iteration.\n4. Create exactly one local commit.\n5. Use this subject format:\n\n   `refactor(streamline): <area and concrete result>`\n\nUse a more accurate Conventional Commit type when needed, while keeping `(streamline)` as the scope. Examples:\n\n- `test(streamline): consolidate CLI fixture setup`\n- `docs(streamline): remove stale backend guidance`\n- `fix(streamline): close abandoned child sessions`\n\nDo not push the commit.\n\nFinal report\n\nReport:\n\n- The 1 to 5 completed cleanup items.\n- Why the changes are safe.\n- Files changed.\n- Verification commands and results.\n- The new commit hash and subject.\n- Any pre-existing failures or unrelated dirty files left untouched.\n\nComplete this one iteration, create its verified commit, and stop. The next Autopilot iteration will start with fresh context."
   },
   "procedure": {
+    "frontier_patch_backend": "codex",
+    "repository_index": {
+      "max_files": 10000,
+      "max_total_bytes": 67108864
+    },
     "verifier_commands": [
       "cargo fmt --all -- --check",
       "cargo check --workspace",
       "cargo clippy --workspace -- -D warnings",
       "cargo test --workspace"
-    ]
+    ],
+    "structural_retries": 1,
+    "local_verifier_attempts": 3,
+    "frontier_attempts": 2,
+    "localization_sample_count": 3,
+    "localization_agreement_quorum": 2,
+    "local_patch_candidate_count": 3,
+    "metrics_window_runs": 20,
+    "local_success_warning_percent": 70,
+    "frontier_escalation_warning_percent": 15
   },
   "context_budget": 150000,
   "show_raw_output": false,
   "backends": {
-    "claude": {
-      "kind": "claude_cli",
-      "model": "opus"
-    },
     "ollama": {
       "kind": "api",
       "provider": "ollama",
       "model": "hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M"
+    },
+    "deepseek": {
+      "kind": "api",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro"
     },
     "codex": {
       "kind": "codex_cli",
       "model": "gpt-5.6-sol",
       "sandbox": "workspace-write"
     },
-    "deepseek": {
-      "kind": "api",
-      "provider": "deepseek",
-      "model": "deepseek-v4-pro"
+    "claude": {
+      "kind": "claude_cli",
+      "model": "claude-sonnet-4-6"
     }
   },
-  "default_backend": "codex",
+  "default_backend": "claude",
   "working_dir": "C:\\Users\\siriu\\RustroverProjects\\DeepSeekCustom",
   "style": {
     "plain_language_enabled": false

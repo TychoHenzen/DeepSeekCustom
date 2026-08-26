@@ -341,6 +341,17 @@ async fn valid_change_starts_localization_case() {
     let saved = store.load(&run.id).unwrap();
     assert_eq!(saved, run);
     let stored = store.load_with_fingerprints(&run.id).unwrap();
+    let metrics = stored.metrics.as_ref().unwrap();
+    assert_eq!(metrics.localization_attempt_count, 1);
+    assert!(metrics.duration_ms < u64::MAX);
+    assert_eq!(
+        metrics
+            .stage_timings
+            .iter()
+            .map(|timing| timing.stage.as_str())
+            .collect::<Vec<_>>(),
+        vec!["spec_validation", "localization"]
+    );
     assert_eq!(stored.input_fingerprints.openspec.len(), 3);
     assert_eq!(stored.input_fingerprints.targets.len(), 1);
     assert_eq!(stored.input_fingerprints.targets[0].path, "src/lib.rs");
