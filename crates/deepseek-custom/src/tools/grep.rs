@@ -249,21 +249,17 @@ impl Tool for GrepTool {
             parsed.pattern
         );
         if lines.is_empty() {
-            return Ok(ToolOutput {
-                content: format!("No matches for {} under {}", parsed.pattern, root.display()),
-                is_error: false,
-                image: None,
-            });
+            return Ok(ToolOutput::ok(format!(
+                "No matches for {} under {}",
+                parsed.pattern,
+                root.display()
+            )));
         }
         let capped = if lines.len() == limit {
             format!("\n(capped at {limit} results)")
         } else {
             String::new()
         };
-        Ok(ToolOutput {
-            content: format!("{}{capped}", lines.join("\n")),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!("{}{capped}", lines.join("\n"))))
     }
 }

@@ -106,10 +106,6 @@ impl Tool for SkillTool {
             skill.source.label(),
             body.len()
         );
-        Ok(ToolOutput {
-            content: format!("# Skill: {}\n\n{body}", skill.name),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!("# Skill: {}\n\n{body}", skill.name)))
     }
 }

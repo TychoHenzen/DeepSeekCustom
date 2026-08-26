@@ -197,14 +197,10 @@ impl Tool for EditTool {
             outcome.replacements,
             path.display()
         );
-        Ok(ToolOutput {
-            content: format!(
-                "Made {} replacement(s) in {}",
-                outcome.replacements,
-                path.display()
-            ),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!(
+            "Made {} replacement(s) in {}",
+            outcome.replacements,
+            path.display()
+        )))
     }
 }

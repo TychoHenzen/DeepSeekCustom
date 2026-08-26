@@ -128,11 +128,11 @@ impl Tool for GlobTool {
 
         info!("glob: {} match(es) for {}", hits.len(), parsed.pattern);
         if hits.is_empty() {
-            return Ok(ToolOutput {
-                content: format!("No files match {} under {}", parsed.pattern, root.display()),
-                is_error: false,
-                image: None,
-            });
+            return Ok(ToolOutput::ok(format!(
+                "No files match {} under {}",
+                parsed.pattern,
+                root.display()
+            )));
         }
 
         let listing: Vec<String> = hits.iter().map(|path| path.display().to_string()).collect();
@@ -141,10 +141,6 @@ impl Tool for GlobTool {
         } else {
             String::new()
         };
-        Ok(ToolOutput {
-            content: format!("{}{capped}", listing.join("\n")),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!("{}{capped}", listing.join("\n"))))
     }
 }

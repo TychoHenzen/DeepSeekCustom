@@ -94,19 +94,15 @@ impl Tool for ReadTool {
             String::new()
         };
 
-        Ok(ToolOutput {
-            content: if output.is_empty() {
-                format!(
-                    "(empty - {} total lines, requested offset={})",
-                    total_lines,
-                    start + 1
-                )
-            } else {
-                format!("{output}\n[lines {}-{} of {total_lines}]", start + 1, end)
-            },
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(if output.is_empty() {
+            format!(
+                "(empty - {} total lines, requested offset={})",
+                total_lines,
+                start + 1
+            )
+        } else {
+            format!("{output}\n[lines {}-{} of {total_lines}]", start + 1, end)
+        }))
     }
 }
 
