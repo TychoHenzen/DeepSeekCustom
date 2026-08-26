@@ -8,9 +8,10 @@ use thiserror::Error;
 use tracing::debug;
 
 use super::{
-    ProcedureInputFingerprints, ProcedureMetricsSummary, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureRunMetrics, ProcedureTerminalDisposition, RepairLadderEvent,
-    VerifierReport, capture_path_fingerprints,
+    LocalizationTraceExport, LocalizationTraceExportRecord, ProcedureInputFingerprints,
+    ProcedureMetricsSummary, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureRunMetrics, ProcedureTerminalDisposition, RepairLadderEvent, VerifierReport,
+    capture_path_fingerprints,
 };
 use crate::error::{HarnessError, Result};
 
@@ -266,6 +267,35 @@ impl ProcedureReportStore {
         Ok(summary)
     }
 
+    /// Build an allowlisted trace document from saved reports.
+    ///
+    /// The returned document intentionally omits report prompts, task text,
+    /// source evidence, fingerprints, verifier commands, and raw output.
+    pub fn export_localization_traces(&self) -> Result<LocalizationTraceExport> {
+        let entries = match std::fs::read_dir(&self.reports_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(LocalizationTraceExport::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut reports = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            reports.push(load_document(&path)?);
+        }
+        reports.sort_unstable_by_key(|report| report.run.id.as_str());
+        Ok(LocalizationTraceExport {
+            records: reports
+                .iter()
+                .map(LocalizationTraceExportRecord::from)
+                .collect(),
+        })
+    }
+
     /// Reject one structurally valid report by its immutable run identifier.
     pub fn reject(
         &self,
@@ -387,6 +417,23 @@ impl ProcedureReportStore {
         );
         Ok(())
     }
+}
+
+fn load_document(path: &Path) -> Result<StoredProcedureReport> {
+    let json = std::fs::read_to_string(path)?;
+    let document: ProcedureReportDocument = serde_json::from_str(&json).map_err(|error| {
+        HarnessError::Parse(format!(
+            "could not parse procedure report {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(StoredProcedureReport {
+        run: document.run,
+        input_fingerprints: document.input_fingerprints,
+        verification: document.verification,
+        repair_events: document.repair_events,
+        metrics: document.metrics,
+    })
 }
 
 fn openspec_artifact_paths(project_root: &Path, report: &ProcedureRun) -> Vec<String> {

@@ -61,8 +61,10 @@
 
 ## 5. Privacy-limited trace export
 
-- [ ] 5.1 Define a separate allowlisted export record containing normalized targets, route labels, outcomes, and numeric metrics only.
-- [ ] 5.2 Export records without serializing procedure reports directly and add secret, prompt, source-content, and raw-output redaction fixtures.
+- [x] 5.1 Define a separate allowlisted export record containing normalized targets, route labels, outcomes, and numeric metrics only.
+<!-- status: completed -->
+- [x] 5.2 Export records without serializing procedure reports directly and add secret, prompt, source-content, and raw-output redaction fixtures.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Exported localization traces protect workspace content :: Trace export is inspected -->
 
 ## 6. Completed procedure and verification

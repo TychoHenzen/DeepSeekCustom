@@ -109,6 +109,7 @@ mod procedure_route;
 mod procedure_run;
 mod procedure_runner;
 mod procedure_sampling;
+mod procedure_trace_export;
 mod procedure_verification_input;
 mod procedure_verifier;
 mod process_group;
