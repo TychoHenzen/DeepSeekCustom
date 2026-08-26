@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
-use crate::api::types::{ImageAttachment, ToolDef};
+use crate::api::types::{FunctionDef, ImageAttachment, ToolDef};
 use crate::config::settings::PermissionsConfig;
 use crate::error::Result;
 
@@ -111,7 +111,7 @@ impl ToolRegistry {
             .values()
             .map(|t| ToolDef {
                 tool_type: "function".to_string(),
-                function: crate::api::types::FunctionDef {
+                function: FunctionDef {
                     name: t.name().to_string(),
                     description: t.description().to_string(),
                     parameters: t.input_schema(),

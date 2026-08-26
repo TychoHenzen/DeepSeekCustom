@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::agent::repeat::RepeatCommand;
+use crate::autopilot::policy::PolicyStore;
 use crate::config::settings::Settings;
 
 /// Progress readout for the Autopilot tab. Fed from
@@ -67,11 +68,9 @@ pub struct AutopilotTab {
 impl AutopilotTab {
     /// Seed the controls from `settings`, with no channels attached yet.
     pub fn new(settings: &Settings, project_root: &std::path::Path) -> Self {
-        let policy_path = crate::autopilot::policy::PolicyStore::new(
-            project_root.to_path_buf(),
-            settings.autopilot_policy_path(),
-        )
-        .resolved_policy_path();
+        let policy_path =
+            PolicyStore::new(project_root.to_path_buf(), settings.autopilot_policy_path())
+                .resolved_policy_path();
 
         Self {
             repeat_tx: None,
