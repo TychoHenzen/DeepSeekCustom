@@ -122,15 +122,6 @@ impl CdTool {
     /// Resolve a target path against the current working directory, read
     /// fresh from the shared value. An absolute path is used as given.
     fn resolve_path(&self, path: &str) -> std::path::PathBuf {
-        let target = std::path::Path::new(path);
-        if target.is_absolute() {
-            return target.to_path_buf();
-        }
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
-        working_dir.join(target)
+        super::resolve_against(&self.working_dir, path)
     }
 }

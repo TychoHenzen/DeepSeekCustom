@@ -189,6 +189,28 @@ impl WeakToolRegistry {
     }
 }
 
+/// Resolve `path` against the working directory, read fresh from the
+/// shared handle on every call. An absolute path is used as given.
+///
+/// Every tool that takes a path from the model resolves it this way, so
+/// the answer follows a `cd` the model made earlier in the same turn.
+/// Each such tool keeps its own `resolve_path` wrapper over this, so one
+/// that ever needs different resolution stops delegating on its own.
+fn resolve_against(
+    working_dir: &std::sync::Mutex<std::path::PathBuf>,
+    path: &str,
+) -> std::path::PathBuf {
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let working_dir = working_dir
+        .lock()
+        .expect("working_dir mutex poisoned")
+        .clone();
+    working_dir.join(path)
+}
+
 /// Check if a tool name matches a pattern (exact or wildcard suffix).
 fn tool_matches(name: &str, pattern: &str) -> bool {
     if pattern == "*" {
