@@ -14,7 +14,7 @@ pub mod stub;
 pub mod subagent;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
@@ -179,12 +179,7 @@ impl Backend {
     /// Both variants drive the same `run_repeat` loop in
     /// `src/agent/repeat.rs`, through the `RepeatTarget` trait each
     /// implements its own way.
-    pub async fn run_repeat(
-        &mut self,
-        task: &str,
-        iterations: u32,
-        project_root: &std::path::Path,
-    ) {
+    pub async fn run_repeat(&mut self, task: &str, iterations: u32, project_root: &Path) {
         match self {
             Backend::Api(agent) => run_repeat(agent.as_mut(), task, iterations, project_root).await,
             Backend::ClaudeCli(driver) => {

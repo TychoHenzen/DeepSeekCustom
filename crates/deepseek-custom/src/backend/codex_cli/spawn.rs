@@ -1,7 +1,7 @@
 //! Argument assembly and one-shot child creation for `codex exec --json`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -90,10 +90,7 @@ fn build_command(args: &[String], working_dir: &Path) -> Command {
 
 /// Returns the directory configured on the real spawn command.
 #[cfg(feature = "test-support")]
-pub fn command_working_dir_for_test(
-    args: &[String],
-    working_dir: &Path,
-) -> Option<std::path::PathBuf> {
+pub fn command_working_dir_for_test(args: &[String], working_dir: &Path) -> Option<PathBuf> {
     build_command(args, working_dir)
         .as_std()
         .get_current_dir()
