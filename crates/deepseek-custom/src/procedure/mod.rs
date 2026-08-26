@@ -57,7 +57,8 @@ pub use frontier_patch_draft::{
 pub use frontier_patch_output::decode_frontier_patch_output;
 pub use frontier_repair::{
     FRONTIER_REPAIR_INSTRUCTION, FrontierRepairDispatch, FrontierRepairDispatchResult,
-    FrontierRepairDispatcher, FrontierRepairError, FrontierRepairRequest, dispatch_frontier_repair,
+    FrontierRepairDispatcher, FrontierRepairError, FrontierRepairOutcome, FrontierRepairRequest,
+    FrontierRepairRunner, dispatch_frontier_repair,
 };
 pub use index::{RepositoryIndexError, build_repository_index};
 pub use input::{

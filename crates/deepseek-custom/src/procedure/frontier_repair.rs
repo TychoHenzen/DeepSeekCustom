@@ -14,11 +14,16 @@ use crate::backend::registry::SubagentRegistry;
 use crate::effort::Effort;
 
 use super::{
-    AttemptDisposition, ContractSelection, DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FailureDigest,
-    FailureDigestSectionError, FrontierPatchDraftError, FrontierPatchDraftRequest, LocalRepairRun,
-    PatchCandidate, ProcedureScratchpad, ProcedureTask, RepairCandidateId, RepairTier,
-    ValidatedRepairInput, build_failure_digest_section, draft_frontier_patch,
+    AttemptDisposition, AttemptFailureEvidence, ContractSelection,
+    DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FailureDigest, FailureDigestSectionError,
+    FrontierPatchDraftError, FrontierPatchDraftRequest, LocalRepairRun, PatchApplyCheckError,
+    PatchBoundaryError, PatchCandidate, ProcedureScratchpad, ProcedureTask, PromotionError,
+    PromotionResult, PromotionTargetError, RepairCandidateId, RepairTier, ValidatedRepairInput,
+    VerifierCommandRunner, build_failure_digest_section, draft_frontier_patch,
+    evaluate_applied_patch_eligibility, model_promotion_targets, promote_verified_workspace,
 };
+
+use super::local_repair::{CandidateGateError, apply_candidate_in_fresh_workspace};
 
 /// Fixed final instruction for every frontier escalation request.
 pub const FRONTIER_REPAIR_INSTRUCTION: &str = "Return one corrected patch envelope for this task. Change only the normalized targets. Use the deterministic failure evidence. Do not include commentary or prior conversation.";
@@ -75,6 +80,97 @@ impl FrontierRepairRequest {
 pub struct FrontierRepairDispatchResult {
     pub request: FrontierRepairRequest,
     pub candidate: PatchCandidate,
+}
+
+/// Terminal result of the bounded frontier tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrontierRepairOutcome {
+    Promoted {
+        attempt_number: u8,
+        promotion: PromotionResult,
+    },
+    Blocked {
+        attempts: u8,
+        reason: String,
+    },
+}
+
+/// Runs frontier candidates through the same deterministic gates as local repair.
+pub struct FrontierRepairRunner {
+    project_root: PathBuf,
+}
+
+impl FrontierRepairRunner {
+    pub fn new(project_root: PathBuf) -> Self {
+        Self { project_root }
+    }
+
+    pub async fn run(
+        &self,
+        local_run: &mut LocalRepairRun,
+        dispatcher: &dyn FrontierRepairDispatch,
+        verifier_commands: &[String],
+    ) -> Result<FrontierRepairOutcome, FrontierRepairError> {
+        if verifier_commands.is_empty() {
+            return Err(FrontierRepairError::NoVerifierCommands);
+        }
+
+        let mut dispatched = dispatch_frontier_repair(local_run, dispatcher).await?;
+        loop {
+            let attempt_number = local_run.state.attempt_index();
+            let applied = apply_candidate_in_fresh_workspace(
+                &self.project_root,
+                dispatched.candidate,
+                &local_run.repair_input.preview.targets,
+            )
+            .map_err(FrontierRepairError::from)?;
+            let verifier = VerifierCommandRunner::new();
+            let verifier_run = verifier.run(applied.path(), verifier_commands).await;
+
+            if evaluate_applied_patch_eligibility(&applied, &verifier_run).eligible {
+                let targets = model_promotion_targets(applied.boundary_patch())?;
+                let promotion = promote_verified_workspace(
+                    &self.project_root,
+                    applied.path(),
+                    &local_run.repair_input.promotion_baseline,
+                    &targets,
+                )?;
+                drop(applied);
+                local_run.state.promote()?;
+                return Ok(FrontierRepairOutcome::Promoted {
+                    attempt_number,
+                    promotion,
+                });
+            }
+
+            let failed = verifier_run
+                .commands
+                .last()
+                .expect("nonempty verifier configuration produces command evidence");
+            let digest =
+                FailureDigest::from_verifier_result(attempt_number, RepairTier::Frontier, failed);
+            applied.close().map_err(PatchApplyCheckError::from)?;
+            local_run
+                .state
+                .frontier_verifier_failure(AttemptFailureEvidence::verifier(
+                    digest.command.clone(),
+                    digest.exit_code,
+                    digest.diagnostic.clone(),
+                ))?;
+            local_run.failure_digests.push(digest);
+
+            if local_run.state.disposition() == &AttemptDisposition::FrontierExhausted {
+                let attempts = local_run.state.attempt_index();
+                let reason = format!(
+                    "frontier repair exhausted after {attempts} deterministic verifier attempts"
+                );
+                local_run.state.block(reason.clone())?;
+                return Ok(FrontierRepairOutcome::Blocked { attempts, reason });
+            }
+
+            dispatched = dispatch_next_frontier_repair(local_run, dispatcher).await?;
+        }
+    }
 }
 
 /// Narrow seam for an isolated one-shot frontier draft.
@@ -155,6 +251,25 @@ pub enum FrontierRepairError {
     Transition(#[from] super::AttemptTransitionError),
     #[error(transparent)]
     Dispatch(#[from] FrontierPatchDraftError),
+    #[error(transparent)]
+    Boundary(#[from] PatchBoundaryError),
+    #[error(transparent)]
+    Patch(#[from] PatchApplyCheckError),
+    #[error(transparent)]
+    Targets(#[from] PromotionTargetError),
+    #[error(transparent)]
+    Promotion(#[from] PromotionError),
+    #[error("frontier repair requires at least one verifier command")]
+    NoVerifierCommands,
+}
+
+impl From<CandidateGateError> for FrontierRepairError {
+    fn from(error: CandidateGateError) -> Self {
+        match error {
+            CandidateGateError::Boundary(error) => Self::Boundary(error),
+            CandidateGateError::Patch(error) => Self::Patch(error),
+        }
+    }
 }
 
 /// Build the escalation from the original trusted input and dispatch attempt one.
@@ -198,6 +313,31 @@ pub async fn dispatch_frontier_repair(
 
     let request = build_frontier_request(repair, backend, local_failures)?;
     state.escalate_to_frontier(RepairCandidateId::new("frontier-1")?)?;
+    let candidate = dispatcher.draft(&request).await?;
+    Ok(FrontierRepairDispatchResult { request, candidate })
+}
+
+async fn dispatch_next_frontier_repair(
+    local_run: &mut LocalRepairRun,
+    dispatcher: &dyn FrontierRepairDispatch,
+) -> Result<FrontierRepairDispatchResult, FrontierRepairError> {
+    let backend = local_run
+        .state
+        .policy()
+        .frontier_backend()
+        .ok_or(FrontierRepairError::FrontierDisabled)?
+        .to_string();
+    let request = build_frontier_request(
+        &local_run.repair_input,
+        backend,
+        local_run.failure_digests.clone(),
+    )?;
+    let attempt_number = local_run.state.attempt_index();
+    local_run
+        .state
+        .escalate_to_frontier(RepairCandidateId::new(format!(
+            "frontier-{attempt_number}"
+        ))?)?;
     let candidate = dispatcher.draft(&request).await?;
     Ok(FrontierRepairDispatchResult { request, candidate })
 }

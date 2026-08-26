@@ -277,6 +277,21 @@ enum CandidatePreparationError {
     Patch(PatchApplyCheckError),
 }
 
+pub(super) enum CandidateGateError {
+    Boundary(super::PatchBoundaryError),
+    Patch(PatchApplyCheckError),
+}
+
+pub(super) fn apply_candidate_in_fresh_workspace(
+    project_root: &Path,
+    candidate: super::PatchCandidate,
+    targets: &[String],
+) -> Result<AppliedPatchWorkspace, CandidateGateError> {
+    let boundary: BoundaryValidatedPatch =
+        validate_patch_boundary(candidate, targets).map_err(CandidateGateError::Boundary)?;
+    apply_patch_in_workspace(project_root, boundary).map_err(CandidateGateError::Patch)
+}
+
 async fn draft_apply_candidate(
     dispatcher: &dyn LocalPatchDraftDispatch,
     project_root: &Path,
@@ -289,17 +304,18 @@ async fn draft_apply_candidate(
             CandidatePreparationError::Structural,
         )
     })?;
-    let boundary: BoundaryValidatedPatch =
-        validate_patch_boundary(candidate, targets).map_err(|error| {
-            CandidatePreparationError::Structural(
+    apply_candidate_in_fresh_workspace(project_root, candidate, targets).map_err(
+        |error| match error {
+            CandidateGateError::Boundary(error) => CandidatePreparationError::Structural(
                 classify_structural_failure(RepairFailureRef::LocalizationAllowlist(&error))
                     .expect("localization-boundary failures are structural"),
-            )
-        })?;
-    apply_patch_in_workspace(project_root, boundary).map_err(|error| {
-        classify_structural_failure(RepairFailureRef::PatchApply(&error)).map_or_else(
-            || CandidatePreparationError::Patch(error),
-            CandidatePreparationError::Structural,
-        )
-    })
+            ),
+            CandidateGateError::Patch(error) => {
+                classify_structural_failure(RepairFailureRef::PatchApply(&error)).map_or_else(
+                    || CandidatePreparationError::Patch(error),
+                    CandidatePreparationError::Structural,
+                )
+            }
+        },
+    )
 }

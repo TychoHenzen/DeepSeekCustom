@@ -48,9 +48,11 @@
 - [x] 4.1 Build the frontier request from the same task, spec slice, targets, scratchpad, and accumulated failure digests, then dispatch it in isolation.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Exhausted local work escalates the same task :: Frontier receives accumulated evidence -->
-- [ ] 4.2 Pass frontier envelopes through the same allowlist, parser, verifier, baseline check, and promotion transaction, and cover a successful frontier repair.
+- [x] 4.2 Pass frontier envelopes through the same allowlist, parser, verifier, baseline check, and promotion transaction, and cover a successful frontier repair.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Frontier repair is also bounded :: Frontier candidate passes -->
-- [ ] 4.3 Stop after two failed frontier candidates, return a blocked report, and prove the real workspace is unchanged.
+- [x] 4.3 Stop after two failed frontier candidates, return a blocked report, and prove the real workspace is unchanged.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Frontier repair is also bounded :: Frontier budget is exhausted -->
 
 ## 5. Cancellation and evidence
