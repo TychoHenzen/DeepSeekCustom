@@ -7,15 +7,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use async_trait::async_trait;
 use deepseek_custom::config::settings::{ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
+    LocalCandidateVerificationOutcome, LocalPatchCandidateGeneration, LocalPatchCandidateGenerator,
+    LocalPatchCandidateVerifier, LocalPatchDraftDispatch, LocalPatchDraftError,
     LocalizationAgreementError, LocalizationAgreementOutcome, LocalizationAgreementResolver,
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope,
     LocalizationEscalationTrigger, LocalizationSample, LocalizationSampleOutcome,
     LocalizationSampler, LocalizationTarget, NormalizedLocalizationTarget,
-    NormalizedLocalizationTargets, OpenSpecInput, ProcedureAttemptDisposition,
+    NormalizedLocalizationTargets, OpenSpecInput, PatchCandidate, ProcedureAttemptDisposition,
     ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, select_localization_agreement,
-    sha256_json,
+    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, decode_patch_envelope,
+    select_localization_agreement, sha256_json,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -149,6 +151,20 @@ fn sampling_settings_with_quorum(
         procedure: Some(ProcedureSettings {
             localization_sample_count: count,
             localization_agreement_quorum: quorum,
+            ..ProcedureSettings::default()
+        }),
+        ..Settings::default()
+    }
+    .validated_procedure_sampling_settings()
+    .unwrap()
+}
+
+fn candidate_settings(
+    count: u8,
+) -> deepseek_custom::config::settings::ValidatedProcedureSamplingSettings {
+    Settings {
+        procedure: Some(ProcedureSettings {
+            local_patch_candidate_count: count,
             ..ProcedureSettings::default()
         }),
         ..Settings::default()
@@ -646,5 +662,166 @@ async fn shared_interrupt_stops_pending_localization_samples() {
             .iter()
             .all(|sample| matches!(sample.outcome, LocalizationSampleOutcome::Interrupted))
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn patch_candidate(replacement: &str) -> PatchCandidate {
+    let diff = format!(
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn target_symbol() {{}}\n+pub fn {replacement}() {{}}\n"
+    );
+    let envelope = serde_json::json!({
+        "targets": ["src/lib.rs"],
+        "rationale": "Apply one bounded mechanical rename.",
+        "route": {
+            "automatic_tier": "local",
+            "effective_tier": "local",
+            "signals": [],
+            "selected_override": "automatic",
+            "overridden": false
+        },
+        "unified_diff": diff,
+    });
+    decode_patch_envelope(&envelope.to_string()).unwrap()
+}
+
+struct ScriptedPatchDispatcher {
+    responses: Mutex<VecDeque<Result<PatchCandidate, LocalPatchDraftError>>>,
+    prompts: Mutex<Vec<String>>,
+}
+
+impl ScriptedPatchDispatcher {
+    fn new(responses: Vec<Result<PatchCandidate, LocalPatchDraftError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into()),
+            prompts: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl LocalPatchDraftDispatch for ScriptedPatchDispatcher {
+    fn backend_name(&self) -> &str {
+        "scripted-local-patch"
+    }
+
+    fn model(&self) -> &str {
+        "scripted-patch-model"
+    }
+
+    async fn draft(&self, prompt: String) -> Result<PatchCandidate, LocalPatchDraftError> {
+        self.prompts.lock().unwrap().push(prompt);
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(LocalPatchDraftError::MissingFinalContent))
+    }
+}
+
+fn write_candidate_verifier(root: &Path, workspaces: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let script = root.join("candidate-verifier.ps1");
+        let quoted = workspaces.display().to_string().replace('\'', "''");
+        std::fs::write(
+            &script,
+            format!(
+                "$workspaces = '{quoted}'\nAdd-Content -LiteralPath $workspaces -Value (Get-Location).Path\nif (Test-Path -LiteralPath 'candidate-poison.txt') {{ Write-Error 'prior candidate leaked'; exit 31 }}\n$content = Get-Content -Raw -LiteralPath 'src/lib.rs'\nif ($content -notmatch 'candidate-(one|two|three)') {{ Write-Error 'candidate edit missing'; exit 32 }}\nSet-Content -LiteralPath 'candidate-poison.txt' -Value 'workspace-local mutation'\n"
+            ),
+        )
+        .unwrap();
+        format!(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+            script.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = root.join("candidate-verifier.sh");
+        let quoted = workspaces.display().to_string().replace('\'', "'\\''");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$PWD\" >> '{quoted}'\nif [ -f candidate-poison.txt ]; then echo 'prior candidate leaked' >&2; exit 31; fi\ngrep -Eq 'candidate-(one|two|three)' src/lib.rs || {{ echo 'candidate edit missing' >&2; exit 32; }}\nprintf workspace-local-mutation > candidate-poison.txt\n"
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        format!("\"{}\"", script.display())
+    }
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Local mechanical edits use bounded best-of-N :: Local candidates are generated
+#[test]
+fn bounded_local_candidates_keep_indexed_generation_evidence_and_isolated_verifier_results() {
+    let root = temp_dir("local-candidates");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn target_symbol() {}\n").unwrap();
+    let workspaces = root.join("verifier-workspaces.txt");
+    let dispatcher = ScriptedPatchDispatcher::new(vec![
+        Ok(patch_candidate("candidate-one")),
+        Ok(patch_candidate("candidate-two")),
+        Ok(patch_candidate("candidate-three")),
+    ]);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let generation = run_async_test(
+        LocalPatchCandidateGenerator::new(
+            &dispatcher,
+            candidate_settings(3),
+            Arc::clone(&interrupt),
+        )
+        .generate("Apply the selected mechanical edit."),
+    );
+
+    assert_eq!(generation.candidates.len(), 3);
+    assert!(
+        generation
+            .candidates
+            .iter()
+            .all(|candidate| matches!(candidate, LocalPatchCandidateGeneration::Completed(_)))
+    );
+    assert_eq!(
+        generation
+            .candidates
+            .iter()
+            .map(|candidate| candidate.evidence().index)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    let prompts = dispatcher.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 3);
+    for (index, prompt) in prompts.iter().enumerate() {
+        assert!(prompt.contains(&format!("local-patch-candidate-{}-of-3", index + 1)));
+    }
+
+    let verifier = LocalPatchCandidateVerifier::new(
+        root.clone(),
+        vec!["src/lib.rs".to_string()],
+        vec![write_candidate_verifier(&root, &workspaces)],
+        interrupt,
+    );
+    let verification = run_async_test(verifier.verify(&generation));
+
+    assert_eq!(verification.candidates.len(), 3);
+    assert!(verification.candidates.iter().all(|candidate| {
+        candidate.changed_line_count == 2
+            && matches!(
+                candidate.outcome,
+                LocalCandidateVerificationOutcome::Verified { ref report }
+                    if report.eligibility.eligible
+            )
+    }));
+    let paths = std::fs::read_to_string(&workspaces).unwrap();
+    let paths = paths.lines().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(paths.len(), 3);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn target_symbol() {}\n"
+    );
+    assert!(!root.join("candidate-poison.txt").exists());
     std::fs::remove_dir_all(root).ok();
 }

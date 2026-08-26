@@ -46,6 +46,7 @@ pub struct PatchEnvelope {
 pub struct PatchCandidate {
     envelope: PatchEnvelope,
     file_count: usize,
+    changed_line_count: usize,
 }
 
 impl PatchCandidate {
@@ -59,6 +60,14 @@ impl PatchCandidate {
 
     pub fn file_count(&self) -> usize {
         self.file_count
+    }
+
+    /// Added plus removed content lines from the validated unified diff.
+    ///
+    /// File headers and context lines are deliberately excluded. A pure rename
+    /// therefore has a changed-line count of zero.
+    pub fn changed_line_count(&self) -> usize {
+        self.changed_line_count
     }
 }
 
@@ -117,10 +126,11 @@ pub fn decode_patch_envelope(output: &str) -> Result<PatchCandidate, PatchEnvelo
         }
     })?;
     validate_envelope_fields(&envelope)?;
-    let file_count = validate_unified_diff(&envelope.unified_diff)?;
+    let (file_count, changed_line_count) = validate_unified_diff(&envelope.unified_diff)?;
     Ok(PatchCandidate {
         envelope,
         file_count,
+        changed_line_count,
     })
 }
 
@@ -323,7 +333,7 @@ fn diff_error(reason: impl Into<String>) -> PatchEnvelopeError {
     }
 }
 
-fn validate_unified_diff(diff: &str) -> Result<usize, PatchEnvelopeError> {
+fn validate_unified_diff(diff: &str) -> Result<(usize, usize), PatchEnvelopeError> {
     if diff.trim().is_empty() {
         return Err(diff_error("diff is empty"));
     }
@@ -334,6 +344,7 @@ fn validate_unified_diff(diff: &str) -> Result<usize, PatchEnvelopeError> {
 
     let mut cursor = 0;
     let mut files = 0;
+    let mut changed_lines = 0;
     while cursor < lines.len() {
         if !lines[cursor].starts_with("diff --git ") {
             return Err(diff_error(format!(
@@ -347,15 +358,15 @@ fn validate_unified_diff(diff: &str) -> Result<usize, PatchEnvelopeError> {
         while cursor < lines.len() && !lines[cursor].starts_with("diff --git ") {
             cursor += 1;
         }
-        validate_file_section(&lines[section_start..cursor], section_start + 1)?;
+        changed_lines += validate_file_section(&lines[section_start..cursor], section_start + 1)?;
     }
-    Ok(files)
+    Ok((files, changed_lines))
 }
 
 fn validate_file_section(
     lines: &[&str],
     first_line_number: usize,
-) -> Result<(), PatchEnvelopeError> {
+) -> Result<usize, PatchEnvelopeError> {
     let old_header = lines.iter().position(|line| line.starts_with("--- "));
     let rename_from = lines
         .iter()
@@ -374,7 +385,7 @@ fn validate_rename_section(
     lines: &[&str],
     first_line_number: usize,
     from_index: usize,
-) -> Result<(), PatchEnvelopeError> {
+) -> Result<usize, PatchEnvelopeError> {
     let to_index = lines.iter().position(|line| line.starts_with("rename to "));
     if to_index.is_none_or(|index| index <= from_index) {
         return Err(diff_error(format!(
@@ -382,14 +393,14 @@ fn validate_rename_section(
             first_line_number + from_index
         )));
     }
-    Ok(())
+    Ok(0)
 }
 
 fn validate_hunk_section(
     lines: &[&str],
     first_line_number: usize,
     old_index: usize,
-) -> Result<(), PatchEnvelopeError> {
+) -> Result<usize, PatchEnvelopeError> {
     let new_index = old_index + 1;
     if lines
         .get(new_index)
@@ -402,6 +413,7 @@ fn validate_hunk_section(
     }
     let mut cursor = new_index + 1;
     let mut hunks = 0;
+    let mut changed_lines = 0;
     while cursor < lines.len() {
         if !lines[cursor].starts_with("@@ ") {
             return Err(diff_error(format!(
@@ -424,8 +436,14 @@ fn validate_hunk_section(
                     actual_old += 1;
                     actual_new += 1;
                 }
-                Some('-') => actual_old += 1,
-                Some('+') => actual_new += 1,
+                Some('-') => {
+                    actual_old += 1;
+                    changed_lines += 1;
+                }
+                Some('+') => {
+                    actual_new += 1;
+                    changed_lines += 1;
+                }
                 Some('\\') if lines[cursor] == "\\ No newline at end of file" => {}
                 _ => {
                     return Err(diff_error(format!(
@@ -450,7 +468,7 @@ fn validate_hunk_section(
             first_line_number.saturating_sub(1)
         )));
     }
-    Ok(())
+    Ok(changed_lines)
 }
 
 fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {

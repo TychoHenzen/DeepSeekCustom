@@ -33,9 +33,11 @@
 
 ## 3. Verifier-selected local candidates
 
-- [ ] 3.1 Generate the configured 3 to 5 local patch envelopes with stable diversity hints and retain candidate index and generation evidence.
+- [x] 3.1 Generate the configured 3 to 5 local patch envelopes with stable diversity hints and retain candidate index and generation evidence.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Local mechanical edits use bounded best-of-N :: Local candidates are generated -->
-- [ ] 3.2 Verify every completed candidate serially in a fresh isolated workspace and calculate added plus removed line count from the parsed diff.
+- [x] 3.2 Verify every completed candidate serially in a fresh isolated workspace and calculate added plus removed line count from the parsed diff.
+<!-- status: completed -->
 - [ ] 3.3 Select the passing candidate with the fewest changed lines.
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Passing candidates are selected deterministically :: Two candidates pass -->
 - [ ] 3.4 Break an equal-size passing tie by the lowest candidate index.

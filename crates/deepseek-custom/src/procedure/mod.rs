@@ -15,6 +15,7 @@ mod frontier_patch_output;
 mod frontier_repair;
 mod index;
 mod input;
+mod local_patch_candidates;
 mod local_patch_draft;
 mod local_repair;
 mod patch_apply_check;
@@ -70,6 +71,12 @@ pub use input::{
     CapabilityDeltaSlice, ContractSelection, OpenSpecChange, OpenSpecCommandFailure, OpenSpecInput,
     OpenSpecInputError, OpenSpecValidation, ProposalScope, RequirementSlice, ScenarioSlice,
     SelectedContractSlice, ValidatedContractInput,
+};
+pub use local_patch_candidates::{
+    LocalCandidateGenerationEvidence, LocalCandidateVerification,
+    LocalCandidateVerificationOutcome, LocalCandidateVerificationRun, LocalPatchCandidate,
+    LocalPatchCandidateGeneration, LocalPatchCandidateGenerationRun, LocalPatchCandidateGenerator,
+    LocalPatchCandidateVerifier,
 };
 pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
