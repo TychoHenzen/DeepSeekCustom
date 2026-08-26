@@ -69,8 +69,10 @@
 
 ## 6. Completed procedure and verification
 
-- [ ] 6.1 Extend the Procedure tab with sample standings, candidate verifier results, selected candidate, recent metrics, thresholds, and trace export.
-- [ ] 6.2 Add a full stub-backed local-success run from OpenSpec validation through verified promotion and assert that no frontier dispatch occurs.
+- [x] 6.1 Extend the Procedure tab with sample standings, candidate verifier results, selected candidate, recent metrics, thresholds, and trace export.
+<!-- status: completed -->
+- [x] 6.2 Add a full stub-backed local-success run from OpenSpec validation through verified promotion and assert that no frontier dispatch occurs.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Local end-to-end success -->
 - [ ] 6.3 Add full disagreement and local-exhaustion runs that end in bounded frontier promotion or a blocked report.
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: End-to-end escalation -->

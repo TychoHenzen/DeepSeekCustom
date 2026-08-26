@@ -16,11 +16,13 @@ use deepseek_custom::procedure::{
     LocalizationEscalationTrigger, LocalizationSample, LocalizationSampleOutcome,
     LocalizationSampler, LocalizationTarget, NormalizedLocalizationTarget,
     NormalizedLocalizationTargets, OpenSpecInput, PatchCandidate, ProcedureAttemptDisposition,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, VerifierReport,
-    begin_existing_bounded_repair, decode_patch_envelope, select_localization_agreement,
-    select_passing_local_candidate, sha256_json,
+    ProcedureCandidateMetric, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming,
+    ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, RepositoryIndexEntry,
+    RouteTier, SamplingInputGate, SamplingInputRequest, VerifierReport, apply_patch_in_workspace,
+    begin_existing_bounded_repair, decode_patch_envelope, model_promotion_targets,
+    promote_verified_workspace, select_localization_agreement, select_passing_local_candidate,
+    sha256_json, validate_patch_boundary,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -949,4 +951,148 @@ fn failed_candidates_enter_the_existing_bounded_repair_policy_without_budget_cha
         LocalPatchCandidateResolution::BeginExistingBoundedRepair
     );
     assert_eq!(began_with, Some(policy));
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Local end-to-end success
+#[test]
+fn approved_local_quorum_and_verified_candidate_promote_without_frontier_dispatch() {
+    let root = temp_dir("completed-local-success");
+    let command = write_fixture(&root);
+    let reports = ProcedureReportStore::for_project(&root);
+    let input = approved_sampling_input(&root, &command);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("target_symbol"),
+            "sample one",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("target_symbol"),
+            "sample two",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("target_symbol"),
+            "sample three",
+        )]),
+    ]);
+    let frontier = ScriptedDispatcher::new([]);
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(local.clone(), sampling_settings(3), Arc::clone(&interrupt)),
+        frontier.clone(),
+    );
+    let agreement = run_async_test(resolver.resolve(&input, &index())).unwrap();
+    let LocalizationAgreementOutcome::Local { agreement } = agreement.outcome else {
+        panic!("matching local samples must not dispatch frontier localization");
+    };
+    assert_eq!(agreement.sample_numbers, [1, 2, 3]);
+    assert_eq!(local.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier.calls.load(Ordering::SeqCst), 0);
+
+    let patch_dispatcher = ScriptedPatchDispatcher::new(vec![
+        Ok(patch_candidate("candidate-one")),
+        Ok(patch_candidate("candidate-two")),
+        Ok(patch_candidate("candidate-three")),
+    ]);
+    let generation = run_async_test(
+        LocalPatchCandidateGenerator::new(
+            &patch_dispatcher,
+            candidate_settings(3),
+            Arc::clone(&interrupt),
+        )
+        .generate("Apply the selected mechanical edit."),
+    );
+    let verifier_command = write_candidate_verifier(&root, &root.join("candidate-workspaces.txt"));
+    let verification = run_async_test(
+        LocalPatchCandidateVerifier::new(
+            root.clone(),
+            vec!["src/lib.rs".to_string()],
+            vec![verifier_command],
+            Arc::clone(&interrupt),
+        )
+        .verify(&generation),
+    );
+    let LocalPatchCandidateResolution::Selected(selected) =
+        select_passing_local_candidate(&verification)
+    else {
+        panic!("one verified local candidate must be selected");
+    };
+    assert_eq!(selected.candidate.evidence.index, 1);
+
+    let boundary = validate_patch_boundary(
+        selected.candidate.patch.clone(),
+        &["src/lib.rs".to_string()],
+    )
+    .unwrap();
+    let promotion_targets = model_promotion_targets(&boundary).unwrap();
+    let baseline = PromotionBaseline::capture(&root, &promotion_targets).unwrap();
+    let applied = apply_patch_in_workspace(&root, boundary).unwrap();
+    let promotion =
+        promote_verified_workspace(&root, applied.path(), &baseline, &promotion_targets).unwrap();
+    applied.close().unwrap();
+    assert!(promotion.baseline.can_promote());
+    assert!(
+        std::fs::read_to_string(root.join("src/lib.rs"))
+            .unwrap()
+            .contains("candidate-one")
+    );
+
+    let mut metrics = ProcedureRunMetrics::from_terminal_run(&input.report).unwrap();
+    metrics.stage_timings.extend([
+        ProcedureStageTiming {
+            stage: "agreement_sampling".to_string(),
+            duration_ms: 1,
+        },
+        ProcedureStageTiming {
+            stage: "candidate_verification".to_string(),
+            duration_ms: 1,
+        },
+        ProcedureStageTiming {
+            stage: "promotion".to_string(),
+            duration_ms: 1,
+        },
+    ]);
+    metrics.route.selected_tier = Some(RouteTier::Local);
+    metrics.route.local_mechanical_success = Some(true);
+    metrics.candidates = verification
+        .candidates
+        .iter()
+        .map(|candidate| ProcedureCandidateMetric {
+            index: candidate.candidate.evidence.index,
+            changed_line_count: Some(candidate.changed_line_count),
+            verifier_passed: Some(matches!(
+                candidate.outcome,
+                LocalCandidateVerificationOutcome::Verified { ref report } if report.eligibility.eligible
+            )),
+        })
+        .collect();
+    reports.replace_metrics(&input.report.id, &metrics).unwrap();
+    let stored = reports.load_with_fingerprints(&input.report.id).unwrap();
+    let recorded = stored.metrics.expect("completed local run records metrics");
+    assert_eq!(recorded.route.selected_tier, Some(RouteTier::Local));
+    assert_eq!(recorded.route.local_mechanical_success, Some(true));
+    assert!(recorded.route.escalation_triggers.is_empty());
+    assert_eq!(recorded.candidates.len(), 3);
+    assert!(
+        recorded
+            .stage_timings
+            .iter()
+            .any(|timing| timing.stage == "agreement_sampling")
+    );
+    assert!(
+        recorded
+            .stage_timings
+            .iter()
+            .any(|timing| timing.stage == "candidate_verification")
+    );
+    assert!(
+        recorded
+            .stage_timings
+            .iter()
+            .any(|timing| timing.stage == "promotion")
+    );
+
+    std::fs::remove_dir_all(root).ok();
 }

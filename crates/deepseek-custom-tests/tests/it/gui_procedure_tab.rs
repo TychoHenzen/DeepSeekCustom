@@ -16,9 +16,9 @@ use deepseek_custom::procedure::{
     BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyDisposition,
     GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationTarget, MechanicalVerb,
     OpenSpecValidation, PatchPreview, PatchPreviewStore, ProcedureApplyProgress,
-    ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
-    ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureAttemptDisposition, ProcedureCandidateMetric, ProcedureCommand, ProcedureProgress,
+    ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition, PromotionBaselineComparison, PromotionCleanupEvidence,
     PromotionRecoveryEvidence, PromotionResult, RepairLadderDisposition, RepairLadderErrorCategory,
     RepairLadderEvent, RepairLadderGateResult, RepairLadderTransition, RepairLadderTrigger,
@@ -1693,6 +1693,71 @@ fn escalation_rate_warning_leaves_route_configuration_unchanged() {
     );
     assert_eq!(tab.route_override(), RouteOverride::Automatic);
     assert_eq!(settings.procedure(), before.as_ref());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn procedure_evidence_view_model_shows_sample_candidates_and_allowlisted_trace_export() {
+    let root = fixture_root("sampling-candidate-evidence");
+    let store = ProcedureReportStore::for_project(&root);
+    let report = completed_run(ProcedureRunId::new());
+    store.save(&report).unwrap();
+    let mut metrics = ProcedureRunMetrics::from_terminal_run(&report).unwrap();
+    metrics.candidates = vec![
+        ProcedureCandidateMetric {
+            index: 1,
+            changed_line_count: Some(8),
+            verifier_passed: Some(true),
+        },
+        ProcedureCandidateMetric {
+            index: 2,
+            changed_line_count: Some(3),
+            verifier_passed: Some(true),
+        },
+        ProcedureCandidateMetric {
+            index: 3,
+            changed_line_count: Some(1),
+            verifier_passed: Some(false),
+        },
+    ];
+    metrics.route.escalation_triggers = vec!["local_disagreement".to_string()];
+    store.replace_metrics(&report.id, &metrics).unwrap();
+
+    let lines = ProcedureTab::sampling_and_candidate_render_lines_for_test(&report, &metrics);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Localization sample standings:")
+    );
+    assert!(lines.iter().any(|line| {
+        line == "Sample 1: ollama-a / qwen-a (Accepted); targets: src/procedure.rs::run"
+    }));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Candidate verifier results:")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Candidate 2: 3 changed lines, verifier passed")
+    );
+    assert!(lines.iter().any(|line| line == "Selected candidate: 2"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Escalation triggers: local_disagreement")
+    );
+    assert_eq!(
+        ProcedureTab::routing_threshold_render_line_for_test(&settings()),
+        "Review thresholds: local mechanical success at least 70%; frontier escalation at most 15%."
+    );
+
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    assert_eq!(
+        tab.prepare_trace_export_for_test(),
+        vec!["Allowlisted trace records: 1"]
+    );
     std::fs::remove_dir_all(root).ok();
 }
 

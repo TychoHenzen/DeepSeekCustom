@@ -12,11 +12,11 @@ use tracing::info;
 use crate::api::models::list_models;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
-    BoundedVerifierOutput, GitApplyPhase, GitApplyResult, OpenSpecChange, OpenSpecInput,
-    PatchPreview, PatchPreviewId, PatchPreviewRequest, ProcedureApplyProgress,
+    BoundedVerifierOutput, GitApplyPhase, GitApplyResult, LocalizationTraceExport, OpenSpecChange,
+    OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewRequest, ProcedureApplyProgress,
     ProcedureAttemptDisposition, ProcedureCommand, ProcedureMetricsSummary, ProcedureProgress,
     ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
+    ProcedureRunId, ProcedureRunMetrics, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
     ProcedureTerminalDisposition, PromotionRecoveryEvidence, PromotionResult, RepairLadderEvent,
     RouteOverride, SnapshotProgress, StalePromotionPath, VerifierGateDisposition, VerifierReport,
     repair_ladder_render_lines,
@@ -138,6 +138,7 @@ pub struct ProcedureTab {
     dispatch_model: Option<String>,
     attempt_number: Option<u8>,
     latest_run: Option<ProcedureRun>,
+    latest_metrics: Option<ProcedureRunMetrics>,
     report_path: Option<PathBuf>,
     review_error: Option<String>,
     review_in_flight: bool,
@@ -159,6 +160,8 @@ pub struct ProcedureTab {
     promotion_result: Option<PromotionResult>,
     promotion_failure: Option<PromotionFailureView>,
     apply_terminal: Option<ProcedureTerminalDisposition>,
+    trace_export: Option<LocalizationTraceExport>,
+    trace_export_error: Option<String>,
 }
 
 impl ProcedureTab {
@@ -215,6 +218,7 @@ impl ProcedureTab {
             dispatch_model: None,
             attempt_number: None,
             latest_run: None,
+            latest_metrics: None,
             report_path: None,
             review_error: None,
             review_in_flight: false,
@@ -236,6 +240,8 @@ impl ProcedureTab {
             promotion_result: None,
             promotion_failure: None,
             apply_terminal: None,
+            trace_export: None,
+            trace_export_error: None,
         };
         tab.spawn_model_fetches(settings);
         tab.refresh_changes(project_root);
@@ -493,6 +499,7 @@ impl ProcedureTab {
                         for event in live_events {
                             self.push_repair_event(event);
                         }
+                        self.latest_metrics = stored.metrics;
                         self.latest_run = Some(stored.run);
                         self.review_error = None;
                         self.review_in_flight = false;
@@ -515,9 +522,10 @@ impl ProcedureTab {
                     return;
                 }
                 self.review_in_flight = false;
-                match self.reports.load(&run_id) {
-                    Ok(run) => {
-                        self.latest_run = Some(run);
+                match self.reports.load_with_fingerprints(&run_id) {
+                    Ok(stored) => {
+                        self.latest_metrics = stored.metrics;
+                        self.latest_run = Some(stored.run);
                         self.review_error = None;
                     }
                     Err(error) => {
@@ -713,6 +721,8 @@ impl ProcedureTab {
         self.render_status(ui);
         self.render_repair_ladder(ui);
         self.render_routing_metrics(ui, settings);
+        self.render_routing_thresholds(ui, settings);
+        self.render_trace_export(ui);
         self.render_result(ui);
         self.render_preview(ui);
         self.render_apply(ui);
@@ -767,6 +777,62 @@ impl ProcedureTab {
                     RichText::new(format!("Routing metrics unavailable: {error}"))
                         .color(Color32::LIGHT_RED),
                 );
+            }
+        }
+    }
+
+    fn render_routing_thresholds(&self, ui: &mut egui::Ui, settings: &Settings) {
+        ui.label(routing_threshold_render_line(settings));
+    }
+
+    fn render_trace_export(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Trace export");
+        ui.label("Exports only normalized targets, route labels, outcomes, and numeric metrics.");
+        if ui.button("Prepare allowlisted trace JSON").clicked() {
+            self.prepare_trace_export();
+        }
+        if let Some(error) = &self.trace_export_error {
+            ui.label(RichText::new(error).color(Color32::LIGHT_RED));
+        }
+        let Some(export) = &self.trace_export else {
+            return;
+        };
+        ui.label(format!(
+            "Allowlisted trace records: {}",
+            export.records.len()
+        ));
+        match export.to_pretty_json() {
+            Ok(json) => {
+                egui::ScrollArea::vertical()
+                    .id_salt("procedure-localization-trace-export")
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(json).monospace())
+                                .wrap()
+                                .selectable(true),
+                        );
+                    });
+            }
+            Err(error) => {
+                ui.label(
+                    RichText::new(format!("Trace export could not be serialized: {error}"))
+                        .color(Color32::LIGHT_RED),
+                );
+            }
+        }
+    }
+
+    fn prepare_trace_export(&mut self) {
+        match self.reports.export_localization_traces() {
+            Ok(export) => {
+                self.trace_export = Some(export);
+                self.trace_export_error = None;
+            }
+            Err(error) => {
+                self.trace_export = None;
+                self.trace_export_error = Some(format!("Trace export unavailable: {error}"));
             }
         }
     }
@@ -969,6 +1035,13 @@ impl ProcedureTab {
                     ui.label(format!("{}{}", target.path, symbol));
                     ui.label(RichText::new(&target.evidence).color(Color32::GRAY));
                 }
+            }
+        }
+        if let Some(metrics) = &self.latest_metrics {
+            ui.separator();
+            ui.heading("Sampling and candidate evidence");
+            for line in sampling_and_candidate_render_lines(run, metrics) {
+                ui.label(line);
             }
         }
         if let Some(path) = &self.report_path {
@@ -1272,6 +1345,7 @@ impl ProcedureTab {
         }
         self.active_run = Some(run_id);
         self.latest_run = None;
+        self.latest_metrics = None;
         self.report_path = None;
         self.dispatch_backend = None;
         self.dispatch_model = None;
@@ -1360,6 +1434,8 @@ impl ProcedureTab {
         self.promotion_result = None;
         self.promotion_failure = None;
         self.apply_terminal = None;
+        self.trace_export = None;
+        self.trace_export_error = None;
     }
 
     fn spawn_model_fetches(&self, settings: &Settings) {
@@ -1531,6 +1607,28 @@ impl ProcedureTab {
     ) -> Vec<String> {
         routing_metrics_render_lines(settings, summary)
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn routing_threshold_render_line_for_test(settings: &Settings) -> String {
+        routing_threshold_render_line(settings)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn sampling_and_candidate_render_lines_for_test(
+        run: &ProcedureRun,
+        metrics: &ProcedureRunMetrics,
+    ) -> Vec<String> {
+        sampling_and_candidate_render_lines(run, metrics)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn prepare_trace_export_for_test(&mut self) -> Vec<String> {
+        self.prepare_trace_export();
+        trace_export_render_lines(
+            self.trace_export.as_ref(),
+            self.trace_export_error.as_deref(),
+        )
+    }
 }
 
 impl Drop for ProcedureTab {
@@ -1669,6 +1767,99 @@ fn routing_metrics_render_lines(
         ));
     }
     lines
+}
+
+fn routing_threshold_render_line(settings: &Settings) -> String {
+    let procedure = settings.procedure().cloned().unwrap_or_default();
+    format!(
+        "Review thresholds: local mechanical success at least {}%; frontier escalation at most {}%.",
+        procedure.local_success_warning_percent, procedure.frontier_escalation_warning_percent
+    )
+}
+
+fn sampling_and_candidate_render_lines(
+    run: &ProcedureRun,
+    metrics: &ProcedureRunMetrics,
+) -> Vec<String> {
+    let mut lines = vec!["Localization sample standings:".to_string()];
+    for attempt in &run.attempts {
+        let targets = attempt
+            .targets
+            .iter()
+            .map(|target| match &target.symbol {
+                Some(symbol) => format!("{}::{symbol}", target.path),
+                None => target.path.clone(),
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!(
+            "Sample {}: {} / {} ({:?}); targets: {}",
+            attempt.number,
+            attempt.backend,
+            attempt.model,
+            attempt.disposition,
+            if targets.is_empty() {
+                "none".to_string()
+            } else {
+                targets.join(", ")
+            }
+        ));
+    }
+    lines.push("Candidate verifier results:".to_string());
+    for candidate in &metrics.candidates {
+        let changed_lines = candidate
+            .changed_line_count
+            .map_or_else(|| "unknown".to_string(), |count| count.to_string());
+        let verifier = candidate.verifier_passed.map_or_else(
+            || "not run".to_string(),
+            |passed| {
+                if passed {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                }
+            },
+        );
+        lines.push(format!(
+            "Candidate {}: {changed_lines} changed lines, verifier {verifier}",
+            candidate.index
+        ));
+    }
+    let selected = metrics
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.verifier_passed == Some(true))
+        .min_by_key(|candidate| {
+            (
+                candidate.changed_line_count.unwrap_or(usize::MAX),
+                candidate.index,
+            )
+        });
+    lines.push(match selected {
+        Some(candidate) => format!("Selected candidate: {}", candidate.index),
+        None => "Selected candidate: none".to_string(),
+    });
+    if !metrics.route.escalation_triggers.is_empty() {
+        lines.push(format!(
+            "Escalation triggers: {}",
+            metrics.route.escalation_triggers.join(", ")
+        ));
+    }
+    lines
+}
+
+#[cfg(feature = "test-support")]
+fn trace_export_render_lines(
+    export: Option<&LocalizationTraceExport>,
+    error: Option<&str>,
+) -> Vec<String> {
+    match (export, error) {
+        (_, Some(error)) => vec![format!("Trace export unavailable: {error}")],
+        (Some(export), None) => vec![format!(
+            "Allowlisted trace records: {}",
+            export.records.len()
+        )],
+        (None, None) => Vec::new(),
+    }
 }
 
 fn seed_model_option(options: &mut HashMap<String, Vec<String>>, backend: &str, model: &str) {
