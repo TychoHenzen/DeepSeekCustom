@@ -73,6 +73,15 @@ impl ToolOutput {
             image: None,
         }
     }
+
+    /// Construct a successful result with no image attachment.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            image: None,
+        }
+    }
 }
 
 /// Registry of all available tools, keyed by name.

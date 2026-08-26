@@ -66,41 +66,32 @@ impl Tool for CdTool {
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput> {
         let parsed: CdInput = match serde_json::from_value(input) {
             Ok(parsed) => parsed,
-            Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Invalid cd input: {e}"),
-                    is_error: true,
-                    image: None,
-                });
-            }
+            Err(e) => return Ok(ToolOutput::error(format!("Invalid cd input: {e}"))),
         };
 
         let resolved = self.resolve_path(&parsed.path);
 
         if !resolved.exists() {
-            return Ok(ToolOutput {
-                content: format!("cd: no such path: {}", resolved.display()),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(format!(
+                "cd: no such path: {}",
+                resolved.display()
+            )));
         }
 
         if !resolved.is_dir() {
-            return Ok(ToolOutput {
-                content: format!("cd: not a directory: {}", resolved.display()),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(format!(
+                "cd: not a directory: {}",
+                resolved.display()
+            )));
         }
 
         let canonical = match std::fs::canonicalize(&resolved) {
             Ok(c) => c,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("cd: cannot read {}: {e}", resolved.display()),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "cd: cannot read {}: {e}",
+                    resolved.display()
+                )));
             }
         };
 
@@ -111,11 +102,10 @@ impl Tool for CdTool {
 
         info!("cd: working_dir now {}", canonical.display());
 
-        Ok(ToolOutput {
-            content: format!("working directory is now {}", canonical.display()),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!(
+            "working directory is now {}",
+            canonical.display()
+        )))
     }
 }
 

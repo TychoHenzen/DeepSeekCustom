@@ -87,11 +87,11 @@ impl Tool for WriteTool {
             .map_err(|e| HarnessError::Tool(format!("Failed to write {}: {e}", path.display())))?;
 
         info!("write: wrote {} bytes to {}", content.len(), path.display());
-        Ok(ToolOutput {
-            content: format!("Wrote {} bytes to {}", content.len(), path.display()),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!(
+            "Wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        )))
     }
 }
 
