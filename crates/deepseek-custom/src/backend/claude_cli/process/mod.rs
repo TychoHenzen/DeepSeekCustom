@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::api::types::ImageAttachment;
+use crate::backend::SharedFlags;
 use crate::effort::Effort;
 use crate::error::Result;
 
@@ -96,7 +97,7 @@ impl ClaudeCliDriver {
         self.claude_session_id = id;
     }
 
-    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+    pub fn adopt_flags(&mut self, flags: &SharedFlags) {
         self.interrupt_flag = Arc::clone(&flags.interrupt);
         self.effort_flag = Arc::clone(&flags.effort);
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);
