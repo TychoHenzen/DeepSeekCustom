@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::agent::history::estimate_message_tokens;
 use crate::api::client::ApiClient;
 use crate::api::provider::Provider;
-use crate::api::types::{ChatRequest, Content, Message};
+use crate::api::types::{ChatRequest, Content, Message, Role};
 use crate::json_reply::extract_array_span;
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
@@ -48,10 +48,10 @@ pub fn build_index(messages: &[Message]) -> String {
 
 fn role_name(msg: &Message) -> &'static str {
     match msg.role {
-        crate::api::types::Role::System => "system",
-        crate::api::types::Role::User => "user",
-        crate::api::types::Role::Assistant => "assistant",
-        crate::api::types::Role::Tool => "tool",
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 
