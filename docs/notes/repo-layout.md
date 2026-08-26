@@ -7,6 +7,12 @@ copied from an earlier survey. A later run of this repository's own
 regeneration tooling does not touch this file; if the top-level listing
 changes, a person updates this table by hand.
 
+Re-checked on 2026-08-26. The entry list still matches `ls -a` exactly,
+with no row missing and none left over. Every `.gitignore` line number
+cited below still names the rule it claims. Every row's git status column
+still holds. The one thing that had gone stale was the `openspec` row,
+corrected below.
+
 Git status is one of: `tracked` (git ls-files lists it), `ignored`
 (git check-ignore reports a rule), or `untracked-visible` (neither: it
 would show as a bare `??` in `git status --porcelain` with no ignore
@@ -39,7 +45,7 @@ rule covering it). Disposition is one of `keep`, `ignore`, `delete`,
 | `deepseek_custom.log` | this harness's own run log, written on every process start (see `.gitignore:17`) | ignored | keep |
 | `docs` | checked in by a project contributor | tracked | keep |
 | `models` | voice model weights, downloaded separately per `docs/voice-setup.md` (see `.gitignore:7`) | ignored | keep |
-| `openspec` | checked in by a project contributor; `openspec/changes/` inside it is currently untracked and shows as the single `??` line in `git status --porcelain` | tracked | keep |
+| `openspec` | checked in by a project contributor, `openspec/changes/` included; that subdirectory was untracked when this row was first written and was tracked the same day by `34c53c5` | tracked | keep |
 | `run.ps1` | checked in by a project contributor | tracked | keep |
 | `scripts` | checked in by a project contributor | tracked | keep |
 | `settings.json` | checked in by a project contributor, rewritten by the GUI on every settings-panel control change | tracked | keep |
