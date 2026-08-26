@@ -32,6 +32,7 @@ pub mod report;
 mod route;
 mod run;
 mod runner;
+mod sampling;
 mod sampling_input;
 mod schema;
 mod structural_repair;
@@ -133,6 +134,10 @@ pub use run::{
 pub use runner::{
     ProcedureApplyProgress, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision,
     ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, apply_review_decision,
+};
+pub use sampling::{
+    LocalizationSample, LocalizationSampleOutcome, LocalizationSampler, LocalizationSamplingError,
+    LocalizationSamplingRun, NormalizedLocalizationTarget, NormalizedLocalizationTargets,
 };
 pub use sampling_input::{
     SamplingInputError, SamplingInputGate, SamplingInputRequest, ValidatedSamplingInput,

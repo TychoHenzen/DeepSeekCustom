@@ -11,9 +11,11 @@ use deepseek_custom::config::settings::{
     DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT, DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
     DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM, DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
     DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS, DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
-    MAX_PROCEDURE_FRONTIER_ATTEMPTS, MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
-    MAX_PROCEDURE_STRUCTURAL_RETRIES, PermissionsConfig, ProcedureSettings, RepositoryIndexLimits,
-    Settings, TriggerMode, VoiceConfig,
+    MAX_PROCEDURE_FRONTIER_ATTEMPTS, MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
+    MAX_PROCEDURE_STRUCTURAL_RETRIES, MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT, PermissionsConfig, ProcedureSettings,
+    RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
 
@@ -754,6 +756,88 @@ fn procedure_block_without_repository_index_uses_named_defaults() {
     assert!(settings.procedure().unwrap().verifier_commands.is_empty());
 
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are outside bounds
+#[test]
+fn procedure_sampling_settings_reject_out_of_bounds_values_before_dispatch() {
+    let default_settings = Settings::default();
+    let validated = default_settings
+        .validated_procedure_sampling_settings()
+        .unwrap();
+    assert_eq!(
+        validated.localization_sample_count(),
+        DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+    );
+    assert_eq!(
+        validated.localization_agreement_quorum(),
+        DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+    );
+    assert_eq!(
+        validated.local_patch_candidate_count(),
+        DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+    );
+
+    for localization_sample_count in [
+        MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT - 1,
+        MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT + 1,
+    ] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                localization_sample_count,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.localization_sample_count must be between {MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT} and {MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT}, got {localization_sample_count}"
+            )
+        );
+    }
+
+    for local_patch_candidate_count in [
+        MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT - 1,
+        MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT + 1,
+    ] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                local_patch_candidate_count,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.local_patch_candidate_count must be between {MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT} and {MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT}, got {local_patch_candidate_count}"
+            )
+        );
+    }
+
+    for (localization_sample_count, localization_agreement_quorum) in [(3, 1), (3, 4)] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                localization_sample_count,
+                localization_agreement_quorum,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.localization_agreement_quorum must be between 2 and procedure.localization_sample_count ({localization_sample_count}), got {localization_agreement_quorum}"
+            )
+        );
+    }
 }
 
 #[test]

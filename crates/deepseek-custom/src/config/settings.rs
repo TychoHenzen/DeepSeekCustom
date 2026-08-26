@@ -663,10 +663,20 @@ pub const DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
 pub const MAX_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
 /// Default number of bounded local localization samples.
 pub const DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 3;
+/// Smallest supported number of local localization samples.
+pub const MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 3;
+/// Largest supported number of local localization samples.
+pub const MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 5;
 /// Default number of identical normalized samples required to continue locally.
 pub const DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM: u8 = 2;
+/// Smallest supported agreement quorum.
+pub const MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM: u8 = 2;
 /// Default number of local patch candidates generated before repair escalation.
 pub const DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 3;
+/// Smallest supported number of local patch candidates.
+pub const MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 3;
+/// Largest supported number of local patch candidates.
+pub const MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 5;
 /// Default number of completed procedure reports included in recent metrics.
 pub const DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS: usize = 20;
 /// Default local mechanical success percentage below which the view warns.
@@ -814,6 +824,28 @@ pub struct ValidatedProcedureRepairPolicy {
     frontier_attempts: u8,
 }
 
+/// Sampling settings that passed the pre-dispatch bounds checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedProcedureSamplingSettings {
+    localization_sample_count: u8,
+    localization_agreement_quorum: u8,
+    local_patch_candidate_count: u8,
+}
+
+impl ValidatedProcedureSamplingSettings {
+    pub const fn localization_sample_count(&self) -> u8 {
+        self.localization_sample_count
+    }
+
+    pub const fn localization_agreement_quorum(&self) -> u8 {
+        self.localization_agreement_quorum
+    }
+
+    pub const fn local_patch_candidate_count(&self) -> u8 {
+        self.local_patch_candidate_count
+    }
+}
+
 impl ValidatedProcedureRepairPolicy {
     pub fn structural_retries(&self) -> u8 {
         self.structural_retries
@@ -833,6 +865,44 @@ impl ValidatedProcedureRepairPolicy {
 }
 
 impl Settings {
+    /// Validate bounded sampling settings before any localization or candidate dispatch.
+    pub fn validated_procedure_sampling_settings(
+        &self,
+    ) -> std::result::Result<ValidatedProcedureSamplingSettings, String> {
+        let procedure = self.procedure.as_ref().cloned().unwrap_or_default();
+
+        if !(MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT..=MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT)
+            .contains(&procedure.localization_sample_count)
+        {
+            return Err(format!(
+                "procedure.localization_sample_count must be between {MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT} and {MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT}, got {}",
+                procedure.localization_sample_count
+            ));
+        }
+        if !(MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT..=MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT)
+            .contains(&procedure.local_patch_candidate_count)
+        {
+            return Err(format!(
+                "procedure.local_patch_candidate_count must be between {MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT} and {MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT}, got {}",
+                procedure.local_patch_candidate_count
+            ));
+        }
+        if !(MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM..=procedure.localization_sample_count)
+            .contains(&procedure.localization_agreement_quorum)
+        {
+            return Err(format!(
+                "procedure.localization_agreement_quorum must be between {MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM} and procedure.localization_sample_count ({}), got {}",
+                procedure.localization_sample_count, procedure.localization_agreement_quorum
+            ));
+        }
+
+        Ok(ValidatedProcedureSamplingSettings {
+            localization_sample_count: procedure.localization_sample_count,
+            localization_agreement_quorum: procedure.localization_agreement_quorum,
+            local_patch_candidate_count: procedure.local_patch_candidate_count,
+        })
+    }
+
     /// Validate the bounded repair policy before any local or frontier dispatch.
     pub fn validated_procedure_repair_policy(
         &self,

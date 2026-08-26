@@ -11,13 +11,16 @@
 
 - [x] 1.1 Add bounded settings for localization sample count, agreement quorum, local patch candidate count, metric window, and review thresholds, with load and round-trip coverage.
 <!-- status: completed -->
-- [ ] 1.2 Reject localization and candidate counts outside 3 through 5, and reject quorum outside 2 through the localization sample count before dispatch.
+- [x] 1.2 Reject localization and candidate counts outside 3 through 5, and reject quorum outside 2 through the localization sample count before dispatch.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are outside bounds -->
-- [ ] 1.3 Normalize each accepted localization result into a sorted, deduplicated set of repository path and symbol identities.
+- [x] 1.3 Normalize each accepted localization result into a sorted, deduplicated set of repository path and symbol identities.
+<!-- status: completed -->
 
 ## 2. Agreement-based localization
 
-- [ ] 2.1 Launch exactly the configured 3 to 5 constrained local localization samples with bounded concurrency and shared interruption.
+- [x] 2.1 Launch exactly the configured 3 to 5 constrained local localization samples with bounded concurrency and shared interruption.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are inside bounds -->
 - [ ] 2.2 Group exact normalized target sets, select the largest quorum group, and break equal-size ties by first sample index.
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization agreement controls escalation :: Local samples reach quorum -->
