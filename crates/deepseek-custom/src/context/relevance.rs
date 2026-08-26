@@ -14,6 +14,7 @@ use crate::agent::history::estimate_message_tokens;
 use crate::api::client::ApiClient;
 use crate::api::provider::Provider;
 use crate::api::types::{ChatRequest, Content, Message, Role};
+use crate::effort::Effort;
 use crate::json_reply::extract_array_span;
 
 const SYSTEM_PROMPT: &str = "You are scoring a conversation history that is about to be \
@@ -147,7 +148,7 @@ pub async fn score_messages(
         thinking_mode: None,
         reasoning_effort: None,
         response_format: None,
-        effort: Some(crate::effort::Effort::None),
+        effort: Some(Effort::None),
     };
 
     let response = match client.chat(&req).await {

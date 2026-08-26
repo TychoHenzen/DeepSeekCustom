@@ -21,10 +21,11 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agent::agent_loop::AgentLoop;
-use crate::agent::agent_types::DEFAULT_CONTEXT_BUDGET;
+use crate::agent::agent_types::{DEFAULT_CONTEXT_BUDGET, DEFAULT_TARGET_GRADE};
 use crate::agent::events::RoutedEvent;
 use crate::agent::repeat::run_repeat;
 use crate::api::types::{ImageAttachment, Message};
+use crate::effort::Effort;
 use crate::error::Result;
 
 use claude_cli::process::ClaudeCliDriver;
@@ -80,7 +81,7 @@ impl SharedFlags {
     pub fn new(model: String) -> Self {
         Self {
             interrupt: Arc::new(AtomicBool::new(false)),
-            effort: Arc::new(AtomicU8::new(crate::effort::Effort::None.to_u8())),
+            effort: Arc::new(AtomicU8::new(Effort::None.to_u8())),
             voice_mode: Arc::new(AtomicBool::new(false)),
             context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model: Arc::new(Mutex::new(model)),
@@ -88,9 +89,7 @@ impl SharedFlags {
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
             style_plain_language: Arc::new(AtomicBool::new(false)),
-            style_target_grade: Arc::new(AtomicU8::new(
-                crate::agent::agent_types::DEFAULT_TARGET_GRADE,
-            )),
+            style_target_grade: Arc::new(AtomicU8::new(DEFAULT_TARGET_GRADE)),
             search_interrupt: Arc::new(AtomicBool::new(false)),
         }
     }

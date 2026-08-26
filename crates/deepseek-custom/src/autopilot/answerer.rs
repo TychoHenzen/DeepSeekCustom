@@ -12,7 +12,8 @@ use tracing::{info, warn};
 use crate::api::client::ApiClient;
 use crate::api::types::{ChatRequest, Content, Message};
 use crate::autopilot::policy::{PolicyStore, format_policy_prompt_section};
-use crate::autopilot::question::{Answer, AskInput};
+use crate::autopilot::question::{Answer, AskInput, Question};
+use crate::effort::Effort;
 use crate::error::Result;
 use crate::json_reply::extract_array_span;
 
@@ -73,7 +74,7 @@ impl QuestionAnswerer for PolicyAnswerer {
             thinking_mode: None,
             reasoning_effort: None,
             response_format: None,
-            effort: Some(crate::effort::Effort::None),
+            effort: Some(Effort::None),
         };
 
         let parsed = match self.client.chat(&req).await {
@@ -224,7 +225,7 @@ pub fn resolve_answers(parsed: Option<Vec<Answer>>, input: &AskInput) -> Vec<Ans
 
 /// Validate one parsed answer against its question and fall back to the
 /// first option when the answer is invalid.
-fn resolve_one(question: &crate::autopilot::question::Question, answer: &Answer) -> Answer {
+fn resolve_one(question: &Question, answer: &Answer) -> Answer {
     if answer.labels.is_empty() {
         warn!(
             "autopilot answerer: question '{}' got no labels, falling back to first option",
@@ -264,7 +265,7 @@ fn resolve_one(question: &crate::autopilot::question::Question, answer: &Answer)
 }
 
 /// The first-option fallback answer for one question.
-fn fallback_one(question: &crate::autopilot::question::Question) -> Answer {
+fn fallback_one(question: &Question) -> Answer {
     Answer {
         question: question.question.clone(),
         labels: vec![question.options[0].label.clone()],
