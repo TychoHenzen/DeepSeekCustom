@@ -5,6 +5,7 @@
 //! short prompt for its current stage.
 
 mod apply;
+mod bounded_repair;
 mod dispatch;
 mod disposable_workspace;
 mod failure_digest;
@@ -38,6 +39,7 @@ mod verification_input;
 mod verifier;
 
 pub use apply::{ProcedureApplyError, ProcedureApplyRunner};
+pub use bounded_repair::{BoundedRepairCoordinator, BoundedRepairError, BoundedRepairRun};
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,

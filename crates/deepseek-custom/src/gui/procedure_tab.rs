@@ -487,7 +487,11 @@ impl ProcedureTab {
                 match self.reports.load_with_fingerprints(&run_id) {
                     Ok(stored) => {
                         self.report_path = Some(self.reports.report_path(&run_id));
+                        let live_events = std::mem::take(&mut self.repair_events);
                         self.repair_events = stored.repair_events;
+                        for event in live_events {
+                            self.push_repair_event(event);
+                        }
                         self.latest_run = Some(stored.run);
                         self.review_error = None;
                         self.review_in_flight = false;
@@ -574,9 +578,15 @@ impl ProcedureTab {
             }
             ProcedureProgress::RepairTransition { run_id, event } => {
                 if self.owns_active_run(run_id) || self.displays_run(run_id) {
-                    self.repair_events.push(event);
+                    self.push_repair_event(event);
                 }
             }
+        }
+    }
+
+    fn push_repair_event(&mut self, event: RepairLadderEvent) {
+        if !self.repair_events.contains(&event) {
+            self.repair_events.push(event);
         }
     }
 
@@ -671,6 +681,7 @@ impl ProcedureTab {
         });
 
         ui.add_space(8.0);
+        self.render_repair_policy(ui, settings);
         self.render_verifier_commands(ui, settings);
         ui.horizontal(|ui| {
             if ui
@@ -699,6 +710,7 @@ impl ProcedureTab {
             }
         });
         self.render_status(ui);
+        self.render_repair_ladder(ui);
         self.render_result(ui);
         self.render_preview(ui);
         self.render_apply(ui);
@@ -706,6 +718,24 @@ impl ProcedureTab {
             ui.label(RichText::new(MISSING_VERIFIER_COMMANDS_MESSAGE).color(Color32::LIGHT_RED));
         }
         dirty
+    }
+
+    fn render_repair_policy(&self, ui: &mut egui::Ui, settings: &Settings) {
+        ui.label("Bounded repair policy:");
+        for line in repair_policy_render_lines(settings) {
+            ui.label(line);
+        }
+    }
+
+    fn render_repair_ladder(&self, ui: &mut egui::Ui) {
+        if self.repair_events.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.heading("Repair and escalation progress");
+        for line in repair_ladder_render_lines(&self.repair_events) {
+            ui.label(line);
+        }
     }
 
     fn render_verifier_commands(&self, ui: &mut egui::Ui, settings: &Settings) {
@@ -907,9 +937,6 @@ impl ProcedureTab {
                     ui.label(RichText::new(&target.evidence).color(Color32::GRAY));
                 }
             }
-        }
-        for line in repair_ladder_render_lines(&self.repair_events) {
-            ui.label(line);
         }
         if let Some(path) = &self.report_path {
             ui.label(format!("Report: {}", path.display()));
@@ -1458,6 +1485,11 @@ impl ProcedureTab {
     pub fn repair_render_lines_for_test(&self) -> Vec<String> {
         repair_ladder_render_lines(&self.repair_events)
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn repair_policy_render_lines_for_test(settings: &Settings) -> Vec<String> {
+        repair_policy_render_lines(settings)
+    }
 }
 
 impl Drop for ProcedureTab {
@@ -1520,6 +1552,37 @@ fn configured_model(settings: &Settings, backend: &str) -> String {
         .resolve_backend(backend)
         .map(|config| config.model().to_string())
         .unwrap_or_default()
+}
+
+fn repair_policy_render_lines(settings: &Settings) -> Vec<String> {
+    let policy = match settings.validated_procedure_repair_policy() {
+        Ok(policy) => policy,
+        Err(error) => return vec![format!("Repair policy unavailable: {error}")],
+    };
+    let mut lines = vec![
+        format!("Structural retry cap: {}", policy.structural_retries()),
+        format!(
+            "Local verifier attempt cap: {}",
+            policy.local_verifier_attempts()
+        ),
+    ];
+    if policy.frontier_attempts() == 0 {
+        lines.push("Frontier escalation: disabled (attempt cap: 0)".to_string());
+        return lines;
+    }
+    let backend = policy
+        .frontier_backend()
+        .expect("validated enabled frontier policy has a backend");
+    let model = settings
+        .resolve_backend(backend)
+        .map(|config| config.model())
+        .unwrap_or("(unresolved)");
+    lines.push(format!("Frontier backend/model: {backend} / {model}"));
+    lines.push(format!(
+        "Frontier verifier attempt cap: {}",
+        policy.frontier_attempts()
+    ));
+    lines
 }
 
 fn seed_model_option(options: &mut HashMap<String, Vec<String>>, backend: &str, model: &str) {

@@ -85,6 +85,7 @@ mod memory;
 mod path_repair;
 mod plugins;
 mod procedure_apply;
+mod procedure_bounded_repair_end_to_end;
 mod procedure_dispatch;
 mod procedure_disposable_workspace;
 mod procedure_failure_digest;

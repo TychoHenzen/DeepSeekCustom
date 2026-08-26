@@ -1601,6 +1601,71 @@ fn saved_and_live_repair_transitions_render_as_one_complete_procedure_sequence()
     std::fs::remove_dir_all(root).ok();
 }
 
+#[test]
+fn repair_policy_view_model_uses_validated_caps_backend_and_model() {
+    assert_eq!(
+        ProcedureTab::repair_policy_render_lines_for_test(&settings()),
+        vec![
+            "Structural retry cap: 1",
+            "Local verifier attempt cap: 3",
+            "Frontier backend/model: claude / opus",
+            "Frontier verifier attempt cap: 2",
+        ]
+    );
+
+    let mut disabled = settings();
+    let procedure = disabled.procedure_mut();
+    procedure.frontier_attempts = 0;
+    procedure.frontier_patch_backend = None;
+    assert_eq!(
+        ProcedureTab::repair_policy_render_lines_for_test(&disabled),
+        vec![
+            "Structural retry cap: 1",
+            "Local verifier attempt cap: 3",
+            "Frontier escalation: disabled (attempt cap: 0)",
+        ]
+    );
+}
+
+#[test]
+fn live_and_reloaded_repair_rows_are_exact_and_not_duplicated() {
+    let root = fixture_root("repair-ladder-deduplication");
+    let store = ProcedureReportStore::for_project(&root);
+    let run_id = ProcedureRunId::new();
+    store.save(&completed_run(run_id)).unwrap();
+    let event = repair_event(RepairLadderTransition::AttemptStarted, 1, RepairTier::Local);
+    store
+        .save_repair_events(&run_id, std::slice::from_ref(&event))
+        .unwrap();
+
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    for _ in 0..2 {
+        tab.handle_progress(ProcedureProgress::RepairTransition {
+            run_id,
+            event: event.clone(),
+        });
+    }
+    assert_eq!(
+        tab.repair_render_lines_for_test(),
+        vec![
+            "Repair AttemptStarted: attempt 1 Local via local-backend / local-model; trigger InitialRequest; error None; gate NotRun; disposition CandidateActive"
+        ]
+    );
+
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    assert_eq!(tab.repair_render_lines_for_test().len(), 1);
+
+    std::fs::remove_dir_all(root).ok();
+}
+
 fn completed_run(id: ProcedureRunId) -> ProcedureRun {
     ProcedureRun {
         id,

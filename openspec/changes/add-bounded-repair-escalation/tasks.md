@@ -63,11 +63,13 @@
 - [x] 5.2 Persist and render attempt number, tier, backend, model, trigger, error category, gate result, and disposition for every transition.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Retry and escalation decisions are visible :: User inspects the ladder -->
-- [ ] 5.3 Add scripted stub and fake-command end-to-end tests for parser recovery, local recovery, local exhaustion, frontier recovery, frontier exhaustion, and interruption.
+- [x] 5.3 Add scripted stub and fake-command end-to-end tests for parser recovery, local recovery, local exhaustion, frontier recovery, frontier exhaustion, and interruption.
+<!-- status: completed -->
 
 ## 6. Practical escalation and verification
 
-- [ ] 6.1 Add the repair and escalation progress ladder to the Procedure tab with exact attempt caps visible before a run.
+- [x] 6.1 Add the repair and escalation progress ladder to the Procedure tab with exact attempt caps visible before a run.
+<!-- status: completed -->
 - [ ] 6.2 Run a controlled task whose local candidates fail verification, confirm the frontier receives the accumulated errors, and record the final verified or blocked disposition.
 - [ ] 6.3 Confirm the practical run made no real workspace change before a candidate passed every gate.
 - [ ] 6.4 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
