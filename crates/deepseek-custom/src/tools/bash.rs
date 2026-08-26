@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -179,7 +180,7 @@ fn format_output(out: &CommandOutput) -> String {
 
 pub(crate) async fn run_command(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
     shell: Shell,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let use_powershell = match shell {
@@ -218,7 +219,7 @@ pub(crate) async fn run_command(
 /// run that hit the escaping bug above hit this one right after it.
 async fn run_cmd(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let mut command = Command::new("cmd");
     #[cfg(windows)]
@@ -250,7 +251,7 @@ async fn run_cmd(
 /// avoiding cmd.exe's quote-mangling of inner double-quotes.
 async fn run_powershell_direct(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let args = split_shell_words(cmd_str);
     let (program, args) = if args.is_empty() {

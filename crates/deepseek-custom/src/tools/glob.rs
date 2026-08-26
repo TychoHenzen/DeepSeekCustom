@@ -5,6 +5,7 @@
 //! That works and it is slow, platform-locked, and it puts shell quoting
 //! between the model and a list of paths.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -24,18 +25,18 @@ const MAX_RESULTS: usize = 200;
 /// names its own `path`. Reads the shared working directory fresh on every
 /// call, the same way `read`, `write`, and `edit` do.
 pub struct GlobTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl GlobTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
     /// The directory this call searches under. An absolute `path` is used
     /// as given. A relative one joins onto the working directory. No path
     /// at all means the working directory itself.
-    fn search_root(&self, path: Option<&str>) -> std::path::PathBuf {
+    fn search_root(&self, path: Option<&str>) -> PathBuf {
         let working_dir = self
             .working_dir
             .lock()
@@ -43,7 +44,7 @@ impl GlobTool {
             .clone();
         match path {
             Some(path) => {
-                let path = std::path::Path::new(path);
+                let path = Path::new(path);
                 if path.is_absolute() {
                     path.to_path_buf()
                 } else {
@@ -64,7 +65,7 @@ struct GlobInput {
 /// Sort key for one hit: its modification time, newest first. A time that
 /// cannot be read counts as the epoch, so that file sorts last instead of
 /// failing the whole search.
-fn modified_at(path: &std::path::Path) -> SystemTime {
+fn modified_at(path: &Path) -> SystemTime {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -73,15 +74,12 @@ fn modified_at(path: &std::path::Path) -> SystemTime {
 /// Expand `pattern` under `root` and return matching files, newest first,
 /// capped at `MAX_RESULTS`. A directory that matches is skipped: the model
 /// asked for files.
-fn matching_files(
-    root: &std::path::Path,
-    pattern: &str,
-) -> std::result::Result<Vec<std::path::PathBuf>, String> {
+fn matching_files(root: &Path, pattern: &str) -> std::result::Result<Vec<PathBuf>, String> {
     let joined = root.join(pattern);
     let joined = joined.to_string_lossy().replace('\\', "/");
     let paths = glob::glob(&joined).map_err(|e| format!("Invalid glob pattern: {e}"))?;
 
-    let mut hits: Vec<std::path::PathBuf> = paths.flatten().filter(|path| path.is_file()).collect();
+    let mut hits: Vec<PathBuf> = paths.flatten().filter(|path| path.is_file()).collect();
     hits.sort_by_key(|path| std::cmp::Reverse(modified_at(path)));
     hits.truncate(MAX_RESULTS);
     Ok(hits)

@@ -5,6 +5,7 @@
 //! `bash` instead, once per lookup, each one paying process startup and
 //! shell quoting to answer "where is this symbol".
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -68,9 +69,7 @@ impl GrepTool {
             .expect("working_dir mutex poisoned")
             .clone();
         match path {
-            Some(path) if std::path::Path::new(path).is_absolute() => {
-                std::path::PathBuf::from(path)
-            }
+            Some(path) if Path::new(path).is_absolute() => PathBuf::from(path),
             Some(path) => working_dir.join(path),
             None => working_dir,
         }
@@ -105,7 +104,7 @@ fn is_searchable(entry: &walkdir::DirEntry, filter: Option<&glob::Pattern>) -> b
 
 /// Every match in one file, formatted for `mode`. A file that is not valid
 /// UTF-8 yields nothing: it is a binary, and this tool searches text.
-fn search_one_file(path: &std::path::Path, regex: &regex::Regex, mode: OutputMode) -> Vec<String> {
+fn search_one_file(path: &Path, regex: &regex::Regex, mode: OutputMode) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -134,7 +133,7 @@ fn search_one_file(path: &std::path::Path, regex: &regex::Regex, mode: OutputMod
 /// in hand. A directory the walker cannot read is skipped rather than
 /// failing the search.
 fn search_tree(
-    root: &std::path::Path,
+    root: &Path,
     regex: &regex::Regex,
     filter: Option<&glob::Pattern>,
     mode: OutputMode,
