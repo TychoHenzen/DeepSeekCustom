@@ -33,6 +33,8 @@
 //! that exists only for this run, and it stays ahead of the registry list
 //! the way the launcher meant it to.
 
+use std::path::Path;
+
 /// Longest `PATH` `cmd.exe` will read. Anything past this is dropped by the
 /// shell before it searches, so the repair keeps the list under it. Measured
 /// on this machine: 8064 characters resolved `node`, 8262 did not.
@@ -172,7 +174,7 @@ pub fn same_dir(a: &str, b: &str) -> bool {
 fn find_on_path(entries: &[String], program: &str) -> Option<String> {
     entries
         .iter()
-        .map(|dir| std::path::Path::new(dir).join(program))
+        .map(|dir| Path::new(dir).join(program))
         .find(|candidate| candidate.is_file())
         .map(|candidate| candidate.display().to_string())
 }

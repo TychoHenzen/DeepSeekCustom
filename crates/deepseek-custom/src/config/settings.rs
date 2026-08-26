@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, info, warn};
@@ -449,7 +449,7 @@ impl Settings {
         serde_json::from_str::<Settings>(&contents).ok()
     }
 
-    fn home_settings(dir: &str) -> Option<std::path::PathBuf> {
+    fn home_settings(dir: &str) -> Option<PathBuf> {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()?;

@@ -11,7 +11,7 @@
 //! a collapsible "Setup" header, keeping the Run button and the progress
 //! label visible on their own row whether that header is open or closed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -67,7 +67,7 @@ pub struct AutopilotTab {
 
 impl AutopilotTab {
     /// Seed the controls from `settings`, with no channels attached yet.
-    pub fn new(settings: &Settings, project_root: &std::path::Path) -> Self {
+    pub fn new(settings: &Settings, project_root: &Path) -> Self {
         let policy_path =
             PolicyStore::new(project_root.to_path_buf(), settings.autopilot_policy_path())
                 .resolved_policy_path();
