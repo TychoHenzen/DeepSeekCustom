@@ -6,13 +6,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::skills::{SkillLoader, SkillSource};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-loader-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::unique_temp_dir("dsc-loader", tag)
 }
 
 fn write(dir: &Path, name: &str, body: &str) -> PathBuf {

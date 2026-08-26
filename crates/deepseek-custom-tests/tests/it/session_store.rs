@@ -11,13 +11,7 @@ use deepseek_custom::session::store::SessionStore;
 use deepseek_custom::session::{SessionId, SessionMeta, SessionRecord};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-store-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::unique_temp_dir("dsc-store", tag)
 }
 
 fn sample_record(title: &str, seq: u64, updated_at: u64) -> SessionRecord {

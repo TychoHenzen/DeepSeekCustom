@@ -12,13 +12,7 @@ use deepseek_custom::skills::SkillSource;
 use deepseek_custom::skills::discovery::discover_skill_files_in;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-skills-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::unique_temp_dir("dsc-skills", tag)
 }
 
 /// Write a flat `<root>/skills/<name>.md`.

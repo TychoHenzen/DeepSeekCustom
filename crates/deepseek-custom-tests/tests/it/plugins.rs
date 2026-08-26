@@ -6,14 +6,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::plugins::enabled_plugin_roots_in;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("dsc-plugins-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::unique_temp_dir("dsc-plugins", tag)
 }
 
 /// Build a `~/.claude` lookalike: `settings.json` with an `enabledPlugins`

@@ -10,16 +10,7 @@ use deepseek_custom::tools::skill::SkillTool;
 use serde_json::json;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "dsc-skilltool-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::unique_temp_dir("dsc-skilltool", tag)
 }
 
 fn skill_in(dir: &Path, name: &str, body: &str) -> Skill {
