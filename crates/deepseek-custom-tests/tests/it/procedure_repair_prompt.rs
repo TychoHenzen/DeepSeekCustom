@@ -87,6 +87,7 @@ fn repair_input() -> ValidatedRepairInput {
             },
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
+            repair_events: Vec::new(),
         },
         contract: SelectedContractSlice {
             change_id: "add-bounded-repair-escalation".to_string(),

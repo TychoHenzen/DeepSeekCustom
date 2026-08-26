@@ -1,22 +1,23 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
-    AttemptDisposition, AttemptFailureEvidence, AttemptState, ContractSelection, FailureDigest,
-    FailureDigestErrorCategory, FrontierPatchDraftError, FrontierRepairDispatch,
-    FrontierRepairOutcome, FrontierRepairRequest, FrontierRepairRunner, LocalRepairOutcome,
-    LocalRepairRun, LocalizationAttempt, LocalizationTarget, PatchCandidate, PatchPreview,
-    PatchPreviewId, ProcedureAttemptDisposition, ProcedureInputFingerprints,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, PromotionTarget, ProposalScope,
-    RepairCandidateId, RepairTier, RequirementSlice, RouteDecision, RouteOverride, RouteTier,
-    SelectedContractSlice, StoredProcedureReport, ValidatedRepairInput, decode_patch_envelope,
-    dispatch_frontier_repair,
+    AttemptDisposition, AttemptFailureEvidence, AttemptState, ContractSelection,
+    DisposableDraftWorkspace, FailureDigest, FailureDigestErrorCategory, FrontierPatchDraftError,
+    FrontierRepairDispatch, FrontierRepairOutcome, FrontierRepairRequest, FrontierRepairRunner,
+    LocalRepairOutcome, LocalRepairRun, LocalizationAttempt, LocalizationTarget, PatchCandidate,
+    PatchPreview, PatchPreviewId, ProcedureAttemptDisposition, ProcedureInputFingerprints,
+    ProcedureProgress, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    PromotionBaseline, PromotionTarget, ProposalScope, RepairCandidateId, RepairTier,
+    RequirementSlice, RouteDecision, RouteOverride, RouteTier, SelectedContractSlice,
+    StoredProcedureReport, ValidatedRepairInput, decode_patch_envelope, dispatch_frontier_repair,
 };
 
 const PRIOR_CHAT_SENTINEL: &str = "prior-chat-must-not-cross-frontier";
@@ -73,6 +74,7 @@ fn validated_input() -> ValidatedRepairInput {
             },
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
+            repair_events: Vec::new(),
         },
         contract: SelectedContractSlice {
             change_id: "bounded-change".to_string(),
@@ -192,6 +194,10 @@ struct ScriptedFrontierDispatcher {
 
 #[async_trait]
 impl FrontierRepairDispatch for ScriptedFrontierDispatcher {
+    fn model(&self, _backend: &str) -> String {
+        "scripted-frontier-model".to_string()
+    }
+
     async fn draft(
         &self,
         request: &FrontierRepairRequest,
@@ -215,6 +221,7 @@ fn local_exhaustion_dispatches_the_same_compact_context_to_configured_frontier()
             repair_input: input.clone(),
             state,
             failure_digests: digests.clone(),
+            repair_events: Vec::new(),
             outcome: LocalRepairOutcome::LocalExhausted,
         };
         let dispatcher = ScriptedFrontierDispatcher::default();
@@ -324,6 +331,7 @@ fn workspace_local_run(root: &Path) -> LocalRepairRun {
         repair_input: input,
         state,
         failure_digests,
+        repair_events: Vec::new(),
         outcome: LocalRepairOutcome::LocalExhausted,
     }
 }
@@ -334,6 +342,125 @@ struct QueuedFrontierDispatcher {
     calls: AtomicUsize,
     real_target: PathBuf,
     real_bytes_seen_at_dispatch: Mutex<Vec<Vec<u8>>>,
+}
+
+struct InterruptibleFrontierDispatcher {
+    root: PathBuf,
+    started: PathBuf,
+    completed: PathBuf,
+    calls: AtomicUsize,
+    cancelled: Arc<AtomicBool>,
+    disposable_paths: Mutex<Vec<PathBuf>>,
+}
+
+struct DispatchCancellationGuard(Arc<AtomicBool>);
+
+impl Drop for DispatchCancellationGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl FrontierRepairDispatch for InterruptibleFrontierDispatcher {
+    fn model(&self, _backend: &str) -> String {
+        "interruptible-frontier-model".to_string()
+    }
+
+    async fn draft(
+        &self,
+        _request: &FrontierRepairRequest,
+    ) -> Result<PatchCandidate, FrontierPatchDraftError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let disposable = DisposableDraftWorkspace::create_current_state(&self.root)?;
+        self.disposable_paths
+            .lock()
+            .unwrap()
+            .push(disposable.path().to_path_buf());
+        let _cancelled = DispatchCancellationGuard(Arc::clone(&self.cancelled));
+        let script = if cfg!(windows) {
+            self.root.join("interruptible-frontier.ps1")
+        } else {
+            self.root.join("interruptible-frontier.sh")
+        };
+        let mut command = if cfg!(windows) {
+            let mut command = tokio::process::Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script.display().to_string(),
+            ]);
+            command
+        } else {
+            tokio::process::Command::new(&script)
+        };
+        command.current_dir(&self.root).kill_on_drop(true);
+        deepseek_custom::process_group::prepare(&mut command);
+        let mut child = command
+            .spawn()
+            .map_err(|error| FrontierPatchDraftError::Dispatch {
+                backend: "fake-frontier".to_string(),
+                message: error.to_string(),
+            })?;
+        deepseek_custom::process_group::adopt(&child);
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| FrontierPatchDraftError::Dispatch {
+                backend: "fake-frontier".to_string(),
+                message: error.to_string(),
+            })?;
+        if !status.success() {
+            return Err(FrontierPatchDraftError::Dispatch {
+                backend: "fake-frontier".to_string(),
+                message: format!("interrupt fixture exited with {status}"),
+            });
+        }
+        Err(FrontierPatchDraftError::Dispatch {
+            backend: "fake-frontier".to_string(),
+            message: format!(
+                "interrupt fixture unexpectedly completed: {} / {}",
+                self.started.display(),
+                self.completed.display()
+            ),
+        })
+    }
+}
+
+fn write_interruptible_frontier_dispatch(root: &Path, started: &Path, completed: &Path) {
+    #[cfg(windows)]
+    {
+        let quote = |path: &Path| path.display().to_string().replace('\'', "''");
+        std::fs::write(
+            root.join("interruptible-frontier.ps1"),
+            format!(
+                "Set-Content -LiteralPath '{}' -Value 'started'\nStart-Sleep -Seconds 4\nSet-Content -LiteralPath '{}' -Value 'child-completed'\n",
+                quote(started),
+                quote(completed),
+            ),
+        )
+        .unwrap();
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let quote = |path: &Path| path.display().to_string().replace('\'', "'\\''");
+        let script = root.join("interruptible-frontier.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf started > '{}'\nsleep 4\nprintf child-completed > '{}'\n",
+                quote(started),
+                quote(completed),
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+    }
 }
 
 impl QueuedFrontierDispatcher {
@@ -350,6 +477,10 @@ impl QueuedFrontierDispatcher {
 
 #[async_trait]
 impl FrontierRepairDispatch for QueuedFrontierDispatcher {
+    fn model(&self, _backend: &str) -> String {
+        "queued-frontier-model".to_string()
+    }
+
     async fn draft(
         &self,
         request: &FrontierRepairRequest,
@@ -539,8 +670,10 @@ fn two_failed_frontier_candidates_block_without_third_dispatch_or_workspace_chan
                 workspace_frontier_candidate("second"),
             ],
         );
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let outcome = FrontierRepairRunner::new(root.clone())
+            .with_progress(progress_tx)
             .run(&mut local_run, &dispatcher, &[verifier])
             .await
             .unwrap();
@@ -591,6 +724,107 @@ fn two_failed_frontier_candidates_block_without_third_dispatch_or_workspace_chan
         assert_eq!(requests[0].failure_digests().len(), 3);
         assert_eq!(requests[1].failure_digests().len(), 4);
         assert!(requests[1].prompt().contains("tier=frontier"));
+        assert_eq!(
+            local_run
+                .repair_events
+                .iter()
+                .map(|event| event.transition)
+                .collect::<Vec<_>>(),
+            vec![
+                deepseek_custom::procedure::RepairLadderTransition::Escalated,
+                deepseek_custom::procedure::RepairLadderTransition::AttemptStarted,
+                deepseek_custom::procedure::RepairLadderTransition::VerifierFailure,
+                deepseek_custom::procedure::RepairLadderTransition::AttemptStarted,
+                deepseek_custom::procedure::RepairLadderTransition::VerifierFailure,
+                deepseek_custom::procedure::RepairLadderTransition::Blocked,
+            ]
+        );
+        let progress_events = std::iter::from_fn(|| progress_rx.try_recv().ok())
+            .filter_map(|progress| match progress {
+                ProcedureProgress::RepairTransition { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(progress_events, local_run.repair_events);
+
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(evidence).ok();
+    });
+}
+
+// covers: deepseek-custom/bounded-repair-escalation :: Interruption cancels the ladder :: User interrupts during repair
+#[test]
+fn interrupting_active_frontier_dispatch_kills_the_child_and_stops_the_ladder() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let root = temp_dir("interrupt-dispatch");
+        let evidence = temp_dir("interrupt-evidence");
+        init_repository(&root);
+        write_target(&root, ORIGINAL_BYTES);
+        let started = evidence.join("started.txt");
+        let completed = evidence.join("completed.txt");
+        write_interruptible_frontier_dispatch(&root, &started, &completed);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let dispatcher = InterruptibleFrontierDispatcher {
+            root: root.clone(),
+            started: started.clone(),
+            completed: completed.clone(),
+            calls: AtomicUsize::new(0),
+            cancelled: Arc::clone(&cancelled),
+            disposable_paths: Mutex::new(Vec::new()),
+        };
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let mut local_run = workspace_local_run(&root);
+        let commands = ["must-not-run".to_string()];
+        let runner = FrontierRepairRunner::with_interrupt(root.clone(), Arc::clone(&interrupt));
+        let outcome = {
+            let run_future = runner.run(&mut local_run, &dispatcher, &commands);
+            tokio::pin!(run_future);
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                tokio::select! {
+                    result = &mut run_future => panic!("frontier dispatch ended before interruption: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if started.exists() {
+                            break;
+                        }
+                        assert!(Instant::now() < deadline, "frontier dispatch fixture did not start");
+                    }
+                }
+            }
+
+            interrupt.store(true, Ordering::SeqCst);
+            tokio::time::timeout(Duration::from_secs(3), run_future)
+                .await
+                .expect("interrupted frontier dispatch must finish promptly")
+                .unwrap()
+        };
+
+        assert_eq!(outcome, FrontierRepairOutcome::Interrupted);
+        assert_eq!(local_run.state.disposition(), &AttemptDisposition::Interrupted);
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            std::fs::read(root.join(WORKSPACE_TARGET)).unwrap(),
+            ORIGINAL_BYTES.as_bytes()
+        );
+        assert!(
+            dispatcher
+                .disposable_paths
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|path| !path.exists()),
+            "interrupted frontier disposable state leaked"
+        );
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!completed.exists(), "interrupted frontier child kept running");
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
 
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(evidence).ok();

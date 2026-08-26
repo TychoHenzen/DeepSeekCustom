@@ -57,9 +57,11 @@
 
 ## 5. Cancellation and evidence
 
-- [ ] 5.1 Cancel the active model or verifier child on interruption, delete disposable state, and prevent later retries or promotion.
+- [x] 5.1 Cancel the active model or verifier child on interruption, delete disposable state, and prevent later retries or promotion.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Interruption cancels the ladder :: User interrupts during repair -->
-- [ ] 5.2 Persist and render attempt number, tier, backend, model, trigger, error category, gate result, and disposition for every transition.
+- [x] 5.2 Persist and render attempt number, tier, backend, model, trigger, error category, gate result, and disposition for every transition.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Retry and escalation decisions are visible :: User inspects the ladder -->
 - [ ] 5.3 Add scripted stub and fake-command end-to-end tests for parser recovery, local recovery, local exhaustion, frontier recovery, frontier exhaustion, and interruption.
 

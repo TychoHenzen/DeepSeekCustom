@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -11,6 +13,7 @@ use tokio::sync::mpsc;
 use crate::agent::events::RoutedEvent;
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
+use crate::backend::resolved::ResolvedBackend;
 use crate::effort::Effort;
 
 use super::{
@@ -18,9 +21,11 @@ use super::{
     DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FailureDigest, FailureDigestSectionError,
     FrontierPatchDraftError, FrontierPatchDraftRequest, LocalRepairRun, PatchApplyCheckError,
     PatchBoundaryError, PatchCandidate, ProcedureScratchpad, ProcedureTask, PromotionError,
-    PromotionResult, PromotionTargetError, RepairCandidateId, RepairTier, ValidatedRepairInput,
-    VerifierCommandRunner, build_failure_digest_section, draft_frontier_patch,
-    evaluate_applied_patch_eligibility, model_promotion_targets, promote_verified_workspace,
+    PromotionResult, PromotionTargetError, RepairCandidateId, RepairLadderDisposition,
+    RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult, RepairLadderTransition,
+    RepairLadderTrigger, RepairTier, ValidatedRepairInput, VerifierCommandRunner,
+    build_failure_digest_section, draft_frontier_patch, evaluate_applied_patch_eligibility,
+    model_promotion_targets, promote_verified_workspace,
 };
 
 use super::local_repair::{CandidateGateError, apply_candidate_in_fresh_workspace};
@@ -93,16 +98,39 @@ pub enum FrontierRepairOutcome {
         attempts: u8,
         reason: String,
     },
+    Interrupted,
 }
 
 /// Runs frontier candidates through the same deterministic gates as local repair.
 pub struct FrontierRepairRunner {
     project_root: PathBuf,
+    interrupt: Arc<AtomicBool>,
+    progress: Option<mpsc::UnboundedSender<super::ProcedureProgress>>,
 }
 
 impl FrontierRepairRunner {
     pub fn new(project_root: PathBuf) -> Self {
-        Self { project_root }
+        Self {
+            project_root,
+            interrupt: Arc::new(AtomicBool::new(false)),
+            progress: None,
+        }
+    }
+
+    pub fn with_interrupt(project_root: PathBuf, interrupt: Arc<AtomicBool>) -> Self {
+        Self {
+            project_root,
+            interrupt,
+            progress: None,
+        }
+    }
+
+    pub fn with_progress(
+        mut self,
+        progress: mpsc::UnboundedSender<super::ProcedureProgress>,
+    ) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     pub async fn run(
@@ -115,7 +143,56 @@ impl FrontierRepairRunner {
             return Err(FrontierRepairError::NoVerifierCommands);
         }
 
-        let mut dispatched = dispatch_frontier_repair(local_run, dispatcher).await?;
+        if self.interrupted() {
+            local_run.state.interrupt()?;
+            let event = frontier_interrupted_event(local_run, dispatcher);
+            self.record_event(local_run, event);
+            return Ok(FrontierRepairOutcome::Interrupted);
+        }
+        let initial_request = prepare_initial_frontier_request(local_run)?;
+        self.record_event(
+            local_run,
+            frontier_event(
+                FrontierEventSpec {
+                    transition: RepairLadderTransition::Escalated,
+                    trigger: RepairLadderTrigger::LocalBudgetExhausted,
+                    gate_result: RepairLadderGateResult::NotRun,
+                    disposition: RepairLadderDisposition::CandidateActive,
+                    error_category: None,
+                    attempt_number: 1,
+                },
+                dispatcher,
+                &initial_request,
+            ),
+        );
+        self.record_event(
+            local_run,
+            frontier_event(
+                FrontierEventSpec {
+                    transition: RepairLadderTransition::AttemptStarted,
+                    trigger: RepairLadderTrigger::LocalBudgetExhausted,
+                    gate_result: RepairLadderGateResult::NotRun,
+                    disposition: RepairLadderDisposition::CandidateActive,
+                    error_category: None,
+                    attempt_number: 1,
+                },
+                dispatcher,
+                &initial_request,
+            ),
+        );
+        let Some(initial_candidate) =
+            dispatch_frontier_interruptibly(dispatcher.draft(&initial_request), &self.interrupt)
+                .await
+        else {
+            local_run.state.interrupt()?;
+            let event = frontier_interrupted_event(local_run, dispatcher);
+            self.record_event(local_run, event);
+            return Ok(FrontierRepairOutcome::Interrupted);
+        };
+        let mut dispatched = FrontierRepairDispatchResult {
+            request: initial_request,
+            candidate: initial_candidate?,
+        };
         loop {
             let attempt_number = local_run.state.attempt_index();
             let applied = apply_candidate_in_fresh_workspace(
@@ -124,8 +201,27 @@ impl FrontierRepairRunner {
                 &local_run.repair_input.preview.targets,
             )
             .map_err(FrontierRepairError::from)?;
-            let verifier = VerifierCommandRunner::new();
+            if self.interrupted() {
+                applied.close().map_err(PatchApplyCheckError::from)?;
+                local_run.state.interrupt()?;
+                let event = frontier_interrupted_event(local_run, dispatcher);
+                self.record_event(local_run, event);
+                return Ok(FrontierRepairOutcome::Interrupted);
+            }
+            let verifier = VerifierCommandRunner::with_interrupt(Arc::clone(&self.interrupt));
             let verifier_run = verifier.run(applied.path(), verifier_commands).await;
+
+            if self.interrupted()
+                || verifier_run.commands.iter().any(|command| {
+                    command.disposition == super::VerifierCommandDisposition::Interrupted
+                })
+            {
+                applied.close().map_err(PatchApplyCheckError::from)?;
+                local_run.state.interrupt()?;
+                let event = frontier_interrupted_event(local_run, dispatcher);
+                self.record_event(local_run, event);
+                return Ok(FrontierRepairOutcome::Interrupted);
+            }
 
             if evaluate_applied_patch_eligibility(&applied, &verifier_run).eligible {
                 let targets = model_promotion_targets(applied.boundary_patch())?;
@@ -137,6 +233,21 @@ impl FrontierRepairRunner {
                 )?;
                 drop(applied);
                 local_run.state.promote()?;
+                self.record_event(
+                    local_run,
+                    frontier_event(
+                        FrontierEventSpec {
+                            transition: RepairLadderTransition::Promoted,
+                            trigger: RepairLadderTrigger::CandidatePassed,
+                            gate_result: RepairLadderGateResult::VerifierPassed,
+                            disposition: RepairLadderDisposition::Promoted,
+                            error_category: None,
+                            attempt_number,
+                        },
+                        dispatcher,
+                        &dispatched.request,
+                    ),
+                );
                 return Ok(FrontierRepairOutcome::Promoted {
                     attempt_number,
                     promotion,
@@ -157,7 +268,29 @@ impl FrontierRepairRunner {
                     digest.exit_code,
                     digest.diagnostic.clone(),
                 ))?;
+            let failure_category = digest.error_category;
             local_run.failure_digests.push(digest);
+            let disposition =
+                if local_run.state.disposition() == &AttemptDisposition::FrontierExhausted {
+                    RepairLadderDisposition::FrontierExhausted
+                } else {
+                    RepairLadderDisposition::Ready
+                };
+            self.record_event(
+                local_run,
+                frontier_event(
+                    FrontierEventSpec {
+                        transition: RepairLadderTransition::VerifierFailure,
+                        trigger: RepairLadderTrigger::VerifierFailure,
+                        gate_result: RepairLadderGateResult::VerifierFailed,
+                        disposition,
+                        error_category: Some(failure_category.into()),
+                        attempt_number,
+                    },
+                    dispatcher,
+                    &dispatched.request,
+                ),
+            );
 
             if local_run.state.disposition() == &AttemptDisposition::FrontierExhausted {
                 let attempts = local_run.state.attempt_index();
@@ -165,10 +298,68 @@ impl FrontierRepairRunner {
                     "frontier repair exhausted after {attempts} deterministic verifier attempts"
                 );
                 local_run.state.block(reason.clone())?;
+                self.record_event(
+                    local_run,
+                    frontier_event(
+                        FrontierEventSpec {
+                            transition: RepairLadderTransition::Blocked,
+                            trigger: RepairLadderTrigger::FrontierBudgetExhausted,
+                            gate_result: RepairLadderGateResult::VerifierFailed,
+                            disposition: RepairLadderDisposition::Blocked,
+                            error_category: Some(failure_category.into()),
+                            attempt_number: attempts,
+                        },
+                        dispatcher,
+                        &dispatched.request,
+                    ),
+                );
                 return Ok(FrontierRepairOutcome::Blocked { attempts, reason });
             }
 
-            dispatched = dispatch_next_frontier_repair(local_run, dispatcher).await?;
+            let next_request = prepare_next_frontier_request(local_run)?;
+            let next_attempt = local_run.state.attempt_index();
+            self.record_event(
+                local_run,
+                frontier_event(
+                    FrontierEventSpec {
+                        transition: RepairLadderTransition::AttemptStarted,
+                        trigger: RepairLadderTrigger::VerifierFailure,
+                        gate_result: RepairLadderGateResult::NotRun,
+                        disposition: RepairLadderDisposition::CandidateActive,
+                        error_category: Some(failure_category.into()),
+                        attempt_number: next_attempt,
+                    },
+                    dispatcher,
+                    &next_request,
+                ),
+            );
+            let Some(next_candidate) =
+                dispatch_frontier_interruptibly(dispatcher.draft(&next_request), &self.interrupt)
+                    .await
+            else {
+                local_run.state.interrupt()?;
+                let event = frontier_interrupted_event(local_run, dispatcher);
+                self.record_event(local_run, event);
+                return Ok(FrontierRepairOutcome::Interrupted);
+            };
+            dispatched = FrontierRepairDispatchResult {
+                request: next_request,
+                candidate: next_candidate?,
+            };
+        }
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupt.load(Ordering::SeqCst)
+    }
+
+    fn record_event(&self, local_run: &mut LocalRepairRun, event: RepairLadderEvent) {
+        local_run.repair_events.push(event.clone());
+        if let Some(progress) = &self.progress {
+            let _ = progress.send(super::ProcedureProgress::RepairTransition {
+                run_id: local_run.repair_input.report.run.id,
+                event,
+            });
         }
     }
 }
@@ -176,6 +367,8 @@ impl FrontierRepairRunner {
 /// Narrow seam for an isolated one-shot frontier draft.
 #[async_trait]
 pub trait FrontierRepairDispatch: Send + Sync {
+    fn model(&self, backend: &str) -> String;
+
     async fn draft(
         &self,
         request: &FrontierRepairRequest,
@@ -214,6 +407,23 @@ impl FrontierRepairDispatcher {
 
 #[async_trait]
 impl FrontierRepairDispatch for FrontierRepairDispatcher {
+    fn model(&self, backend: &str) -> String {
+        self.factory
+            .resolve(backend, self.model.as_deref())
+            .map(|resolved| match resolved {
+                ResolvedBackend::Api { model, .. }
+                | ResolvedBackend::ClaudeCli { model, .. }
+                | ResolvedBackend::CodexCli { model, .. } => model,
+                #[cfg(feature = "test-support")]
+                ResolvedBackend::Stub { model, .. } => model,
+            })
+            .unwrap_or_else(|_| {
+                self.model
+                    .clone()
+                    .unwrap_or_else(|| "unresolved backend model".to_string())
+            })
+    }
+
     async fn draft(
         &self,
         request: &FrontierRepairRequest,
@@ -277,6 +487,14 @@ pub async fn dispatch_frontier_repair(
     local_run: &mut LocalRepairRun,
     dispatcher: &dyn FrontierRepairDispatch,
 ) -> Result<FrontierRepairDispatchResult, FrontierRepairError> {
+    let request = prepare_initial_frontier_request(local_run)?;
+    let candidate = dispatcher.draft(&request).await?;
+    Ok(FrontierRepairDispatchResult { request, candidate })
+}
+
+fn prepare_initial_frontier_request(
+    local_run: &mut LocalRepairRun,
+) -> Result<FrontierRepairRequest, FrontierRepairError> {
     let LocalRepairRun {
         repair_input: repair,
         state,
@@ -313,14 +531,12 @@ pub async fn dispatch_frontier_repair(
 
     let request = build_frontier_request(repair, backend, local_failures)?;
     state.escalate_to_frontier(RepairCandidateId::new("frontier-1")?)?;
-    let candidate = dispatcher.draft(&request).await?;
-    Ok(FrontierRepairDispatchResult { request, candidate })
+    Ok(request)
 }
 
-async fn dispatch_next_frontier_repair(
+fn prepare_next_frontier_request(
     local_run: &mut LocalRepairRun,
-    dispatcher: &dyn FrontierRepairDispatch,
-) -> Result<FrontierRepairDispatchResult, FrontierRepairError> {
+) -> Result<FrontierRepairRequest, FrontierRepairError> {
     let backend = local_run
         .state
         .policy()
@@ -338,8 +554,79 @@ async fn dispatch_next_frontier_repair(
         .escalate_to_frontier(RepairCandidateId::new(format!(
             "frontier-{attempt_number}"
         ))?)?;
-    let candidate = dispatcher.draft(&request).await?;
-    Ok(FrontierRepairDispatchResult { request, candidate })
+    Ok(request)
+}
+
+async fn dispatch_frontier_interruptibly<T>(
+    future: impl std::future::Future<Output = T>,
+    interrupt: &Arc<AtomicBool>,
+) -> Option<T> {
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            output = &mut future => return Some(output),
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                if interrupt.load(Ordering::SeqCst) {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+struct FrontierEventSpec {
+    transition: RepairLadderTransition,
+    trigger: RepairLadderTrigger,
+    gate_result: RepairLadderGateResult,
+    disposition: RepairLadderDisposition,
+    error_category: Option<RepairLadderErrorCategory>,
+    attempt_number: u8,
+}
+
+fn frontier_event(
+    spec: FrontierEventSpec,
+    dispatcher: &dyn FrontierRepairDispatch,
+    request: &FrontierRepairRequest,
+) -> RepairLadderEvent {
+    RepairLadderEvent {
+        transition: spec.transition,
+        attempt_number: spec.attempt_number,
+        tier: RepairTier::Frontier,
+        backend: request.backend().to_string(),
+        model: dispatcher.model(request.backend()),
+        trigger: spec.trigger,
+        error_category: spec.error_category,
+        gate_result: spec.gate_result,
+        disposition: spec.disposition,
+    }
+}
+
+fn frontier_interrupted_event(
+    local_run: &LocalRepairRun,
+    dispatcher: &dyn FrontierRepairDispatch,
+) -> RepairLadderEvent {
+    RepairLadderEvent {
+        transition: RepairLadderTransition::Interrupted,
+        attempt_number: local_run.state.attempt_index(),
+        tier: RepairTier::Frontier,
+        backend: local_run
+            .state
+            .policy()
+            .frontier_backend()
+            .unwrap_or("frontier")
+            .to_string(),
+        model: dispatcher.model(
+            local_run
+                .state
+                .policy()
+                .frontier_backend()
+                .unwrap_or("frontier"),
+        ),
+        trigger: RepairLadderTrigger::UserInterrupt,
+        error_category: Some(RepairLadderErrorCategory::Interrupted),
+        gate_result: RepairLadderGateResult::Interrupted,
+        disposition: RepairLadderDisposition::Interrupted,
+    }
 }
 
 fn build_frontier_request(

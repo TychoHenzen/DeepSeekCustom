@@ -537,6 +537,12 @@ async fn collect_output(
                     if let Err(kill_error) = crate::process_group::terminate(child) {
                         error.get_or_insert_with(|| format!("could not stop interrupted verifier: {kill_error}"));
                     }
+                    match child.wait().await {
+                        Ok(exit_status) => status = Some(exit_status),
+                        Err(wait_error) => {
+                            error.get_or_insert_with(|| format!("could not reap interrupted verifier: {wait_error}"));
+                        }
+                    }
                     break;
                 }
                 match child.try_wait() {

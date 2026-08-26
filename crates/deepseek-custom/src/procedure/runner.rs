@@ -181,6 +181,10 @@ pub enum ProcedureProgress {
         run_id: ProcedureRunId,
         progress: Box<ProcedureApplyProgress>,
     },
+    RepairTransition {
+        run_id: ProcedureRunId,
+        event: super::RepairLadderEvent,
+    },
 }
 
 /// Apply one persisted review decision and publish its run-scoped result.

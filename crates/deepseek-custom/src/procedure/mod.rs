@@ -23,6 +23,7 @@ mod patch_preview;
 mod preview_input;
 mod promotion;
 mod prompt;
+mod repair_event;
 mod repair_input;
 mod repair_prompt;
 mod repair_state;
@@ -99,6 +100,10 @@ pub use promotion::{PromotionFailureInjection, promote_verified_workspace_with_f
 pub use prompt::{
     LocalizationPromptInput, RepositoryIndexEntry, TARGET_SELECTION_INSTRUCTION,
     build_localization_prompt,
+};
+pub use repair_event::{
+    RepairLadderDisposition, RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult,
+    RepairLadderTransition, RepairLadderTrigger, repair_ladder_render_lines,
 };
 pub use repair_input::{RepairInputError, RepairInputGate, RepairRequest, ValidatedRepairInput};
 pub use repair_prompt::{

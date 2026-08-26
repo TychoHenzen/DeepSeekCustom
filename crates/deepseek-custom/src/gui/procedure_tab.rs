@@ -17,8 +17,8 @@ use crate::procedure::{
     ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
     ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureRunRequest, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    PromotionRecoveryEvidence, PromotionResult, RouteOverride, SnapshotProgress,
-    StalePromotionPath, VerifierGateDisposition, VerifierReport,
+    PromotionRecoveryEvidence, PromotionResult, RepairLadderEvent, RouteOverride, SnapshotProgress,
+    StalePromotionPath, VerifierGateDisposition, VerifierReport, repair_ladder_render_lines,
 };
 
 const MISSING_VERIFIER_COMMANDS_MESSAGE: &str =
@@ -153,6 +153,7 @@ pub struct ProcedureTab {
     patch_gate_results: Vec<GitApplyResult>,
     verifier_gate_evidence: Vec<(usize, crate::procedure::VerifierGateEvidence)>,
     verification_report: Option<VerifierReport>,
+    repair_events: Vec<RepairLadderEvent>,
     conflicts: Vec<StalePromotionPath>,
     promotion_result: Option<PromotionResult>,
     promotion_failure: Option<PromotionFailureView>,
@@ -229,6 +230,7 @@ impl ProcedureTab {
             patch_gate_results: Vec::new(),
             verifier_gate_evidence: Vec::new(),
             verification_report: None,
+            repair_events: Vec::new(),
             conflicts: Vec::new(),
             promotion_result: None,
             promotion_failure: None,
@@ -482,10 +484,11 @@ impl ProcedureTab {
                 if !self.owns_active_run(run_id) {
                     return;
                 }
-                match self.reports.load(&run_id) {
-                    Ok(run) => {
+                match self.reports.load_with_fingerprints(&run_id) {
+                    Ok(stored) => {
                         self.report_path = Some(self.reports.report_path(&run_id));
-                        self.latest_run = Some(run);
+                        self.repair_events = stored.repair_events;
+                        self.latest_run = Some(stored.run);
                         self.review_error = None;
                         self.review_in_flight = false;
                         self.active_run = None;
@@ -568,6 +571,11 @@ impl ProcedureTab {
             }
             ProcedureProgress::Apply { run_id, progress } => {
                 self.handle_apply_progress(run_id, *progress);
+            }
+            ProcedureProgress::RepairTransition { run_id, event } => {
+                if self.owns_active_run(run_id) || self.displays_run(run_id) {
+                    self.repair_events.push(event);
+                }
             }
         }
     }
@@ -900,6 +908,9 @@ impl ProcedureTab {
                 }
             }
         }
+        for line in repair_ladder_render_lines(&self.repair_events) {
+            ui.label(line);
+        }
         if let Some(path) = &self.report_path {
             ui.label(format!("Report: {}", path.display()));
         }
@@ -1205,6 +1216,7 @@ impl ProcedureTab {
         self.dispatch_backend = None;
         self.dispatch_model = None;
         self.attempt_number = None;
+        self.repair_events.clear();
         self.review_error = None;
         self.review_in_flight = false;
         self.status = ProcedureStatus::Running {
@@ -1440,6 +1452,11 @@ impl ProcedureTab {
     #[cfg(feature = "test-support")]
     pub fn apply_render_lines_for_test(&self) -> Vec<String> {
         self.apply_render_lines()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn repair_render_lines_for_test(&self) -> Vec<String> {
+        repair_ladder_render_lines(&self.repair_events)
     }
 }
 

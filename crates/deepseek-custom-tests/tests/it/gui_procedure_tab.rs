@@ -20,9 +20,11 @@ use deepseek_custom::procedure::{
     ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
     PromotionBaselineComparison, PromotionCleanupEvidence, PromotionRecoveryEvidence,
-    PromotionResult, RouteDecision, RouteOverride, RouteSignal, RouteTier, StalePromotionPath,
-    VerifierCommandDisposition, VerifierCommandEvidence, VerifierGateDisposition,
-    VerifierGateEvidence, VerifierReport, apply_review_decision, capture_path_fingerprint,
+    PromotionResult, RepairLadderDisposition, RepairLadderErrorCategory, RepairLadderEvent,
+    RepairLadderGateResult, RepairLadderTransition, RepairLadderTrigger, RepairTier, RouteDecision,
+    RouteOverride, RouteSignal, RouteTier, StalePromotionPath, VerifierCommandDisposition,
+    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
+    apply_review_decision, capture_path_fingerprint,
 };
 use tokio::sync::mpsc;
 
@@ -1469,6 +1471,133 @@ fn session_reset_and_drop_interrupt_an_owned_procedure() {
     gui.procedure_mut_for_test().start_for_test();
     drop(gui);
     assert!(interrupt.load(Ordering::SeqCst));
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn repair_event(
+    transition: RepairLadderTransition,
+    attempt_number: u8,
+    tier: RepairTier,
+) -> RepairLadderEvent {
+    RepairLadderEvent {
+        transition,
+        attempt_number,
+        tier,
+        backend: format!("{tier}-backend"),
+        model: format!("{tier}-model"),
+        trigger: match transition {
+            RepairLadderTransition::AttemptStarted => RepairLadderTrigger::InitialRequest,
+            RepairLadderTransition::StructuralRetry
+            | RepairLadderTransition::StructuralRetryExhausted => {
+                RepairLadderTrigger::StructuralFailure
+            }
+            RepairLadderTransition::VerifierFailure => RepairLadderTrigger::VerifierFailure,
+            RepairLadderTransition::Escalated => RepairLadderTrigger::LocalBudgetExhausted,
+            RepairLadderTransition::Promoted => RepairLadderTrigger::CandidatePassed,
+            RepairLadderTransition::Blocked => RepairLadderTrigger::FrontierBudgetExhausted,
+            RepairLadderTransition::Interrupted => RepairLadderTrigger::UserInterrupt,
+        },
+        error_category: match transition {
+            RepairLadderTransition::StructuralRetry => Some(RepairLadderErrorCategory::Envelope),
+            RepairLadderTransition::VerifierFailure | RepairLadderTransition::Blocked => {
+                Some(RepairLadderErrorCategory::VerifierFailed)
+            }
+            RepairLadderTransition::Interrupted => Some(RepairLadderErrorCategory::Interrupted),
+            _ => None,
+        },
+        gate_result: match transition {
+            RepairLadderTransition::StructuralRetry => RepairLadderGateResult::StructuralRejected,
+            RepairLadderTransition::VerifierFailure | RepairLadderTransition::Blocked => {
+                RepairLadderGateResult::VerifierFailed
+            }
+            RepairLadderTransition::Promoted => RepairLadderGateResult::VerifierPassed,
+            RepairLadderTransition::Interrupted => RepairLadderGateResult::Interrupted,
+            _ => RepairLadderGateResult::NotRun,
+        },
+        disposition: match transition {
+            RepairLadderTransition::Promoted => RepairLadderDisposition::Promoted,
+            RepairLadderTransition::Blocked => RepairLadderDisposition::Blocked,
+            RepairLadderTransition::Interrupted => RepairLadderDisposition::Interrupted,
+            RepairLadderTransition::Escalated => RepairLadderDisposition::FrontierReady,
+            _ => RepairLadderDisposition::CandidateActive,
+        },
+    }
+}
+
+// covers: deepseek-custom/bounded-repair-escalation :: Retry and escalation decisions are visible :: User inspects the ladder
+#[test]
+fn saved_and_live_repair_transitions_render_as_one_complete_procedure_sequence() {
+    let root = fixture_root("repair-ladder-evidence");
+    let store = ProcedureReportStore::for_project(&root);
+    let run_id = ProcedureRunId::new();
+    let run = completed_run(run_id);
+    store.save(&run).unwrap();
+    let events = vec![
+        repair_event(RepairLadderTransition::AttemptStarted, 1, RepairTier::Local),
+        repair_event(
+            RepairLadderTransition::StructuralRetry,
+            1,
+            RepairTier::Local,
+        ),
+        repair_event(
+            RepairLadderTransition::VerifierFailure,
+            1,
+            RepairTier::Local,
+        ),
+        repair_event(RepairLadderTransition::Escalated, 1, RepairTier::Frontier),
+        repair_event(RepairLadderTransition::Promoted, 1, RepairTier::Frontier),
+        repair_event(RepairLadderTransition::Blocked, 2, RepairTier::Frontier),
+        repair_event(RepairLadderTransition::Interrupted, 2, RepairTier::Frontier),
+    ];
+    store.save_repair_events(&run_id, &events).unwrap();
+    assert_eq!(
+        store.load_with_fingerprints(&run_id).unwrap().repair_events,
+        events
+    );
+
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    let lines = tab.repair_render_lines_for_test();
+    assert_eq!(lines.len(), 7);
+    for transition in [
+        "AttemptStarted",
+        "StructuralRetry",
+        "VerifierFailure",
+        "Escalated",
+        "Promoted",
+        "Blocked",
+        "Interrupted",
+    ] {
+        assert!(lines.iter().any(|line| line.contains(transition)));
+    }
+    assert!(lines.iter().all(|line| line.contains("attempt")));
+    assert!(lines.iter().all(|line| line.contains("backend")));
+    assert!(lines.iter().all(|line| line.contains("model")));
+    assert!(lines.iter().all(|line| line.contains("trigger")));
+    assert!(lines.iter().all(|line| line.contains("error")));
+    assert!(lines.iter().all(|line| line.contains("gate")));
+    assert!(lines.iter().all(|line| line.contains("disposition")));
+
+    let live = repair_event(
+        RepairLadderTransition::AttemptStarted,
+        3,
+        RepairTier::Frontier,
+    );
+    tab.handle_progress(ProcedureProgress::RepairTransition {
+        run_id,
+        event: live,
+    });
+    assert_eq!(tab.repair_render_lines_for_test().len(), 8);
+    assert!(tab.repair_render_lines_for_test()[7].contains("attempt 3"));
+
     std::fs::remove_dir_all(root).ok();
 }
 

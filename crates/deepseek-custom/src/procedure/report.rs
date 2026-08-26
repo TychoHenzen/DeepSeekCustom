@@ -9,7 +9,7 @@ use tracing::debug;
 
 use super::{
     ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureTerminalDisposition, VerifierReport, capture_path_fingerprints,
+    ProcedureTerminalDisposition, RepairLadderEvent, VerifierReport, capture_path_fingerprints,
 };
 use crate::error::{HarnessError, Result};
 
@@ -29,6 +29,7 @@ pub struct StoredProcedureReport {
     pub run: ProcedureRun,
     pub input_fingerprints: ProcedureInputFingerprints,
     pub verification: Option<VerifierReport>,
+    pub repair_events: Vec<RepairLadderEvent>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,6 +40,8 @@ struct ProcedureReportDocument {
     input_fingerprints: ProcedureInputFingerprints,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verification: Option<VerifierReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    repair_events: Vec<RepairLadderEvent>,
 }
 
 /// Failure to record a semantic review decision for one saved run.
@@ -126,6 +129,7 @@ impl ProcedureReportStore {
             run: report.clone(),
             input_fingerprints: self.capture_input_fingerprints(report)?,
             verification: None,
+            repair_events: Vec::new(),
         };
         self.save_document(&document)
     }
@@ -155,6 +159,7 @@ impl ProcedureReportStore {
             run: document.run,
             input_fingerprints: document.input_fingerprints,
             verification: document.verification,
+            repair_events: document.repair_events,
         })
     }
 
@@ -166,6 +171,17 @@ impl ProcedureReportStore {
     ) -> Result<()> {
         let mut stored = self.load_with_fingerprints(id)?;
         stored.verification = Some(verification.clone());
+        self.save_document(&stored)
+    }
+
+    /// Replace the bounded repair transition sequence for one saved run.
+    pub fn save_repair_events(
+        &self,
+        id: &ProcedureRunId,
+        repair_events: &[RepairLadderEvent],
+    ) -> Result<()> {
+        let mut stored = self.load_with_fingerprints(id)?;
+        stored.repair_events = repair_events.to_vec();
         self.save_document(&stored)
     }
 
@@ -274,6 +290,7 @@ impl ProcedureReportStore {
             run: report.run.clone(),
             input_fingerprints: report.input_fingerprints.clone(),
             verification: report.verification.clone(),
+            repair_events: report.repair_events.clone(),
         };
         let json = serde_json::to_string_pretty(&document).map_err(|error| {
             HarnessError::Parse(format!("could not serialize procedure report: {error}"))

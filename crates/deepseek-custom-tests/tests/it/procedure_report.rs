@@ -8,9 +8,11 @@ use deepseek_custom::procedure::{
     PatchGateDisposition, PatchGateEvidence, ProcedureApprovedReportError,
     ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, VerifierCommandDisposition,
-    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
-    capture_path_fingerprint, require_approved_report,
+    ProcedureTask, ProcedureTerminalDisposition, RepairLadderDisposition,
+    RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult, RepairLadderTransition,
+    RepairLadderTrigger, RepairTier, VerifierCommandDisposition, VerifierCommandEvidence,
+    VerifierGateDisposition, VerifierGateEvidence, VerifierReport, capture_path_fingerprint,
+    repair_ladder_render_lines, require_approved_report,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -588,6 +590,106 @@ fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
         VerifierGateDisposition::NotRun { blocked_by: 0 }
     );
     assert!(saved.gates[1].result.is_none());
+
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+#[test]
+fn repair_transition_evidence_round_trips_and_renders_without_sensitive_context() {
+    let reports_dir = temp_path("repair-transition-round-trip");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let report = completed_run();
+    store.save(&report).unwrap();
+    let transitions = [
+        RepairLadderTransition::AttemptStarted,
+        RepairLadderTransition::StructuralRetry,
+        RepairLadderTransition::VerifierFailure,
+        RepairLadderTransition::Escalated,
+        RepairLadderTransition::Promoted,
+        RepairLadderTransition::Blocked,
+        RepairLadderTransition::Interrupted,
+    ];
+    let events = transitions
+        .into_iter()
+        .enumerate()
+        .map(|(index, transition)| RepairLadderEvent {
+            transition,
+            attempt_number: (index + 1) as u8,
+            tier: if index < 3 {
+                RepairTier::Local
+            } else {
+                RepairTier::Frontier
+            },
+            backend: if index < 3 {
+                "local-backend".to_string()
+            } else {
+                "frontier-backend".to_string()
+            },
+            model: format!("model-{index}"),
+            trigger: match transition {
+                RepairLadderTransition::AttemptStarted => RepairLadderTrigger::InitialRequest,
+                RepairLadderTransition::StructuralRetry
+                | RepairLadderTransition::StructuralRetryExhausted => {
+                    RepairLadderTrigger::StructuralFailure
+                }
+                RepairLadderTransition::VerifierFailure => RepairLadderTrigger::VerifierFailure,
+                RepairLadderTransition::Escalated => RepairLadderTrigger::LocalBudgetExhausted,
+                RepairLadderTransition::Promoted => RepairLadderTrigger::CandidatePassed,
+                RepairLadderTransition::Blocked => RepairLadderTrigger::FrontierBudgetExhausted,
+                RepairLadderTransition::Interrupted => RepairLadderTrigger::UserInterrupt,
+            },
+            error_category: match transition {
+                RepairLadderTransition::StructuralRetry => {
+                    Some(RepairLadderErrorCategory::PatchParse)
+                }
+                RepairLadderTransition::VerifierFailure => {
+                    Some(RepairLadderErrorCategory::VerifierFailed)
+                }
+                RepairLadderTransition::Interrupted => Some(RepairLadderErrorCategory::Interrupted),
+                _ => None,
+            },
+            gate_result: match transition {
+                RepairLadderTransition::StructuralRetry => {
+                    RepairLadderGateResult::StructuralRejected
+                }
+                RepairLadderTransition::VerifierFailure | RepairLadderTransition::Blocked => {
+                    RepairLadderGateResult::VerifierFailed
+                }
+                RepairLadderTransition::Promoted => RepairLadderGateResult::VerifierPassed,
+                RepairLadderTransition::Interrupted => RepairLadderGateResult::Interrupted,
+                _ => RepairLadderGateResult::NotRun,
+            },
+            disposition: match transition {
+                RepairLadderTransition::Promoted => RepairLadderDisposition::Promoted,
+                RepairLadderTransition::Blocked => RepairLadderDisposition::Blocked,
+                RepairLadderTransition::Interrupted => RepairLadderDisposition::Interrupted,
+                RepairLadderTransition::Escalated => RepairLadderDisposition::FrontierReady,
+                _ => RepairLadderDisposition::CandidateActive,
+            },
+        })
+        .collect::<Vec<_>>();
+
+    store.save_repair_events(&report.id, &events).unwrap();
+
+    let stored = store.load_with_fingerprints(&report.id).unwrap();
+    assert_eq!(stored.repair_events, events);
+    let lines = repair_ladder_render_lines(&stored.repair_events);
+    assert_eq!(lines.len(), 7);
+    assert!(lines[0].contains("AttemptStarted"));
+    assert!(lines[1].contains("StructuralRetry"));
+    assert!(lines[3].contains("Escalated"));
+    assert!(lines[4].contains("Promoted"));
+    assert!(lines[5].contains("Blocked"));
+    assert!(lines[6].contains("Interrupted"));
+    assert!(lines.iter().all(|line| line.contains("attempt")));
+    assert!(lines.iter().all(|line| line.contains("trigger")));
+    assert!(lines.iter().all(|line| line.contains("gate")));
+    assert!(lines.iter().all(|line| line.contains("disposition")));
+    let json = std::fs::read_to_string(store.report_path(&report.id)).unwrap();
+    assert!(!json.contains("api-key-must-not-be-saved"));
+    assert!(!json.contains("source-bytes-must-not-be-saved"));
+    assert!(!json.contains("prior-prompt-must-not-be-saved"));
+    assert!(!json.contains("full-log-must-not-be-saved"));
 
     std::fs::remove_dir_all(reports_dir).ok();
 }

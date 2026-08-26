@@ -240,6 +240,7 @@ fn validated_repair_input() -> ValidatedRepairInput {
             },
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
+            repair_events: Vec::new(),
         },
         contract: SelectedContractSlice {
             change_id: "change".to_string(),
