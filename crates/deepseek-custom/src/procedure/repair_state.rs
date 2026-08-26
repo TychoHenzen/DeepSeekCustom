@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::config::settings::ValidatedProcedureRepairPolicy;
 
-use super::ValidatedRepairInput;
+use super::{StructuralFailureCategory, ValidatedRepairInput};
 
 /// Tier that owns the current candidate attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,7 @@ impl fmt::Display for AttemptFailureKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptFailureEvidence {
     kind: AttemptFailureKind,
+    structural_category: Option<StructuralFailureCategory>,
     command: Option<String>,
     exit_code: Option<i32>,
     diagnostic: String,
@@ -71,6 +72,20 @@ impl AttemptFailureEvidence {
     pub fn structural(diagnostic: impl Into<String>) -> Self {
         Self {
             kind: AttemptFailureKind::Structural,
+            structural_category: None,
+            command: None,
+            exit_code: None,
+            diagnostic: diagnostic.into(),
+        }
+    }
+
+    pub(crate) fn classified_structural(
+        category: StructuralFailureCategory,
+        diagnostic: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: AttemptFailureKind::Structural,
+            structural_category: Some(category),
             command: None,
             exit_code: None,
             diagnostic: diagnostic.into(),
@@ -84,6 +99,7 @@ impl AttemptFailureEvidence {
     ) -> Self {
         Self {
             kind: AttemptFailureKind::Verifier,
+            structural_category: None,
             command: Some(command.into()),
             exit_code,
             diagnostic: diagnostic.into(),
@@ -96,6 +112,10 @@ impl AttemptFailureEvidence {
 
     pub fn command(&self) -> Option<&str> {
         self.command.as_deref()
+    }
+
+    pub fn structural_category(&self) -> Option<StructuralFailureCategory> {
+        self.structural_category
     }
 
     pub fn exit_code(&self) -> Option<i32> {
@@ -284,6 +304,43 @@ impl AttemptState {
         self.push_failure(failure)?;
         self.structural_retry_count += 1;
         self.last_candidate = Some(retry_candidate);
+        Ok(())
+    }
+
+    /// Record the final structural failure and route according to frontier policy.
+    pub fn structural_retry_exhausted(
+        &mut self,
+        failure: AttemptFailureEvidence,
+    ) -> Result<(), AttemptTransitionError> {
+        self.reject_terminal_dispatch(RepairTier::Local)?;
+        self.require(
+            "structural_retry_exhausted",
+            RepairTier::Local,
+            &["candidate_active"],
+        )?;
+        self.require_failure_kind(
+            "structural_retry_exhausted",
+            &failure,
+            AttemptFailureKind::Structural,
+        )?;
+        if self.structural_retry_count < self.policy.structural_retries() {
+            return Err(AttemptTransitionError::new(format!(
+                "attempt transition `structural_retry_exhausted` requires structural retry budget {} to be consumed; consumed {}",
+                self.policy.structural_retries(),
+                self.structural_retry_count
+            )));
+        }
+        self.push_failure(failure)?;
+        if self.policy.frontier_attempts() > 0 {
+            self.tier = RepairTier::Frontier;
+            self.attempt_index = 1;
+            self.disposition = AttemptDisposition::Ready;
+        } else {
+            self.disposition = AttemptDisposition::Blocked {
+                reason: "structural retry exhausted and frontier escalation is disabled"
+                    .to_string(),
+            };
+        }
         Ok(())
     }
 

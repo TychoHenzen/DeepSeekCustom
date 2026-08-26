@@ -98,6 +98,7 @@ mod procedure_promotion;
 mod procedure_prompt;
 mod procedure_repair_input;
 mod procedure_repair_state;
+mod procedure_repair_structural;
 mod procedure_report;
 mod procedure_route;
 mod procedure_run;

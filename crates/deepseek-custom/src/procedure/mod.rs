@@ -27,6 +27,7 @@ mod route;
 mod run;
 mod runner;
 mod schema;
+mod structural_repair;
 mod validation;
 mod verification_input;
 mod verifier;
@@ -108,6 +109,11 @@ pub use runner::{
     ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, apply_review_decision,
 };
 pub use schema::localization_response_format;
+pub use structural_repair::{
+    LocalStructuralRepairError, LocalStructuralRepairOutcome, RepairFailureRef,
+    STRUCTURAL_RETRY_INSTRUCTION, StructuralFailure, StructuralFailureCategory,
+    build_structural_retry_prompt, classify_structural_failure, draft_local_with_structural_retry,
+};
 pub use validation::{
     LocalizationTargetRejection, LocalizationTargetValidationError, validate_localization_targets,
 };

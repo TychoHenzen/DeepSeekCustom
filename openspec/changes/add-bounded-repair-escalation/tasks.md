@@ -18,10 +18,13 @@
 
 ## 2. Structural retry
 
-- [ ] 2.1 Classify schema, envelope, allowlist, and patch-parse failures as structural failures with exact deterministic diagnostics.
-- [ ] 2.2 Retry one local structural failure and continue when the second candidate parses.
+- [x] 2.1 Classify schema, envelope, allowlist, and patch-parse failures as structural failures with exact deterministic diagnostics.
+<!-- status: completed -->
+- [x] 2.2 Retry one local structural failure and continue when the second candidate parses.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Structural failures receive one local retry :: Parser retry succeeds -->
-- [ ] 2.3 Stop structural retry after a second invalid result and prove no third structural request occurs.
+- [x] 2.3 Stop structural retry after a second invalid result and prove no third structural request occurs.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Structural failures receive one local retry :: Parser retry fails again -->
 
 ## 3. Local verifier-driven repair
