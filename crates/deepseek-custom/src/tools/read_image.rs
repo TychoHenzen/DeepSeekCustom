@@ -104,11 +104,7 @@ impl Tool for ReadImageTool {
                 is_error: false,
                 image: Some(attachment),
             }),
-            Err(reason) => Ok(ToolOutput {
-                content: reason,
-                is_error: true,
-                image: None,
-            }),
+            Err(reason) => Ok(ToolOutput::error(reason)),
         }
     }
 }

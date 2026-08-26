@@ -74,11 +74,7 @@ impl AgentLoop {
             Ok(v) => v,
             Err(e) => {
                 warn!("execute_tool: failed to parse args for '{}': {}", name, e);
-                return ToolOutput {
-                    content: self.arg_parse_error(name, args, &e),
-                    is_error: true,
-                    image: None,
-                };
+                return ToolOutput::error(self.arg_parse_error(name, args, &e));
             }
         };
 
@@ -97,20 +93,12 @@ impl AgentLoop {
                         image: None,
                     }
                 }
-                Err(e) => ToolOutput {
-                    content: format!("Tool error: {e}"),
-                    is_error: true,
-                    image: None,
-                },
+                Err(e) => ToolOutput::error(format!("Tool error: {e}")),
             },
-            None => ToolOutput {
-                content: format!(
-                    "Unknown tool: {name}. Available tools: {}",
-                    self.tool_name_list()
-                ),
-                is_error: true,
-                image: None,
-            },
+            None => ToolOutput::error(format!(
+                "Unknown tool: {name}. Available tools: {}",
+                self.tool_name_list()
+            )),
         }
     }
 
