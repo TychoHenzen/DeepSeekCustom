@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -22,17 +23,17 @@ use crate::tools::{Tool, ToolOutput};
 /// about which behavior it gets. The model instead picks the right tool by
 /// name, the same way it already picks `bash` over `read` over `write`.
 pub struct ReadImageTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl ReadImageTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared flag. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
         super::resolve_against(&self.working_dir, file_path)
     }
 }

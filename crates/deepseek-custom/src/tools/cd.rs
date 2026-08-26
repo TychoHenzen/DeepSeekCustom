@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -21,11 +22,11 @@ use crate::tools::{Tool, ToolOutput};
 /// There is no path sandbox: the target may point outside `project_root`,
 /// on purpose, the same as `BashTool`, `ReadTool`, and `WriteTool`.
 pub struct CdTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl CdTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 }
@@ -121,7 +122,7 @@ impl Tool for CdTool {
 impl CdTool {
     /// Resolve a target path against the current working directory, read
     /// fresh from the shared value. An absolute path is used as given.
-    fn resolve_path(&self, path: &str) -> std::path::PathBuf {
+    fn resolve_path(&self, path: &str) -> PathBuf {
         super::resolve_against(&self.working_dir, path)
     }
 }

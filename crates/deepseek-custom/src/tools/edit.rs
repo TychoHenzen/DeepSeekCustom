@@ -12,6 +12,7 @@
 //! must appear exactly once unless `replace_all` is set, and a match that
 //! is missing or ambiguous is a tool error rather than a guess.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,17 +28,17 @@ use crate::tools::{Tool, ToolOutput};
 /// `write` do. There is no path sandbox, on purpose. See the working
 /// directory section of `CLAUDE.md`.
 pub struct EditTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl EditTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared handle. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
         super::resolve_against(&self.working_dir, file_path)
     }
 }

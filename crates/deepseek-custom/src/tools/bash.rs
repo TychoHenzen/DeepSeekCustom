@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,11 +33,11 @@ pub enum Shell {
 /// not captured at construction, so a change takes effect on the next
 /// command run.
 pub struct BashTool {
-    work_dir: Arc<Mutex<std::path::PathBuf>>,
+    work_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl BashTool {
-    pub fn new(work_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(work_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { work_dir }
     }
 }
