@@ -70,6 +70,9 @@
 
 - [x] 6.1 Add the repair and escalation progress ladder to the Procedure tab with exact attempt caps visible before a run.
 <!-- status: completed -->
-- [ ] 6.2 Run a controlled task whose local candidates fail verification, confirm the frontier receives the accumulated errors, and record the final verified or blocked disposition.
-- [ ] 6.3 Confirm the practical run made no real workspace change before a candidate passed every gate.
-- [ ] 6.4 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+- [x] 6.2 Run a controlled task whose local candidates fail verification, confirm the frontier receives the accumulated errors, and record the final verified or blocked disposition.
+<!-- status: completed -->
+- [x] 6.3 Confirm the practical run made no real workspace change before a candidate passed every gate.
+<!-- status: completed -->
+- [x] 6.4 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+<!-- status: completed -->

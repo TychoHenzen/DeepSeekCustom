@@ -14,8 +14,8 @@ use deepseek_custom::procedure::{
     PatchPreviewId, PatchPreviewStore, ProcedureAttemptDisposition, ProcedureReportStore,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
     ProcedureTask, ProcedureTerminalDisposition, RepairInputGate, RepairLadderDisposition,
-    RepairLadderTransition, RepairRequest, RouteDecision, RouteOverride, RouteTier,
-    decode_patch_envelope, sha256_json,
+    RepairLadderGateResult, RepairLadderTransition, RepairRequest, RepairTier, RouteDecision,
+    RouteOverride, RouteTier, decode_patch_envelope, sha256_json,
 };
 
 const CHANGE_ID: &str = "fixture-change";
@@ -110,6 +110,7 @@ fn candidate(value: &str) -> PatchCandidate {
 struct ScriptedLocal {
     replies: Mutex<VecDeque<Result<PatchCandidate, LocalPatchDraftError>>>,
     calls: AtomicUsize,
+    workspace_observer: Option<WorkspaceObserver>,
 }
 
 impl ScriptedLocal {
@@ -117,7 +118,16 @@ impl ScriptedLocal {
         Self {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
+            workspace_observer: None,
         }
+    }
+
+    fn observing_workspace(mut self, root: &Path, observations: WorkspaceObservations) -> Self {
+        self.workspace_observer = Some(WorkspaceObserver {
+            root: root.to_path_buf(),
+            observations,
+        });
+        self
     }
 }
 
@@ -132,7 +142,10 @@ impl LocalPatchDraftDispatch for ScriptedLocal {
     }
 
     async fn draft(&self, _prompt: String) -> Result<PatchCandidate, LocalPatchDraftError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(observer) = &self.workspace_observer {
+            observer.record(format!("local-dispatch-{call}"));
+        }
         self.replies
             .lock()
             .unwrap()
@@ -144,6 +157,8 @@ impl LocalPatchDraftDispatch for ScriptedLocal {
 struct ScriptedFrontier {
     replies: Mutex<VecDeque<PatchCandidate>>,
     calls: AtomicUsize,
+    requests: Mutex<Vec<FrontierRepairRequest>>,
+    workspace_observer: Option<WorkspaceObserver>,
 }
 
 impl ScriptedFrontier {
@@ -151,7 +166,17 @@ impl ScriptedFrontier {
         Self {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            workspace_observer: None,
         }
+    }
+
+    fn observing_workspace(mut self, root: &Path, observations: WorkspaceObservations) -> Self {
+        self.workspace_observer = Some(WorkspaceObserver {
+            root: root.to_path_buf(),
+            observations,
+        });
+        self
     }
 }
 
@@ -163,9 +188,13 @@ impl FrontierRepairDispatch for ScriptedFrontier {
 
     async fn draft(
         &self,
-        _request: &FrontierRepairRequest,
+        request: &FrontierRepairRequest,
     ) -> Result<PatchCandidate, FrontierPatchDraftError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(observer) = &self.workspace_observer {
+            observer.record(format!("frontier-dispatch-{call}"));
+        }
+        self.requests.lock().unwrap().push(request.clone());
         self.replies
             .lock()
             .unwrap()
@@ -178,12 +207,40 @@ impl FrontierRepairDispatch for ScriptedFrontier {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceObservation {
+    stage: String,
+    target: Vec<u8>,
+    unrelated: Vec<u8>,
+}
+
+type WorkspaceObservations = Arc<Mutex<Vec<WorkspaceObservation>>>;
+
+struct WorkspaceObserver {
+    root: PathBuf,
+    observations: WorkspaceObservations,
+}
+
+impl WorkspaceObserver {
+    fn record(&self, stage: String) {
+        self.observations
+            .lock()
+            .unwrap()
+            .push(WorkspaceObservation {
+                stage,
+                target: std::fs::read(self.root.join(TARGET)).unwrap(),
+                unrelated: std::fs::read(self.root.join(UNRELATED)).unwrap(),
+            });
+    }
+}
+
 struct Fixture {
     root: PathBuf,
     request: RepairRequest,
     reports: ProcedureReportStore,
     openspec: PathBuf,
     verifier: String,
+    verifier_observations: PathBuf,
 }
 
 impl Fixture {
@@ -252,7 +309,8 @@ impl Fixture {
         PatchPreviewStore::for_project(&root)
             .save(&preview)
             .unwrap();
-        let verifier = write_verifier(&root, interrupt_marker);
+        let verifier_observations = root.join("verifier-workspace-observations.txt");
+        let verifier = write_verifier(&root, interrupt_marker, &verifier_observations);
         Self {
             root,
             request: RepairRequest {
@@ -264,6 +322,7 @@ impl Fixture {
             reports,
             openspec,
             verifier,
+            verifier_observations,
         }
     }
 
@@ -286,6 +345,17 @@ impl Fixture {
         assert_eq!(stored.repair_events, run.persisted_events);
         assert_eq!(run.persisted_events, run.local.repair_events);
     }
+
+    fn assert_verifier_observed_original_workspace(&self, expected_runs: usize) {
+        let observations = std::fs::read_to_string(&self.verifier_observations).unwrap();
+        let lines = observations.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), expected_runs);
+        assert!(
+            lines
+                .iter()
+                .all(|line| { *line == "verifier|target_original=true|unrelated_original=true" })
+        );
+    }
 }
 
 impl Drop for Fixture {
@@ -294,7 +364,7 @@ impl Drop for Fixture {
     }
 }
 
-fn write_verifier(root: &Path, marker_only: bool) -> String {
+fn write_verifier(root: &Path, marker_only: bool, observations: &Path) -> String {
     #[cfg(windows)]
     {
         let command = root.join("repair-verifier.ps1");
@@ -303,10 +373,29 @@ fn write_verifier(root: &Path, marker_only: bool) -> String {
             .display()
             .to_string()
             .replace('\'', "''");
+        let target = root.join(TARGET).display().to_string().replace('\'', "''");
+        let unrelated = root
+            .join(UNRELATED)
+            .display()
+            .to_string()
+            .replace('\'', "''");
+        let observations = observations.display().to_string().replace('\'', "''");
+        let target_hex = hex(ORIGINAL.as_bytes());
+        let unrelated_hex = hex(UNRELATED_BYTES);
         let body = if marker_only {
             format!("Set-Content -LiteralPath '{marker}' -Value ran\nexit 0\n")
         } else {
-            "$content = Get-Content -Raw -LiteralPath 'src/lib.rs'\nif ($content.Contains('pass')) { exit 0 }\nWrite-Error 'deterministic repair failure'\nexit 7\n".to_string()
+            format!(
+                "$targetHex = [BitConverter]::ToString([IO.File]::ReadAllBytes('{target}')).Replace('-', '')\n\
+                 $unrelatedHex = [BitConverter]::ToString([IO.File]::ReadAllBytes('{unrelated}')).Replace('-', '')\n\
+                 if ($targetHex -ne '{target_hex}') {{ Write-Error 'real target changed before promotion'; exit 91 }}\n\
+                 if ($unrelatedHex -ne '{unrelated_hex}') {{ Write-Error 'unrelated real-workspace bytes changed'; exit 92 }}\n\
+                 Add-Content -LiteralPath '{observations}' -Value 'verifier|target_original=true|unrelated_original=true'\n\
+                 $content = Get-Content -Raw -LiteralPath 'src/lib.rs'\n\
+                 if ($content.Contains('pass')) {{ exit 0 }}\n\
+                 Write-Error 'deterministic repair failure'\n\
+                 exit 7\n"
+            )
         };
         std::fs::write(&command, body).unwrap();
         format!(
@@ -323,10 +412,33 @@ fn write_verifier(root: &Path, marker_only: bool) -> String {
             .display()
             .to_string()
             .replace('\'', "'\\''");
+        let target = root
+            .join(TARGET)
+            .display()
+            .to_string()
+            .replace('\'', "'\\''");
+        let unrelated = root
+            .join(UNRELATED)
+            .display()
+            .to_string()
+            .replace('\'', "'\\''");
+        let observations = observations.display().to_string().replace('\'', "'\\''");
+        let target_hex = hex(ORIGINAL.as_bytes()).to_ascii_lowercase();
+        let unrelated_hex = hex(UNRELATED_BYTES).to_ascii_lowercase();
         let body = if marker_only {
             format!("#!/bin/sh\nprintf ran > '{marker}'\nexit 0\n")
         } else {
-            "#!/bin/sh\ngrep -q pass src/lib.rs && exit 0\necho 'deterministic repair failure' >&2\nexit 7\n".to_string()
+            format!(
+                "#!/bin/sh\n\
+                 target_hex=$(od -An -tx1 '{target}' | tr -d ' \\n')\n\
+                 unrelated_hex=$(od -An -tx1 '{unrelated}' | tr -d ' \\n')\n\
+                 [ \"$target_hex\" = \"{target_hex}\" ] || {{ echo 'real target changed before promotion' >&2; exit 91; }}\n\
+                 [ \"$unrelated_hex\" = \"{unrelated_hex}\" ] || {{ echo 'unrelated real-workspace bytes changed' >&2; exit 92; }}\n\
+                 printf '%s\\n' 'verifier|target_original=true|unrelated_original=true' >> '{observations}'\n\
+                 grep -q pass src/lib.rs && exit 0\n\
+                 echo 'deterministic repair failure' >&2\n\
+                 exit 7\n"
+            )
         };
         std::fs::write(&command, body).unwrap();
         let mut permissions = std::fs::metadata(&command).unwrap().permissions();
@@ -334,6 +446,10 @@ fn write_verifier(root: &Path, marker_only: bool) -> String {
         std::fs::set_permissions(&command, permissions).unwrap();
         format!("\"{}\"", command.display())
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
 }
 
 fn policy(
@@ -493,12 +609,15 @@ fn local_exhaustion_persists_blocked_sequence_without_workspace_changes() {
 #[test]
 fn frontier_recovery_runs_both_tiers_and_persists_promoted_sequence() {
     let fixture = Fixture::new("frontier-recovery", false);
+    let workspace_observations = Arc::new(Mutex::new(Vec::new()));
     let local = ScriptedLocal::new(vec![
         Ok(candidate("fail-one")),
         Ok(candidate("fail-two")),
         Ok(candidate("fail-three")),
-    ]);
-    let frontier = ScriptedFrontier::new(vec![candidate("pass-frontier")]);
+    ])
+    .observing_workspace(&fixture.root, Arc::clone(&workspace_observations));
+    let frontier = ScriptedFrontier::new(vec![candidate("pass-frontier")])
+        .observing_workspace(&fixture.root, Arc::clone(&workspace_observations));
     let run = run(
         &fixture,
         Arc::new(AtomicBool::new(false)),
@@ -516,11 +635,153 @@ fn frontier_recovery_runs_both_tiers_and_persists_promoted_sequence() {
     ));
     assert_eq!(local.calls.load(Ordering::SeqCst), 3);
     assert_eq!(frontier.calls.load(Ordering::SeqCst), 1);
+    let frontier_requests = frontier.requests.lock().unwrap();
+    assert_eq!(frontier_requests.len(), 1);
+    let frontier_request = &frontier_requests[0];
+    assert_eq!(frontier_request.backend(), "scripted-frontier");
+    assert_eq!(frontier_request.change_id(), CHANGE_ID);
+    assert_eq!(frontier_request.task().id, TASK_ID);
+    assert_eq!(frontier_request.targets(), [TARGET]);
+    assert_eq!(frontier_request.failure_digests().len(), 3);
+    assert_eq!(
+        frontier_request
+            .failure_digests()
+            .iter()
+            .map(|failure| (failure.attempt_number, failure.tier, failure.exit_code))
+            .collect::<Vec<_>>(),
+        [
+            (1, RepairTier::Local, Some(7)),
+            (2, RepairTier::Local, Some(7)),
+            (3, RepairTier::Local, Some(7)),
+        ]
+    );
+    assert!(
+        frontier_request
+            .failure_digests()
+            .iter()
+            .all(|failure| failure.diagnostic.contains("deterministic repair failure"))
+    );
+    assert_eq!(
+        run.persisted_events
+            .iter()
+            .map(|event| {
+                (
+                    event.transition,
+                    event.attempt_number,
+                    event.tier,
+                    event.backend.as_str(),
+                    event.model.as_str(),
+                    event.gate_result,
+                    event.disposition,
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            (
+                RepairLadderTransition::AttemptStarted,
+                1,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::NotRun,
+                RepairLadderDisposition::CandidateActive,
+            ),
+            (
+                RepairLadderTransition::VerifierFailure,
+                1,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::VerifierFailed,
+                RepairLadderDisposition::Ready,
+            ),
+            (
+                RepairLadderTransition::AttemptStarted,
+                2,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::NotRun,
+                RepairLadderDisposition::CandidateActive,
+            ),
+            (
+                RepairLadderTransition::VerifierFailure,
+                2,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::VerifierFailed,
+                RepairLadderDisposition::Ready,
+            ),
+            (
+                RepairLadderTransition::AttemptStarted,
+                3,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::NotRun,
+                RepairLadderDisposition::CandidateActive,
+            ),
+            (
+                RepairLadderTransition::VerifierFailure,
+                3,
+                RepairTier::Local,
+                "scripted-local",
+                "local-model",
+                RepairLadderGateResult::VerifierFailed,
+                RepairLadderDisposition::LocalExhausted,
+            ),
+            (
+                RepairLadderTransition::Escalated,
+                1,
+                RepairTier::Frontier,
+                "scripted-frontier",
+                "frontier-model",
+                RepairLadderGateResult::NotRun,
+                RepairLadderDisposition::CandidateActive,
+            ),
+            (
+                RepairLadderTransition::AttemptStarted,
+                1,
+                RepairTier::Frontier,
+                "scripted-frontier",
+                "frontier-model",
+                RepairLadderGateResult::NotRun,
+                RepairLadderDisposition::CandidateActive,
+            ),
+            (
+                RepairLadderTransition::Promoted,
+                1,
+                RepairTier::Frontier,
+                "scripted-frontier",
+                "frontier-model",
+                RepairLadderGateResult::VerifierPassed,
+                RepairLadderDisposition::Promoted,
+            ),
+        ]
+    );
     assert_eq!(
         run.local.repair_events.last().unwrap().disposition,
         RepairLadderDisposition::Promoted
     );
     fixture.assert_saved(&run);
+    let observations = workspace_observations.lock().unwrap();
+    assert_eq!(
+        observations
+            .iter()
+            .map(|observation| observation.stage.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "local-dispatch-1",
+            "local-dispatch-2",
+            "local-dispatch-3",
+            "frontier-dispatch-1",
+        ]
+    );
+    assert!(observations.iter().all(|observation| {
+        observation.target == ORIGINAL.as_bytes() && observation.unrelated == UNRELATED_BYTES
+    }));
+    fixture.assert_verifier_observed_original_workspace(4);
     assert_eq!(
         std::fs::read_to_string(fixture.root.join(TARGET)).unwrap(),
         "pub const VALUE: &str = \"pass-frontier\";\n"
