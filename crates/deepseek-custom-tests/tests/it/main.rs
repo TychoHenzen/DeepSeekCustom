@@ -87,7 +87,6 @@ mod gui_session_state;
 mod gui_sessions_tab;
 mod gui_transcript;
 mod gui_voice_ui;
-mod hemisphere;
 mod hooks;
 mod image_bytes;
 mod json_reply;

@@ -599,7 +599,6 @@ The per-module rows below date from the workspace split and sum to 1124. They ha
 | `gui/cascade_tab.rs` | 8 |
 | `gui/evolve_tab.rs` | 6 |
 | `gui/search_view.rs` | 9 |
-| `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
 | `session/mod.rs` | 12 |
@@ -648,7 +647,7 @@ Two modules are missing from that table on purpose. `gui/settings_panel.rs` and 
 
 The three fixtures sit in `crates/deepseek-custom-tests/tests/it/fixtures/`: `chat_response.json`, `claude_stream_json.jsonl`, and `claude_stream_json_tools.jsonl`.
 
-**Next:** Phase 3 (hemisphere model), or hook execution integration. Skill injection is done. See "Skills" above.
+**Next:** Hook execution integration. Skill injection is done. See "Skills" above.
 
 ## API Key Resolution
 
