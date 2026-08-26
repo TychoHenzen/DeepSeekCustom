@@ -123,13 +123,7 @@ impl Tool for GlobTool {
 
         let hits = match matching_files(&root, &parsed.pattern) {
             Ok(hits) => hits,
-            Err(reason) => {
-                return Ok(ToolOutput {
-                    content: reason,
-                    is_error: true,
-                    image: None,
-                });
-            }
+            Err(reason) => return Ok(ToolOutput::error(reason)),
         };
 
         info!("glob: {} match(es) for {}", hits.len(), parsed.pattern);

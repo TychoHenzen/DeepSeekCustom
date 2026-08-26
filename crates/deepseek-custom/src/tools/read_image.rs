@@ -74,21 +74,19 @@ impl Tool for ReadImageTool {
         debug!("read_image: path={}", path.display());
 
         if path.is_dir() {
-            return Ok(ToolOutput {
-                content: format!("{} is a directory, not an image file", path.display()),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(format!(
+                "{} is a directory, not an image file",
+                path.display()
+            )));
         }
 
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Failed to read {}: {e}", path.display()),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Failed to read {}: {e}",
+                    path.display()
+                )));
             }
         };
 

@@ -79,19 +79,11 @@ impl Tool for SkillTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput> {
         let Some(name) = input.get("name").and_then(|v| v.as_str()) else {
-            return Ok(ToolOutput {
-                content: "missing required parameter \"name\"".to_string(),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error("missing required parameter \"name\""));
         };
 
         let Some(skill) = self.find(name) else {
-            return Ok(ToolOutput {
-                content: self.unknown_name_error(name),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(self.unknown_name_error(name)));
         };
 
         // A read failure here is a tool error, not a hard failure: the file
@@ -100,15 +92,11 @@ impl Tool for SkillTool {
         let body = match skill.load_body() {
             Ok(body) => body,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!(
-                        "failed to read skill \"{}\" from {}: {e}",
-                        skill.name,
-                        skill.path.display()
-                    ),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "failed to read skill \"{}\" from {}: {e}",
+                    skill.name,
+                    skill.path.display()
+                )));
             }
         };
 
