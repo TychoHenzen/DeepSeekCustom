@@ -54,15 +54,15 @@ impl OutputMode {
 /// Regular expression search under the working directory. Reads the shared
 /// working directory fresh on every call, like the other file tools.
 pub struct GrepTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl GrepTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
-    fn search_root(&self, path: Option<&str>) -> std::path::PathBuf {
+    fn search_root(&self, path: Option<&str>) -> PathBuf {
         let working_dir = self
             .working_dir
             .lock()
