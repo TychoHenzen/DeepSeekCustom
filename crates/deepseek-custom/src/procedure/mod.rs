@@ -136,8 +136,11 @@ pub use runner::{
     ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, apply_review_decision,
 };
 pub use sampling::{
+    LocalizationAgreement, LocalizationAgreementError, LocalizationAgreementOutcome,
+    LocalizationAgreementResolver, LocalizationAgreementRun, LocalizationEscalationTrigger,
     LocalizationSample, LocalizationSampleOutcome, LocalizationSampler, LocalizationSamplingError,
     LocalizationSamplingRun, NormalizedLocalizationTarget, NormalizedLocalizationTargets,
+    select_localization_agreement,
 };
 pub use sampling_input::{
     SamplingInputError, SamplingInputGate, SamplingInputRequest, ValidatedSamplingInput,

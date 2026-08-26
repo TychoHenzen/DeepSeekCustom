@@ -1,16 +1,20 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use deepseek_custom::config::settings::{ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
+    LocalizationAgreementError, LocalizationAgreementOutcome, LocalizationAgreementResolver,
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope,
-    LocalizationSampleOutcome, LocalizationSampler, LocalizationTarget,
-    NormalizedLocalizationTarget, NormalizedLocalizationTargets, OpenSpecInput,
-    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition, RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest,
+    LocalizationEscalationTrigger, LocalizationSample, LocalizationSampleOutcome,
+    LocalizationSampler, LocalizationTarget, NormalizedLocalizationTarget,
+    NormalizedLocalizationTargets, OpenSpecInput, ProcedureAttemptDisposition,
+    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, select_localization_agreement,
     sha256_json,
 };
 
@@ -134,10 +138,17 @@ fn index() -> Vec<RepositoryIndexEntry> {
 fn sampling_settings(
     count: u8,
 ) -> deepseek_custom::config::settings::ValidatedProcedureSamplingSettings {
+    sampling_settings_with_quorum(count, 2)
+}
+
+fn sampling_settings_with_quorum(
+    count: u8,
+    quorum: u8,
+) -> deepseek_custom::config::settings::ValidatedProcedureSamplingSettings {
     Settings {
         procedure: Some(ProcedureSettings {
             localization_sample_count: count,
-            localization_agreement_quorum: 2,
+            localization_agreement_quorum: quorum,
             ..ProcedureSettings::default()
         }),
         ..Settings::default()
@@ -189,11 +200,276 @@ fn accepted_localization_targets_normalize_to_sorted_deduplicated_identities() {
     );
 }
 
+fn accepted_sample(number: u8, targets: Vec<LocalizationTarget>) -> LocalizationSample {
+    LocalizationSample {
+        number,
+        outcome: LocalizationSampleOutcome::Accepted {
+            normalized_targets: NormalizedLocalizationTargets::from_accepted(&targets),
+            targets,
+        },
+    }
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Localization agreement controls escalation :: Local samples reach quorum
+#[test]
+fn largest_normalized_quorum_group_wins_with_first_sample_tie_breaking() {
+    let alpha = vec![
+        target("src/lib.rs", Some("target_symbol"), "alpha evidence"),
+        target("src/lib.rs", None, "alpha path evidence"),
+    ];
+    let alpha_reordered_with_duplicate = vec![
+        target("src/lib.rs", None, "different alpha path evidence"),
+        target(
+            "src/lib.rs",
+            Some("target_symbol"),
+            "different alpha evidence",
+        ),
+        target(
+            "src/lib.rs",
+            Some("target_symbol"),
+            "duplicate alpha evidence",
+        ),
+    ];
+    let beta = vec![target("src/lib.rs", None, "beta evidence")];
+    let samples = vec![
+        accepted_sample(4, beta.clone()),
+        accepted_sample(3, alpha_reordered_with_duplicate),
+        accepted_sample(1, beta.clone()),
+        accepted_sample(2, alpha.clone()),
+    ];
+
+    let agreement = select_localization_agreement(&samples, 2).unwrap();
+
+    assert_eq!(agreement.targets, beta);
+    assert_eq!(agreement.sample_numbers, [1, 4]);
+    assert_eq!(
+        agreement.normalized_targets,
+        NormalizedLocalizationTargets::from_accepted(&agreement.targets)
+    );
+}
+
 #[derive(Clone)]
 struct CountingDispatcher {
     calls: Arc<AtomicUsize>,
     active: Arc<AtomicUsize>,
     max_active: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct ScriptedDispatcher {
+    calls: Arc<AtomicUsize>,
+    responses: Arc<Mutex<VecDeque<Result<LocalizationEnvelope, LocalizationDispatchError>>>>,
+}
+
+impl ScriptedDispatcher {
+    fn new(
+        responses: impl IntoIterator<Item = Result<LocalizationEnvelope, LocalizationDispatchError>>,
+    ) -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+        }
+    }
+}
+
+#[async_trait]
+impl LocalizationDispatch for ScriptedDispatcher {
+    fn backend_name(&self) -> &str {
+        "scripted-localizer"
+    }
+
+    fn model(&self) -> &str {
+        "scripted-model"
+    }
+
+    async fn dispatch_prompt(
+        &self,
+        _prompt: String,
+        _repository_index: &[RepositoryIndexEntry],
+    ) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.responses.lock().unwrap().pop_front().unwrap()
+    }
+}
+
+fn envelope(
+    targets: Vec<LocalizationTarget>,
+) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
+    Ok(LocalizationEnvelope { targets })
+}
+
+async fn disagreement_runs_one_validated_frontier_localization_case()
+-> (usize, usize, LocalizationAgreementOutcome) {
+    let root = temp_dir("frontier-disagreement");
+    let command = write_fixture(&root);
+    let repository_index = vec![
+        RepositoryIndexEntry {
+            path: "src/lib.rs".to_string(),
+            symbols: vec!["target_symbol".to_string()],
+        },
+        RepositoryIndexEntry {
+            path: "src/one.rs".to_string(),
+            symbols: Vec::new(),
+        },
+        RepositoryIndexEntry {
+            path: "src/two.rs".to_string(),
+            symbols: Vec::new(),
+        },
+    ];
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "first")]),
+        envelope(vec![target("src/one.rs", None, "second")]),
+        envelope(vec![target("src/two.rs", None, "third")]),
+    ]);
+    let frontier = ScriptedDispatcher::new([envelope(vec![target(
+        "src/lib.rs",
+        Some("target_symbol"),
+        "frontier result",
+    )])]);
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(
+            local.clone(),
+            sampling_settings(3),
+            Arc::new(AtomicBool::new(false)),
+        ),
+        frontier.clone(),
+    );
+
+    let run = resolver
+        .resolve(&approved_sampling_input(&root, &command), &repository_index)
+        .await
+        .unwrap();
+
+    let local_calls = local.calls.load(Ordering::SeqCst);
+    let frontier_calls = frontier.calls.load(Ordering::SeqCst);
+    std::fs::remove_dir_all(root).ok();
+    (local_calls, frontier_calls, run.outcome)
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Localization agreement controls escalation :: Local samples disagree
+#[test]
+fn disagreement_runs_one_validated_frontier_localization() {
+    let (local_calls, frontier_calls, outcome) =
+        run_async_test(disagreement_runs_one_validated_frontier_localization_case());
+
+    assert_eq!(local_calls, 3);
+    assert_eq!(frontier_calls, 1);
+    assert!(matches!(
+        outcome,
+        LocalizationAgreementOutcome::Frontier {
+            escalation_trigger: LocalizationEscalationTrigger::LocalDisagreement,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn invalid_samples_do_not_count_and_exact_quorum_stays_local() {
+    let root = temp_dir("invalid-and-quorum");
+    let command = write_fixture(&root);
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target("outside.rs", None, "not indexed")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "second")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "third")]),
+    ]);
+    let frontier = ScriptedDispatcher::new(std::iter::empty());
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(
+            local.clone(),
+            sampling_settings_with_quorum(3, 2),
+            Arc::new(AtomicBool::new(false)),
+        ),
+        frontier.clone(),
+    );
+
+    let run = resolver
+        .resolve(&approved_sampling_input(&root, &command), &index())
+        .await
+        .unwrap();
+
+    assert_eq!(local.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier.calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        run.outcome,
+        LocalizationAgreementOutcome::Local { ref agreement }
+            if agreement.sample_numbers == [2, 3]
+    ));
+    assert!(matches!(
+        run.sampling_run.samples()[0].outcome,
+        LocalizationSampleOutcome::Rejected { .. }
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn frontier_localization_failure_preserves_the_disagreement_trigger() {
+    let root = temp_dir("frontier-failure");
+    let command = write_fixture(&root);
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "first")]),
+        envelope(vec![target("src/lib.rs", None, "second")]),
+        envelope(Vec::new()),
+    ]);
+    let frontier = ScriptedDispatcher::new([Err(LocalizationDispatchError::Request {
+        backend: "frontier".to_string(),
+        reason: "fixture failure".to_string(),
+    })]);
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(
+            local,
+            sampling_settings(3),
+            Arc::new(AtomicBool::new(false)),
+        ),
+        frontier.clone(),
+    );
+
+    let error = resolver
+        .resolve(&approved_sampling_input(&root, &command), &index())
+        .await
+        .unwrap_err();
+
+    assert_eq!(frontier.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        error,
+        LocalizationAgreementError::FrontierDispatch {
+            trigger: LocalizationEscalationTrigger::LocalDisagreement,
+            ..
+        }
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn all_samples_are_required_when_the_quorum_equals_the_sample_count() {
+    let root = temp_dir("quorum-boundary");
+    let command = write_fixture(&root);
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "first")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "second")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "third")]),
+    ]);
+    let frontier = ScriptedDispatcher::new(std::iter::empty());
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(
+            local,
+            sampling_settings_with_quorum(3, 3),
+            Arc::new(AtomicBool::new(false)),
+        ),
+        frontier.clone(),
+    );
+
+    let run = resolver
+        .resolve(&approved_sampling_input(&root, &command), &index())
+        .await
+        .unwrap();
+
+    assert_eq!(frontier.calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        run.outcome,
+        LocalizationAgreementOutcome::Local { ref agreement }
+            if agreement.sample_numbers == [1, 2, 3]
+    ));
+    std::fs::remove_dir_all(root).ok();
 }
 
 impl CountingDispatcher {
@@ -259,8 +535,8 @@ struct SamplingCountObservation {
     max_concurrent_dispatches: usize,
 }
 
-async fn configured_localization_sample_count_is_attempted_within_the_fixed_cap_case(
-) -> Vec<SamplingCountObservation> {
+async fn configured_localization_sample_count_is_attempted_within_the_fixed_cap_case()
+-> Vec<SamplingCountObservation> {
     let mut observations = Vec::new();
     for count in 3..=5 {
         let root = temp_dir(&format!("count-{count}"));
@@ -295,8 +571,9 @@ async fn configured_localization_sample_count_is_attempted_within_the_fixed_cap_
 // covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are inside bounds
 #[test]
 fn configured_localization_sample_count_is_attempted_within_the_fixed_cap() {
-    let observations =
-        run_async_test(configured_localization_sample_count_is_attempted_within_the_fixed_cap_case());
+    let observations = run_async_test(
+        configured_localization_sample_count_is_attempted_within_the_fixed_cap_case(),
+    );
 
     assert_eq!(observations.len(), 3);
     for observation in observations {

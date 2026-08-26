@@ -22,11 +22,14 @@
 - [x] 2.1 Launch exactly the configured 3 to 5 constrained local localization samples with bounded concurrency and shared interruption.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are inside bounds -->
-- [ ] 2.2 Group exact normalized target sets, select the largest quorum group, and break equal-size ties by first sample index.
+- [x] 2.2 Group exact normalized target sets, select the largest quorum group, and break equal-size ties by first sample index.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization agreement controls escalation :: Local samples reach quorum -->
-- [ ] 2.3 Dispatch one frontier localization when no group reaches quorum, validate it against the same repository index, and record the disagreement trigger.
+- [x] 2.3 Dispatch one frontier localization when no group reaches quorum, validate it against the same repository index, and record the disagreement trigger.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Localization agreement controls escalation :: Local samples disagree -->
-- [ ] 2.4 Add fixtures for order-only differences, duplicates, invalid samples, quorum boundaries, ties, interruption, and frontier localization failure.
+- [x] 2.4 Add fixtures for order-only differences, duplicates, invalid samples, quorum boundaries, ties, interruption, and frontier localization failure.
+<!-- status: completed -->
 
 ## 3. Verifier-selected local candidates
 
