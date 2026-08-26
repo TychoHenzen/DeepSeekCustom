@@ -110,8 +110,8 @@ impl PlaybackQueue {
     }
 
     /// Test seam for [`Self::is_empty`]. See [`Self::pop_into_for_test`]:
-    /// `AudioSink::is_playing` and [`wait_for_empty`] are the only
-    /// production callers and both call it unconditionally.
+    /// [`wait_for_empty`] is the only production caller and calls it
+    /// unconditionally.
     #[cfg(feature = "test-support")]
     pub fn is_empty_for_test(&self) -> bool {
         self.is_empty()
@@ -181,11 +181,6 @@ impl AudioSink {
         } else {
             error!("audio playback queue lock poisoned, could not clear");
         }
-    }
-
-    /// Whether any queued audio remains to be played.
-    pub fn is_playing(&self) -> bool {
-        self.queue.lock().map(|q| !q.is_empty()).unwrap_or(false)
     }
 
     /// Block until every sample enqueued so far has actually played, not

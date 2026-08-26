@@ -80,19 +80,9 @@ impl KokoroSynth {
         self.voice_id = voice_id.into();
     }
 
-    /// The active voice id.
-    pub fn voice_id(&self) -> &str {
-        &self.voice_id
-    }
-
     /// Set the speaking speed, clamped to 0.5-2.0. Default is 1.0.
     pub fn set_speed(&mut self, speed: f32) {
         self.speed = clamp_speed(speed);
-    }
-
-    /// The active speaking speed.
-    pub fn speed(&self) -> f32 {
-        self.speed
     }
 
     /// Synthesize `text` into 24 kHz mono f32 samples using the current
