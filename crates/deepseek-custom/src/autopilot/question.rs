@@ -93,7 +93,7 @@ pub fn validate(input: &AskInput) -> Result<(), String> {
             return Err(format!("question '{}' has no options", q.question));
         }
 
-        let mut seen_labels: Vec<&str> = Vec::new();
+        let mut seen_labels = std::collections::HashSet::new();
         for opt in &q.options {
             if opt.label.trim().is_empty() {
                 return Err(format!(
@@ -101,13 +101,12 @@ pub fn validate(input: &AskInput) -> Result<(), String> {
                     q.question
                 ));
             }
-            if seen_labels.contains(&opt.label.as_str()) {
+            if !seen_labels.insert(opt.label.as_str()) {
                 return Err(format!(
                     "question '{}' has duplicate option label '{}'",
                     q.question, opt.label
                 ));
             }
-            seen_labels.push(opt.label.as_str());
         }
     }
 
