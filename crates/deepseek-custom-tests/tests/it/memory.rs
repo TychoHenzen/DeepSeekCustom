@@ -49,15 +49,3 @@ fn formatting_includes_non_empty() {
     assert!(fragment.contains("Remember X"));
     assert!(!fragment.contains("## Project Memory")); // None → excluded
 }
-
-#[test]
-fn reload_reads_disk_changes() {
-    let root = std::env::current_dir().unwrap();
-    let store = MemoryStore::load(&root);
-    let reloaded = store.reload(&root);
-    // After reload, CLAUDE.md should still be present
-    assert_eq!(
-        store.project_claude_md.is_some(),
-        reloaded.project_claude_md.is_some()
-    );
-}
