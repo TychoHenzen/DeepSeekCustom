@@ -211,7 +211,7 @@ fn failing_test_like_verification_preserves_real_workspace_hashes() {
         let fixture_relative = failing_test.strip_prefix(&source).unwrap();
         let command = format!("\"{}\"", applied.path().join(fixture_relative).display());
         let run = VerifierCommandRunner::new()
-            .run(&applied.path().to_path_buf(), &[command])
+            .run(applied.path(), &[command])
             .await;
 
         assert_eq!(run.commands.len(), 1);
