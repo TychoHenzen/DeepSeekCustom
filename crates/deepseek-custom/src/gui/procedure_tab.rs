@@ -14,11 +14,12 @@ use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
     BoundedVerifierOutput, GitApplyPhase, GitApplyResult, OpenSpecChange, OpenSpecInput,
     PatchPreview, PatchPreviewId, PatchPreviewRequest, ProcedureApplyProgress,
-    ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
-    ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureRunRequest, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    PromotionRecoveryEvidence, PromotionResult, RepairLadderEvent, RouteOverride, SnapshotProgress,
-    StalePromotionPath, VerifierGateDisposition, VerifierReport, repair_ladder_render_lines,
+    ProcedureAttemptDisposition, ProcedureCommand, ProcedureMetricsSummary, ProcedureProgress,
+    ProcedureReportStore, ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
+    ProcedureTerminalDisposition, PromotionRecoveryEvidence, PromotionResult, RepairLadderEvent,
+    RouteOverride, SnapshotProgress, StalePromotionPath, VerifierGateDisposition, VerifierReport,
+    repair_ladder_render_lines,
 };
 
 const MISSING_VERIFIER_COMMANDS_MESSAGE: &str =
@@ -711,6 +712,7 @@ impl ProcedureTab {
         });
         self.render_status(ui);
         self.render_repair_ladder(ui);
+        self.render_routing_metrics(ui, settings);
         self.render_result(ui);
         self.render_preview(ui);
         self.render_apply(ui);
@@ -735,6 +737,37 @@ impl ProcedureTab {
         ui.heading("Repair and escalation progress");
         for line in repair_ladder_render_lines(&self.repair_events) {
             ui.label(line);
+        }
+    }
+
+    fn render_routing_metrics(&self, ui: &mut egui::Ui, settings: &Settings) {
+        let window_runs = settings
+            .procedure()
+            .map(|procedure| procedure.metrics_window_runs)
+            .unwrap_or_default();
+        match self.reports.recent_metrics(window_runs) {
+            Ok(summary) => {
+                let lines = routing_metrics_render_lines(settings, &summary);
+                if lines.is_empty() {
+                    return;
+                }
+                ui.separator();
+                ui.heading("Recent routing metrics");
+                for line in lines {
+                    let warning = line.starts_with("Warning:");
+                    ui.label(if warning {
+                        RichText::new(line).color(Color32::YELLOW)
+                    } else {
+                        RichText::new(line)
+                    });
+                }
+            }
+            Err(error) => {
+                ui.label(
+                    RichText::new(format!("Routing metrics unavailable: {error}"))
+                        .color(Color32::LIGHT_RED),
+                );
+            }
         }
     }
 
@@ -1490,6 +1523,14 @@ impl ProcedureTab {
     pub fn repair_policy_render_lines_for_test(settings: &Settings) -> Vec<String> {
         repair_policy_render_lines(settings)
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn routing_metrics_render_lines_for_test(
+        settings: &Settings,
+        summary: &ProcedureMetricsSummary,
+    ) -> Vec<String> {
+        routing_metrics_render_lines(settings, summary)
+    }
 }
 
 impl Drop for ProcedureTab {
@@ -1582,6 +1623,51 @@ fn repair_policy_render_lines(settings: &Settings) -> Vec<String> {
         "Frontier verifier attempt cap: {}",
         policy.frontier_attempts()
     ));
+    lines
+}
+
+fn routing_metrics_render_lines(
+    settings: &Settings,
+    summary: &ProcedureMetricsSummary,
+) -> Vec<String> {
+    if summary.completed_run_count == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "Terminal runs in window: {}",
+        summary.completed_run_count
+    )];
+    match summary.local_mechanical_success_percent() {
+        Some(rate) => lines.push(format!(
+            "Local mechanical success: {rate}% ({}/{})",
+            summary.local_mechanical_success_count, summary.local_mechanical_run_count
+        )),
+        None => lines.push("Local mechanical success: no local mechanical runs".to_string()),
+    }
+    if let Some(rate) = summary.frontier_escalation_percent() {
+        lines.push(format!(
+            "Frontier escalation: {rate}% ({}/{})",
+            summary.frontier_escalation_count, summary.completed_run_count
+        ));
+    }
+
+    let procedure = settings.procedure().cloned().unwrap_or_default();
+    if let Some(rate) = summary.local_mechanical_success_percent()
+        && rate < procedure.local_success_warning_percent
+    {
+        lines.push(format!(
+            "Warning: Local mechanical success {rate}% is below review threshold {}%.",
+            procedure.local_success_warning_percent
+        ));
+    }
+    if let Some(rate) = summary.frontier_escalation_percent()
+        && rate > procedure.frontier_escalation_warning_percent
+    {
+        lines.push(format!(
+            "Warning: Frontier escalation {rate}% exceeds review threshold {}%.",
+            procedure.frontier_escalation_warning_percent
+        ));
+    }
     lines
 }
 

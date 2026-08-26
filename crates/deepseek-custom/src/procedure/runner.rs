@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -285,6 +285,8 @@ where
         run_id: ProcedureRunId,
         request: ProcedureRunRequest,
     ) -> Result<ProcedureRun, ProcedureRunnerError> {
+        let started_at = Instant::now();
+        let mut stage_timings = Vec::new();
         let mut run = ProcedureRun {
             id: run_id,
             change_id: request.change_id.clone(),
@@ -309,12 +311,18 @@ where
         });
 
         if self.interrupted() {
-            return self.finish(run, ProcedureTerminalDisposition::Interrupted);
+            return self.finish(
+                run,
+                ProcedureTerminalDisposition::Interrupted,
+                started_at.elapsed(),
+                stage_timings,
+            );
         }
         self.emit(ProcedureProgress::StageStarted {
             run_id: run.id,
             stage: ProcedureStage::SpecValidation,
         });
+        let spec_validation_started_at = Instant::now();
 
         let validated = match self
             .input
@@ -327,6 +335,12 @@ where
                     ProcedureTerminalDisposition::Failed {
                         reason: error.to_string(),
                     },
+                    started_at.elapsed(),
+                    terminal_stage_timings(
+                        &stage_timings,
+                        "spec_validation",
+                        spec_validation_started_at.elapsed(),
+                    ),
                 );
             }
         };
@@ -342,6 +356,12 @@ where
                             "could not fingerprint selected OpenSpec contract: {error}"
                         ),
                     },
+                    started_at.elapsed(),
+                    terminal_stage_timings(
+                        &stage_timings,
+                        "spec_validation",
+                        spec_validation_started_at.elapsed(),
+                    ),
                 );
             }
         };
@@ -349,15 +369,25 @@ where
             run_id: run.id,
             stage: ProcedureStage::SpecValidation,
         });
+        stage_timings.push(super::ProcedureStageTiming {
+            stage: "spec_validation".to_string(),
+            duration_ms: duration_ms(spec_validation_started_at.elapsed()),
+        });
 
         if self.interrupted() {
-            return self.finish(run, ProcedureTerminalDisposition::Interrupted);
+            return self.finish(
+                run,
+                ProcedureTerminalDisposition::Interrupted,
+                started_at.elapsed(),
+                stage_timings,
+            );
         }
         run.stage = ProcedureStage::Localization;
         self.emit(ProcedureProgress::StageStarted {
             run_id: run.id,
             stage: ProcedureStage::Localization,
         });
+        let localization_started_at = Instant::now();
 
         let repository_index = match build_repository_index(&self.working_dir, &self.index_limits) {
             Ok(index) => index,
@@ -367,6 +397,12 @@ where
                     ProcedureTerminalDisposition::Failed {
                         reason: error.to_string(),
                     },
+                    started_at.elapsed(),
+                    terminal_stage_timings(
+                        &stage_timings,
+                        "localization",
+                        localization_started_at.elapsed(),
+                    ),
                 );
             }
         };
@@ -378,15 +414,37 @@ where
                     ProcedureTerminalDisposition::Failed {
                         reason: format!("could not fingerprint repository index: {error}"),
                     },
+                    started_at.elapsed(),
+                    terminal_stage_timings(
+                        &stage_timings,
+                        "localization",
+                        localization_started_at.elapsed(),
+                    ),
                 );
             }
         };
         if self.interrupted() {
-            return self.finish(run, ProcedureTerminalDisposition::Interrupted);
+            return self.finish(
+                run,
+                ProcedureTerminalDisposition::Interrupted,
+                started_at.elapsed(),
+                terminal_stage_timings(
+                    &stage_timings,
+                    "localization",
+                    localization_started_at.elapsed(),
+                ),
+            );
         }
 
-        self.run_localization_attempts(run, &validated.contract, &repository_index)
-            .await
+        self.run_localization_attempts(
+            run,
+            &validated.contract,
+            &repository_index,
+            started_at,
+            stage_timings,
+            localization_started_at,
+        )
+        .await
     }
 
     async fn run_localization_attempts(
@@ -394,6 +452,9 @@ where
         mut run: ProcedureRun,
         contract: &super::SelectedContractSlice,
         repository_index: &[RepositoryIndexEntry],
+        started_at: Instant,
+        stage_timings: Vec<super::ProcedureStageTiming>,
+        localization_started_at: Instant,
     ) -> Result<ProcedureRun, ProcedureRunnerError> {
         let backend = self.dispatcher.backend_name().to_string();
         let model = self.dispatcher.model().to_string();
@@ -417,6 +478,12 @@ where
                         ProcedureTerminalDisposition::Failed {
                             reason: format!("failed to serialize the localization prompt: {error}"),
                         },
+                        started_at.elapsed(),
+                        terminal_stage_timings(
+                            &stage_timings,
+                            "localization",
+                            localization_started_at.elapsed(),
+                        ),
                     );
                 }
             };
@@ -446,6 +513,12 @@ where
                     return self.finish(
                         run,
                         ProcedureTerminalDisposition::Failed { reason: message },
+                        started_at.elapsed(),
+                        terminal_stage_timings(
+                            &stage_timings,
+                            "localization",
+                            localization_started_at.elapsed(),
+                        ),
                     );
                 }
                 DispatchOutcome::Interrupted => {
@@ -457,7 +530,16 @@ where
                         targets: Vec::new(),
                         validation_error: None,
                     });
-                    return self.finish(run, ProcedureTerminalDisposition::Interrupted);
+                    return self.finish(
+                        run,
+                        ProcedureTerminalDisposition::Interrupted,
+                        started_at.elapsed(),
+                        terminal_stage_timings(
+                            &stage_timings,
+                            "localization",
+                            localization_started_at.elapsed(),
+                        ),
+                    );
                 }
             };
 
@@ -470,7 +552,16 @@ where
                     targets: envelope.targets,
                     validation_error: None,
                 });
-                return self.finish(run, ProcedureTerminalDisposition::Interrupted);
+                return self.finish(
+                    run,
+                    ProcedureTerminalDisposition::Interrupted,
+                    started_at.elapsed(),
+                    terminal_stage_timings(
+                        &stage_timings,
+                        "localization",
+                        localization_started_at.elapsed(),
+                    ),
+                );
             }
 
             let returned_targets = envelope.targets;
@@ -497,7 +588,16 @@ where
                         run_id: run.id,
                         stage: ProcedureStage::Localization,
                     });
-                    return self.finish(run, ProcedureTerminalDisposition::AwaitingReview);
+                    return self.finish(
+                        run,
+                        ProcedureTerminalDisposition::AwaitingReview,
+                        started_at.elapsed(),
+                        terminal_stage_timings(
+                            &stage_timings,
+                            "localization",
+                            localization_started_at.elapsed(),
+                        ),
+                    );
                 }
                 Err(error) => {
                     let message = error.to_string();
@@ -520,6 +620,12 @@ where
                     return self.finish(
                         run,
                         ProcedureTerminalDisposition::Failed { reason: message },
+                        started_at.elapsed(),
+                        terminal_stage_timings(
+                            &stage_timings,
+                            "localization",
+                            localization_started_at.elapsed(),
+                        ),
                     );
                 }
             }
@@ -563,11 +669,19 @@ where
         &self,
         mut run: ProcedureRun,
         disposition: ProcedureTerminalDisposition,
+        duration: Duration,
+        stage_timings: Vec<super::ProcedureStageTiming>,
     ) -> Result<ProcedureRun, ProcedureRunnerError> {
         run.stage = ProcedureStage::Finished;
         run.terminal_disposition = Some(disposition.clone());
+        let metrics = super::ProcedureRunMetrics::from_terminal_run_with_timing(
+            &run,
+            duration,
+            stage_timings,
+        )
+        .expect("terminal disposition was set before saving procedure metrics");
         self.reports
-            .save(&run)
+            .save_with_metrics(&run, metrics)
             .map_err(|source| ProcedureRunnerError::ReportSave {
                 run_id: run.id.as_str(),
                 source,
@@ -578,6 +692,23 @@ where
         });
         Ok(run)
     }
+}
+
+fn terminal_stage_timings(
+    completed: &[super::ProcedureStageTiming],
+    stage: &str,
+    elapsed: Duration,
+) -> Vec<super::ProcedureStageTiming> {
+    let mut timings = completed.to_vec();
+    timings.push(super::ProcedureStageTiming {
+        stage: stage.to_string(),
+        duration_ms: duration_ms(elapsed),
+    });
+    timings
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 enum DispatchOutcome {

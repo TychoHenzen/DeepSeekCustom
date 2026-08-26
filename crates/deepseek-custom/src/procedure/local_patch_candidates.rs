@@ -157,7 +157,7 @@ pub struct LocalCandidateVerificationRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalPatchCandidateResolution {
     /// A passing candidate selected by changed-line count and then generation index.
-    Selected(LocalCandidateVerification),
+    Selected(Box<LocalCandidateVerification>),
     /// No sampled candidate passed, so the existing bounded repair ladder must begin.
     BeginExistingBoundedRepair,
 }
@@ -179,7 +179,7 @@ pub fn select_passing_local_candidate(
         .cloned()
         .map_or(
             LocalPatchCandidateResolution::BeginExistingBoundedRepair,
-            LocalPatchCandidateResolution::Selected,
+            |candidate| LocalPatchCandidateResolution::Selected(Box::new(candidate)),
         )
 }
 

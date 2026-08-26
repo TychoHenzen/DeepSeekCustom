@@ -18,13 +18,13 @@ use deepseek_custom::procedure::{
     OpenSpecValidation, PatchPreview, PatchPreviewStore, ProcedureApplyProgress,
     ProcedureAttemptDisposition, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
     ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    PromotionBaselineComparison, PromotionCleanupEvidence, PromotionRecoveryEvidence,
-    PromotionResult, RepairLadderDisposition, RepairLadderErrorCategory, RepairLadderEvent,
-    RepairLadderGateResult, RepairLadderTransition, RepairLadderTrigger, RepairTier, RouteDecision,
-    RouteOverride, RouteSignal, RouteTier, StalePromotionPath, VerifierCommandDisposition,
-    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
-    apply_review_decision, capture_path_fingerprint,
+    ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, PromotionBaselineComparison, PromotionCleanupEvidence,
+    PromotionRecoveryEvidence, PromotionResult, RepairLadderDisposition, RepairLadderErrorCategory,
+    RepairLadderEvent, RepairLadderGateResult, RepairLadderTransition, RepairLadderTrigger,
+    RepairTier, RouteDecision, RouteOverride, RouteSignal, RouteTier, StalePromotionPath,
+    VerifierCommandDisposition, VerifierCommandEvidence, VerifierGateDisposition,
+    VerifierGateEvidence, VerifierReport, apply_review_decision, capture_path_fingerprint,
 };
 use tokio::sync::mpsc;
 
@@ -1663,6 +1663,36 @@ fn live_and_reloaded_repair_rows_are_exact_and_not_duplicated() {
     });
     assert_eq!(tab.repair_render_lines_for_test().len(), 1);
 
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Threshold warnings do not rewrite policy :: Escalation rate exceeds threshold
+#[test]
+fn escalation_rate_warning_leaves_route_configuration_unchanged() {
+    let root = fixture_root("routing-metrics-warning");
+    let store = ProcedureReportStore::for_project(&root);
+    let report = completed_run(ProcedureRunId::new());
+    store.save(&report).unwrap();
+    let mut metrics = ProcedureRunMetrics::from_terminal_run(&report).unwrap();
+    metrics.route.escalation_triggers = vec!["local_disagreement".to_string()];
+    store.replace_metrics(&report.id, &metrics).unwrap();
+
+    let mut settings = settings();
+    settings.procedure_mut().frontier_escalation_warning_percent = 15;
+    let before = settings.procedure().cloned();
+    let summary = ProcedureReportStore::for_project(&root)
+        .recent_metrics(20)
+        .unwrap();
+    let tab = ProcedureTab::new(&settings, &root);
+    let lines = ProcedureTab::routing_metrics_render_lines_for_test(&settings, &summary);
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Warning: Frontier escalation 100% exceeds review threshold 15%.")
+    );
+    assert_eq!(tab.route_override(), RouteOverride::Automatic);
+    assert_eq!(settings.procedure(), before.as_ref());
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -7,12 +7,12 @@ use deepseek_custom::procedure::{
     GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationTarget, OpenSpecValidation,
     PatchGateDisposition, PatchGateEvidence, ProcedureApprovedReportError,
     ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, RepairLadderDisposition,
-    RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult, RepairLadderTransition,
-    RepairLadderTrigger, RepairTier, VerifierCommandDisposition, VerifierCommandEvidence,
-    VerifierGateDisposition, VerifierGateEvidence, VerifierReport, capture_path_fingerprint,
-    repair_ladder_render_lines, require_approved_report,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureRunMetrics,
+    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
+    RepairLadderDisposition, RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult,
+    RepairLadderTransition, RepairLadderTrigger, RepairTier, VerifierCommandDisposition,
+    VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
+    capture_path_fingerprint, repair_ladder_render_lines, require_approved_report,
 };
 
 fn temp_path(tag: &str) -> PathBuf {
@@ -89,6 +89,40 @@ fn load_returns_the_saved_targets_and_dispatch_details() {
         loaded.attempts[0].targets[0].symbol.as_deref(),
         Some("ProcedureReportStore")
     );
+    std::fs::remove_dir_all(reports_dir).ok();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Routing metrics are durable and inspectable :: Completed run updates metrics
+#[test]
+fn completed_run_updates_metrics_after_report_store_restart() {
+    let reports_dir = temp_path("routing-metrics-restart");
+    let store = ProcedureReportStore::new(reports_dir.clone());
+    let report = completed_run();
+    store.save(&report).unwrap();
+
+    let restarted = ProcedureReportStore::new(reports_dir.clone());
+    let stored = restarted.load_with_fingerprints(&report.id).unwrap();
+    let metrics = stored
+        .metrics
+        .expect("terminal reports save routing metrics");
+
+    assert_eq!(metrics.localization_attempt_count, 1);
+    assert_eq!(metrics.schema_rejection_count, 0);
+    assert_eq!(metrics.backends.len(), 1);
+    assert_eq!(
+        metrics.terminal_disposition,
+        ProcedureRunMetrics::from_terminal_run(&report)
+            .unwrap()
+            .terminal_disposition
+    );
+    let mut metrics = metrics;
+    metrics.route.local_mechanical_success = Some(true);
+    restarted.replace_metrics(&report.id, &metrics).unwrap();
+    let summary = restarted.recent_metrics(20).unwrap();
+
+    assert_eq!(summary.completed_run_count, 1);
+    assert_eq!(summary.local_mechanical_run_count, 1);
+    assert_eq!(summary.local_mechanical_success_percent(), Some(100));
     std::fs::remove_dir_all(reports_dir).ok();
 }
 

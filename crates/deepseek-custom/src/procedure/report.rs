@@ -8,8 +8,9 @@ use thiserror::Error;
 use tracing::debug;
 
 use super::{
-    ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureTerminalDisposition, RepairLadderEvent, VerifierReport, capture_path_fingerprints,
+    ProcedureInputFingerprints, ProcedureMetricsSummary, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureRunMetrics, ProcedureTerminalDisposition, RepairLadderEvent,
+    VerifierReport, capture_path_fingerprints,
 };
 use crate::error::{HarnessError, Result};
 
@@ -30,6 +31,8 @@ pub struct StoredProcedureReport {
     pub input_fingerprints: ProcedureInputFingerprints,
     pub verification: Option<VerifierReport>,
     pub repair_events: Vec<RepairLadderEvent>,
+    /// Missing for reports written before routing metrics existed.
+    pub metrics: Option<ProcedureRunMetrics>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,6 +45,8 @@ struct ProcedureReportDocument {
     verification: Option<VerifierReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     repair_events: Vec<RepairLadderEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metrics: Option<ProcedureRunMetrics>,
 }
 
 /// Failure to record a semantic review decision for one saved run.
@@ -125,11 +130,30 @@ impl ProcedureReportStore {
 
     /// Save a complete run report, creating the report directory as needed.
     pub fn save(&self, report: &ProcedureRun) -> Result<()> {
+        let metrics = ProcedureRunMetrics::from_terminal_run(report);
+        self.save_with_optional_metrics(report, metrics)
+    }
+
+    /// Save a complete run report with timings gathered by its owning runner.
+    pub fn save_with_metrics(
+        &self,
+        report: &ProcedureRun,
+        metrics: ProcedureRunMetrics,
+    ) -> Result<()> {
+        self.save_with_optional_metrics(report, Some(metrics))
+    }
+
+    fn save_with_optional_metrics(
+        &self,
+        report: &ProcedureRun,
+        metrics: Option<ProcedureRunMetrics>,
+    ) -> Result<()> {
         let document = StoredProcedureReport {
             run: report.clone(),
             input_fingerprints: self.capture_input_fingerprints(report)?,
             verification: None,
             repair_events: Vec::new(),
+            metrics,
         };
         self.save_document(&document)
     }
@@ -160,6 +184,7 @@ impl ProcedureReportStore {
             input_fingerprints: document.input_fingerprints,
             verification: document.verification,
             repair_events: document.repair_events,
+            metrics: document.metrics,
         })
     }
 
@@ -183,6 +208,62 @@ impl ProcedureReportStore {
         let mut stored = self.load_with_fingerprints(id)?;
         stored.repair_events = repair_events.to_vec();
         self.save_document(&stored)
+    }
+
+    /// Replace the content-free routing metrics for one saved terminal run.
+    pub fn replace_metrics(
+        &self,
+        id: &ProcedureRunId,
+        metrics: &ProcedureRunMetrics,
+    ) -> Result<()> {
+        let mut stored = self.load_with_fingerprints(id)?;
+        stored.metrics = Some(metrics.clone());
+        self.save_document(&stored)
+    }
+
+    /// Aggregate the most recent terminal reports that carry routing metrics.
+    ///
+    /// Older reports remain readable and do not alter the aggregate because
+    /// they never captured the required route evidence.
+    pub fn recent_metrics(&self, window_runs: usize) -> Result<ProcedureMetricsSummary> {
+        let entries = match std::fs::read_dir(&self.reports_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ProcedureMetricsSummary::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut metrics = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let json = std::fs::read_to_string(&path)?;
+            let document: ProcedureReportDocument =
+                serde_json::from_str(&json).map_err(|error| {
+                    HarnessError::Parse(format!(
+                        "could not parse procedure report {}: {error}",
+                        path.display()
+                    ))
+                })?;
+            if let Some(metric) = document.metrics {
+                metrics.push((
+                    metric.completed_at_unix_ms,
+                    document.run.id.as_str(),
+                    metric,
+                ));
+            }
+        }
+        metrics.sort_unstable_by(|left, right| {
+            right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
+        });
+        let mut summary = ProcedureMetricsSummary::default();
+        for (_, _, metric) in metrics.into_iter().take(window_runs) {
+            summary.record(&metric);
+        }
+        Ok(summary)
     }
 
     /// Reject one structurally valid report by its immutable run identifier.
@@ -291,6 +372,7 @@ impl ProcedureReportStore {
             input_fingerprints: report.input_fingerprints.clone(),
             verification: report.verification.clone(),
             repair_events: report.repair_events.clone(),
+            metrics: report.metrics.clone(),
         };
         let json = serde_json::to_string_pretty(&document).map_err(|error| {
             HarnessError::Parse(format!("could not serialize procedure report: {error}"))

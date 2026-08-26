@@ -50,10 +50,13 @@
 
 ## 4. Durable metrics and warnings
 
-- [ ] 4.1 Extend run reports with stage timings, route signals, backends, models, attempts, schema failures, candidates, gate outcomes, escalation triggers, available token usage, and terminal disposition.
-- [ ] 4.2 Load reports across restart and calculate recent-window local mechanical success and frontier escalation rates with their run counts.
+- [x] 4.1 Extend run reports with stage timings, route signals, backends, models, attempts, schema failures, candidates, gate outcomes, escalation triggers, available token usage, and terminal disposition.
+<!-- status: completed -->
+- [x] 4.2 Load reports across restart and calculate recent-window local mechanical success and frontier escalation rates with their run counts.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Routing metrics are durable and inspectable :: Completed run updates metrics -->
-- [ ] 4.3 Render threshold warnings without mutating route, budget, sample, or backend settings.
+- [x] 4.3 Render threshold warnings without mutating route, budget, sample, or backend settings.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Threshold warnings do not rewrite policy :: Escalation rate exceeds threshold -->
 
 ## 5. Privacy-limited trace export

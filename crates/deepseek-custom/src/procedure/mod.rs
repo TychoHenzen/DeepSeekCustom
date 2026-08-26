@@ -31,6 +31,7 @@ mod repair_prompt;
 mod repair_state;
 pub mod report;
 mod route;
+mod routing_metrics;
 mod run;
 mod runner;
 mod sampling;
@@ -132,6 +133,11 @@ pub use report::{
 pub use route::{
     DifficultyAssessment, MechanicalVerb, RouteDecision, RouteOverride, RouteSignal, RouteTier,
     apply_route_override, assess_route,
+};
+pub use routing_metrics::{
+    ProcedureBackendModel, ProcedureCandidateMetric, ProcedureGateOutcome,
+    ProcedureMetricsDisposition, ProcedureMetricsSummary, ProcedureRouteMetrics,
+    ProcedureRunMetrics, ProcedureStageTiming, ProcedureTokenUsage,
 };
 
 pub use run::{
