@@ -76,7 +76,8 @@ pub use local_patch_candidates::{
     LocalCandidateGenerationEvidence, LocalCandidateVerification,
     LocalCandidateVerificationOutcome, LocalCandidateVerificationRun, LocalPatchCandidate,
     LocalPatchCandidateGeneration, LocalPatchCandidateGenerationRun, LocalPatchCandidateGenerator,
-    LocalPatchCandidateVerifier,
+    LocalPatchCandidateResolution, LocalPatchCandidateVerifier, begin_existing_bounded_repair,
+    select_passing_local_candidate,
 };
 pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,

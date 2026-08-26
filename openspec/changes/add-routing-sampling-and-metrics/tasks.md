@@ -38,11 +38,14 @@
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Local mechanical edits use bounded best-of-N :: Local candidates are generated -->
 - [x] 3.2 Verify every completed candidate serially in a fresh isolated workspace and calculate added plus removed line count from the parsed diff.
 <!-- status: completed -->
-- [ ] 3.3 Select the passing candidate with the fewest changed lines.
+- [x] 3.3 Select the passing candidate with the fewest changed lines.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Passing candidates are selected deterministically :: Two candidates pass -->
-- [ ] 3.4 Break an equal-size passing tie by the lowest candidate index.
+- [x] 3.4 Break an equal-size passing tie by the lowest candidate index.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Passing candidates are selected deterministically :: Passing patches have equal size -->
-- [ ] 3.5 Enter the existing repair and escalation ladder after every sampled candidate fails without increasing either attempt budget.
+- [x] 3.5 Enter the existing repair and escalation ladder after every sampled candidate fails without increasing either attempt budget.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: Local mechanical edits use bounded best-of-N :: No local candidate passes -->
 
 ## 4. Durable metrics and warnings

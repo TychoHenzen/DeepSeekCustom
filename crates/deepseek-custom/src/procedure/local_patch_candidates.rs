@@ -153,6 +153,50 @@ pub struct LocalCandidateVerificationRun {
     pub candidates: Vec<LocalCandidateVerification>,
 }
 
+/// Deterministic next action after every generated candidate was verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalPatchCandidateResolution {
+    /// A passing candidate selected by changed-line count and then generation index.
+    Selected(LocalCandidateVerification),
+    /// No sampled candidate passed, so the existing bounded repair ladder must begin.
+    BeginExistingBoundedRepair,
+}
+
+/// Select the smallest passing patch, using the lowest generation index as a stable tie-breaker.
+pub fn select_passing_local_candidate(
+    verification: &LocalCandidateVerificationRun,
+) -> LocalPatchCandidateResolution {
+    verification
+        .candidates
+        .iter()
+        .filter(|candidate| candidate_passed(candidate))
+        .min_by_key(|candidate| {
+            (
+                candidate.changed_line_count,
+                candidate.candidate.evidence.index,
+            )
+        })
+        .cloned()
+        .map_or(
+            LocalPatchCandidateResolution::BeginExistingBoundedRepair,
+            LocalPatchCandidateResolution::Selected,
+        )
+}
+
+/// Begin the pre-existing bounded repair and frontier policy only after every sampled candidate fails.
+///
+/// The caller owns the existing policy and dispatcher, so this handoff cannot alter either budget.
+pub fn begin_existing_bounded_repair<T>(
+    resolution: &LocalPatchCandidateResolution,
+    begin_repair: impl FnOnce() -> T,
+) -> Option<T> {
+    matches!(
+        resolution,
+        LocalPatchCandidateResolution::BeginExistingBoundedRepair
+    )
+    .then(begin_repair)
+}
+
 /// Verifies completed candidates one at a time in new disposable workspaces.
 pub struct LocalPatchCandidateVerifier {
     project_root: PathBuf,
@@ -229,6 +273,13 @@ impl LocalPatchCandidateVerifier {
             ),
         }
     }
+}
+
+fn candidate_passed(candidate: &LocalCandidateVerification) -> bool {
+    matches!(
+        candidate.outcome,
+        LocalCandidateVerificationOutcome::Verified { ref report } if report.eligibility.eligible
+    )
 }
 
 fn rejected(

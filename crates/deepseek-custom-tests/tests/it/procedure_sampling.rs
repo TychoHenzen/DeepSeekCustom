@@ -1,13 +1,15 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use deepseek_custom::config::settings::{ProcedureSettings, Settings};
+use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
-    LocalCandidateVerificationOutcome, LocalPatchCandidateGeneration, LocalPatchCandidateGenerator,
+    CandidateEligibility, LocalCandidateGenerationEvidence, LocalCandidateVerification,
+    LocalCandidateVerificationOutcome, LocalCandidateVerificationRun, LocalPatchCandidate,
+    LocalPatchCandidateGeneration, LocalPatchCandidateGenerator, LocalPatchCandidateResolution,
     LocalPatchCandidateVerifier, LocalPatchDraftDispatch, LocalPatchDraftError,
     LocalizationAgreementError, LocalizationAgreementOutcome, LocalizationAgreementResolver,
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope,
@@ -16,8 +18,9 @@ use deepseek_custom::procedure::{
     NormalizedLocalizationTargets, OpenSpecInput, PatchCandidate, ProcedureAttemptDisposition,
     ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, decode_patch_envelope,
-    select_localization_agreement, sha256_json,
+    RepositoryIndexEntry, SamplingInputGate, SamplingInputRequest, VerifierReport,
+    begin_existing_bounded_repair, decode_patch_envelope, select_localization_agreement,
+    select_passing_local_candidate, sha256_json,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -824,4 +827,126 @@ fn bounded_local_candidates_keep_indexed_generation_evidence_and_isolated_verifi
     );
     assert!(!root.join("candidate-poison.txt").exists());
     std::fs::remove_dir_all(root).ok();
+}
+
+fn candidate_verification(
+    index: u8,
+    changed_line_count: usize,
+    eligible: bool,
+) -> LocalCandidateVerification {
+    LocalCandidateVerification {
+        candidate: LocalPatchCandidate {
+            evidence: LocalCandidateGenerationEvidence {
+                index,
+                diversity_hint: format!("candidate-{index}"),
+                backend: "fixture-local".to_string(),
+                model: "fixture-model".to_string(),
+            },
+            patch: patch_candidate(&format!("candidate-{index}")),
+        },
+        changed_line_count,
+        outcome: LocalCandidateVerificationOutcome::Verified {
+            report: VerifierReport {
+                patch_gates: Vec::new(),
+                gates: Vec::new(),
+                stopped_after_failure: false,
+                first_failed_gate: None,
+                eligibility: if eligible {
+                    CandidateEligibility::eligible()
+                } else {
+                    CandidateEligibility::ineligible(
+                        deepseek_custom::procedure::CandidateIneligibility::VerifierCommandFailed {
+                            index: 0,
+                            command: "fixture verifier".to_string(),
+                            disposition:
+                                deepseek_custom::procedure::VerifierCommandDisposition::Failed,
+                        },
+                    )
+                },
+                terminal_disposition: None,
+            },
+        },
+    }
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Passing candidates are selected deterministically :: Two candidates pass
+#[test]
+fn passing_candidate_with_fewer_changed_lines_is_selected() {
+    let verification = LocalCandidateVerificationRun {
+        candidates: vec![
+            candidate_verification(1, 8, true),
+            candidate_verification(2, 4, true),
+            candidate_verification(3, 1, false),
+        ],
+    };
+
+    let resolution = select_passing_local_candidate(&verification);
+
+    assert!(matches!(
+        resolution,
+        LocalPatchCandidateResolution::Selected(candidate)
+            if candidate.candidate.evidence.index == 2 && candidate.changed_line_count == 4
+    ));
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Passing candidates are selected deterministically :: Passing patches have equal size
+#[test]
+fn equal_size_passing_candidates_use_the_lowest_generation_index() {
+    let verification = LocalCandidateVerificationRun {
+        candidates: vec![
+            candidate_verification(4, 6, true),
+            candidate_verification(2, 6, true),
+            candidate_verification(3, 6, true),
+        ],
+    };
+
+    let resolution = select_passing_local_candidate(&verification);
+
+    assert!(matches!(
+        resolution,
+        LocalPatchCandidateResolution::Selected(candidate)
+            if candidate.candidate.evidence.index == 2 && candidate.changed_line_count == 6
+    ));
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Local mechanical edits use bounded best-of-N :: No local candidate passes
+#[test]
+fn failed_candidates_enter_the_existing_bounded_repair_policy_without_budget_changes() {
+    let verification = LocalCandidateVerificationRun {
+        candidates: vec![
+            candidate_verification(1, 2, false),
+            candidate_verification(2, 4, false),
+            candidate_verification(3, 6, false),
+        ],
+    };
+    let policy = Settings {
+        procedure: Some(ProcedureSettings {
+            structural_retries: 1,
+            local_verifier_attempts: 2,
+            frontier_attempts: 1,
+            frontier_patch_backend: Some("fixture-frontier".to_string()),
+            ..ProcedureSettings::default()
+        }),
+        backends: Some(HashMap::from([(
+            "fixture-frontier".to_string(),
+            BackendConfig::CodexCli {
+                model: "fixture-frontier-model".to_string(),
+                sandbox: Some("workspace-write".to_string()),
+                env: None,
+                models: None,
+            },
+        )])),
+        ..Settings::default()
+    }
+    .validated_procedure_repair_policy()
+    .unwrap();
+
+    let resolution = select_passing_local_candidate(&verification);
+    let began_with = begin_existing_bounded_repair(&resolution, || policy.clone());
+
+    assert_eq!(
+        resolution,
+        LocalPatchCandidateResolution::BeginExistingBoundedRepair
+    );
+    assert_eq!(began_with, Some(policy));
 }
