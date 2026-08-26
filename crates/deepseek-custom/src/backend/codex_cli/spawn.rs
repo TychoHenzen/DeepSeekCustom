@@ -1,7 +1,9 @@
 //! Argument assembly and one-shot child creation for `codex exec --json`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "test-support")]
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
