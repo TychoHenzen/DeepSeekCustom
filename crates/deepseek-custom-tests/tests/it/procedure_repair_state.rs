@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
-    AttemptDisposition, AttemptFailureEvidence, AttemptState, PatchPreview, PatchPreviewId,
-    ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
-    PromotionBaseline, RepairCandidateId, RepairTier, RouteDecision, RouteOverride, RouteTier,
+    AttemptDisposition, AttemptFailureEvidence, AttemptState, ContractSelection, PatchPreview,
+    PatchPreviewId, ProcedureInputFingerprints, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, PromotionBaseline, ProposalScope, RepairCandidateId, RepairTier,
+    RequirementSlice, RouteDecision, RouteOverride, RouteTier, SelectedContractSlice,
     StoredProcedureReport, ValidatedRepairInput,
 };
 
@@ -15,16 +16,17 @@ fn candidate(value: &str) -> RepairCandidateId {
 
 fn validated_input() -> ValidatedRepairInput {
     let run_id = ProcedureRunId::new();
+    let task = ProcedureTask {
+        id: "1.1".to_string(),
+        text: "Repair the target".to_string(),
+        covers: None,
+    };
     ValidatedRepairInput {
         report: StoredProcedureReport {
             run: ProcedureRun {
                 id: run_id,
                 change_id: "change".to_string(),
-                selected_task: ProcedureTask {
-                    id: "1.1".to_string(),
-                    text: "Repair the target".to_string(),
-                    covers: None,
-                },
+                selected_task: task.clone(),
                 spec_fingerprint: Some("spec".to_string()),
                 repository_fingerprint: Some("repository".to_string()),
                 validation: None,
@@ -36,6 +38,22 @@ fn validated_input() -> ValidatedRepairInput {
             },
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
+        },
+        contract: SelectedContractSlice {
+            change_id: "change".to_string(),
+            task,
+            proposal_scope: ProposalScope {
+                why: String::new(),
+                what_changes: String::new(),
+            },
+            selection: ContractSelection::Bound {
+                capability: "fixture".to_string(),
+                requirement: RequirementSlice {
+                    name: "Repair".to_string(),
+                    text: "Repair the target.".to_string(),
+                    scenarios: Vec::new(),
+                },
+            },
         },
         preview: PatchPreview {
             id: PatchPreviewId::new(),

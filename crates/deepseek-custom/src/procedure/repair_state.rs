@@ -2,12 +2,15 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::settings::ValidatedProcedureRepairPolicy;
 
 use super::{StructuralFailureCategory, ValidatedRepairInput};
 
 /// Tier that owns the current candidate attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RepairTier {
     Local,
     Frontier,

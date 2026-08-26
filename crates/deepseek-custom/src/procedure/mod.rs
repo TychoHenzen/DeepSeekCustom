@@ -7,12 +7,14 @@
 mod apply;
 mod dispatch;
 mod disposable_workspace;
+mod failure_digest;
 mod fingerprint;
 mod frontier_patch_draft;
 mod frontier_patch_output;
 mod index;
 mod input;
 mod local_patch_draft;
+mod local_repair;
 mod patch_apply_check;
 mod patch_boundary;
 mod patch_envelope;
@@ -21,6 +23,7 @@ mod preview_input;
 mod promotion;
 mod prompt;
 mod repair_input;
+mod repair_prompt;
 mod repair_state;
 pub mod report;
 mod route;
@@ -37,6 +40,11 @@ pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, Localization
 pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,
     DisposableWorkspaceOptions, RetainedRecoveryWorkspace, SnapshotProgress,
+};
+pub use failure_digest::{
+    DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FAILURE_COMMAND_CHARACTER_CAP,
+    FAILURE_DIAGNOSTIC_CHARACTER_CAP, FailureDigest, FailureDigestErrorCategory,
+    FailureDigestSectionError, build_failure_digest_section,
 };
 pub use fingerprint::{
     ProcedureFingerprintError, ProcedureInputFingerprints, ProcedurePathFingerprint,
@@ -55,6 +63,7 @@ pub use input::{
 pub use local_patch_draft::{
     LocalPatchDraftDispatch, LocalPatchDraftDispatcher, LocalPatchDraftError,
 };
+pub use local_repair::{LocalRepairError, LocalRepairOutcome, LocalRepairRun, LocalRepairRunner};
 pub use patch_apply_check::{
     AppliedPatchWorkspace, ApplyCheckedPatch, GitApplyDisposition, GitApplyPhase, GitApplyResult,
     PatchApplyCheckError, PatchApplyProgress, PatchGateDisposition, PatchGateEvidence,
@@ -86,6 +95,9 @@ pub use prompt::{
     build_localization_prompt,
 };
 pub use repair_input::{RepairInputError, RepairInputGate, RepairRequest, ValidatedRepairInput};
+pub use repair_prompt::{
+    REPAIR_INSTRUCTION, RepairPromptError, RepairPromptInput, build_repair_prompt,
+};
 pub use repair_state::{
     AttemptDisposition, AttemptFailure, AttemptFailureEvidence, AttemptFailureKind, AttemptState,
     AttemptTransitionError, RepairCandidateId, RepairTier,

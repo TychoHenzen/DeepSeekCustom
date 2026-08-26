@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
@@ -12,7 +13,8 @@ use super::{
 };
 
 /// Stable structural categories accepted by the bounded parser-retry path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StructuralFailureCategory {
     Schema,
     Envelope,
@@ -53,7 +55,7 @@ impl StructuralFailure {
         &self.diagnostic
     }
 
-    fn evidence(&self) -> AttemptFailureEvidence {
+    pub(crate) fn evidence(&self) -> AttemptFailureEvidence {
         AttemptFailureEvidence::classified_structural(self.category, self.diagnostic.clone())
     }
 }

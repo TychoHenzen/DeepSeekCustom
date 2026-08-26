@@ -22,6 +22,7 @@ pub struct RepairRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedRepairInput {
     pub report: StoredProcedureReport,
+    pub contract: super::SelectedContractSlice,
     pub preview: PatchPreview,
     pub promotion_baseline: PromotionBaseline,
 }
@@ -77,6 +78,7 @@ impl RepairInputGate {
 
         Ok(ValidatedRepairInput {
             report: validated.report,
+            contract: validated.contract,
             preview: validated.preview,
             promotion_baseline: validated.promotion_baseline,
         })

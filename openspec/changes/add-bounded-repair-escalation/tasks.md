@@ -29,9 +29,12 @@
 
 ## 3. Local verifier-driven repair
 
-- [ ] 3.1 Build bounded `FailureDigest` values from command, exit code, error category, and the newest detailed verifier output.
-- [ ] 3.2 Reconstruct each repair prompt from the spec slice, targets, scratchpad, and failure digests without prior prompts or chat history.
-- [ ] 3.3 Promote a local candidate that passes on attempt three or earlier and make no frontier call.
+- [x] 3.1 Build bounded `FailureDigest` values from command, exit code, error category, and the newest detailed verifier output.
+<!-- status: completed -->
+- [x] 3.2 Reconstruct each repair prompt from the spec slice, targets, scratchpad, and failure digests without prior prompts or chat history.
+<!-- status: completed -->
+- [x] 3.3 Promote a local candidate that passes on attempt three or earlier and make no frontier call.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local repair passes within budget -->
 - [ ] 3.4 Exhaust the default local budget after three failed candidates and assert that no fourth local candidate is requested.
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local budget is exhausted -->

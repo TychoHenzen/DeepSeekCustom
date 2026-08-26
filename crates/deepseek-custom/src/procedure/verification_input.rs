@@ -24,6 +24,7 @@ pub struct ApplyRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedApplyInput {
     pub report: StoredProcedureReport,
+    pub contract: super::SelectedContractSlice,
     pub preview: PatchPreview,
     pub promotion_baseline: super::PromotionBaseline,
 }
@@ -255,6 +256,7 @@ impl VerificationInputGate {
             })?;
         Ok(ValidatedApplyInput {
             report,
+            contract: localization.contract.contract,
             preview,
             promotion_baseline,
         })

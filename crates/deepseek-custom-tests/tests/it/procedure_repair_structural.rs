@@ -5,12 +5,13 @@ use async_trait::async_trait;
 use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
     AttemptDisposition, AttemptFailureEvidence, AttemptState, BoundedVerifierOutput,
-    GitApplyDisposition, GitApplyPhase, GitApplyResult, LocalPatchDraftDispatch,
+    ContractSelection, GitApplyDisposition, GitApplyPhase, GitApplyResult, LocalPatchDraftDispatch,
     LocalPatchDraftError, LocalStructuralRepairOutcome, PatchApplyCheckError, PatchCandidate,
     PatchEnvelopeError, PatchPreview, PatchPreviewId, ProcedureInputFingerprints,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, RepairCandidateId,
-    RepairFailureRef, RepairTier, RouteDecision, RouteOverride, RouteTier, StoredProcedureReport,
+    ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, ProposalScope,
+    RepairCandidateId, RepairFailureRef, RepairTier, RequirementSlice, RouteDecision,
+    RouteOverride, RouteTier, SelectedContractSlice, StoredProcedureReport,
     StructuralFailureCategory, ValidatedRepairInput, classify_structural_failure,
     decode_patch_envelope, draft_local_with_structural_retry, validate_patch_boundary,
 };
@@ -217,16 +218,17 @@ fn candidate_id(value: &str) -> RepairCandidateId {
 
 fn validated_repair_input() -> ValidatedRepairInput {
     let run_id = ProcedureRunId::new();
+    let task = ProcedureTask {
+        id: "2.2".to_string(),
+        text: "Retry the structural patch failure".to_string(),
+        covers: None,
+    };
     ValidatedRepairInput {
         report: StoredProcedureReport {
             run: ProcedureRun {
                 id: run_id,
                 change_id: "change".to_string(),
-                selected_task: ProcedureTask {
-                    id: "2.2".to_string(),
-                    text: "Retry the structural patch failure".to_string(),
-                    covers: None,
-                },
+                selected_task: task.clone(),
                 spec_fingerprint: Some("spec".to_string()),
                 repository_fingerprint: Some("repository".to_string()),
                 validation: None,
@@ -238,6 +240,22 @@ fn validated_repair_input() -> ValidatedRepairInput {
             },
             input_fingerprints: ProcedureInputFingerprints::default(),
             verification: None,
+        },
+        contract: SelectedContractSlice {
+            change_id: "change".to_string(),
+            task,
+            proposal_scope: ProposalScope {
+                why: String::new(),
+                what_changes: String::new(),
+            },
+            selection: ContractSelection::Bound {
+                capability: "fixture".to_string(),
+                requirement: RequirementSlice {
+                    name: "Repair".to_string(),
+                    text: "Repair the target.".to_string(),
+                    scenarios: Vec::new(),
+                },
+            },
         },
         preview: PatchPreview {
             id: PatchPreviewId::new(),
