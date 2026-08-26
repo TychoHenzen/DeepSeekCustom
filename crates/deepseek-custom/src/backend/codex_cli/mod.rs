@@ -120,10 +120,6 @@ impl CodexCliDriver {
         self.thread_id = None;
     }
 
-    pub fn reset(&mut self) {
-        self.clear_session();
-    }
-
     pub async fn send(&mut self, text: &str) -> Result<()> {
         self.send_with_image(text, None).await
     }
@@ -152,7 +148,6 @@ impl CodexCliDriver {
             .map_err(|_| HarnessError::Tool("model lock is poisoned".to_owned()))?
             .clone();
         let effort = Effort::load(&self.effort_flag);
-        let _voice_mode = self.voice_mode_flag.load(Ordering::SeqCst);
         let args = build_args(
             text,
             self.thread_id.as_deref(),
