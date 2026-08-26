@@ -1,11 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use deepseek_custom::config::settings::{ProcedureSettings, Settings};
+use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
 use deepseek_custom::procedure::{
     AttemptDisposition, LocalPatchDraftDispatch, LocalPatchDraftError, LocalRepairOutcome,
     LocalRepairRunner, LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchCandidate,
@@ -102,6 +102,73 @@ fn write_verifier(root: &Path) -> PathBuf {
         std::fs::set_permissions(&command, permissions).unwrap();
     }
     command
+}
+
+fn write_failing_verifier(root: &Path) -> PathBuf {
+    let command = if cfg!(windows) {
+        root.join("failing-verifier.cmd")
+    } else {
+        root.join("failing-verifier.sh")
+    };
+    #[cfg(windows)]
+    std::fs::write(
+        &command,
+        "@echo off\r\necho deterministic candidate failure 1>&2\r\nexit /b 7\r\n",
+    )
+    .unwrap();
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(
+            &command,
+            "#!/bin/sh\necho 'deterministic candidate failure' >&2\nexit 7\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&command, permissions).unwrap();
+    }
+    command
+}
+
+fn write_isolation_verifier(root: &Path, counter: &Path, workspaces: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let command = root.join("isolation-verifier.ps1");
+        let quote = |path: &Path| path.display().to_string().replace('\'', "''");
+        std::fs::write(
+            &command,
+            format!(
+                "$counterPath = '{}'\n$workspacesPath = '{}'\n$count = if (Test-Path -LiteralPath $counterPath) {{ [int](Get-Content -Raw -LiteralPath $counterPath) }} else {{ 0 }}\n$count += 1\nSet-Content -NoNewline -LiteralPath $counterPath -Value $count\nAdd-Content -LiteralPath $workspacesPath -Value (Get-Location).Path\nif (Test-Path -LiteralPath 'repair-poison.txt') {{ Write-Error 'prior poison leaked'; exit 31 }}\n$expected = @('first', 'second', 'third')[$count - 1]\n$content = Get-Content -Raw -LiteralPath 'src/lib.rs'\nif (-not $content.Contains($expected)) {{ Write-Error \"expected clean candidate $expected\"; exit 32 }}\nSet-Content -LiteralPath 'repair-poison.txt' -Value 'failed-attempt residue'\nSet-Content -LiteralPath 'src/lib.rs' -Value 'verifier-mutated residue'\nWrite-Error \"deterministic failure $count\"\nexit 7\n",
+                quote(counter),
+                quote(workspaces),
+            ),
+        )
+        .unwrap();
+        format!(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+            command.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let command = root.join("isolation-verifier.sh");
+        let quote = |path: &Path| path.display().to_string().replace('\'', "'\\''");
+        std::fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\ncounter='{}'\nworkspaces='{}'\ncount=0\n[ ! -f \"$counter\" ] || count=$(cat \"$counter\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$counter\"\npwd >> \"$workspaces\"\nif [ -f repair-poison.txt ]; then echo 'prior poison leaked' >&2; exit 31; fi\ncase $count in 1) expected=first ;; 2) expected=second ;; 3) expected=third ;; *) echo 'unexpected attempt' >&2; exit 33 ;; esac\ngrep -q \"$expected\" src/lib.rs || {{ echo \"expected clean candidate $expected\" >&2; exit 32; }}\nprintf '%s\\n' 'failed-attempt residue' > repair-poison.txt\nprintf '%s\\n' 'verifier-mutated residue' > src/lib.rs\necho \"deterministic failure $count\" >&2\nexit 7\n",
+                quote(counter),
+                quote(workspaces),
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&command, permissions).unwrap();
+        format!("\"{}\"", command.display())
+    }
 }
 
 fn candidate(value: &str) -> PatchCandidate {
@@ -233,17 +300,242 @@ fn save_trusted_input(root: &Path, openspec_command: &Path) -> (ProcedureRun, Pa
 }
 
 fn policy() -> deepseek_custom::config::settings::ValidatedProcedureRepairPolicy {
+    policy_with_frontier_attempts(0)
+}
+
+fn policy_with_frontier_attempts(
+    frontier_attempts: u8,
+) -> deepseek_custom::config::settings::ValidatedProcedureRepairPolicy {
+    let frontier_backend = (frontier_attempts > 0).then(|| "fixture-frontier".to_string());
+    let backends = frontier_backend.as_ref().map(|name| {
+        HashMap::from([(
+            name.clone(),
+            BackendConfig::CodexCli {
+                model: "fixture-frontier-model".to_string(),
+                sandbox: Some("workspace-write".to_string()),
+                env: None,
+                models: None,
+            },
+        )])
+    });
     Settings {
         procedure: Some(ProcedureSettings {
             structural_retries: 1,
             local_verifier_attempts: 3,
-            frontier_attempts: 0,
+            frontier_patch_backend: frontier_backend,
+            frontier_attempts,
             ..ProcedureSettings::default()
         }),
+        backends,
         ..Settings::default()
     }
     .validated_procedure_repair_policy()
     .unwrap()
+}
+
+// covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local budget is exhausted
+#[test]
+fn three_local_failures_exhaust_the_budget_without_a_fourth_dispatch() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let root = temp_dir();
+        init_repository(&root);
+        write_file(&root, TARGET, ORIGINAL);
+        let openspec_command = write_openspec_fixture(&root);
+        let verifier = write_failing_verifier(&root);
+        let (report, preview) = save_trusted_input(&root, &openspec_command);
+        let dispatcher = ScriptedLocalDispatcher::new(
+            &root,
+            vec![candidate("first"), candidate("second"), candidate("third")],
+        );
+        let gate = RepairInputGate::new(
+            OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
+            root.clone(),
+            ProcedureReportStore::for_project(&root),
+        );
+        let runner = LocalRepairRunner::new(
+            gate,
+            root.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let run = runner
+            .run(
+                &RepairRequest {
+                    localization_run_id: report.id,
+                    preview_id: preview.id,
+                    change_id: CHANGE_ID.to_string(),
+                    task_id: TASK_ID.to_string(),
+                },
+                policy_with_frontier_attempts(2),
+                &dispatcher,
+                &[format!("\"{}\"", verifier.display())],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.outcome, LocalRepairOutcome::LocalExhausted);
+        assert_eq!(run.state.disposition(), &AttemptDisposition::LocalExhausted);
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(run.failure_digests.len(), 3);
+        assert_eq!(
+            run.failure_digests
+                .iter()
+                .map(|digest| digest.attempt_number)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(
+            run.failure_digests
+                .iter()
+                .all(|digest| digest.exit_code == Some(7))
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(TARGET)).unwrap(),
+            ORIGINAL
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    });
+}
+
+#[test]
+fn local_exhaustion_blocks_when_frontier_policy_is_disabled() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let root = temp_dir();
+        init_repository(&root);
+        write_file(&root, TARGET, ORIGINAL);
+        let openspec_command = write_openspec_fixture(&root);
+        let verifier = write_failing_verifier(&root);
+        let (report, preview) = save_trusted_input(&root, &openspec_command);
+        let dispatcher = ScriptedLocalDispatcher::new(
+            &root,
+            vec![candidate("first"), candidate("second"), candidate("third")],
+        );
+        let gate = RepairInputGate::new(
+            OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
+            root.clone(),
+            ProcedureReportStore::for_project(&root),
+        );
+        let runner = LocalRepairRunner::new(
+            gate,
+            root.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let run = runner
+            .run(
+                &RepairRequest {
+                    localization_run_id: report.id,
+                    preview_id: preview.id,
+                    change_id: CHANGE_ID.to_string(),
+                    task_id: TASK_ID.to_string(),
+                },
+                policy(),
+                &dispatcher,
+                &[format!("\"{}\"", verifier.display())],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.outcome, LocalRepairOutcome::Blocked);
+        assert!(matches!(
+            run.state.disposition(),
+            AttemptDisposition::Blocked { reason }
+                if reason == "local repair exhausted and frontier escalation is disabled"
+        ));
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(run.failure_digests.len(), 3);
+        assert_eq!(
+            std::fs::read_to_string(root.join(TARGET)).unwrap(),
+            ORIGINAL
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    });
+}
+
+// covers: deepseek-custom/bounded-repair-escalation :: Every repair starts from a fresh verification workspace :: Prior failed files cannot leak
+#[test]
+fn failed_candidate_workspaces_are_discarded_before_the_next_attempt() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let root = temp_dir();
+        init_repository(&root);
+        write_file(&root, TARGET, ORIGINAL);
+        let openspec_command = write_openspec_fixture(&root);
+        let evidence = temp_dir();
+        let counter = evidence.join("isolation-counter.txt");
+        let workspaces = evidence.join("isolation-workspaces.txt");
+        let verifier = write_isolation_verifier(&root, &counter, &workspaces);
+        let (report, preview) = save_trusted_input(&root, &openspec_command);
+        let dispatcher = ScriptedLocalDispatcher::new(
+            &root,
+            vec![candidate("first"), candidate("second"), candidate("third")],
+        );
+        let gate = RepairInputGate::new(
+            OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
+            root.clone(),
+            ProcedureReportStore::for_project(&root),
+        );
+        let runner = LocalRepairRunner::new(
+            gate,
+            root.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let run = runner
+            .run(
+                &RepairRequest {
+                    localization_run_id: report.id,
+                    preview_id: preview.id,
+                    change_id: CHANGE_ID.to_string(),
+                    task_id: TASK_ID.to_string(),
+                },
+                policy_with_frontier_attempts(2),
+                &dispatcher,
+                &[verifier],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.outcome, LocalRepairOutcome::LocalExhausted);
+        assert_eq!(std::fs::read_to_string(&counter).unwrap(), "3");
+        let attempted_workspaces = std::fs::read_to_string(&workspaces)
+            .unwrap()
+            .lines()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        assert_eq!(attempted_workspaces.len(), 3);
+        let unique_workspaces = attempted_workspaces
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique_workspaces.len(), 3);
+        assert!(
+            attempted_workspaces
+                .iter()
+                .all(|workspace| !workspace.exists()),
+            "a failed verification workspace was retained: {attempted_workspaces:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(TARGET)).unwrap(),
+            ORIGINAL
+        );
+        assert!(!root.join("repair-poison.txt").exists());
+
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(evidence).ok();
+    });
 }
 
 // covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local repair passes within budget

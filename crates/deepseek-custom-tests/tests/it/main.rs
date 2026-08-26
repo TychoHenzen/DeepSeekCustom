@@ -89,6 +89,7 @@ mod procedure_dispatch;
 mod procedure_disposable_workspace;
 mod procedure_failure_digest;
 mod procedure_frontier_patch_draft;
+mod procedure_frontier_repair;
 mod procedure_index;
 mod procedure_input;
 mod procedure_local_repair;

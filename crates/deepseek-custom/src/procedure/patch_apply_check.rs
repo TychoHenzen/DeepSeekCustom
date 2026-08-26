@@ -169,6 +169,11 @@ impl AppliedPatchWorkspace {
     pub fn apply_result(&self) -> &GitApplyResult {
         &self.apply
     }
+
+    /// Remove the failed verification workspace before another attempt starts.
+    pub fn close(self) -> Result<(), DisposableWorkspaceError> {
+        self.workspace.close()
+    }
 }
 
 /// Failure while checking patch hunks against an isolated source snapshot.

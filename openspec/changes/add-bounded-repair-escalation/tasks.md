@@ -36,14 +36,17 @@
 - [x] 3.3 Promote a local candidate that passes on attempt three or earlier and make no frontier call.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local repair passes within budget -->
-- [ ] 3.4 Exhaust the default local budget after three failed candidates and assert that no fourth local candidate is requested.
+- [x] 3.4 Exhaust the default local budget after three failed candidates and assert that no fourth local candidate is requested.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Verifier failures have a bounded local repair budget :: Local budget is exhausted -->
-- [ ] 3.5 Delete each failed verification workspace and rebuild the next attempt from the original current-state snapshot.
+- [x] 3.5 Delete each failed verification workspace and rebuild the next attempt from the original current-state snapshot.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Every repair starts from a fresh verification workspace :: Prior failed files cannot leak -->
 
 ## 4. Frontier escalation
 
-- [ ] 4.1 Build the frontier request from the same task, spec slice, targets, scratchpad, and accumulated failure digests, then dispatch it in isolation.
+- [x] 4.1 Build the frontier request from the same task, spec slice, targets, scratchpad, and accumulated failure digests, then dispatch it in isolation.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Exhausted local work escalates the same task :: Frontier receives accumulated evidence -->
 - [ ] 4.2 Pass frontier envelopes through the same allowlist, parser, verifier, baseline check, and promotion transaction, and cover a successful frontier repair.
   <!-- covers: deepseek-custom/bounded-repair-escalation :: Frontier repair is also bounded :: Frontier candidate passes -->

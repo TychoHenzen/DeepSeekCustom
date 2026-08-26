@@ -35,6 +35,7 @@ pub enum LocalRepairOutcome {
 /// Complete typed local-tier state returned to later escalation orchestration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalRepairRun {
+    pub repair_input: ValidatedRepairInput,
     pub state: AttemptState,
     pub failure_digests: Vec<FailureDigest>,
     pub outcome: LocalRepairOutcome,
@@ -110,6 +111,7 @@ impl LocalRepairRunner {
             if self.interrupted() {
                 state.interrupt()?;
                 return Ok(local_run(
+                    input,
                     state,
                     failure_digests,
                     LocalRepairOutcome::Interrupted,
@@ -132,13 +134,14 @@ impl LocalRepairRunner {
                     AttemptDisposition::Blocked { .. } => LocalRepairOutcome::Blocked,
                     _ => LocalRepairOutcome::StructuralExhausted,
                 };
-                return Ok(local_run(state, failure_digests, outcome));
+                return Ok(local_run(input, state, failure_digests, outcome));
             };
 
             if self.interrupted() {
                 drop(applied);
                 state.interrupt()?;
                 return Ok(local_run(
+                    input,
                     state,
                     failure_digests,
                     LocalRepairOutcome::Interrupted,
@@ -154,6 +157,7 @@ impl LocalRepairRunner {
                 drop(applied);
                 state.interrupt()?;
                 return Ok(local_run(
+                    input,
                     state,
                     failure_digests,
                     LocalRepairOutcome::Interrupted,
@@ -172,6 +176,7 @@ impl LocalRepairRunner {
                 drop(applied);
                 state.promote()?;
                 return Ok(local_run(
+                    input,
                     state,
                     failure_digests,
                     LocalRepairOutcome::Promoted {
@@ -187,22 +192,27 @@ impl LocalRepairRunner {
                 .expect("nonempty verifier configuration produces command evidence");
             let digest =
                 FailureDigest::from_verifier_result(attempt_number, RepairTier::Local, failed);
+            applied.close().map_err(PatchApplyCheckError::from)?;
             state.local_verifier_failure(AttemptFailureEvidence::verifier(
                 digest.command.clone(),
                 digest.exit_code,
                 digest.diagnostic.clone(),
             ))?;
             failure_digests.push(digest);
-            drop(applied);
         }
 
+        if state.disposition() == &AttemptDisposition::LocalExhausted
+            && state.policy().frontier_attempts() == 0
+        {
+            state.block("local repair exhausted and frontier escalation is disabled")?;
+        }
         let outcome = match state.disposition() {
             AttemptDisposition::LocalExhausted => LocalRepairOutcome::LocalExhausted,
             AttemptDisposition::Blocked { .. } => LocalRepairOutcome::Blocked,
             AttemptDisposition::Interrupted => LocalRepairOutcome::Interrupted,
             _ => LocalRepairOutcome::StructuralExhausted,
         };
-        Ok(local_run(state, failure_digests, outcome))
+        Ok(local_run(input, state, failure_digests, outcome))
     }
 
     async fn prepare_candidate(
@@ -248,11 +258,13 @@ impl LocalRepairRunner {
 }
 
 fn local_run(
+    repair_input: ValidatedRepairInput,
     state: AttemptState,
     failure_digests: Vec<FailureDigest>,
     outcome: LocalRepairOutcome,
 ) -> LocalRepairRun {
     LocalRepairRun {
+        repair_input,
         state,
         failure_digests,
         outcome,
