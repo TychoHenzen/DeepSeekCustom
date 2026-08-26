@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use crate::api::types::{StreamChoice, StreamChunk, ToolCall};
+use crate::api::types::{StreamChoice, StreamChunk, ToolCall, Usage};
 use crate::error::HarnessError;
 
 use super::agent_helpers::{StreamCollection, merge_tool_call};
@@ -16,7 +16,7 @@ struct ChunkAccum<'a> {
     reasoning: &'a mut String,
     tool_calls: &'a mut Vec<ToolCall>,
     finish_reason: &'a mut String,
-    usage: &'a mut Option<crate::api::types::Usage>,
+    usage: &'a mut Option<Usage>,
 }
 
 impl AgentLoop {
@@ -29,7 +29,7 @@ impl AgentLoop {
         let mut reasoning = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut finish_reason = String::new();
-        let mut usage: Option<crate::api::types::Usage> = None;
+        let mut usage: Option<Usage> = None;
         let mut interrupted = false;
 
         while let Some(chunk_result) = rx.recv().await {
