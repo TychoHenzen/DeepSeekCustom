@@ -49,7 +49,7 @@ pub trait Tool: Send + Sync {
 /// speak accepts an `image_url` content part only inside a `user` role
 /// message, never a `tool` role message. So a tool cannot put the image
 /// straight into its own result. `AgentLoop::run_turn`
-/// (`src/agent/agent_loop.rs`) reads this field after the tool result
+/// (`src/agent/agent_run.rs`) reads this field after the tool result
 /// message is pushed and, when set, appends a synthetic `Role::User`
 /// message carrying the image, mapped through the same
 /// `build_user_content` a pasted or dropped image already goes through.
