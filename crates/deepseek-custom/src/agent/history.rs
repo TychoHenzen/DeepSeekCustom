@@ -164,7 +164,7 @@ fn estimate_tokens(s: &str) -> usize {
 /// followed by the suffix itself. Matches the format `to_api_messages`
 /// emits, so token counts stay in sync with the real output.
 fn suffix_addition(suffix: &str) -> String {
-    format!("\n\n{}", suffix)
+    format!("\n\n{suffix}")
 }
 
 /// Token count a suffix adds to the system message, or zero when unset.
@@ -180,7 +180,7 @@ fn suffix_tokens(suffix: Option<&str>) -> usize {
 /// the format `to_api_messages` emits, so token counts stay in sync with
 /// the real output.
 fn working_dir_addition(working_dir: &str) -> String {
-    format!("\n\nWorking directory: {}.", working_dir)
+    format!("\n\nWorking directory: {working_dir}.")
 }
 
 /// Token count the working directory line adds to the system message, or

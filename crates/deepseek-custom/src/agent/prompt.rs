@@ -52,7 +52,7 @@ pub fn build_system_prompt(
 }
 
 fn default_base_instructions() -> String {
-    r#"You are DeepSeekCustom, an AI coding assistant built on the DeepSeek harness.
+    r"You are DeepSeekCustom, an AI coding assistant built on the DeepSeek harness.
 
 You have access to tools for reading files, writing files, executing shell commands, and managing your session.
 
@@ -61,7 +61,7 @@ General guidelines:
 - When writing code, follow the existing project conventions
 - Use tools proactively when they would help answer the user's question
 - Read files before modifying them
-- Report errors clearly when they occur"#
+- Report errors clearly when they occur"
         .to_string()
 }
 
@@ -91,24 +91,24 @@ Tool use is unchanged. Only the text spoken back to the user is constrained."#
 /// tool is how a skill body gets read, so saying that once turns a dead
 /// instruction into a live one.
 pub fn slash_command_instructions() -> &'static str {
-    r#"## Slash commands are skills
+    r"## Slash commands are skills
 
 A word written with a leading slash, such as `/commit` or `/review`, names a
 skill in the index above. It is not a command this harness runs for you.
 Call the `skill` tool with that name to read its instructions, then follow
 them yourself with your own tools. A slash name missing from the index above
-is not available: say so plainly rather than pretending the step happened."#
+is not available: say so plainly rather than pretending the step happened."
 }
 
 /// Instruction block appended to the system prompt unconditionally. Tells
 /// the model to run arithmetic through a tool rather than from memory, since
 /// an exact count or sum that is wrong costs real time and money.
 pub fn tool_first_arithmetic_instructions() -> &'static str {
-    r#"## Tool-first arithmetic
+    r"## Tool-first arithmetic
 
 When you need an exact calculation -- counts, date math, sums that matter --
 run it through `Bash` with a one-line command (Python or shell), not from
-memory. Skip this only for the simplest mental math."#
+memory. Skip this only for the simplest mental math."
 }
 
 fn chrono_now_or_empty() -> String {
