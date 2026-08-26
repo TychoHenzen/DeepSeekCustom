@@ -144,7 +144,9 @@ impl BackendFactory {
     }
 
     /// Resolve a backend by name without building it.
-    pub(crate) fn resolve(
+    /// Resolve one configured backend and optional model override for an
+    /// independent production runner.
+    pub fn resolve(
         &self,
         name: &str,
         model_override: Option<&str>,

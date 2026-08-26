@@ -6,6 +6,7 @@
 
 mod apply;
 mod bounded_repair;
+mod completed;
 mod dispatch;
 mod disposable_workspace;
 mod failure_digest;
@@ -45,6 +46,10 @@ mod verifier;
 
 pub use apply::{ProcedureApplyError, ProcedureApplyRunner};
 pub use bounded_repair::{BoundedRepairCoordinator, BoundedRepairError, BoundedRepairRun};
+pub use completed::{
+    SampledProcedureError, SampledProcedureOutcome, SampledProcedureRequest,
+    SampledProcedureRunner, SampledRepairContext,
+};
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,

@@ -486,6 +486,37 @@ fn preview_action_sends_selected_route_and_exposes_complete_evidence() {
 }
 
 #[test]
+fn sampled_action_uses_the_same_approved_baseline_and_selected_backends() {
+    let root = fixture_root("sampled-procedure-command");
+    let store = ProcedureReportStore::for_project(&root);
+    let baseline = ProcedureRunId::new();
+    store.save(&completed_run(baseline)).unwrap();
+    let mut tab = ProcedureTab::new(&settings(), &root);
+    tab.handle_progress(ProcedureProgress::RunStarted {
+        run_id: baseline,
+        change_id: "a-change".to_string(),
+        task_id: "1.1".to_string(),
+    });
+    tab.handle_progress(ProcedureProgress::RunFinished {
+        run_id: baseline,
+        disposition: ProcedureTerminalDisposition::Succeeded,
+    });
+    let mut command_rx = attach_tab(&mut tab);
+
+    tab.start_sampled_for_test();
+
+    let ProcedureCommand::Sampled { run_id, request } = command_rx.try_recv().unwrap() else {
+        panic!("Sample and apply must send the sampled procedure command")
+    };
+    assert_ne!(run_id, baseline);
+    assert_eq!(request.localization_run_id, baseline);
+    assert_eq!(request.local_backend, "ollama-b");
+    assert_eq!(request.frontier_backend, "claude");
+    assert!(tab.is_running());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn apply_is_disabled_without_verifier_commands_and_explains_missing_configuration() {
     let root = fixture_root("apply-missing-verifiers");
     let run_id = ProcedureRunId::new();

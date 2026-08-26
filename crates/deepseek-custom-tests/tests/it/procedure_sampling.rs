@@ -19,7 +19,8 @@ use deepseek_custom::procedure::{
     ProcedureCandidateMetric, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
     ProcedureRunId, ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming,
     ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, RepositoryIndexEntry,
-    RouteTier, SamplingInputGate, SamplingInputRequest, VerifierReport, apply_patch_in_workspace,
+    RouteTier, SampledProcedureOutcome, SampledProcedureRequest, SampledProcedureRunner,
+    SamplingInputGate, SamplingInputRequest, VerifierReport, apply_patch_in_workspace,
     begin_existing_bounded_repair, decode_patch_envelope, model_promotion_targets,
     promote_verified_workspace, select_localization_agreement, select_passing_local_candidate,
     sha256_json, validate_patch_boundary,
@@ -1094,5 +1095,85 @@ fn approved_local_quorum_and_verified_candidate_promote_without_frontier_dispatc
             .any(|timing| timing.stage == "promotion")
     );
 
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Local end-to-end success
+#[test]
+fn sampled_procedure_runner_composes_the_approved_input_and_local_promotion_path() {
+    let root = temp_dir("sampled-runner-local-success");
+    let command = write_fixture(&root);
+    let input = approved_sampling_input(&root, &command);
+    let reports = ProcedureReportStore::for_project(&root);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let local = ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "first")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "second")]),
+        envelope(vec![target("src/lib.rs", Some("target_symbol"), "third")]),
+    ]);
+    let frontier = ScriptedDispatcher::new(std::iter::empty());
+    let sampling = sampling_settings(3);
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(local.clone(), sampling.clone(), Arc::clone(&interrupt)),
+        frontier.clone(),
+    );
+    let runner = SampledProcedureRunner::new(
+        SamplingInputGate::new(
+            OpenSpecInput::with_command(&root, command.display().to_string()),
+            root.clone(),
+            reports.clone(),
+        ),
+        root.clone(),
+        ProcedureSettings::default().repository_index,
+        resolver,
+        sampling,
+        reports.clone(),
+        Arc::clone(&interrupt),
+    );
+    let patch = ScriptedPatchDispatcher::new(vec![
+        Ok(patch_candidate("candidate-one")),
+        Ok(patch_candidate("candidate-two")),
+        Ok(patch_candidate("candidate-three")),
+    ]);
+    let verifier = write_candidate_verifier(&root, &root.join("sampled-runner-workspaces.txt"));
+
+    let outcome = run_async_test(runner.run(
+        SampledProcedureRequest {
+            baseline_localization_run_id: input.report.id,
+            change_id: "fixture-change".to_string(),
+            task_id: "1.1".to_string(),
+            route_override: deepseek_custom::procedure::RouteOverride::ForceLocal,
+        },
+        &patch,
+        &[verifier],
+        None,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        SampledProcedureOutcome::Promoted { candidate_index: 1 }
+    );
+    assert_eq!(local.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        std::fs::read_to_string(root.join("src/lib.rs"))
+            .unwrap()
+            .contains("candidate-one")
+    );
+    let metrics = reports
+        .load_with_fingerprints(&input.report.id)
+        .unwrap()
+        .metrics
+        .unwrap();
+    assert_eq!(metrics.route.selected_tier, Some(RouteTier::Local));
+    assert_eq!(metrics.route.local_mechanical_success, Some(true));
+    assert_eq!(metrics.candidates.len(), 3);
+    assert!(
+        metrics
+            .stage_timings
+            .iter()
+            .any(|timing| timing.stage == "promotion")
+    );
     std::fs::remove_dir_all(root).ok();
 }

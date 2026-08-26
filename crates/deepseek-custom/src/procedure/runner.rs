@@ -48,6 +48,12 @@ pub enum ProcedureCommand {
         preview_id: super::PatchPreviewId,
         request: super::PatchPreviewRequest,
     },
+    /// Run the bounded agreement and verifier-selected execution path from
+    /// the currently approved localization report.
+    Sampled {
+        run_id: ProcedureRunId,
+        request: super::PatchPreviewRequest,
+    },
     Apply {
         run_id: ProcedureRunId,
         request: super::ApplyRequest,
@@ -169,6 +175,11 @@ pub enum ProcedureProgress {
     },
     PreviewFailed {
         preview_id: super::PatchPreviewId,
+        message: String,
+    },
+    SampledFinished {
+        run_id: ProcedureRunId,
+        disposition: ProcedureTerminalDisposition,
         message: String,
     },
     /// Infrastructure or backend preflight failed before a runner could

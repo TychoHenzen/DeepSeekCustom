@@ -78,5 +78,8 @@
 <!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: End-to-end escalation -->
 - [ ] 6.4 Run the same small real OpenSpec task several times and record localization agreement, candidate pass rate, selected patch size, and escalation rate.
-- [ ] 6.5 Confirm sampling never exceeds configured caps and no workspace change occurs before deterministic verification passes.
-- [ ] 6.6 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+<!-- status: blocked -->
+- [x] 6.5 Confirm sampling never exceeds configured caps and no workspace change occurs before deterministic verification passes.
+<!-- status: completed -->
+- [x] 6.6 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace`.
+<!-- status: completed -->

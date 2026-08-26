@@ -582,6 +582,28 @@ impl ProcedureTab {
                 self.active_preview = None;
                 self.preview_status = PatchPreviewStatus::Error { message };
             }
+            ProcedureProgress::SampledFinished {
+                run_id,
+                disposition,
+                message,
+            } => {
+                if !self.owns_active_run(run_id) {
+                    return;
+                }
+                if let Some(baseline) = self.latest_run.as_ref().map(|run| run.id)
+                    && let Ok(stored) = self.reports.load_with_fingerprints(&baseline)
+                {
+                    self.latest_metrics = stored.metrics;
+                    self.repair_events = stored.repair_events;
+                }
+                self.active_run = None;
+                self.status = match disposition {
+                    ProcedureTerminalDisposition::Failed { .. } => {
+                        ProcedureStatus::Error { message }
+                    }
+                    disposition => ProcedureStatus::Finished(disposition),
+                };
+            }
             ProcedureProgress::Apply { run_id, progress } => {
                 self.handle_apply_progress(run_id, *progress);
             }
@@ -704,6 +726,15 @@ impl ProcedureTab {
                 .clicked()
             {
                 self.start_preview();
+            }
+            if ui
+                .add_enabled(
+                    self.can_sampled(settings),
+                    egui::Button::new("Sample and apply"),
+                )
+                .clicked()
+            {
+                self.start_sampled();
             }
             if ui
                 .add_enabled(self.is_running(), egui::Button::new("Stop"))
@@ -1316,6 +1347,10 @@ impl ProcedureTab {
             })
     }
 
+    fn can_sampled(&self, settings: &Settings) -> bool {
+        self.can_preview() && !Self::verifier_commands(settings).is_empty()
+    }
+
     fn start_run(&mut self) {
         if !self.can_run() {
             return;
@@ -1393,6 +1428,46 @@ impl ProcedureTab {
         self.latest_preview = None;
         self.preview_report_path = None;
         self.preview_status = PatchPreviewStatus::Running;
+    }
+
+    fn start_sampled(&mut self) {
+        if !self.can_preview() {
+            return;
+        }
+        let Some(command_tx) = &self.command_tx else {
+            return;
+        };
+        let Some(localization_run_id) = self.latest_run.as_ref().map(|run| run.id) else {
+            return;
+        };
+        let run_id = ProcedureRunId::new();
+        let command = ProcedureCommand::Sampled {
+            run_id,
+            request: PatchPreviewRequest {
+                localization_run_id,
+                change_id: self.selected_change.clone(),
+                task_id: self.selected_task.clone(),
+                route_override: self.route_override,
+                local_backend: self.local_backend.clone(),
+                local_model: self.local_model.clone(),
+                frontier_backend: self.frontier_backend.clone(),
+                frontier_model: self.frontier_model.clone(),
+            },
+        };
+        if command_tx.send(command).is_err() {
+            self.status = ProcedureStatus::Error {
+                message: "procedure executor is unavailable".to_string(),
+            };
+            return;
+        }
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.store(false, Ordering::SeqCst);
+        }
+        self.active_run = Some(run_id);
+        self.repair_events.clear();
+        self.status = ProcedureStatus::Running {
+            message: "Queued sampled procedure".to_string(),
+        };
     }
 
     fn start_apply(&mut self, settings: &Settings) {
@@ -1525,6 +1600,11 @@ impl ProcedureTab {
     #[cfg(feature = "test-support")]
     pub fn start_preview_for_test(&mut self) {
         self.start_preview();
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn start_sampled_for_test(&mut self) {
+        self.start_sampled();
     }
 
     #[cfg(feature = "test-support")]

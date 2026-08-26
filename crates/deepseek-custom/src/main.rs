@@ -14,14 +14,18 @@ use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::backend::SharedFlags;
 use deepseek_custom::backend::factory::BackendFactory;
+use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
 use deepseek_custom::procedure::{
-    LocalizationDispatcher, OpenSpecInput, PatchPreviewInputGate, PatchPreviewRunner,
-    ProcedureApplyRunner, ProcedureCommand, ProcedureProgress, ProcedureReportStore,
-    ProcedureRunner, VerificationInputGate, apply_review_decision,
+    FrontierRepairDispatcher, LocalPatchDraftDispatcher, LocalizationAgreementResolver,
+    LocalizationDispatcher, LocalizationSampler, OpenSpecInput, PatchPreviewInputGate,
+    PatchPreviewRunner, ProcedureApplyRunner, ProcedureCommand, ProcedureProgress,
+    ProcedureReportStore, ProcedureRunner, SampledProcedureOutcome, SampledProcedureRequest,
+    SampledProcedureRunner, SampledRepairContext, SamplingInputGate, VerificationInputGate,
+    apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
@@ -413,6 +417,124 @@ async fn main() {
                                 decision,
                                 &tx_procedure_progress,
                             );
+                        }
+                        Some(ProcedureCommand::Sampled { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let mut local_settings = procedure_settings.clone();
+                            {
+                                let procedure = local_settings.procedure_mut();
+                                procedure.localization_backend = Some(request.local_backend.clone());
+                                procedure.local_patch_backend = Some(request.local_backend.clone());
+                                procedure.frontier_patch_backend = Some(request.frontier_backend.clone());
+                            }
+                            // Localization currently has a schema-constrained Ollama adapter.
+                            // The separately selected frontier backend remains reserved for the
+                            // bounded repair tier, which can use the CLI adapters. A second
+                            // localizer instance still enforces the one-call disagreement cap.
+                            let frontier_settings = local_settings.clone();
+                            let prepared: Result<_, String> = (|| {
+                                let local = LocalizationDispatcher::from_settings(
+                                    &local_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?;
+                                let frontier = LocalizationDispatcher::from_settings(
+                                    &frontier_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?;
+                                let patch = LocalPatchDraftDispatcher::from_resolved_backend(
+                                    preview_factory.resolve(
+                                        &request.local_backend,
+                                        Some(&request.local_model),
+                                    ).map_err(|error| error.to_string())?,
+                                    deepseek_custom::effort::Effort::None,
+                                    local_settings.max_tokens(),
+                                ).map_err(|error| error.to_string())?;
+                                let sampling = local_settings
+                                    .validated_procedure_sampling_settings()
+                                    .map_err(|error| error.to_string())?;
+                                let repair = local_settings
+                                    .validated_procedure_repair_policy()
+                                    .map_err(|error| error.to_string())?;
+                                Ok((
+                                    local, frontier, patch, sampling, repair,
+                                ))
+                            })();
+                            match prepared {
+                                Ok((local, frontier, patch, sampling, repair_policy)) => {
+                                    let limits = local_settings.procedure().map(|value| value.repository_index.clone()).unwrap_or_default();
+                                    let resolver = LocalizationAgreementResolver::new(
+                                        LocalizationSampler::new(local, sampling.clone(), Arc::clone(&procedure_task_interrupt)),
+                                        frontier,
+                                    );
+                                    let runner = SampledProcedureRunner::new(
+                                        SamplingInputGate::new(
+                                            OpenSpecInput::new(&procedure_project_root),
+                                            procedure_project_root.clone(),
+                                            ProcedureReportStore::for_project(&procedure_project_root),
+                                        ),
+                                        procedure_project_root.clone(),
+                                        limits,
+                                        resolver,
+                                        sampling,
+                                        ProcedureReportStore::for_project(&procedure_project_root),
+                                        Arc::clone(&procedure_task_interrupt),
+                                    );
+                                    let registry = Arc::new(SubagentRegistry::new());
+                                    let frontier_dispatcher = FrontierRepairDispatcher::new(
+                                        Arc::clone(&preview_factory),
+                                        procedure_project_root.clone(),
+                                        Some(request.frontier_model.clone()),
+                                        local_settings.effort(),
+                                        switch_tx_events.clone(),
+                                        registry,
+                                    );
+                                    let commands = local_settings.procedure().map(|value| value.verifier_commands.clone()).unwrap_or_default();
+                                    match runner.run(
+                                        SampledProcedureRequest {
+                                            baseline_localization_run_id: request.localization_run_id,
+                                            change_id: request.change_id,
+                                            task_id: request.task_id,
+                                            route_override: request.route_override,
+                                        },
+                                        &patch,
+                                        &commands,
+                                        Some(SampledRepairContext {
+                                            policy: repair_policy,
+                                            frontier_dispatcher: Some(&frontier_dispatcher),
+                                        }),
+                                    ).await {
+                                        Ok(outcome) => {
+                                            let (disposition, message) = match outcome {
+                                                SampledProcedureOutcome::Promoted { candidate_index } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    format!("Sampled candidate {candidate_index} passed and was promoted."),
+                                                ),
+                                                SampledProcedureOutcome::Repaired => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    "All sampled candidates failed. The bounded repair ladder promoted a verified repair.".to_string(),
+                                                ),
+                                                SampledProcedureOutcome::NeedsBoundedRepair => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Failed {
+                                                        reason: "sampled candidates did not produce a promotable repair".to_string(),
+                                                    },
+                                                    "Sampled candidates and the bounded repair ladder did not produce a promotable patch.".to_string(),
+                                                ),
+                                                SampledProcedureOutcome::Interrupted => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Interrupted,
+                                                    "Sampled procedure was interrupted.".to_string(),
+                                                ),
+                                            };
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::SampledFinished { run_id, disposition, message });
+                                        }
+                                        Err(error) => {
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                }
+                            }
                         }
                         Some(ProcedureCommand::Preview {
                             preview_id,
