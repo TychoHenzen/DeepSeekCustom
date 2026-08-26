@@ -1,87 +1,54 @@
 use crate::api::types::ToolDef;
 
-/// Builds the system prompt from base instructions, memory files, skills, and tool definitions.
+/// Assemble the system prompt from base instructions, memory files, skills,
+/// and tool definitions.
 ///
-/// This builder does not report a working directory. That line is added by
+/// This does not report a working directory. That line is added by
 /// `MessageHistory`, re-read every turn from the shared `working_dir` the
 /// tools also read from, so the model is never told a directory it built
 /// once at startup and never revisited. See `MessageHistory::set_working_dir`.
-pub struct SystemPromptBuilder {
-    base_instructions: String,
-    current_date: String,
-}
+pub fn build_system_prompt(
+    memory_fragment: Option<&str>,
+    skills_fragment: Option<&str>,
+    tools: &[ToolDef],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
 
-impl Default for SystemPromptBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+    // 1. Date. The working directory is not built in here: it is added
+    // by `MessageHistory` on every turn, see the function doc comment.
+    parts.push(format!("Today's date is {}.\n", chrono_now_or_empty()));
 
-impl SystemPromptBuilder {
-    pub fn new() -> Self {
-        Self {
-            base_instructions: default_base_instructions(),
-            current_date: chrono_now_or_empty(),
-        }
-    }
+    // 2. Base instructions
+    parts.push(default_base_instructions());
 
-    /// Set custom base instructions (overrides defaults).
-    pub fn with_base_instructions(mut self, instructions: String) -> Self {
-        self.base_instructions = instructions;
-        self
-    }
+    // 3. Tool-first arithmetic (unconditional, see Phase A of the
+    // diversity implementation plan)
+    parts.push(tool_first_arithmetic_instructions().to_string());
 
-    /// Set current date.
-    pub fn with_date(mut self, date: String) -> Self {
-        self.current_date = date;
-        self
+    // 4. Memory files (CLAUDE.md, MEMORY.md)
+    if let Some(mem) = memory_fragment
+        && !mem.is_empty()
+    {
+        parts.push(format!("\n## Project Context\n\n{mem}"));
     }
 
-    /// Assemble the full system prompt.
-    pub fn build(
-        &self,
-        memory_fragment: Option<&str>,
-        skills_fragment: Option<&str>,
-        tools: &[ToolDef],
-    ) -> String {
-        let mut parts: Vec<String> = Vec::new();
-
-        // 1. Date. The working directory is not built in here: it is added
-        // by `MessageHistory` on every turn, see the struct doc comment.
-        parts.push(format!("Today's date is {}.\n", self.current_date));
-
-        // 2. Base instructions
-        parts.push(self.base_instructions.clone());
-
-        // 3. Tool-first arithmetic (unconditional, see Phase A of the
-        // diversity implementation plan)
-        parts.push(tool_first_arithmetic_instructions().to_string());
-
-        // 4. Memory files (CLAUDE.md, MEMORY.md)
-        if let Some(mem) = memory_fragment
-            && !mem.is_empty()
-        {
-            parts.push(format!("\n## Project Context\n\n{mem}"));
-        }
-
-        // 5. Skills
-        if let Some(skills) = skills_fragment
-            && !skills.is_empty()
-        {
-            parts.push(format!("\n## Available Skills\n\n{skills}"));
-            parts.push(slash_command_instructions().to_string());
-        }
-
-        // 6. Tool definitions
-        if !tools.is_empty() {
-            let tool_json = serde_json::to_string_pretty(tools).unwrap_or_default();
-            parts.push(format!(
-                "\n## Available Tools\n\nYou have access to the following tools. Use them by responding with a tool_call:\n\n```json\n{tool_json}\n```"
-            ));
-        }
-
-        parts.join("\n")
+    // 5. Skills
+    if let Some(skills) = skills_fragment
+        && !skills.is_empty()
+    {
+        parts.push(format!("\n## Available Skills\n\n{skills}"));
+        parts.push(slash_command_instructions().to_string());
     }
+
+    // 6. Tool definitions
+    if !tools.is_empty() {
+        let tool_json = serde_json::to_string_pretty(tools).unwrap_or_default();
+        parts.push(format!(
+            "\n## Available Tools\n\nYou have access to the following tools. Use them by responding with a tool_call:\n\n```json\n{tool_json}\n```"
+        ));
+    }
+
+    parts.join("\n")
 }
 
 fn default_base_instructions() -> String {

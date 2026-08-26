@@ -11,10 +11,9 @@ use tracing::info;
 use crate::agent::agent_loop::AgentLoop;
 use crate::agent::agent_types::AgentConfig;
 use crate::agent::events::RoutedEvent;
-use crate::agent::prompt::SystemPromptBuilder;
+use crate::agent::prompt::build_system_prompt;
 use crate::api::client::ApiClient;
 use crate::api::provider::Provider;
-use crate::api::types::ToolDef;
 use crate::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
 use crate::autopilot::policy::PolicyStore;
 use crate::backend::Backend;
@@ -107,26 +106,6 @@ fn register_tools(
     factory.attach_mcp(tools);
 }
 
-/// Build the system prompt from memory and skills fragments, plus the tool
-/// definitions gathered so far.
-fn build_system_prompt(
-    memory_fragment: &str,
-    skills_fragment: &str,
-    tool_defs: &[ToolDef],
-) -> String {
-    let memory_opt = if memory_fragment.is_empty() {
-        None
-    } else {
-        Some(memory_fragment)
-    };
-    let skills_opt = if skills_fragment.is_empty() {
-        None
-    } else {
-        Some(skills_fragment)
-    };
-    SystemPromptBuilder::new().build(memory_opt, skills_opt, tool_defs)
-}
-
 /// Wire up the `AgentLoop` with all its handles and wrap it in `Backend::Api`.
 fn finish_agent(
     client: ApiClient,
@@ -198,7 +177,11 @@ fn build_api_backend(
     let memory_fragment = memory.to_system_prompt_fragment();
     let skills_fragment = format_skills_for_prompt(&skills);
     let tool_defs = tools.to_api_definitions();
-    let system_prompt = build_system_prompt(&memory_fragment, &skills_fragment, &tool_defs);
+    let system_prompt = build_system_prompt(
+        Some(memory_fragment.as_str()),
+        Some(skills_fragment.as_str()),
+        &tool_defs,
+    );
     info!(
         "system prompt built: {} chars, {} tools defined",
         system_prompt.len(),

@@ -11,7 +11,7 @@ use super::agent_helpers::{
 use super::agent_loop::AgentLoop;
 use super::events::StreamEvent;
 use super::history::MessageHistory;
-use super::prompt::SystemPromptBuilder;
+use super::prompt::build_system_prompt;
 
 impl AgentLoop {
     /// Run the agent loop for a single user message.
@@ -271,9 +271,8 @@ impl AgentLoop {
         memory_fragment: Option<&str>,
         skills_fragment: Option<&str>,
     ) {
-        let builder = SystemPromptBuilder::new();
         let tools = self.tools.to_api_definitions();
-        let prompt = builder.build(memory_fragment, skills_fragment, &tools);
+        let prompt = build_system_prompt(memory_fragment, skills_fragment, &tools);
         self.history = MessageHistory::new(prompt);
     }
 }
