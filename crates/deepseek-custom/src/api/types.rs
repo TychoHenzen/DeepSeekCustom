@@ -155,10 +155,10 @@ struct ImageUrlPayload {
 /// payload with no `data:` prefix. `media_type` is the image's MIME type,
 /// e.g. `"image/png"`.
 ///
-/// Backend-agnostic on purpose: `src/agent/agent_loop.rs`'s
+/// Backend-agnostic on purpose: `src/agent/agent_helpers.rs`'s
 /// `build_user_content` maps this onto the OpenAI `image_url` part for
 /// Ollama, or drops it with a transcript notice for DeepSeek.
-/// `src/backend/claude_cli/process.rs`'s `build_user_turn_line` maps it
+/// `src/backend/claude_cli/args.rs`'s `build_user_turn_line` maps it
 /// onto the Anthropic `image` content block instead. Each backend needs its
 /// own shape; see `docs/notes/image-support.md` for what was confirmed
 /// against each one.

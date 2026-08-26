@@ -6,7 +6,7 @@
 //! Each backend maps `Effort` to whatever its own API or CLI expects, at the
 //! edge, right before a request goes out or a child gets spawned:
 //! `ApiClient::prepare_request` in `src/api/client.rs` for DeepSeek,
-//! `build_args` in `src/backend/claude_cli/process.rs` for the `claude` CLI,
+//! `build_args` in `src/backend/claude_cli/args.rs` for the `claude` CLI,
 //! and the Codex spawn adapter. Ollama intentionally ignores this control.
 //! See phase 5 of
 //! `docs/plans/2026-08-04-long-term-roadmap.md` and
