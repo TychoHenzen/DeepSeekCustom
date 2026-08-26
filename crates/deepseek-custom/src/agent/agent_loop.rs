@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::api::client::ApiClient;
-use crate::api::types::{Content, Message, Role};
+use crate::api::types::Message;
 use crate::effort::Effort;
 
 use super::agent_helpers::context_low_water;
@@ -279,13 +279,7 @@ impl AgentLoop {
     pub fn reset(&mut self, new_system_prompt: String, new_user_prompt: String) {
         info!("agent: session reset");
         self.history = MessageHistory::new(new_system_prompt);
-        self.history.push(Message {
-            role: Role::User,
-            content: Some(Content::text(new_user_prompt)),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        });
+        self.history.push(Message::user(new_user_prompt));
         self.send_event(StreamEvent::SessionReset);
     }
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tracing::{debug, warn};
 
 use crate::api::client::ApiClient;
-use crate::api::types::{ChatRequest, Content, Message, Role};
+use crate::api::types::{ChatRequest, Message};
 use crate::effort::Effort;
 
 /// Result of a critique-and-revise run: the final text and the number of
@@ -101,20 +101,8 @@ impl StyleState {
             let request = ChatRequest {
                 model: model.to_string(),
                 messages: vec![
-                    Message {
-                        role: Role::System,
-                        content: Some(Content::text(rubric)),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning_content: None,
-                    },
-                    Message {
-                        role: Role::User,
-                        content: Some(Content::text(current.clone())),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning_content: None,
-                    },
+                    Message::system(rubric.to_string()),
+                    Message::user(current.clone()),
                 ],
                 tools: None,
                 tool_choice: None,

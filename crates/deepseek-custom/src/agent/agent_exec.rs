@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use tracing::{info, warn};
 
-use crate::api::types::{Content, Message, Role, ToolCall, Usage};
+use crate::api::types::{Message, ToolCall, Usage};
 use crate::error::HarnessError;
 use crate::tools::ToolOutput;
 
@@ -49,13 +49,8 @@ impl AgentLoop {
                 is_error: result.is_error,
             });
 
-            self.history.push(Message {
-                role: Role::Tool,
-                content: Some(Content::text(result.content)),
-                tool_calls: None,
-                tool_call_id: Some(tc.id.clone()),
-                reasoning_content: None,
-            });
+            self.history
+                .push(Message::tool_result(tc.id.clone(), result.content));
 
             if let Some(image) = result.image {
                 let built = build_user_content(

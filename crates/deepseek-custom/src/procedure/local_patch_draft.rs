@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::api::client::ApiClient;
 use crate::api::provider::Provider;
-use crate::api::types::{ChatRequest, Content, Message, Role};
+use crate::api::types::{ChatRequest, Content, Message};
 use crate::backend::resolved::ResolvedBackend;
 use crate::effort::Effort;
 
@@ -101,13 +101,7 @@ impl LocalPatchDraftDispatch for LocalPatchDraftDispatcher {
     async fn draft(&self, prompt: String) -> Result<PatchCandidate, LocalPatchDraftError> {
         let request = ChatRequest {
             model: self.model.clone(),
-            messages: vec![Message {
-                role: Role::User,
-                content: Some(Content::text(prompt)),
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning_content: None,
-            }],
+            messages: vec![Message::user(prompt)],
             tools: None,
             tool_choice: None,
             stream: false,
