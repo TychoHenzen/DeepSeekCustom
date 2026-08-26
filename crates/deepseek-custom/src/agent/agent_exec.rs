@@ -87,11 +87,7 @@ impl AgentLoop {
                         registry.close_all().await;
                     }
                     self.send_event(StreamEvent::SessionReset);
-                    ToolOutput {
-                        content: "Session reset initiated.".into(),
-                        is_error: false,
-                        image: None,
-                    }
+                    ToolOutput::ok("Session reset initiated.")
                 }
                 Err(e) => ToolOutput::error(format!("Tool error: {e}")),
             },

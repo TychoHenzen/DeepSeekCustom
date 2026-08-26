@@ -143,15 +143,11 @@ impl Tool for BashTool {
                 })
             }
             Ok(Err(e)) => Err(HarnessError::Tool(format!("bash: {e}"))),
-            Err(_elapsed) => Ok(ToolOutput {
-                content: format!(
-                    "Command timed out after {}ms\nCommand: {}",
-                    timeout_dur.as_millis(),
-                    parsed.command
-                ),
-                is_error: true,
-                image: None,
-            }),
+            Err(_elapsed) => Ok(ToolOutput::error(format!(
+                "Command timed out after {}ms\nCommand: {}",
+                timeout_dur.as_millis(),
+                parsed.command
+            ))),
         }
     }
 }
