@@ -165,7 +165,7 @@ impl Tool for EditTool {
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(e) => {
-                return Ok(tool_error(format!(
+                return Ok(ToolOutput::error(format!(
                     "Failed to read {}: {e}",
                     path.display()
                 )));
@@ -182,11 +182,11 @@ impl Tool for EditTool {
                 replacements,
                 content,
             },
-            Err(reason) => return Ok(tool_error(format!("{}: {reason}", path.display()))),
+            Err(reason) => return Ok(ToolOutput::error(format!("{}: {reason}", path.display()))),
         };
 
         if let Err(e) = std::fs::write(&path, &outcome.content) {
-            return Ok(tool_error(format!(
+            return Ok(ToolOutput::error(format!(
                 "Failed to write {}: {e}",
                 path.display()
             )));
@@ -206,16 +206,5 @@ impl Tool for EditTool {
             is_error: false,
             image: None,
         })
-    }
-}
-
-/// A failed edit comes back as tool output, never as a hard `Err`. A bad
-/// path or an ambiguous match is something the model can fix on the next
-/// turn, and ending the turn on it would throw away the rest of the work.
-fn tool_error(content: String) -> ToolOutput {
-    ToolOutput {
-        content,
-        is_error: true,
-        image: None,
     }
 }

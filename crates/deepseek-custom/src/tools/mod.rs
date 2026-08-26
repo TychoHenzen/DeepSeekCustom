@@ -64,6 +64,17 @@ pub struct ToolOutput {
     pub image: Option<ImageAttachment>,
 }
 
+impl ToolOutput {
+    /// Construct an error result with no image attachment.
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            image: None,
+        }
+    }
+}
+
 /// Registry of all available tools, keyed by name.
 ///
 /// The map sits behind an `Arc<RwLock<_>>` rather than being owned

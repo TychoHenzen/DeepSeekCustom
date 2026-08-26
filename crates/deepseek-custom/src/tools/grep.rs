@@ -228,15 +228,15 @@ impl Tool for GrepTool {
         let root = self.search_root(parsed.path.as_deref());
         let mode = match OutputMode::parse(parsed.output_mode.as_deref()) {
             Ok(mode) => mode,
-            Err(reason) => return Ok(grep_error(reason)),
+            Err(reason) => return Ok(ToolOutput::error(reason)),
         };
         let regex = match build_regex(&parsed.pattern, parsed.case_insensitive) {
             Ok(regex) => regex,
-            Err(reason) => return Ok(grep_error(reason)),
+            Err(reason) => return Ok(ToolOutput::error(reason)),
         };
         let filter = match parsed.glob.as_deref().map(glob::Pattern::new).transpose() {
             Ok(filter) => filter,
-            Err(e) => return Ok(grep_error(format!("Invalid glob filter: {e}"))),
+            Err(e) => return Ok(ToolOutput::error(format!("Invalid glob filter: {e}"))),
         };
 
         let limit = parsed.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
@@ -265,15 +265,5 @@ impl Tool for GrepTool {
             is_error: false,
             image: None,
         })
-    }
-}
-
-/// A bad pattern or a bad mode comes back as tool output, never a hard
-/// `Err`: the model can fix either on the next turn.
-fn grep_error(content: String) -> ToolOutput {
-    ToolOutput {
-        content,
-        is_error: true,
-        image: None,
     }
 }
