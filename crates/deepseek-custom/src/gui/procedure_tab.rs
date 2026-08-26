@@ -19,7 +19,7 @@ use crate::procedure::{
     ProcedureRunId, ProcedureRunMetrics, ProcedureRunRequest, ProcedureScratchpad, ProcedureStage,
     ProcedureTerminalDisposition, PromotionRecoveryEvidence, PromotionResult, RepairLadderEvent,
     RouteOverride, SnapshotProgress, StalePromotionPath, VerifierGateDisposition, VerifierReport,
-    repair_ladder_render_lines,
+    WholeChangeCommandRequest, repair_ladder_render_lines,
 };
 
 const MISSING_VERIFIER_COMMANDS_MESSAGE: &str =
@@ -730,7 +730,7 @@ impl ProcedureTab {
             if ui
                 .add_enabled(
                     self.can_sampled(settings),
-                    egui::Button::new("Sample and apply"),
+                    egui::Button::new("Run whole change"),
                 )
                 .clicked()
             {
@@ -917,6 +917,7 @@ impl ProcedureTab {
             })
             .unwrap_or_default();
         task_combo(ui, &mut self.selected_task, &tasks);
+        ui.label("Run whole change processes every unchecked task in this change. Run, Preview, and Apply use the selected task.");
 
         if backend_combo(
             ui,
@@ -1348,7 +1349,14 @@ impl ProcedureTab {
     }
 
     fn can_sampled(&self, settings: &Settings) -> bool {
-        self.can_preview() && !Self::verifier_commands(settings).is_empty()
+        !self.is_running()
+            && self.command_tx.is_some()
+            && !self.selected_change.is_empty()
+            && !self.local_backend.is_empty()
+            && !self.local_model.is_empty()
+            && !self.frontier_backend.is_empty()
+            && !self.frontier_model.is_empty()
+            && !Self::verifier_commands(settings).is_empty()
     }
 
     fn start_run(&mut self) {
@@ -1431,23 +1439,19 @@ impl ProcedureTab {
     }
 
     fn start_sampled(&mut self) {
-        if !self.can_preview() {
+        if self.command_tx.is_none() || self.selected_change.is_empty() {
             return;
         }
         let Some(command_tx) = &self.command_tx else {
             return;
         };
-        let Some(localization_run_id) = self.latest_run.as_ref().map(|run| run.id) else {
-            return;
-        };
         let run_id = ProcedureRunId::new();
-        let command = ProcedureCommand::Sampled {
+        let command = ProcedureCommand::WholeChange {
             run_id,
-            request: PatchPreviewRequest {
-                localization_run_id,
+            request: WholeChangeCommandRequest {
                 change_id: self.selected_change.clone(),
-                task_id: self.selected_task.clone(),
                 route_override: self.route_override,
+                localization_backend: self.backend.clone(),
                 local_backend: self.local_backend.clone(),
                 local_model: self.local_model.clone(),
                 frontier_backend: self.frontier_backend.clone(),
@@ -1466,7 +1470,7 @@ impl ProcedureTab {
         self.active_run = Some(run_id);
         self.repair_events.clear();
         self.status = ProcedureStatus::Running {
-            message: "Queued sampled procedure".to_string(),
+            message: "Queued whole-change procedure".to_string(),
         };
     }
 

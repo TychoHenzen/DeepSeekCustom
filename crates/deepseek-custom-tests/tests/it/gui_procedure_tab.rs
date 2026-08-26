@@ -486,32 +486,22 @@ fn preview_action_sends_selected_route_and_exposes_complete_evidence() {
 }
 
 #[test]
-fn sampled_action_uses_the_same_approved_baseline_and_selected_backends() {
+fn whole_change_action_uses_selected_change_and_backends_without_a_task_baseline() {
     let root = fixture_root("sampled-procedure-command");
-    let store = ProcedureReportStore::for_project(&root);
-    let baseline = ProcedureRunId::new();
-    store.save(&completed_run(baseline)).unwrap();
     let mut tab = ProcedureTab::new(&settings(), &root);
-    tab.handle_progress(ProcedureProgress::RunStarted {
-        run_id: baseline,
-        change_id: "a-change".to_string(),
-        task_id: "1.1".to_string(),
-    });
-    tab.handle_progress(ProcedureProgress::RunFinished {
-        run_id: baseline,
-        disposition: ProcedureTerminalDisposition::Succeeded,
-    });
     let mut command_rx = attach_tab(&mut tab);
 
     tab.start_sampled_for_test();
 
-    let ProcedureCommand::Sampled { run_id, request } = command_rx.try_recv().unwrap() else {
-        panic!("Sample and apply must send the sampled procedure command")
+    let ProcedureCommand::WholeChange { run_id, request } = command_rx.try_recv().unwrap() else {
+        panic!("Run whole change must send the whole-change procedure command")
     };
-    assert_ne!(run_id, baseline);
-    assert_eq!(request.localization_run_id, baseline);
+    assert_eq!(request.change_id, "a-change");
+    assert_eq!(request.localization_backend, "ollama-a");
     assert_eq!(request.local_backend, "ollama-b");
+    assert_ne!(request.localization_backend, request.local_backend);
     assert_eq!(request.frontier_backend, "claude");
+    assert!(!run_id.as_str().is_empty());
     assert!(tab.is_running());
     std::fs::remove_dir_all(root).ok();
 }

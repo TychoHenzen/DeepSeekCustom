@@ -122,6 +122,7 @@ pub struct ValidatedContractInput {
 }
 
 /// Reads procedure input from one OpenSpec project.
+#[derive(Clone)]
 pub struct OpenSpecInput {
     project_root: PathBuf,
     command: String,

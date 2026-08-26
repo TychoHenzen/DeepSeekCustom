@@ -74,6 +74,8 @@
 - [x] 6.2 Add a full stub-backed local-success run from OpenSpec validation through verified promotion and assert that no frontier dispatch occurs.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Local end-to-end success -->
+  <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Whole change runs sequentially -->
+  <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Whole change stops at first failed task -->
 - [x] 6.3 Add full disagreement and local-exhaustion runs that end in bounded frontier promotion or a blocked report.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: End-to-end escalation -->

@@ -48,7 +48,8 @@ pub use apply::{ProcedureApplyError, ProcedureApplyRunner};
 pub use bounded_repair::{BoundedRepairCoordinator, BoundedRepairError, BoundedRepairRun};
 pub use completed::{
     SampledProcedureError, SampledProcedureOutcome, SampledProcedureRequest,
-    SampledProcedureRunner, SampledRepairContext,
+    SampledProcedureRunner, SampledRepairContext, WholeChangeProcedureError,
+    WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
 };
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
@@ -153,7 +154,8 @@ pub use run::{
 };
 pub use runner::{
     ProcedureApplyProgress, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision,
-    ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, apply_review_decision,
+    ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, WholeChangeCommandRequest,
+    apply_review_decision,
 };
 pub use sampling::{
     LocalizationAgreement, LocalizationAgreementError, LocalizationAgreementOutcome,

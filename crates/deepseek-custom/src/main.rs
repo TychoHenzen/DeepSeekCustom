@@ -25,6 +25,7 @@ use deepseek_custom::procedure::{
     PatchPreviewRunner, ProcedureApplyRunner, ProcedureCommand, ProcedureProgress,
     ProcedureReportStore, ProcedureRunner, SampledProcedureOutcome, SampledProcedureRequest,
     SampledProcedureRunner, SampledRepairContext, SamplingInputGate, VerificationInputGate,
+    WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
     apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
@@ -522,6 +523,103 @@ async fn main() {
                                                 SampledProcedureOutcome::Interrupted => (
                                                     deepseek_custom::procedure::ProcedureTerminalDisposition::Interrupted,
                                                     "Sampled procedure was interrupted.".to_string(),
+                                                ),
+                                            };
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::SampledFinished { run_id, disposition, message });
+                                        }
+                                        Err(error) => {
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                }
+                            }
+                        }
+                        Some(ProcedureCommand::WholeChange { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let mut local_settings = procedure_settings.clone();
+                            {
+                                let procedure = local_settings.procedure_mut();
+                                procedure.localization_backend = Some(request.localization_backend.clone());
+                                procedure.local_patch_backend = Some(request.local_backend.clone());
+                                procedure.frontier_patch_backend = Some(request.frontier_backend.clone());
+                            }
+                            let frontier_settings = local_settings.clone();
+                            let prepared: Result<_, String> = (|| {
+                                let local = Arc::new(LocalizationDispatcher::from_settings(
+                                    &local_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?);
+                                let frontier = Arc::new(LocalizationDispatcher::from_settings(
+                                    &frontier_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?);
+                                let patch = LocalPatchDraftDispatcher::from_resolved_backend(
+                                    preview_factory.resolve(
+                                        &request.local_backend,
+                                        Some(&request.local_model),
+                                    ).map_err(|error| error.to_string())?,
+                                    deepseek_custom::effort::Effort::None,
+                                    local_settings.max_tokens(),
+                                ).map_err(|error| error.to_string())?;
+                                let sampling = local_settings
+                                    .validated_procedure_sampling_settings()
+                                    .map_err(|error| error.to_string())?;
+                                let repair = local_settings
+                                    .validated_procedure_repair_policy()
+                                    .map_err(|error| error.to_string())?;
+                                Ok((local, frontier, patch, sampling, repair))
+                            })();
+                            match prepared {
+                                Ok((local, frontier, patch, sampling, repair_policy)) => {
+                                    let limits = local_settings.procedure().map(|value| value.repository_index.clone()).unwrap_or_default();
+                                    let runner = WholeChangeProcedureRunner::new(
+                                        OpenSpecInput::new(&procedure_project_root),
+                                        procedure_project_root.clone(),
+                                        limits,
+                                        local,
+                                        frontier,
+                                        sampling,
+                                        ProcedureReportStore::for_project(&procedure_project_root),
+                                        Arc::clone(&procedure_task_interrupt),
+                                    );
+                                    let registry = Arc::new(SubagentRegistry::new());
+                                    let frontier_dispatcher = FrontierRepairDispatcher::new(
+                                        Arc::clone(&preview_factory),
+                                        procedure_project_root.clone(),
+                                        Some(request.frontier_model.clone()),
+                                        local_settings.effort(),
+                                        switch_tx_events.clone(),
+                                        registry,
+                                    );
+                                    let commands = local_settings.procedure().map(|value| value.verifier_commands.clone()).unwrap_or_default();
+                                    match runner.run(
+                                        WholeChangeProcedureRequest {
+                                            change_id: request.change_id,
+                                            route_override: request.route_override,
+                                        },
+                                        &patch,
+                                        &commands,
+                                        Some(SampledRepairContext {
+                                            policy: repair_policy,
+                                            frontier_dispatcher: Some(&frontier_dispatcher),
+                                        }),
+                                    ).await {
+                                        Ok(outcome) => {
+                                            let (disposition, message) = match outcome {
+                                                WholeChangeProcedureOutcome::Completed { task_ids } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    format!("Completed {} unchecked task(s): {}.", task_ids.len(), task_ids.join(", ")),
+                                                ),
+                                                WholeChangeProcedureOutcome::Failed { task_id, reason } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Failed { reason: reason.clone() },
+                                                    format!("Stopped at task {task_id}: {reason}"),
+                                                ),
+                                                WholeChangeProcedureOutcome::Interrupted { completed_task_ids } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Interrupted,
+                                                    format!("Whole-change procedure was interrupted after {} task(s).", completed_task_ids.len()),
                                                 ),
                                             };
                                             let _ = tx_procedure_progress.send(ProcedureProgress::SampledFinished { run_id, disposition, message });

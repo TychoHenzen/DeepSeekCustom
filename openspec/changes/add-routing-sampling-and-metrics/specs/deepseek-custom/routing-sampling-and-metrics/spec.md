@@ -87,6 +87,14 @@ The system SHALL execute OpenSpec validation, agreement localization, difficulty
 - **WHEN** localization reaches quorum and a local candidate passes verification
 - **THEN** the candidate is promoted without a frontier call and all stages are recorded
 
+#### Scenario: Whole change runs sequentially
+- **WHEN** the user starts the whole-change Procedure action for an active change
+- **THEN** the system processes each currently unchecked task in order, creates and approves a fresh localization report for each task, and rereads OpenSpec before the next task
+
+#### Scenario: Whole change stops at first failed task
+- **WHEN** localization, sampling, verification, promotion, or bounded repair fails for one task in a whole-change run
+- **THEN** the system reports that task and does not attempt a later unchecked task
+
 #### Scenario: End-to-end escalation
 - **WHEN** localization disagreement or exhausted local patch work triggers frontier use
 - **THEN** the frontier path remains bounded and ends with either a verified promotion or a blocked report

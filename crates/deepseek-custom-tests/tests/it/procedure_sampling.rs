@@ -19,11 +19,12 @@ use deepseek_custom::procedure::{
     ProcedureCandidateMetric, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
     ProcedureRunId, ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming,
     ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, RepositoryIndexEntry,
-    RouteTier, SampledProcedureOutcome, SampledProcedureRequest, SampledProcedureRunner,
-    SamplingInputGate, SamplingInputRequest, VerifierReport, apply_patch_in_workspace,
-    begin_existing_bounded_repair, decode_patch_envelope, model_promotion_targets,
-    promote_verified_workspace, select_localization_agreement, select_passing_local_candidate,
-    sha256_json, validate_patch_boundary,
+    RouteOverride, RouteTier, SampledProcedureOutcome, SampledProcedureRequest,
+    SampledProcedureRunner, SamplingInputGate, SamplingInputRequest, VerifierReport,
+    WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
+    apply_patch_in_workspace, begin_existing_bounded_repair, decode_patch_envelope,
+    model_promotion_targets, promote_verified_workspace, select_localization_agreement,
+    select_passing_local_candidate, sha256_json, validate_patch_boundary,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -281,6 +282,7 @@ struct CountingDispatcher {
 struct ScriptedDispatcher {
     calls: Arc<AtomicUsize>,
     responses: Arc<Mutex<VecDeque<Result<LocalizationEnvelope, LocalizationDispatchError>>>>,
+    prompts: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedDispatcher {
@@ -290,6 +292,7 @@ impl ScriptedDispatcher {
         Self {
             calls: Arc::new(AtomicUsize::new(0)),
             responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            prompts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -306,10 +309,11 @@ impl LocalizationDispatch for ScriptedDispatcher {
 
     async fn dispatch_prompt(
         &self,
-        _prompt: String,
+        prompt: String,
         _repository_index: &[RepositoryIndexEntry],
     ) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.prompts.lock().unwrap().push(prompt);
         self.responses.lock().unwrap().pop_front().unwrap()
     }
 }
@@ -1174,6 +1178,249 @@ fn sampled_procedure_runner_composes_the_approved_input_and_local_promotion_path
             .stage_timings
             .iter()
             .any(|timing| timing.stage == "promotion")
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn write_whole_change_fixture(root: &Path) -> PathBuf {
+    let command = write_fake_openspec(root);
+    let change = root.join("openspec/changes/fixture-change");
+    let spec = change.join("specs/sample/capability");
+    std::fs::create_dir_all(&spec).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn first() {}\n").unwrap();
+    std::fs::write(
+        change.join("proposal.md"),
+        "## Why\n\nRun the whole change.\n\n## What Changes\n\n- Rename two functions.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        change.join("tasks.md"),
+        "- [ ] 1.1 Rename first\n  <!-- covers: sample/capability :: Rename first :: First renamed -->\n- [ ] 1.2 Rename second\n  <!-- covers: sample/capability :: Rename second :: Second renamed -->\n",
+    )
+    .unwrap();
+    std::fs::write(
+        spec.join("spec.md"),
+        "## Purpose\n\nFixture.\n\n## ADDED Requirements\n\n### Requirement: Rename first\nThe system SHALL rename the first function.\n\n#### Scenario: First renamed\n- **WHEN** the first task runs\n- **THEN** it promotes its verified patch\n\n### Requirement: Rename second\nThe system SHALL rename the second function.\n\n#### Scenario: Second renamed\n- **WHEN** the next task runs\n- **THEN** it uses the changed repository\n",
+    )
+    .unwrap();
+    command
+}
+
+fn patch_between(previous: &str, replacement: &str) -> PatchCandidate {
+    let diff = format!(
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn {previous}() {{}}\n+pub fn {replacement}() {{}}\n"
+    );
+    decode_patch_envelope(
+        &serde_json::json!({
+            "targets": ["src/lib.rs"],
+            "rationale": "Apply one verified rename.",
+            "route": {
+                "automatic_tier": "local",
+                "effective_tier": "local",
+                "signals": [],
+                "selected_override": "automatic",
+                "overridden": false
+            },
+            "unified_diff": diff,
+        })
+        .to_string(),
+    )
+    .unwrap()
+}
+
+fn passing_verifier_command() -> String {
+    #[cfg(windows)]
+    {
+        "powershell.exe -NoProfile -Command \"exit 0\"".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "true".to_string()
+    }
+}
+
+fn whole_change_reports(root: &Path) -> Vec<serde_json::Value> {
+    let reports = root.join(".deepseek/procedure-runs");
+    let mut values = std::fs::read_dir(reports)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        })
+        .collect::<Vec<serde_json::Value>>();
+    values.sort_by_key(|value| value["selected_task"]["id"].to_string());
+    values
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Whole change runs sequentially
+#[test]
+fn whole_change_runner_approves_and_promotes_each_task_in_fresh_order() {
+    let root = temp_dir("whole-change-success");
+    let command = write_whole_change_fixture(&root);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let local = Arc::new(ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("first"), "localize first")]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first one",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first two",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first three",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("second"),
+            "localize second",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("second"),
+            "sample second one",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("second"),
+            "sample second two",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("second"),
+            "sample second three",
+        )]),
+    ]));
+    let frontier = Arc::new(ScriptedDispatcher::new(std::iter::empty()));
+    let reports = ProcedureReportStore::for_project(&root);
+    let runner = WholeChangeProcedureRunner::new(
+        OpenSpecInput::with_command(&root, command.display().to_string()),
+        root.clone(),
+        ProcedureSettings::default().repository_index,
+        Arc::clone(&local),
+        frontier,
+        sampling_settings(3),
+        reports,
+        Arc::clone(&interrupt),
+    );
+    let patch = ScriptedPatchDispatcher::new(vec![
+        Ok(patch_between("first", "second")),
+        Ok(patch_between("first", "second")),
+        Ok(patch_between("first", "second")),
+        Ok(patch_between("second", "third")),
+        Ok(patch_between("second", "third")),
+        Ok(patch_between("second", "third")),
+    ]);
+
+    let outcome = run_async_test(runner.run(
+        WholeChangeProcedureRequest {
+            change_id: "fixture-change".to_string(),
+            route_override: RouteOverride::ForceLocal,
+        },
+        &patch,
+        &[passing_verifier_command()],
+        None,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        WholeChangeProcedureOutcome::Completed {
+            task_ids: vec!["1.1".to_string(), "1.2".to_string()],
+        }
+    );
+    assert_eq!(local.calls.load(Ordering::SeqCst), 8);
+    assert!(
+        local
+            .prompts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|prompt| prompt.contains("second")),
+        "the second task must be localized against the repository after the first promotion"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn third() {}\n"
+    );
+    let reports = whole_change_reports(&root);
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["selected_task"]["id"], "1.1");
+    assert_eq!(reports[1]["selected_task"]["id"], "1.2");
+    assert!(reports.iter().all(|report| {
+        report["review_disposition"] == "approved"
+            && report["terminal_disposition"]["status"] == "awaiting_review"
+    }));
+    std::fs::remove_dir_all(root).ok();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Whole change stops at first failed task
+#[test]
+fn whole_change_runner_does_not_attempt_later_tasks_after_a_failed_task() {
+    let root = temp_dir("whole-change-failure");
+    let command = write_whole_change_fixture(&root);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let local = Arc::new(ScriptedDispatcher::new([
+        envelope(vec![target("src/lib.rs", Some("first"), "localize first")]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first one",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first two",
+        )]),
+        envelope(vec![target(
+            "src/lib.rs",
+            Some("first"),
+            "sample first three",
+        )]),
+    ]));
+    let reports = ProcedureReportStore::for_project(&root);
+    let runner = WholeChangeProcedureRunner::new(
+        OpenSpecInput::with_command(&root, command.display().to_string()),
+        root.clone(),
+        ProcedureSettings::default().repository_index,
+        Arc::clone(&local),
+        Arc::new(ScriptedDispatcher::new(std::iter::empty())),
+        sampling_settings(3),
+        reports,
+        interrupt,
+    );
+    let patch = ScriptedPatchDispatcher::new(vec![
+        Err(LocalPatchDraftError::MissingFinalContent),
+        Err(LocalPatchDraftError::MissingFinalContent),
+        Err(LocalPatchDraftError::MissingFinalContent),
+    ]);
+
+    let outcome = run_async_test(runner.run(
+        WholeChangeProcedureRequest {
+            change_id: "fixture-change".to_string(),
+            route_override: RouteOverride::ForceLocal,
+        },
+        &patch,
+        &[passing_verifier_command()],
+        None,
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        WholeChangeProcedureOutcome::Failed { ref task_id, .. } if task_id == "1.1"
+    ));
+    assert_eq!(local.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(whole_change_reports(&root).len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn first() {}\n"
     );
     std::fs::remove_dir_all(root).ok();
 }

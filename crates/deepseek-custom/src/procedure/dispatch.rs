@@ -1,6 +1,7 @@
 //! Provider preflight and one-shot dispatch for Stage 1 localization.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -35,6 +36,30 @@ pub trait LocalizationDispatch: Send + Sync {
         prompt: String,
         repository_index: &[RepositoryIndexEntry],
     ) -> Result<LocalizationEnvelope, LocalizationDispatchError>;
+}
+
+#[async_trait]
+impl<D> LocalizationDispatch for Arc<D>
+where
+    D: LocalizationDispatch + ?Sized,
+{
+    fn backend_name(&self) -> &str {
+        self.as_ref().backend_name()
+    }
+
+    fn model(&self) -> &str {
+        self.as_ref().model()
+    }
+
+    async fn dispatch_prompt(
+        &self,
+        prompt: String,
+        repository_index: &[RepositoryIndexEntry],
+    ) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
+        self.as_ref()
+            .dispatch_prompt(prompt, repository_index)
+            .await
+    }
 }
 
 /// A localization backend that passed the structured-output preflight.

@@ -32,6 +32,18 @@ pub struct ProcedureRunRequest {
     pub scratchpad: ProcedureScratchpad,
 }
 
+/// UI-selected backend settings for one whole-change sampled procedure run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WholeChangeCommandRequest {
+    pub change_id: String,
+    pub route_override: super::RouteOverride,
+    pub localization_backend: String,
+    pub local_backend: String,
+    pub local_model: String,
+    pub frontier_backend: String,
+    pub frontier_model: String,
+}
+
 /// One GUI-selected run sent to the background procedure executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcedureCommand {
@@ -53,6 +65,11 @@ pub enum ProcedureCommand {
     Sampled {
         run_id: ProcedureRunId,
         request: super::PatchPreviewRequest,
+    },
+    /// Execute every current unchecked task in one selected change.
+    WholeChange {
+        run_id: ProcedureRunId,
+        request: WholeChangeCommandRequest,
     },
     Apply {
         run_id: ProcedureRunId,
