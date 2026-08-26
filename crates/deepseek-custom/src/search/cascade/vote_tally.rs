@@ -1,5 +1,3 @@
-//! One vote group: candidates whose trimmed text matched exactly.
-
 /// One vote group: candidates whose trimmed text matched exactly.
 pub(super) struct VoteTally {
     pub(super) text: String,

@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use tracing::{debug, info, warn};
 
-use crate::api::types::{Content, ImageAttachment, Message, Role, ToolCall, Usage};
+use crate::api::types::{ChatRequest, Content, ImageAttachment, Message, Role, ToolCall, Usage};
 use crate::error::Result;
 
 use super::agent_helpers::{
@@ -11,7 +11,7 @@ use super::agent_helpers::{
 use super::agent_loop::AgentLoop;
 use super::events::StreamEvent;
 use super::history::MessageHistory;
-use super::prompt::SystemPromptBuilder;
+use super::prompt::build_system_prompt;
 
 impl AgentLoop {
     /// Run the agent loop for a single user message.
@@ -121,13 +121,13 @@ impl AgentLoop {
     }
 
     /// Build the chat request from current config and history.
-    pub(crate) fn build_chat_request(&self) -> crate::api::types::ChatRequest {
+    pub(crate) fn build_chat_request(&self) -> ChatRequest {
         let tools = self.tools.to_api_definitions();
         let messages = self.history.to_api_messages();
         let effort = self.config.effort;
         info!(effort = ?effort, "building API request");
 
-        crate::api::types::ChatRequest {
+        ChatRequest {
             model: self.config.model.clone(),
             messages,
             tools: (!tools.is_empty()).then_some(tools),
@@ -271,9 +271,8 @@ impl AgentLoop {
         memory_fragment: Option<&str>,
         skills_fragment: Option<&str>,
     ) {
-        let builder = SystemPromptBuilder::new();
         let tools = self.tools.to_api_definitions();
-        let prompt = builder.build(memory_fragment, skills_fragment, &tools);
+        let prompt = build_system_prompt(memory_fragment, skills_fragment, &tools);
         self.history = MessageHistory::new(prompt);
     }
 }

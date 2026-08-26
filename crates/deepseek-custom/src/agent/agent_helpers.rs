@@ -1,13 +1,13 @@
 use tracing::{debug, info};
 
 use crate::api::provider::Provider;
-use crate::api::types::{Content, ContentPart, ImageAttachment, Message, Role, ToolCall};
+use crate::api::types::{Content, ContentPart, ImageAttachment, Message, Role, ToolCall, Usage};
 
 /// Result of building a user's content for an API request: the `Content`
 /// to send, and an optional notice to post in the transcript when the
 /// image could not be carried on this provider.
 pub struct BuiltUserContent {
-    pub content: crate::api::types::Content,
+    pub content: Content,
     pub notice: Option<String>,
 }
 
@@ -17,7 +17,7 @@ pub(crate) struct StreamCollection {
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: String,
-    pub usage: Option<crate::api::types::Usage>,
+    pub usage: Option<Usage>,
     pub interrupted: bool,
 }
 

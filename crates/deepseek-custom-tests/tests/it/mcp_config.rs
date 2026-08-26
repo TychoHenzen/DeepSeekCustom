@@ -8,13 +8,7 @@ use deepseek_custom::mcp::config::discover_servers_from;
 use deepseek_custom::plugins::PluginRoot;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-mcpcfg-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-mcpcfg", tag)
 }
 
 fn write_mcp_json(dir: &Path, body: &str) {

@@ -153,9 +153,17 @@ impl ApiClient {
         status == 429 || status >= 500
     }
 
+    /// Millis to wait before retrying `attempt` (0-indexed): the base delay
+    /// doubled each attempt. Associated (not `&self`) so the streaming
+    /// path's connect retry can share it, keeping the backoff curve from
+    /// drifting between the non-streaming and streaming requests.
+    pub(crate) fn retry_delay_ms(base_delay_ms: u64, attempt: u32) -> u64 {
+        base_delay_ms * 2u64.pow(attempt)
+    }
+
     /// Calculate the retry delay for the given attempt (0-indexed).
     fn retry_delay(&self, attempt: u32) -> Duration {
-        Duration::from_millis(self.base_delay_ms * 2u64.pow(attempt))
+        Duration::from_millis(Self::retry_delay_ms(self.base_delay_ms, attempt))
     }
 
     /// Build the Bearer auth header value.

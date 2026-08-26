@@ -27,6 +27,22 @@ fn process_environment_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Make a scratch directory no other call can collide with: the process id
+/// and a nanosecond timestamp go into the name, so two tests running at
+/// once, or one test run twice, never share a path.
+///
+/// `prefix` names the test file that asked for it, which is what makes a
+/// directory left behind by a failed run traceable to its test.
+fn scratch_dir(prefix: &str, tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}-{tag}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 mod agent_agent_loop;
 mod agent_history;
 mod agent_prompt;

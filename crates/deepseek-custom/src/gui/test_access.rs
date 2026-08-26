@@ -5,6 +5,8 @@
 
 #![cfg(feature = "test-support")]
 
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 
 use crate::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
@@ -141,7 +143,7 @@ impl DeepSeekGui {
         &self.working_dir_display
     }
 
-    pub fn apply_working_dir_selection_for_test(&mut self, selection: Option<std::path::PathBuf>) {
+    pub fn apply_working_dir_selection_for_test(&mut self, selection: Option<PathBuf>) {
         self.apply_working_dir_selection(selection);
     }
 

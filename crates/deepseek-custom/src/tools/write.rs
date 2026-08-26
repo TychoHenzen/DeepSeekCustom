@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -14,11 +15,11 @@ use crate::tools::{Tool, ToolOutput};
 /// purpose. See the phase 4 section of
 /// `docs/plans/2026-08-04-long-term-roadmap.md`.
 pub struct WriteTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl WriteTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 }
@@ -34,7 +35,7 @@ struct WriteInput {
 /// strips the carriage returns, so writing what it sends back verbatim
 /// would flip a whole Windows file to LF and show up as a diff on every
 /// line. A new file, or one that is already LF, is written as given.
-fn match_existing_line_endings(path: &std::path::Path, content: String) -> String {
+fn match_existing_line_endings(path: &Path, content: String) -> String {
     match std::fs::read_to_string(path) {
         Ok(existing) if has_crlf(&existing) => to_crlf(&content),
         _ => content,
@@ -86,27 +87,18 @@ impl Tool for WriteTool {
             .map_err(|e| HarnessError::Tool(format!("Failed to write {}: {e}", path.display())))?;
 
         info!("write: wrote {} bytes to {}", content.len(), path.display());
-        Ok(ToolOutput {
-            content: format!("Wrote {} bytes to {}", content.len(), path.display()),
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(format!(
+            "Wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        )))
     }
 }
 
 impl WriteTool {
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared flag. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
-        let path = std::path::Path::new(file_path);
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
-        working_dir.join(path)
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
+        super::resolve_against(&self.working_dir, file_path)
     }
 }

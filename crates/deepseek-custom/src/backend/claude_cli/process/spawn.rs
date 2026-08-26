@@ -1,7 +1,7 @@
 //! Child-process spawning for `ClaudeCliDriver`. Extracted from
 //! `mod.rs` so that file stays under the 300-line bound.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
@@ -89,12 +89,7 @@ impl ClaudeCliDriver {
 
     /// Assemble a `Command` with all the flags, env vars, and pipe
     /// plumbing before spawning.
-    fn build_spawn_command(
-        &self,
-        binary: &std::path::Path,
-        args: &[String],
-        working_dir: &std::path::Path,
-    ) -> Command {
+    fn build_spawn_command(&self, binary: &Path, args: &[String], working_dir: &Path) -> Command {
         let mut command = Command::new(binary);
         command
             .args(args)
@@ -117,11 +112,7 @@ impl ClaudeCliDriver {
     /// Spawn the command, adopt the child into the process group, and
     /// take stdin/stdout/stderr handles. Reports failure as both an
     /// event and an error, same as `resolve_binary_for_spawn`.
-    fn spawn_and_take_handles(
-        &self,
-        mut command: Command,
-        binary: &std::path::Path,
-    ) -> Result<SpawnedChild> {
+    fn spawn_and_take_handles(&self, mut command: Command, binary: &Path) -> Result<SpawnedChild> {
         let mut child = command.spawn().map_err(|e| {
             let message = format!(
                 "failed to spawn claude CLI at {}: {e}; set {CLAUDE_CLI_PATH_KEY}",

@@ -85,11 +85,7 @@ impl Tool for McpTool {
                 is_error: outcome.is_error,
                 image: None,
             }),
-            Err(e) => Ok(ToolOutput {
-                content: e.to_string(),
-                is_error: true,
-                image: None,
-            }),
+            Err(e) => Ok(ToolOutput::error(e.to_string())),
         }
     }
 }

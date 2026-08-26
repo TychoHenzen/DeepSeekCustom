@@ -55,6 +55,15 @@ fn claude_cli_effort_omits_the_flag_only_for_none() {
 }
 
 #[test]
+fn codex_cli_effort_keeps_the_public_config_override_contract() {
+    assert_eq!(Effort::None.codex_cli_effort(), None);
+    assert_eq!(
+        Effort::High.codex_cli_effort(),
+        Some("-c reasoning.effort=high".to_string())
+    );
+}
+
+#[test]
 fn wire_form_is_lowercase() {
     assert_eq!(serde_json::to_string(&Effort::None).unwrap(), "\"none\"");
     assert_eq!(serde_json::to_string(&Effort::Low).unwrap(), "\"low\"");

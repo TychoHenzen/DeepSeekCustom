@@ -7,6 +7,7 @@
 //! The one thing a model decides is the text of each new candidate.
 
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -266,7 +267,7 @@ async fn dispatch_and_score_one(
 async fn score_candidate_output(
     params: &EvolveParams,
     text: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> Result<(f64, Vec<f64>), String> {
     let fitness = scoring::run_score_cmd(&params.fitness_cmd, text, work_dir)
         .await

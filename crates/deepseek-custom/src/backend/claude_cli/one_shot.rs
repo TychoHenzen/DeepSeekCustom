@@ -1,5 +1,5 @@
 //! A single `claude -p` invocation that runs to completion and exits, in
-//! place of the long-lived stdin-fed child `process.rs` owns for the GUI
+//! place of the long-lived stdin-fed child `process/` owns for the GUI
 //! session. Meant for a subagent call: one prompt in, one answer out, then
 //! the process is gone. `run_once` is an associated function on
 //! `ClaudeCliDriver` rather than a method, since a one-shot run owns nothing
@@ -47,7 +47,7 @@ pub struct OneShotResult {
 /// `--input-format` flag, since there is no streaming input to declare a
 /// format for. `effort`, when it maps to a CLI value, adds `--effort
 /// <level>` right after the base flags, the same rule `build_args` in
-/// `process.rs` applies for the long-lived driver: `Effort::None` omits
+/// `args.rs` applies for the long-lived driver: `Effort::None` omits
 /// the flag entirely, since the CLI has no `none` value of its own.
 pub fn build_one_shot_args(
     model: &str,
@@ -117,7 +117,7 @@ pub fn accumulate_one_shot_event(
 /// travels as a positional argument and no turn ever follows it. `working_dir`
 /// is where the child spawns, the harness's own working directory, not
 /// necessarily `project_root`: see `Task`'s `working_dir` override in
-/// `src/tools/task.rs`.
+/// `src/tools/task/input.rs`.
 pub fn spawn_one_shot_child(
     model: &str,
     permission_mode: Option<&str>,
@@ -135,7 +135,7 @@ pub fn spawn_one_shot_child(
     command
         .args(&args)
         .current_dir(working_dir)
-        // See the same call in `process.rs`: this covers a dropped `Child`,
+        // See the same call in `process/spawn.rs`: this covers a dropped `Child`,
         // and `process_group::adopt` below covers everything else.
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())

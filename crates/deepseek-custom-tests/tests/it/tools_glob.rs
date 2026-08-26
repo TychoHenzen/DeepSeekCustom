@@ -7,13 +7,7 @@ use deepseek_custom::tools::Tool;
 use deepseek_custom::tools::glob::GlobTool;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-glob-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-glob", tag)
 }
 
 fn tool_in(dir: &std::path::Path) -> GlobTool {

@@ -11,13 +11,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::mcp::spawn::resolve_windows;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-spawn-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-spawn", tag)
 }
 
 fn touch(dir: &Path, name: &str) {

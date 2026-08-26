@@ -29,7 +29,7 @@ impl DeepSeekGui {
     /// `Error` is deliberately not on the list. It fires mid-turn as well:
     /// a turn that carries an image onto a backend that cannot take one
     /// reports the dropped attachment this way, before the request even
-    /// goes out. See `build_user_content` in `src/agent/agent_loop.rs`.
+    /// goes out. See `build_user_content` in `src/agent/agent_helpers.rs`.
     /// Treating it as terminal would end the turn on a notice.
     ///
     /// One iteration's `TurnEnd` does not end an autopilot run. The next

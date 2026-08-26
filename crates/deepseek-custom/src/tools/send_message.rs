@@ -98,26 +98,16 @@ impl Tool for SendMessageTool {
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput> {
         let parsed: SendMessageInput = match serde_json::from_value(input) {
             Ok(parsed) => parsed,
-            Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Invalid SendMessage input: {e}"),
-                    is_error: true,
-                    image: None,
-                });
-            }
+            Err(e) => return Ok(ToolOutput::error(format!("Invalid SendMessage input: {e}"))),
         };
 
         let id = match SubagentId::from_str(&parsed.session_id) {
             Ok(id) => id,
             Err(_) => {
-                return Ok(ToolOutput {
-                    content: format!(
-                        "Invalid SendMessage input: \"{}\" is not a valid session id",
-                        parsed.session_id
-                    ),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Invalid SendMessage input: \"{}\" is not a valid session id",
+                    parsed.session_id
+                )));
             }
         };
 
@@ -131,16 +121,8 @@ impl Tool for SendMessageTool {
             )
             .await
         {
-            Ok(text) => Ok(ToolOutput {
-                content: text,
-                is_error: false,
-                image: None,
-            }),
-            Err(e) => Ok(ToolOutput {
-                content: format!("SendMessage failed: {e}"),
-                is_error: true,
-                image: None,
-            }),
+            Ok(text) => Ok(ToolOutput::ok(text)),
+            Err(e) => Ok(ToolOutput::error(format!("SendMessage failed: {e}"))),
         }
     }
 }

@@ -16,11 +16,12 @@ pub mod task;
 pub mod write;
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
-use crate::api::types::{ImageAttachment, ToolDef};
+use crate::api::types::{FunctionDef, ImageAttachment, ToolDef};
 use crate::config::settings::PermissionsConfig;
 use crate::error::Result;
 
@@ -48,7 +49,7 @@ pub trait Tool: Send + Sync {
 /// speak accepts an `image_url` content part only inside a `user` role
 /// message, never a `tool` role message. So a tool cannot put the image
 /// straight into its own result. `AgentLoop::run_turn`
-/// (`src/agent/agent_loop.rs`) reads this field after the tool result
+/// (`src/agent/agent_run.rs`) reads this field after the tool result
 /// message is pushed and, when set, appends a synthetic `Role::User`
 /// message carrying the image, mapped through the same
 /// `build_user_content` a pasted or dropped image already goes through.
@@ -61,6 +62,26 @@ pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
     pub image: Option<ImageAttachment>,
+}
+
+impl ToolOutput {
+    /// Construct an error result with no image attachment.
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            image: None,
+        }
+    }
+
+    /// Construct a successful result with no image attachment.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            image: None,
+        }
+    }
 }
 
 /// Registry of all available tools, keyed by name.
@@ -111,7 +132,7 @@ impl ToolRegistry {
             .values()
             .map(|t| ToolDef {
                 tool_type: "function".to_string(),
-                function: crate::api::types::FunctionDef {
+                function: FunctionDef {
                     name: t.name().to_string(),
                     description: t.description().to_string(),
                     parameters: t.input_schema(),
@@ -187,6 +208,25 @@ impl WeakToolRegistry {
     pub fn upgrade(&self) -> Option<ToolRegistry> {
         self.tools.upgrade().map(|tools| ToolRegistry { tools })
     }
+}
+
+/// Resolve `path` against the working directory, read fresh from the
+/// shared handle on every call. An absolute path is used as given.
+///
+/// Every tool that takes a path from the model resolves it this way, so
+/// the answer follows a `cd` the model made earlier in the same turn.
+/// Each such tool keeps its own `resolve_path` wrapper over this, so one
+/// that ever needs different resolution stops delegating on its own.
+fn resolve_against(working_dir: &Mutex<PathBuf>, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let working_dir = working_dir
+        .lock()
+        .expect("working_dir mutex poisoned")
+        .clone();
+    working_dir.join(path)
 }
 
 /// Check if a tool name matches a pattern (exact or wildcard suffix).

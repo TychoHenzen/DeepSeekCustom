@@ -90,7 +90,7 @@ async fn connect_stream_with_retry(
                     let body = response.text().await.unwrap_or_default();
                     return Err(HarnessError::Api(format!("API error {status}: {body}")));
                 }
-                let delay_ms = base_delay_ms * 2u64.pow(attempt);
+                let delay_ms = ApiClient::retry_delay_ms(base_delay_ms, attempt);
                 warn!(
                     "stream connect: retry {}/{}, status={}, delay={}ms",
                     attempt + 1,
@@ -104,7 +104,7 @@ async fn connect_stream_with_retry(
                 if attempt + 1 >= max_retries {
                     return Err(HarnessError::Api(format!("HTTP request failed: {e}")));
                 }
-                let delay_ms = base_delay_ms * 2u64.pow(attempt);
+                let delay_ms = ApiClient::retry_delay_ms(base_delay_ms, attempt);
                 warn!(
                     "stream connect: retry {}/{}, error={}, delay={}ms",
                     attempt + 1,

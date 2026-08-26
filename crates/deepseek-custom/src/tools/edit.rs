@@ -12,6 +12,7 @@
 //! must appear exactly once unless `replace_all` is set, and a match that
 //! is missing or ambiguous is a tool error rather than a guess.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,27 +28,18 @@ use crate::tools::{Tool, ToolOutput};
 /// `write` do. There is no path sandbox, on purpose. See the working
 /// directory section of `CLAUDE.md`.
 pub struct EditTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl EditTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared handle. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
-        let path = std::path::Path::new(file_path);
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
-        working_dir.join(path)
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
+        super::resolve_against(&self.working_dir, file_path)
     }
 }
 
@@ -173,7 +165,7 @@ impl Tool for EditTool {
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(e) => {
-                return Ok(tool_error(format!(
+                return Ok(ToolOutput::error(format!(
                     "Failed to read {}: {e}",
                     path.display()
                 )));
@@ -190,11 +182,11 @@ impl Tool for EditTool {
                 replacements,
                 content,
             },
-            Err(reason) => return Ok(tool_error(format!("{}: {reason}", path.display()))),
+            Err(reason) => return Ok(ToolOutput::error(format!("{}: {reason}", path.display()))),
         };
 
         if let Err(e) = std::fs::write(&path, &outcome.content) {
-            return Ok(tool_error(format!(
+            return Ok(ToolOutput::error(format!(
                 "Failed to write {}: {e}",
                 path.display()
             )));
@@ -205,25 +197,10 @@ impl Tool for EditTool {
             outcome.replacements,
             path.display()
         );
-        Ok(ToolOutput {
-            content: format!(
-                "Made {} replacement(s) in {}",
-                outcome.replacements,
-                path.display()
-            ),
-            is_error: false,
-            image: None,
-        })
-    }
-}
-
-/// A failed edit comes back as tool output, never as a hard `Err`. A bad
-/// path or an ambiguous match is something the model can fix on the next
-/// turn, and ending the turn on it would throw away the rest of the work.
-fn tool_error(content: String) -> ToolOutput {
-    ToolOutput {
-        content,
-        is_error: true,
-        image: None,
+        Ok(ToolOutput::ok(format!(
+            "Made {} replacement(s) in {}",
+            outcome.replacements,
+            path.display()
+        )))
     }
 }

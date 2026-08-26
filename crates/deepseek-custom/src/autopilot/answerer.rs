@@ -10,9 +10,10 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 
 use crate::api::client::ApiClient;
-use crate::api::types::{ChatRequest, Content, Message};
+use crate::api::types::{ChatRequest, ChatResponse, Content, Message};
 use crate::autopilot::policy::{PolicyStore, format_policy_prompt_section};
-use crate::autopilot::question::{Answer, AskInput};
+use crate::autopilot::question::{Answer, AskInput, Question};
+use crate::effort::Effort;
 use crate::error::Result;
 use crate::json_reply::extract_array_span;
 
@@ -73,29 +74,11 @@ impl QuestionAnswerer for PolicyAnswerer {
             thinking_mode: None,
             reasoning_effort: None,
             response_format: None,
-            effort: Some(crate::effort::Effort::None),
+            effort: Some(Effort::None),
         };
 
         let parsed = match self.client.chat(&req).await {
-            Ok(response) => match response.choices.first() {
-                Some(choice) => match choice.message.content.as_ref().and_then(Content::as_text) {
-                    Some(text) => match parse_reply(text) {
-                        Some(answers) => Some(answers),
-                        None => {
-                            warn!("autopilot answerer: failed to parse model reply into answers");
-                            None
-                        }
-                    },
-                    None => {
-                        warn!("autopilot answerer: no content in response");
-                        None
-                    }
-                },
-                None => {
-                    warn!("autopilot answerer: empty choices in response");
-                    None
-                }
-            },
+            Ok(response) => parse_response(&response),
             Err(e) => {
                 warn!("autopilot answerer: request failed: {e}");
                 None
@@ -224,7 +207,7 @@ pub fn resolve_answers(parsed: Option<Vec<Answer>>, input: &AskInput) -> Vec<Ans
 
 /// Validate one parsed answer against its question and fall back to the
 /// first option when the answer is invalid.
-fn resolve_one(question: &crate::autopilot::question::Question, answer: &Answer) -> Answer {
+fn resolve_one(question: &Question, answer: &Answer) -> Answer {
     if answer.labels.is_empty() {
         warn!(
             "autopilot answerer: question '{}' got no labels, falling back to first option",
@@ -264,7 +247,7 @@ fn resolve_one(question: &crate::autopilot::question::Question, answer: &Answer)
 }
 
 /// The first-option fallback answer for one question.
-fn fallback_one(question: &crate::autopilot::question::Question) -> Answer {
+fn fallback_one(question: &Question) -> Answer {
     Answer {
         question: question.question.clone(),
         labels: vec![question.options[0].label.clone()],
@@ -274,4 +257,22 @@ fn fallback_one(question: &crate::autopilot::question::Question) -> Answer {
 /// The first-option fallback answer for every question in `input`.
 fn fallback_all(input: &AskInput) -> Vec<Answer> {
     input.questions.iter().map(fallback_one).collect()
+}
+
+/// Extract and parse the text reply from a chat response, logging the
+/// specific failure point when the response carries no usable text.
+fn parse_response(response: &ChatResponse) -> Option<Vec<Answer>> {
+    let Some(choice) = response.choices.first() else {
+        warn!("autopilot answerer: empty choices in response");
+        return None;
+    };
+    let Some(text) = choice.message.content.as_ref().and_then(Content::as_text) else {
+        warn!("autopilot answerer: no content in response");
+        return None;
+    };
+    let parsed = parse_reply(text);
+    if parsed.is_none() {
+        warn!("autopilot answerer: failed to parse model reply into answers");
+    }
+    parsed
 }

@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
@@ -442,7 +442,7 @@ fn normalize_exclusion(path: &Path) -> Result<Vec<String>, DisposableWorkspaceEr
     let components = path
         .components()
         .map(|component| match component {
-            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
             _ => None,
         })
         .collect::<Option<Vec<_>>>();

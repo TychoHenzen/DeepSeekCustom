@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,11 +14,11 @@ use crate::tools::{Tool, ToolOutput};
 /// point outside `project_root`, on purpose. See the phase 4 section of
 /// `docs/plans/2026-08-04-long-term-roadmap.md`.
 pub struct ReadTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl ReadTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 }
@@ -93,36 +94,23 @@ impl Tool for ReadTool {
             String::new()
         };
 
-        Ok(ToolOutput {
-            content: if output.is_empty() {
-                format!(
-                    "(empty - {} total lines, requested offset={})",
-                    total_lines,
-                    start + 1
-                )
-            } else {
-                format!("{output}\n[lines {}-{} of {total_lines}]", start + 1, end)
-            },
-            is_error: false,
-            image: None,
-        })
+        Ok(ToolOutput::ok(if output.is_empty() {
+            format!(
+                "(empty - {} total lines, requested offset={})",
+                total_lines,
+                start + 1
+            )
+        } else {
+            format!("{output}\n[lines {}-{} of {total_lines}]", start + 1, end)
+        }))
     }
 }
 
 impl ReadTool {
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared flag. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
-        let path = std::path::Path::new(file_path);
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
-        working_dir.join(path)
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
+        super::resolve_against(&self.working_dir, file_path)
     }
 }
 

@@ -762,9 +762,10 @@ fn rejected_attempt(
 }
 
 fn unique_paths(targets: &[super::LocalizationTarget]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut paths = Vec::new();
     for target in targets {
-        if !paths.contains(&target.path) {
+        if seen.insert(target.path.as_str()) {
             paths.push(target.path.clone());
         }
     }

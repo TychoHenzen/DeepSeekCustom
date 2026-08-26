@@ -50,13 +50,7 @@ fn make_gui() -> DeepSeekGui {
 /// Create a uniquely named directory under the system temp dir, so a
 /// test that saves never touches the repository's real settings.json.
 fn unique_temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-gui-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-gui", tag)
 }
 
 /// Build a GUI from a specific settings value, so a test can check how

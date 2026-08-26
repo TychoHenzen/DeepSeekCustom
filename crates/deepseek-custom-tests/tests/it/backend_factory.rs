@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use deepseek_custom::agent::events::SubagentId;
 use deepseek_custom::api::provider::Provider;
-use deepseek_custom::backend::factory::{BackendFactory, may_dispatch_for_test};
+use deepseek_custom::backend::factory::{BackendFactory, may_dispatch};
 use deepseek_custom::backend::resolved::{ResolvedBackend, resolve_active_backend};
 use deepseek_custom::backend::stub::StubBackend;
 use deepseek_custom::backend::{Backend, SharedFlags};
@@ -358,10 +358,10 @@ fn may_dispatch_true_below_the_limit_false_at_it() {
     // Default depth limit is 2. The main session (depth 0) and a
     // depth-1 subagent may both dispatch further. A depth-2 subagent,
     // sitting at the limit, may not. Neither may one past it.
-    assert!(may_dispatch_for_test(0, 2));
-    assert!(may_dispatch_for_test(1, 2));
-    assert!(!may_dispatch_for_test(2, 2));
-    assert!(!may_dispatch_for_test(3, 2));
+    assert!(may_dispatch(0, 2));
+    assert!(may_dispatch(1, 2));
+    assert!(!may_dispatch(2, 2));
+    assert!(!may_dispatch(3, 2));
 }
 
 fn api_backend_settings() -> Settings {

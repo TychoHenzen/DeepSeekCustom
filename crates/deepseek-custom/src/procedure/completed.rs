@@ -5,7 +5,7 @@
 //! providing one execution path that records sampling and candidate evidence.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -618,7 +618,7 @@ fn sampled_patch_prompt(
     contract: &str,
     targets: &[String],
     route: &RouteDecision,
-    project_root: &std::path::Path,
+    project_root: &Path,
 ) -> Result<String, SampledProcedureError> {
     let mut source = String::new();
     for target in targets {
@@ -661,7 +661,7 @@ fn candidate_metrics(
 }
 
 fn promote_selected(
-    project_root: &std::path::Path,
+    project_root: &Path,
     targets: &[String],
     patch: &super::PatchCandidate,
 ) -> Result<(), SampledProcedureError> {

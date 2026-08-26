@@ -2,7 +2,7 @@
 //!
 //! `Api`-only.  Holds every decision that must never depend on a model:
 //! which candidates survive, which parent breeds next, and when an island
-//! resets.  The dispatch layer in `tools/evolve.rs` handles the one piece
+//! resets.  The dispatch layer in `src/search/evolve/mod.rs` handles the one piece
 //! that a model owns (writing each new candidate's text), and calls into
 //! this module.  Nothing here touches the network, a child process, or a
 //! model call.

@@ -33,6 +33,8 @@ use crate::agent::events::{RoutedEvent, StreamEvent};
 #[cfg(feature = "test-support")]
 use crate::agent::repeat::RepeatTarget;
 #[cfg(feature = "test-support")]
+use crate::backend::SharedFlags;
+#[cfg(feature = "test-support")]
 use crate::error::{HarnessError, Result};
 
 /// One scripted answer for a turn. `Text` is a normal reply. `Error` makes
@@ -156,7 +158,7 @@ impl StubBackend {
     /// Replace all six shared handles with the ones a caller already
     /// holds, matching what the two real backends do. See
     /// `Backend::adopt_flags`.
-    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+    pub fn adopt_flags(&mut self, flags: &SharedFlags) {
         self.interrupt_flag = Arc::clone(&flags.interrupt);
         self.effort_flag = Arc::clone(&flags.effort);
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);

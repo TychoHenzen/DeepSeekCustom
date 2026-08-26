@@ -5,6 +5,7 @@
 //! `bash` instead, once per lookup, each one paying process startup and
 //! shell quoting to answer "where is this symbol".
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -53,24 +54,22 @@ impl OutputMode {
 /// Regular expression search under the working directory. Reads the shared
 /// working directory fresh on every call, like the other file tools.
 pub struct GrepTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    working_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl GrepTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { working_dir }
     }
 
-    fn search_root(&self, path: Option<&str>) -> std::path::PathBuf {
+    fn search_root(&self, path: Option<&str>) -> PathBuf {
         let working_dir = self
             .working_dir
             .lock()
             .expect("working_dir mutex poisoned")
             .clone();
         match path {
-            Some(path) if std::path::Path::new(path).is_absolute() => {
-                std::path::PathBuf::from(path)
-            }
+            Some(path) if Path::new(path).is_absolute() => PathBuf::from(path),
             Some(path) => working_dir.join(path),
             None => working_dir,
         }
@@ -105,7 +104,7 @@ fn is_searchable(entry: &walkdir::DirEntry, filter: Option<&glob::Pattern>) -> b
 
 /// Every match in one file, formatted for `mode`. A file that is not valid
 /// UTF-8 yields nothing: it is a binary, and this tool searches text.
-fn search_one_file(path: &std::path::Path, regex: &regex::Regex, mode: OutputMode) -> Vec<String> {
+fn search_one_file(path: &Path, regex: &regex::Regex, mode: OutputMode) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -134,7 +133,7 @@ fn search_one_file(path: &std::path::Path, regex: &regex::Regex, mode: OutputMod
 /// in hand. A directory the walker cannot read is skipped rather than
 /// failing the search.
 fn search_tree(
-    root: &std::path::Path,
+    root: &Path,
     regex: &regex::Regex,
     filter: Option<&glob::Pattern>,
     mode: OutputMode,
@@ -229,15 +228,15 @@ impl Tool for GrepTool {
         let root = self.search_root(parsed.path.as_deref());
         let mode = match OutputMode::parse(parsed.output_mode.as_deref()) {
             Ok(mode) => mode,
-            Err(reason) => return Ok(grep_error(reason)),
+            Err(reason) => return Ok(ToolOutput::error(reason)),
         };
         let regex = match build_regex(&parsed.pattern, parsed.case_insensitive) {
             Ok(regex) => regex,
-            Err(reason) => return Ok(grep_error(reason)),
+            Err(reason) => return Ok(ToolOutput::error(reason)),
         };
         let filter = match parsed.glob.as_deref().map(glob::Pattern::new).transpose() {
             Ok(filter) => filter,
-            Err(e) => return Ok(grep_error(format!("Invalid glob filter: {e}"))),
+            Err(e) => return Ok(ToolOutput::error(format!("Invalid glob filter: {e}"))),
         };
 
         let limit = parsed.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
@@ -250,31 +249,17 @@ impl Tool for GrepTool {
             parsed.pattern
         );
         if lines.is_empty() {
-            return Ok(ToolOutput {
-                content: format!("No matches for {} under {}", parsed.pattern, root.display()),
-                is_error: false,
-                image: None,
-            });
+            return Ok(ToolOutput::ok(format!(
+                "No matches for {} under {}",
+                parsed.pattern,
+                root.display()
+            )));
         }
         let capped = if lines.len() == limit {
             format!("\n(capped at {limit} results)")
         } else {
             String::new()
         };
-        Ok(ToolOutput {
-            content: format!("{}{capped}", lines.join("\n")),
-            is_error: false,
-            image: None,
-        })
-    }
-}
-
-/// A bad pattern or a bad mode comes back as tool output, never a hard
-/// `Err`: the model can fix either on the next turn.
-fn grep_error(content: String) -> ToolOutput {
-    ToolOutput {
-        content,
-        is_error: true,
-        image: None,
+        Ok(ToolOutput::ok(format!("{}{capped}", lines.join("\n"))))
     }
 }

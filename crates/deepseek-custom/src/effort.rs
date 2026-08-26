@@ -6,7 +6,7 @@
 //! Each backend maps `Effort` to whatever its own API or CLI expects, at the
 //! edge, right before a request goes out or a child gets spawned:
 //! `ApiClient::prepare_request` in `src/api/client.rs` for DeepSeek,
-//! `build_args` in `src/backend/claude_cli/process.rs` for the `claude` CLI,
+//! `build_args` in `src/backend/claude_cli/args.rs` for the `claude` CLI,
 //! and the Codex spawn adapter. Ollama intentionally ignores this control.
 //! See phase 5 of
 //! `docs/plans/2026-08-04-long-term-roadmap.md` and
@@ -99,12 +99,18 @@ impl Effort {
     /// The `codex` CLI config override for this level.
     /// `None` omits the override entirely.
     pub fn codex_cli_effort(&self) -> Option<String> {
+        self.codex_cli_effort_level()
+            .map(|level| format!("-c reasoning.effort={level}"))
+    }
+
+    /// The bare reasoning level used by the Codex argument builder.
+    pub(crate) fn codex_cli_effort_level(self) -> Option<&'static str> {
         match self {
             Effort::None => None,
-            Effort::Low => Some("-c reasoning.effort=low".to_owned()),
-            Effort::Medium => Some("-c reasoning.effort=medium".to_owned()),
-            Effort::High => Some("-c reasoning.effort=high".to_owned()),
-            Effort::Max => Some("-c reasoning.effort=max".to_owned()),
+            Effort::Low => Some("low"),
+            Effort::Medium => Some("medium"),
+            Effort::High => Some("high"),
+            Effort::Max => Some("max"),
         }
     }
 }

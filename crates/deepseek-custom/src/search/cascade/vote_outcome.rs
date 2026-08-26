@@ -1,5 +1,3 @@
-//! The outcome of voting across candidates.
-
 use super::vote_tally::VoteTally;
 
 /// The outcome of voting across candidates.

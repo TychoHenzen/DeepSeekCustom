@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(feature = "test-support")]
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -50,12 +52,9 @@ pub(super) fn build_args(
         args.push(model.to_owned());
     }
 
-    if let Some(override_arg) = effort.codex_cli_effort() {
-        let value = override_arg
-            .strip_prefix("-c ")
-            .unwrap_or(override_arg.as_str());
+    if let Some(level) = effort.codex_cli_effort_level() {
         args.push("-c".to_owned());
-        args.push(value.to_owned());
+        args.push(format!("reasoning.effort={level}"));
     }
 
     args.push(prompt.to_owned());
@@ -90,10 +89,7 @@ fn build_command(args: &[String], working_dir: &Path) -> Command {
 
 /// Returns the directory configured on the real spawn command.
 #[cfg(feature = "test-support")]
-pub fn command_working_dir_for_test(
-    args: &[String],
-    working_dir: &Path,
-) -> Option<std::path::PathBuf> {
+pub fn command_working_dir_for_test(args: &[String], working_dir: &Path) -> Option<PathBuf> {
     build_command(args, working_dir)
         .as_std()
         .get_current_dir()

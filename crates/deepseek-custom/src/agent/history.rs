@@ -1,6 +1,6 @@
 use crate::agent::pruning;
 pub use crate::agent::pruning::PruneReport;
-use crate::api::types::{Content, Message};
+use crate::api::types::{Content, ContentPart, Message, Role};
 
 /// Thread-safe conversation history with approximate token tracking.
 pub struct MessageHistory {
@@ -164,7 +164,7 @@ fn estimate_tokens(s: &str) -> usize {
 /// followed by the suffix itself. Matches the format `to_api_messages`
 /// emits, so token counts stay in sync with the real output.
 fn suffix_addition(suffix: &str) -> String {
-    format!("\n\n{}", suffix)
+    format!("\n\n{suffix}")
 }
 
 /// Token count a suffix adds to the system message, or zero when unset.
@@ -180,7 +180,7 @@ fn suffix_tokens(suffix: Option<&str>) -> usize {
 /// the format `to_api_messages` emits, so token counts stay in sync with
 /// the real output.
 fn working_dir_addition(working_dir: &str) -> String {
-    format!("\n\nWorking directory: {}.", working_dir)
+    format!("\n\nWorking directory: {working_dir}.")
 }
 
 /// Token count the working directory line adds to the system message, or
@@ -233,8 +233,8 @@ fn content_chars(content: &Content) -> usize {
         Content::Parts(parts) => parts
             .iter()
             .map(|p| match p {
-                crate::api::types::ContentPart::Text { text } => text.chars().count(),
-                crate::api::types::ContentPart::ImageUrl { url } => url.chars().count(),
+                ContentPart::Text { text } => text.chars().count(),
+                ContentPart::ImageUrl { url } => url.chars().count(),
             })
             .sum(),
     }
@@ -244,7 +244,7 @@ fn content_chars(content: &Content) -> usize {
 impl Message {
     pub fn system(content: String) -> Self {
         Self {
-            role: crate::api::types::Role::System,
+            role: Role::System,
             content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
@@ -254,7 +254,7 @@ impl Message {
 
     pub fn user(content: String) -> Self {
         Self {
-            role: crate::api::types::Role::User,
+            role: Role::User,
             content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
@@ -264,7 +264,7 @@ impl Message {
 
     pub fn assistant(content: String) -> Self {
         Self {
-            role: crate::api::types::Role::Assistant,
+            role: Role::Assistant,
             content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: None,
@@ -274,7 +274,7 @@ impl Message {
 
     pub fn tool_result(tool_call_id: String, content: String) -> Self {
         Self {
-            role: crate::api::types::Role::Tool,
+            role: Role::Tool,
             content: Some(Content::text(content)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id),

@@ -29,9 +29,11 @@ fn hook_event_serializes_session_start() {
 
 #[test]
 fn hook_result_deserializes_approved() {
-    let json = r#"{"approved": false, "message": "blocked"}"#;
+    let json =
+        r#"{"approved": false, "modified_input": {"command": "safe"}, "message": "blocked"}"#;
     let result: HookResult = serde_json::from_str(json).unwrap();
     assert!(!result.approved);
+    assert_eq!(result.modified_input.unwrap()["command"], "safe");
     assert_eq!(result.message.unwrap(), "blocked");
 }
 

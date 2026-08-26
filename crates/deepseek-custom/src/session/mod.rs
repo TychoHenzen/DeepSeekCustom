@@ -1,9 +1,9 @@
 //! Plain data types for one saved conversation.
 //!
-//! This module holds the shapes that will eventually be written to and
-//! read from disk under `.deepseek/sessions/` (a later step, not this
-//! one). No disk IO and no GUI wiring happen here, only the types and
-//! the title derivation logic that later steps depend on.
+//! This file holds the shapes and the title derivation logic, and does no
+//! disk IO of its own. `store` below reads and writes them as one JSON
+//! file per session under `.deepseek/sessions/`, and
+//! `src/gui/session_state.rs` drives the saving and loading from the GUI.
 
 use crate::api::types::{Content, Message, Role};
 use crate::gui::transcript::{BlockKind, Transcript};
