@@ -16,7 +16,8 @@ pub mod task;
 pub mod write;
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
@@ -196,11 +197,8 @@ impl WeakToolRegistry {
 /// the answer follows a `cd` the model made earlier in the same turn.
 /// Each such tool keeps its own `resolve_path` wrapper over this, so one
 /// that ever needs different resolution stops delegating on its own.
-fn resolve_against(
-    working_dir: &std::sync::Mutex<std::path::PathBuf>,
-    path: &str,
-) -> std::path::PathBuf {
-    let path = std::path::Path::new(path);
+fn resolve_against(working_dir: &Mutex<PathBuf>, path: &str) -> PathBuf {
+    let path = Path::new(path);
     if path.is_absolute() {
         return path.to_path_buf();
     }
