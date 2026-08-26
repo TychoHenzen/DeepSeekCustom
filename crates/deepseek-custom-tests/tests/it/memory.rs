@@ -49,3 +49,17 @@ fn formatting_includes_non_empty() {
     assert!(fragment.contains("Remember X"));
     assert!(!fragment.contains("## Project Memory")); // None → excluded
 }
+
+#[test]
+fn reload_reads_changed_project_memory_from_disk() {
+    let root = super::scratch_dir("dsc-memory", "reload");
+    let path = root.join("MEMORY.md");
+    std::fs::write(&path, "before").unwrap();
+    let store = MemoryStore::load(&root);
+
+    std::fs::write(&path, "after").unwrap();
+    let reloaded = store.reload(&root);
+
+    assert_eq!(reloaded.project_memory_md.as_deref(), Some("after"));
+    let _ = std::fs::remove_dir_all(root);
+}

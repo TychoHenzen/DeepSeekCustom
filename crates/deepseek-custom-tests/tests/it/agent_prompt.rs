@@ -1,7 +1,9 @@
 //! Unit tests for `deepseek_custom::agent::prompt`, moved out of the
 //! production module as part of the two-crate workspace split.
 
-use deepseek_custom::agent::prompt::{build_system_prompt, voice_mode_instructions};
+use deepseek_custom::agent::prompt::{
+    SystemPromptBuilder, build_system_prompt, voice_mode_instructions,
+};
 use deepseek_custom::api::types::{FunctionDef, ToolDef};
 
 #[test]
@@ -29,6 +31,18 @@ fn system_prompt_handles_empty_optionals() {
     assert!(!prompt.contains("## Project Context"));
     assert!(!prompt.contains("## Available Skills"));
     assert!(!prompt.contains("## Available Tools"));
+}
+
+#[test]
+fn system_prompt_builder_keeps_custom_base_and_date_contract() {
+    let prompt = SystemPromptBuilder::new()
+        .with_base_instructions("custom instructions".to_string())
+        .with_date("2099-12-31".to_string())
+        .build(None, None, &[]);
+
+    assert!(prompt.contains("Today's date is 2099-12-31."));
+    assert!(prompt.contains("custom instructions"));
+    assert!(!prompt.contains("You are DeepSeekCustom"));
 }
 
 #[test]

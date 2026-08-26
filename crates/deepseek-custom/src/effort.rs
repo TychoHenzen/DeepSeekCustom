@@ -96,11 +96,15 @@ impl Effort {
         }
     }
 
-    /// The `codex` CLI's `-c reasoning.effort=<level>` value for this level,
-    /// or `None` to omit the override entirely. The caller assembles the `-c`
-    /// flag itself, the same split `claude_cli_effort` keeps with
-    /// `--effort <level>`.
-    pub fn codex_cli_effort(self) -> Option<&'static str> {
+    /// The `codex` CLI config override for this level.
+    /// `None` omits the override entirely.
+    pub fn codex_cli_effort(&self) -> Option<String> {
+        self.codex_cli_effort_level()
+            .map(|level| format!("-c reasoning.effort={level}"))
+    }
+
+    /// The bare reasoning level used by the Codex argument builder.
+    pub(crate) fn codex_cli_effort_level(self) -> Option<&'static str> {
         match self {
             Effort::None => None,
             Effort::Low => Some("low"),

@@ -8,6 +8,7 @@ pub mod effort;
 pub mod error;
 pub mod evolution;
 pub mod gui;
+pub mod hemisphere;
 pub mod hooks;
 pub mod image_bytes;
 pub mod json_reply;

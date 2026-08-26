@@ -1,13 +1,69 @@
 use crate::api::types::ToolDef;
 
-/// Assemble the system prompt from base instructions, memory files, skills,
-/// and tool definitions.
-///
+/// Configurable system-prompt builder retained as public API.
+pub struct SystemPromptBuilder {
+    base_instructions: String,
+    current_date: String,
+}
+
+impl Default for SystemPromptBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SystemPromptBuilder {
+    pub fn new() -> Self {
+        Self {
+            base_instructions: default_base_instructions(),
+            current_date: chrono_now_or_empty(),
+        }
+    }
+
+    /// Set custom base instructions instead of the defaults.
+    pub fn with_base_instructions(mut self, instructions: String) -> Self {
+        self.base_instructions = instructions;
+        self
+    }
+
+    /// Set the date text included in the prompt.
+    pub fn with_date(mut self, date: String) -> Self {
+        self.current_date = date;
+        self
+    }
+
+    pub fn build(
+        &self,
+        memory_fragment: Option<&str>,
+        skills_fragment: Option<&str>,
+        tools: &[ToolDef],
+    ) -> String {
+        assemble_system_prompt(
+            &self.base_instructions,
+            &self.current_date,
+            memory_fragment,
+            skills_fragment,
+            tools,
+        )
+    }
+}
+
+/// Assemble a system prompt using the default instructions and current date.
+pub fn build_system_prompt(
+    memory_fragment: Option<&str>,
+    skills_fragment: Option<&str>,
+    tools: &[ToolDef],
+) -> String {
+    SystemPromptBuilder::new().build(memory_fragment, skills_fragment, tools)
+}
+
 /// This does not report a working directory. That line is added by
 /// `MessageHistory`, re-read every turn from the shared `working_dir` the
 /// tools also read from, so the model is never told a directory it built
 /// once at startup and never revisited. See `MessageHistory::set_working_dir`.
-pub fn build_system_prompt(
+fn assemble_system_prompt(
+    base_instructions: &str,
+    current_date: &str,
     memory_fragment: Option<&str>,
     skills_fragment: Option<&str>,
     tools: &[ToolDef],
@@ -16,10 +72,10 @@ pub fn build_system_prompt(
 
     // 1. Date. The working directory is not built in here: it is added
     // by `MessageHistory` on every turn, see the function doc comment.
-    parts.push(format!("Today's date is {}.\n", chrono_now_or_empty()));
+    parts.push(format!("Today's date is {current_date}.\n"));
 
     // 2. Base instructions
-    parts.push(default_base_instructions());
+    parts.push(base_instructions.to_string());
 
     // 3. Tool-first arithmetic (unconditional, see Phase A of the
     // diversity implementation plan)

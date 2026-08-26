@@ -33,6 +33,13 @@ pub fn may_dispatch(depth: u32, max_depth: u32) -> bool {
     depth < max_depth
 }
 
+/// Compatibility entry point retained for consumers built with
+/// `test-support`. New code can call [`may_dispatch`] directly.
+#[cfg(feature = "test-support")]
+pub fn may_dispatch_for_test(depth: u32, max_depth: u32) -> bool {
+    may_dispatch(depth, max_depth)
+}
+
 // ---------------------------------------------------------------------------
 // BackendFactory
 // ---------------------------------------------------------------------------

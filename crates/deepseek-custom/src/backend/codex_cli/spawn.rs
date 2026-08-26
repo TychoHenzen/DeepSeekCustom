@@ -52,7 +52,7 @@ pub(super) fn build_args(
         args.push(model.to_owned());
     }
 
-    if let Some(level) = effort.codex_cli_effort() {
+    if let Some(level) = effort.codex_cli_effort_level() {
         args.push("-c".to_owned());
         args.push(format!("reasoning.effort={level}"));
     }

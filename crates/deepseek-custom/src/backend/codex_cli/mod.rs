@@ -120,6 +120,10 @@ impl CodexCliDriver {
         self.thread_id = None;
     }
 
+    pub fn reset(&mut self) {
+        self.clear_session();
+    }
+
     pub async fn send(&mut self, text: &str) -> Result<()> {
         self.send_with_image(text, None).await
     }

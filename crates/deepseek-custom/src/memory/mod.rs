@@ -31,6 +31,12 @@ impl MemoryStore {
         store
     }
 
+    /// Reload all memory files from disk.
+    pub fn reload(&self, project_root: &Path) -> Self {
+        debug!("memory: reloading from disk");
+        Self::load(project_root)
+    }
+
     /// Format all memory content into a string for the system prompt.
     pub fn to_system_prompt_fragment(&self) -> String {
         let mut parts: Vec<String> = Vec::new();

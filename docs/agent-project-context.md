@@ -47,8 +47,8 @@ cargo check --workspace                              # Fast compile-check, no co
 cargo build                                          # Debug build, every member
 cargo build -p deepseek-custom                       # Debug build, production crate only
 cargo build --release                                # Release build
-cargo test --workspace                               # All 1413: 1412 pass, 1 ignored
-cargo test -p deepseek-custom-tests                  # The same 1413, named directly
+cargo test --workspace                               # All 1416: 1415 pass, 1 ignored
+cargo test -p deepseek-custom-tests                  # The same 1416, named directly
 cargo test --workspace -- --test-threads=1           # Tests sequentially
 cargo clippy --workspace -- -D warnings              # Lint (treat warnings as errors)
 cargo fmt --all -- --check                           # Format check
@@ -513,9 +513,9 @@ Phase 1-2 complete, plus a voice subsystem, a second backend kind, and subagent 
 - `Space` (held) - push to talk. Fires only when the input box is not focused and the settings panel is closed.
 - `Ctrl+Space` - push to talk toggle. Works even when the input box is focused. Still blocked while the settings panel is open.
 
-**Tests:** 1413 tests, 1412 passing and 1 ignored, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
+**Tests:** 1416 tests, 1415 passing and 1 ignored, all in `crates/deepseek-custom-tests`. The production crate carries none: no `#[cfg(test)]` module, no `tests/` directory of its own, and its library and binary targets both report zero. There were 832 before the workspace split too. No test was dropped in the move. A handful were rewritten rather than moved as they stood, and `.step-session/progress.log` names which and why.
 
-**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 121 such files and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
+**One test target.** Every test file is a module of `crates/deepseek-custom-tests/tests/it/main.rs`, declared there with a `mod` line. There are 121 such modules and exactly one linked test binary. `autotests = false` in the test crate's `Cargo.toml` stops a stray file under `tests/` becoming a target of its own again. The single `[[test]]` entry is declared by hand.
 
 Cargo's default is the opposite, and it was expensive here. Cargo builds one executable per `.rs` file directly under `tests/`. Each one statically links the whole dependency tree: ONNX Runtime, whisper.cpp, egui, eframe, cpal. Measured on this tree at 71 files: 1.9 GB of executables and 2.7 GB of debug symbols. That is about 4.6 GB, rebuilt from scratch on every full test run. The one target that replaced them is 41 MB with a 72 MB `.pdb`.
 
@@ -527,11 +527,11 @@ One constraint carried over. `include_str!` resolves relative to the file that c
 
 Test files are named by one rule. Take the module path under `crates/deepseek-custom/src/`, drop a trailing `/mod.rs` or `.rs`, then join the remaining segments with an underscore. The examples that follow abbreviate that directory to `src/`. So `src/gui/transcript.rs` is covered by `crates/deepseek-custom-tests/tests/it/gui_transcript.rs`, and `src/backend/claude_cli/process/mod.rs` by `tests/it/backend_claude_cli_process.rs`. `src/gui/mod.rs` lands on `tests/it/gui.rs` and `src/effort.rs` on `tests/it/effort.rs`. The mapping is injective, so two modules can never claim one file. The rule did not change when the files moved into `tests/it/`, only the directory did.
 
-Three test files predate the split and keep their own names. They were already external targets, and each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. Those three carry the 23 tests the per-module table below does not count.
+Three test files predate the split and keep their own names. Each covers a whole path rather than one module: `api_turn.rs`, `claude_cli_fake_binary.rs`, and `claude_cli_lifecycle.rs`. They now run as modules of the same `it` target and carry the 23 tests the per-module table below does not count.
 
 Codex coverage lives in `crates/deepseek-custom-tests/tests/it/backend_codex_cli_events.rs`, `backend_codex_cli_map.rs`, `backend_codex_cli_spawn.rs`, and `codex_cli_lifecycle.rs`. `crates/deepseek-custom-tests/src/bin/fake_codex.rs` supplies the child process for lifecycle coverage. `backend_factory.rs` and `config_settings.rs` cover factory resolution and the `codex_cli` settings schema.
 
-`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1154.
+`voice/stt.rs` and `voice/tts.rs` each have one more test that needs the Whisper and Kokoro model files on disk, see `docs/voice-setup.md`. Those two sit behind the `voice-models` cargo feature, off by default. The test crate forwards that feature to the production crate. Run those two with `cargo test --workspace --features deepseek-custom-tests/voice-models`. That brings the total to 1418.
 
 `backend_resolution_tests` has moved twice. It started inside the old `src/main.rs`, then moved to a `factory_tests.rs` beside `src/backend/factory.rs`. Both of those homes are gone. Those tests now live in `crates/deepseek-custom-tests/tests/it/backend_factory.rs`, covering `resolve_active_backend`, `may_dispatch`, the depth-gated `Task`, `SendMessage`, and `CloseSession` tool wiring, and `with_working_dir`, confirming an override never moves the parent's `Arc`.
 
@@ -551,7 +551,7 @@ Mutation testing has not been run. `cargo mutants --list` found 600 real mutants
 
 Both the coverage run and the mutant listing predate the workspace split. They measured the same tests over the same production code, so their numbers still hold. Only the paths changed.
 
-These are the 1390 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 23 tests sit in the three older targets named above, which cover a path rather than a module.
+These are the 1393 tests that cover one production module each, counted per module. None of them is an inline `#[cfg(test)]` module anymore. Each row's tests live in the test crate, in the one file the naming rule above derives from that module path. The remaining 23 tests sit in the three older files named above, which cover a path rather than a module.
 
 The per-module rows below date from the workspace split and sum to 1124. They have not tracked the tests added since, so read them as the shape of the coverage rather than as current counts. Regenerating them from `cargo test -p deepseek-custom-tests --test it -- --list` is the fix, best done once the active OpenSpec change stops adding procedure modules.
 
@@ -599,6 +599,7 @@ The per-module rows below date from the workspace split and sum to 1124. They ha
 | `gui/cascade_tab.rs` | 8 |
 | `gui/evolve_tab.rs` | 6 |
 | `gui/search_view.rs` | 9 |
+| `hemisphere/mod.rs` | 4 |
 | `hooks/mod.rs` | 5 |
 | `memory/mod.rs` | 4 |
 | `session/mod.rs` | 12 |
@@ -647,7 +648,7 @@ Two modules are missing from that table on purpose. `gui/settings_panel.rs` and 
 
 The three fixtures sit in `crates/deepseek-custom-tests/tests/it/fixtures/`: `chat_response.json`, `claude_stream_json.jsonl`, and `claude_stream_json_tools.jsonl`.
 
-**Next:** Hook execution integration. Skill injection is done. See "Skills" above.
+**Next:** Phase 3 (hemisphere model), or hook execution integration. Skill injection is done. See "Skills" above.
 
 ## API Key Resolution
 

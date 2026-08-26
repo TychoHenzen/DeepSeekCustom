@@ -50,6 +50,8 @@ pub struct HookResult {
     #[serde(default = "default_true")]
     pub approved: bool,
     #[serde(default)]
+    pub modified_input: Option<serde_json::Value>,
+    #[serde(default)]
     pub message: Option<String>,
 }
 
@@ -119,6 +121,7 @@ impl HookRunner {
             // Non-zero exit → don't block
             return Ok(HookResult {
                 approved: true,
+                modified_input: None,
                 message: None,
             });
         }
@@ -127,6 +130,7 @@ impl HookRunner {
         if stdout.trim().is_empty() {
             return Ok(HookResult {
                 approved: true,
+                modified_input: None,
                 message: None,
             });
         }
@@ -137,6 +141,7 @@ impl HookRunner {
                 warn!("hook returned invalid JSON: {e}");
                 Ok(HookResult {
                     approved: true,
+                    modified_input: None,
                     message: Some(format!("invalid JSON from hook: {stdout}")),
                 })
             }
