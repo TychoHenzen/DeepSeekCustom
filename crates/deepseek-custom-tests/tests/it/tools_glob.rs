@@ -7,7 +7,7 @@ use deepseek_custom::tools::Tool;
 use deepseek_custom::tools::glob::GlobTool;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-glob", tag)
+    super::scratch_dir("dsc-glob", tag)
 }
 
 fn tool_in(dir: &std::path::Path) -> GlobTool {

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::plugins::enabled_plugin_roots_in;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-plugins", tag)
+    super::scratch_dir("dsc-plugins", tag)
 }
 
 /// Build a `~/.claude` lookalike: `settings.json` with an `enabledPlugins`

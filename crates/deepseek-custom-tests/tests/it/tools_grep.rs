@@ -7,7 +7,7 @@ use deepseek_custom::tools::Tool;
 use deepseek_custom::tools::grep::GrepTool;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-grep", tag)
+    super::scratch_dir("dsc-grep", tag)
 }
 
 fn tool_in(dir: &std::path::Path) -> GrepTool {

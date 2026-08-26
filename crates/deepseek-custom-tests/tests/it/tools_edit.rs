@@ -7,7 +7,7 @@ use deepseek_custom::tools::Tool;
 use deepseek_custom::tools::edit::{EditTool, apply_edit};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-edit", tag)
+    super::scratch_dir("dsc-edit", tag)
 }
 
 fn tool_in(dir: &std::path::Path) -> EditTool {

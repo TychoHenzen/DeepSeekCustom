@@ -12,7 +12,7 @@ use deepseek_custom::skills::SkillSource;
 use deepseek_custom::skills::discovery::discover_skill_files_in;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-skills", tag)
+    super::scratch_dir("dsc-skills", tag)
 }
 
 /// Write a flat `<root>/skills/<name>.md`.

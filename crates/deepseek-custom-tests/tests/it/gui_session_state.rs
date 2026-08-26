@@ -17,7 +17,7 @@ fn origin() -> SessionOrigin {
 /// A unique temporary project root, the same way `session::store`'s
 /// own tests make one. No temp-directory crate is a dependency here.
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    super::unique_temp_dir("dsc-gui-session", tag)
+    super::scratch_dir("dsc-gui-session", tag)
 }
 
 fn state_in(dir: &std::path::Path) -> SessionState {

@@ -632,14 +632,7 @@ async fn depth_two_forwarder_chain_produces_a_two_element_outermost_first_route(
 /// same helper shape `src/tools/cd.rs`'s own tests already use for the
 /// same purpose.
 fn unique_temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("dsc-subagent-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-subagent", tag)
 }
 
 #[test]

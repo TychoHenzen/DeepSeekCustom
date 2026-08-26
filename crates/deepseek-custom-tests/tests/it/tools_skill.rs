@@ -10,7 +10,7 @@ use deepseek_custom::tools::skill::SkillTool;
 use serde_json::json;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-skilltool", tag)
+    super::scratch_dir("dsc-skilltool", tag)
 }
 
 fn skill_in(dir: &Path, name: &str, body: &str) -> Skill {

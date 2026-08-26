@@ -11,7 +11,7 @@ use deepseek_custom::session::store::SessionStore;
 use deepseek_custom::session::{SessionId, SessionMeta, SessionRecord};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-store", tag)
+    super::scratch_dir("dsc-store", tag)
 }
 
 fn sample_record(title: &str, seq: u64, updated_at: u64) -> SessionRecord {

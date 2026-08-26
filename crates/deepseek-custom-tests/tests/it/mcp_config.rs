@@ -8,7 +8,7 @@ use deepseek_custom::mcp::config::discover_servers_from;
 use deepseek_custom::plugins::PluginRoot;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-mcpcfg", tag)
+    super::scratch_dir("dsc-mcpcfg", tag)
 }
 
 fn write_mcp_json(dir: &Path, body: &str) {

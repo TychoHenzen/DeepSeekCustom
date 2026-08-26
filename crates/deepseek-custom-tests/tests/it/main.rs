@@ -33,7 +33,7 @@ fn process_environment_lock() -> &'static tokio::sync::Mutex<()> {
 ///
 /// `prefix` names the test file that asked for it, which is what makes a
 /// directory left behind by a failed run traceable to its test.
-fn unique_temp_dir(prefix: &str, tag: &str) -> std::path::PathBuf {
+fn scratch_dir(prefix: &str, tag: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::mcp::spawn::resolve_windows;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-spawn", tag)
+    super::scratch_dir("dsc-spawn", tag)
 }
 
 fn touch(dir: &Path, name: &str) {

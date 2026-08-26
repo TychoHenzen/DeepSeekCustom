@@ -195,13 +195,7 @@ fn resolve_shell_explicit_powershell() {
 
 /// Create a uniquely named directory under the system temp dir.
 fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-bash-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-bash", tag)
 }
 
 #[tokio::test]

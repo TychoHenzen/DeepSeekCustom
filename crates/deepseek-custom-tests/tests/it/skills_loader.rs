@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::skills::{SkillLoader, SkillSource};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    super::unique_temp_dir("dsc-loader", tag)
+    super::scratch_dir("dsc-loader", tag)
 }
 
 fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
