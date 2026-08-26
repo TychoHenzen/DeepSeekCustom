@@ -9,13 +9,17 @@ use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settin
 use deepseek_custom::procedure::{
     BoundedRepairCoordinator, FrontierPatchDraftError, FrontierRepairDispatch,
     FrontierRepairOutcome, FrontierRepairRequest, FrontierRepairRunner, LocalPatchDraftDispatch,
-    LocalPatchDraftError, LocalRepairOutcome, LocalRepairRunner, LocalizationAttempt,
-    LocalizationTarget, OpenSpecInput, PatchCandidate, PatchEnvelopeError, PatchPreview,
-    PatchPreviewId, PatchPreviewStore, ProcedureAttemptDisposition, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, RepairInputGate, RepairLadderDisposition,
-    RepairLadderGateResult, RepairLadderTransition, RepairRequest, RepairTier, RouteDecision,
-    RouteOverride, RouteTier, decode_patch_envelope, sha256_json,
+    LocalPatchDraftError, LocalRepairOutcome, LocalRepairRunner, LocalizationAgreementOutcome,
+    LocalizationAgreementResolver, LocalizationAttempt, LocalizationDispatch,
+    LocalizationDispatchError, LocalizationEnvelope, LocalizationEscalationTrigger,
+    LocalizationSampler, LocalizationTarget, OpenSpecInput, PatchCandidate, PatchEnvelopeError,
+    PatchPreview, PatchPreviewId, PatchPreviewStore, ProcedureAttemptDisposition,
+    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming, ProcedureTask,
+    ProcedureTerminalDisposition, RepairInputGate, RepairLadderDisposition, RepairLadderGateResult,
+    RepairLadderTransition, RepairRequest, RepairTier, RepositoryIndexEntry, RouteDecision,
+    RouteOverride, RouteTier, SamplingInputGate, SamplingInputRequest, decode_patch_envelope,
+    sha256_json,
 };
 
 const CHANGE_ID: &str = "fixture-change";
@@ -204,6 +208,47 @@ impl FrontierRepairDispatch for ScriptedFrontier {
                     reason: "unexpected frontier call".to_string(),
                 },
             ))
+    }
+}
+
+#[derive(Clone)]
+struct ScriptedLocalization {
+    responses: Arc<Mutex<VecDeque<Result<LocalizationEnvelope, LocalizationDispatchError>>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ScriptedLocalization {
+    fn new(
+        responses: impl IntoIterator<Item = Result<LocalizationEnvelope, LocalizationDispatchError>>,
+    ) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl LocalizationDispatch for ScriptedLocalization {
+    fn backend_name(&self) -> &str {
+        "scripted-localizer"
+    }
+
+    fn model(&self) -> &str {
+        "localizer-model"
+    }
+
+    async fn dispatch_prompt(
+        &self,
+        _prompt: String,
+        _repository_index: &[RepositoryIndexEntry],
+    ) -> Result<LocalizationEnvelope, LocalizationDispatchError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("localization dispatch exceeded the bounded fixture script")
     }
 }
 
@@ -511,6 +556,45 @@ fn run(
             ),
         )
         .unwrap()
+}
+
+fn approved_sampling_input(
+    fixture: &Fixture,
+) -> deepseek_custom::procedure::ValidatedSamplingInput {
+    SamplingInputGate::new(
+        OpenSpecInput::with_command(&fixture.root, fixture.openspec.display().to_string()),
+        fixture.root.clone(),
+        fixture.reports.clone(),
+    )
+    .load(&SamplingInputRequest {
+        baseline_localization_run_id: fixture.request.localization_run_id,
+        change_id: CHANGE_ID.to_string(),
+        task_id: TASK_ID.to_string(),
+    })
+    .unwrap()
+}
+
+fn localization_envelope(path: &str, symbol: Option<&str>) -> LocalizationEnvelope {
+    LocalizationEnvelope {
+        targets: vec![LocalizationTarget {
+            path: path.to_string(),
+            symbol: symbol.map(str::to_string),
+            evidence: "bounded end-to-end fixture target".to_string(),
+        }],
+    }
+}
+
+fn localization_index() -> Vec<RepositoryIndexEntry> {
+    vec![
+        RepositoryIndexEntry {
+            path: TARGET.to_string(),
+            symbols: vec!["VALUE".to_string()],
+        },
+        RepositoryIndexEntry {
+            path: UNRELATED.to_string(),
+            symbols: Vec::new(),
+        },
+    ]
 }
 
 #[test]
@@ -837,5 +921,193 @@ fn interruption_persists_terminal_sequence_without_dispatch_or_workspace_changes
         RepairLadderDisposition::Interrupted
     );
     fixture.assert_saved(&run);
+    fixture.assert_unchanged();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: End-to-end escalation
+#[test]
+fn disagreement_and_local_exhaustion_use_bounded_frontier_promotion_with_durable_evidence() {
+    let fixture = Fixture::new("sampling-disagreement-to-frontier", false);
+    let input = approved_sampling_input(&fixture);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let local_localization = ScriptedLocalization::new([
+        Ok(localization_envelope(TARGET, None)),
+        Ok(localization_envelope(UNRELATED, None)),
+        Ok(localization_envelope(TARGET, Some("VALUE"))),
+    ]);
+    let frontier_localization =
+        ScriptedLocalization::new([Ok(localization_envelope(TARGET, None))]);
+    let settings = Settings::default()
+        .validated_procedure_sampling_settings()
+        .unwrap();
+    assert_eq!(settings.localization_sample_count(), 3);
+    assert_eq!(settings.localization_agreement_quorum(), 2);
+    let resolver = LocalizationAgreementResolver::new(
+        LocalizationSampler::new(local_localization.clone(), settings, Arc::clone(&interrupt)),
+        frontier_localization.clone(),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let localization = runtime
+        .block_on(resolver.resolve(&input, &localization_index()))
+        .unwrap();
+
+    assert_eq!(local_localization.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier_localization.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        localization.outcome,
+        LocalizationAgreementOutcome::Frontier {
+            escalation_trigger: LocalizationEscalationTrigger::LocalDisagreement,
+            ref targets,
+            ..
+        } if targets == &[LocalizationTarget {
+            path: TARGET.to_string(),
+            symbol: None,
+            evidence: "bounded end-to-end fixture target".to_string(),
+        }]
+    ));
+
+    let local_repair = ScriptedLocal::new(vec![
+        Ok(candidate("fail-local-one")),
+        Ok(candidate("fail-local-two")),
+        Ok(candidate("fail-local-three")),
+    ]);
+    let frontier_repair = ScriptedFrontier::new(vec![candidate("pass-frontier")]);
+    let repair = run(
+        &fixture,
+        interrupt,
+        &local_repair,
+        Some(&frontier_repair),
+        2,
+    );
+
+    assert_eq!(local_repair.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier_repair.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        repair.frontier,
+        Some(FrontierRepairOutcome::Promoted {
+            attempt_number: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        repair.local.repair_events.last().unwrap().disposition,
+        RepairLadderDisposition::Promoted
+    );
+    assert!(repair.local.repair_events.iter().any(|event| {
+        event.transition == RepairLadderTransition::VerifierFailure
+            && event.tier == RepairTier::Local
+            && event.attempt_number == 3
+            && event.disposition == RepairLadderDisposition::LocalExhausted
+    }));
+    assert!(repair.local.repair_events.iter().any(|event| {
+        event.transition == RepairLadderTransition::Promoted
+            && event.tier == RepairTier::Frontier
+            && event.attempt_number == 1
+    }));
+
+    let mut metrics = ProcedureRunMetrics::from_terminal_run(&input.report).unwrap();
+    metrics.stage_timings.extend([
+        ProcedureStageTiming {
+            stage: "agreement_sampling".to_string(),
+            duration_ms: 1,
+        },
+        ProcedureStageTiming {
+            stage: "frontier_localization".to_string(),
+            duration_ms: 1,
+        },
+        ProcedureStageTiming {
+            stage: "bounded_repair".to_string(),
+            duration_ms: 1,
+        },
+        ProcedureStageTiming {
+            stage: "frontier_promotion".to_string(),
+            duration_ms: 1,
+        },
+    ]);
+    metrics.route.selected_tier = Some(RouteTier::Frontier);
+    metrics.route.local_mechanical_success = Some(false);
+    metrics.route.escalation_triggers = vec!["local_disagreement".to_string()];
+    fixture
+        .reports
+        .replace_metrics(&input.report.id, &metrics)
+        .unwrap();
+    let stored = fixture
+        .reports
+        .load_with_fingerprints(&input.report.id)
+        .unwrap();
+    assert_eq!(stored.repair_events, repair.persisted_events);
+    let metrics = stored.metrics.unwrap();
+    assert_eq!(metrics.route.selected_tier, Some(RouteTier::Frontier));
+    assert_eq!(metrics.route.local_mechanical_success, Some(false));
+    assert_eq!(metrics.route.escalation_triggers, ["local_disagreement"]);
+    assert_eq!(
+        metrics
+            .stage_timings
+            .iter()
+            .map(|timing| timing.stage.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "agreement_sampling",
+            "frontier_localization",
+            "bounded_repair",
+            "frontier_promotion",
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join(TARGET)).unwrap(),
+        "pub const VALUE: &str = \"pass-frontier\";\n"
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join(UNRELATED)).unwrap(),
+        UNRELATED_BYTES
+    );
+}
+
+#[test]
+fn local_and_frontier_budget_exhaustion_persist_a_blocked_report_without_extra_dispatch() {
+    let fixture = Fixture::new("sampling-local-and-frontier-exhaustion", false);
+    let local_repair = ScriptedLocal::new(vec![
+        Ok(candidate("fail-local-one")),
+        Ok(candidate("fail-local-two")),
+        Ok(candidate("fail-local-three")),
+    ]);
+    let frontier_repair = ScriptedFrontier::new(vec![
+        candidate("fail-frontier-one"),
+        candidate("fail-frontier-two"),
+    ]);
+    let repair = run(
+        &fixture,
+        Arc::new(AtomicBool::new(false)),
+        &local_repair,
+        Some(&frontier_repair),
+        2,
+    );
+
+    assert_eq!(local_repair.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(frontier_repair.calls.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        repair.frontier,
+        Some(FrontierRepairOutcome::Blocked { attempts: 2, .. })
+    ));
+    assert_eq!(
+        repair.local.repair_events.last().unwrap().disposition,
+        RepairLadderDisposition::Blocked
+    );
+    assert!(repair.local.repair_events.iter().any(|event| {
+        event.transition == RepairLadderTransition::Blocked
+            && event.tier == RepairTier::Frontier
+            && event.attempt_number == 2
+    }));
+    assert_eq!(
+        fixture
+            .reports
+            .load_with_fingerprints(&fixture.request.localization_run_id)
+            .unwrap()
+            .repair_events,
+        repair.persisted_events
+    );
     fixture.assert_unchanged();
 }

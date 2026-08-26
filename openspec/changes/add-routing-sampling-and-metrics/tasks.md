@@ -74,7 +74,8 @@
 - [x] 6.2 Add a full stub-backed local-success run from OpenSpec validation through verified promotion and assert that no frontier dispatch occurs.
 <!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: Local end-to-end success -->
-- [ ] 6.3 Add full disagreement and local-exhaustion runs that end in bounded frontier promotion or a blocked report.
+- [x] 6.3 Add full disagreement and local-exhaustion runs that end in bounded frontier promotion or a blocked report.
+<!-- status: completed -->
   <!-- covers: deepseek-custom/routing-sampling-and-metrics :: The completed procedure remains bounded end to end :: End-to-end escalation -->
 - [ ] 6.4 Run the same small real OpenSpec task several times and record localization agreement, candidate pass rate, selected patch size, and escalation rate.
 - [ ] 6.5 Confirm sampling never exceeds configured caps and no workspace change occurs before deterministic verification passes.
