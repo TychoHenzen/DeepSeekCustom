@@ -540,6 +540,57 @@ fn stable_workspace_files(root: &Path, event_log: &Path) -> BTreeMap<String, Vec
     files
 }
 
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+}
+
+fn bounded_real_checkout_files() -> BTreeMap<String, Vec<u8>> {
+    fn collect_source_files(
+        workspace_root: &Path,
+        directory: &Path,
+        files: &mut BTreeMap<String, Vec<u8>>,
+    ) {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_source_files(workspace_root, &path, files);
+            } else {
+                let relative = path
+                    .strip_prefix(workspace_root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.insert(relative, std::fs::read(path).unwrap());
+            }
+        }
+    }
+
+    let root = workspace_root();
+    let mut files = BTreeMap::new();
+    for relative in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "settings.json",
+        "crates/deepseek-custom-tests/tests/it/procedure_sandbox_e2e.rs",
+    ] {
+        files.insert(
+            relative.to_string(),
+            std::fs::read(root.join(relative)).unwrap(),
+        );
+    }
+    collect_source_files(&root, &root.join("crates/deepseek-custom/src"), &mut files);
+    assert!(files.contains_key("settings.json"));
+    files
+}
+
 fn single_report_document(root: &Path) -> serde_json::Value {
     let reports = root.join(".deepseek/procedure-runs");
     let paths = std::fs::read_dir(reports)
@@ -556,11 +607,14 @@ struct PassingFixtureRun {
     outcome: WholeChangeProcedureOutcome,
     before_files: BTreeMap<String, Vec<u8>>,
     after_files: BTreeMap<String, Vec<u8>>,
+    real_checkout_before: BTreeMap<String, Vec<u8>>,
+    real_checkout_after: BTreeMap<String, Vec<u8>>,
     report: serde_json::Value,
     event_lines: Vec<String>,
 }
 
 async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
+    let real_checkout_before = bounded_real_checkout_files();
     let fixture = SandboxFixture::new(tag);
     let event_log = fixture.root.join("procedure-events.log");
     let state = RecordingState::with_event_log(event_log.clone());
@@ -614,6 +668,8 @@ async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
         state.record(RecordedEvent::PromotionObserved);
     }
     let after_files = stable_workspace_files(&fixture.root, &event_log);
+    let real_checkout_after = bounded_real_checkout_files();
+    assert_eq!(real_checkout_after, real_checkout_before);
     let report = single_report_document(&fixture.root);
     let event_lines = std::fs::read_to_string(event_log)
         .unwrap()
@@ -626,6 +682,8 @@ async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
         outcome,
         before_files,
         after_files,
+        real_checkout_before,
+        real_checkout_after,
         report,
         event_lines,
     }
@@ -764,6 +822,7 @@ async fn assert_passing_fixture_changes_only_the_localized_source_target() {
         std::fs::read(run.fixture.root.join(UNRELATED_PATH)).unwrap(),
         UNRELATED_BYTES
     );
+    assert_eq!(run.real_checkout_after, run.real_checkout_before);
     let verifier_workspaces = run
         .event_lines
         .iter()
@@ -875,7 +934,10 @@ async fn run_localization_fixture(
     tag: &str,
     responses: impl IntoIterator<Item = Result<LocalizationEnvelope, LocalizationDispatchError>>,
 ) -> LocalizationFixtureRun {
+    let real_checkout_before = bounded_real_checkout_files();
     let fixture = SandboxFixture::new(tag);
+    let event_log = fixture.root.join("unused-event.log");
+    let files_before = stable_workspace_files(&fixture.root, &event_log);
     let state = RecordingState::default();
     let reports = ProcedureReportStore::for_project(&fixture.root);
     let runner = ProcedureRunner::new(
@@ -894,6 +956,11 @@ async fn run_localization_fixture(
         })
         .await
         .unwrap();
+    assert_eq!(
+        stable_workspace_files(&fixture.root, &event_log),
+        files_before
+    );
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
     LocalizationFixtureRun {
         fixture,
         state,
@@ -963,6 +1030,10 @@ async fn assert_repeated_captured_invalid_symbol_stops_after_two_localization_at
     assert_eq!(
         std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
         TARGET_SOURCE
+    );
+    assert_eq!(
+        std::fs::read(run.fixture.root.join(UNRELATED_PATH)).unwrap(),
+        UNRELATED_BYTES
     );
 }
 
@@ -1044,12 +1115,19 @@ async fn assert_captured_invalid_then_valid_localization_waits_for_explicit_appr
         std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
         TARGET_SOURCE
     );
+    assert_eq!(
+        std::fs::read(run.fixture.root.join(UNRELATED_PATH)).unwrap(),
+        UNRELATED_BYTES
+    );
 }
 
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Minimal proposal passes the preflight gate
 #[test]
 fn valid_isolated_proposal_passes_preflight_and_indexes_fixture_files() {
+    let real_checkout_before = bounded_real_checkout_files();
     let fixture = SandboxFixture::new("valid-preflight");
+    let event_log = fixture.root.join("unused-event.log");
+    let files_before = stable_workspace_files(&fixture.root, &event_log);
 
     let validated = fixture.preflight();
     let index = fixture.index();
@@ -1074,12 +1152,20 @@ fn valid_isolated_proposal_passes_preflight_and_indexes_fixture_files() {
         entry.path == TARGET_PATH && entry.symbols == ["target_symbol".to_string()]
     }));
     assert!(index.iter().any(|entry| entry.path == UNRELATED_PATH));
+    assert_eq!(
+        stable_workspace_files(&fixture.root, &event_log),
+        files_before
+    );
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
 }
 
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance test is runnable without live model services :: The test runs offline
 #[test]
 fn fixture_preflight_uses_only_the_local_deterministic_validator() {
+    let real_checkout_before = bounded_real_checkout_files();
     let fixture = SandboxFixture::new("offline-preflight");
+    let event_log = fixture.root.join("unused-event.log");
+    let files_before = stable_workspace_files(&fixture.root, &event_log);
 
     let first = fixture.preflight();
     let second = fixture.preflight();
@@ -1098,6 +1184,11 @@ fn fixture_preflight_uses_only_the_local_deterministic_validator() {
         &first.validation.command[first.validation.command.len() - 4..],
         ["validate", CHANGE_ID, "--strict", "--no-interactive"]
     );
+    assert_eq!(
+        stable_workspace_files(&fixture.root, &event_log),
+        files_before
+    );
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
 }
 
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Invalid proposal stops before execution
@@ -1113,6 +1204,7 @@ fn invalid_required_artifacts_do_not_mutate_source_files() {
 }
 
 fn assert_invalid_required_artifacts_report_exact_preflight_failure_before_downstream_work() {
+    let real_checkout_before = bounded_real_checkout_files();
     let cases = [
         (
             "missing-proposal",
@@ -1144,6 +1236,10 @@ fn assert_invalid_required_artifacts_report_exact_preflight_failure_before_downs
         } else {
             fixture.corrupt(artifact);
         }
+        let event_log = fixture.root.join("unused-event.log");
+        let files_before = stable_workspace_files(&fixture.root, &event_log);
+        let target_before = std::fs::read(fixture.root.join(TARGET_PATH)).unwrap();
+        let unrelated_before = std::fs::read(fixture.root.join(UNRELATED_PATH)).unwrap();
         let activity = PreflightActivity::default();
 
         let error = fixture
@@ -1160,17 +1256,102 @@ fn assert_invalid_required_artifacts_report_exact_preflight_failure_before_downs
         }
         assert_eq!(activity.counts(), [0, 0, 0, 0]);
         assert_eq!(
+            stable_workspace_files(&fixture.root, &event_log),
+            files_before,
+            "invalid-preflight case changed sandbox files: {tag}"
+        );
+        assert_eq!(
             std::fs::read(fixture.root.join(TARGET_PATH)).unwrap(),
-            TARGET_SOURCE.as_bytes()
+            target_before
         );
         assert_eq!(
             std::fs::read(fixture.root.join(UNRELATED_PATH)).unwrap(),
-            UNRELATED_BYTES
+            unrelated_before
         );
     }
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Failure does not mutate source files
+#[test]
+fn whole_change_interruption_before_promotion_preserves_source_bytes() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_whole_change_interruption_before_promotion_preserves_source_bytes());
+}
+
+async fn assert_whole_change_interruption_before_promotion_preserves_source_bytes() {
+    let real_checkout_before = bounded_real_checkout_files();
+    let fixture = SandboxFixture::new("task-4-3-interrupted");
+    let state = RecordingState::default();
+    let local = Arc::new(RecordingLocalization::new(
+        state.clone(),
+        std::iter::empty::<Result<LocalizationEnvelope, LocalizationDispatchError>>(),
+    ));
+    let frontier = Arc::new(RecordingLocalization::new(
+        state.clone(),
+        std::iter::empty::<Result<LocalizationEnvelope, LocalizationDispatchError>>(),
+    ));
+    let patches = RecordingPatch::new(
+        state.clone(),
+        std::iter::empty::<Result<PatchCandidate, LocalPatchDraftError>>(),
+    );
+    let event_log = fixture.root.join("unused-event.log");
+    let files_before = stable_workspace_files(&fixture.root, &event_log);
+    let target_before = std::fs::read(fixture.root.join(TARGET_PATH)).unwrap();
+    let unrelated_before = std::fs::read(fixture.root.join(UNRELATED_PATH)).unwrap();
+    let runner = WholeChangeProcedureRunner::new(
+        fixture.input(),
+        fixture.root.clone(),
+        RepositoryIndexLimits::default(),
+        local,
+        frontier,
+        sampling_settings(),
+        ProcedureReportStore::for_project(&fixture.root),
+        Arc::new(AtomicBool::new(true)),
+    );
+
+    let outcome = runner
+        .run(
+            WholeChangeProcedureRequest {
+                change_id: CHANGE_ID.to_string(),
+                route_override: RouteOverride::Automatic,
+            },
+            &patches,
+            &["must-not-run".to_string()],
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome,
+        WholeChangeProcedureOutcome::Interrupted {
+            completed_task_ids: Vec::new(),
+        }
+    );
+    assert_eq!(state.counts(), [0, 0, 0, 0]);
+    assert!(state.events().is_empty());
+    assert_eq!(
+        stable_workspace_files(&fixture.root, &event_log),
+        files_before
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join(TARGET_PATH)).unwrap(),
+        target_before
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join(UNRELATED_PATH)).unwrap(),
+        unrelated_before
+    );
+    assert!(!fixture.root.join(".deepseek/procedure-runs").exists());
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
 }
 
 async fn assert_recording_seams_share_ordered_events_and_bounded_call_counters_offline() {
+    let real_checkout_before = bounded_real_checkout_files();
     let fixture = SandboxFixture::new("recording-seams");
     let state = RecordingState::default();
     let localization = RecordingLocalization::new(
@@ -1189,6 +1370,9 @@ async fn assert_recording_seams_share_ordered_events_and_bounded_call_counters_o
         std::iter::empty::<Result<PatchCandidate, FrontierPatchDraftError>>(),
     );
     let verifier = RecordingVerifier::new(state.clone());
+    let verifier_command = write_passing_verifier(&fixture.root);
+    let event_log = fixture.root.join("unused-event.log");
+    let files_before = stable_workspace_files(&fixture.root, &event_log);
 
     fixture.preflight();
     state.record(RecordedEvent::ValidationCompleted);
@@ -1200,9 +1384,7 @@ async fn assert_recording_seams_share_ordered_events_and_bounded_call_counters_o
         .draft("bounded fixture patch prompt".to_string())
         .await
         .unwrap_err();
-    let verifier_run = verifier
-        .run(&fixture.root, &[write_passing_verifier(&fixture.root)])
-        .await;
+    let verifier_run = verifier.run(&fixture.root, &[verifier_command]).await;
     assert!(verifier_run.commands.iter().all(|command| command.success));
     state.record(RecordedEvent::PromotionObserved);
 
@@ -1218,6 +1400,11 @@ async fn assert_recording_seams_share_ordered_events_and_bounded_call_counters_o
         ]
     );
     assert_eq!(state.counts(), [1, 1, 0, 1]);
+    assert_eq!(
+        stable_workspace_files(&fixture.root, &event_log),
+        files_before
+    );
+    assert_eq!(bounded_real_checkout_files(), real_checkout_before);
 }
 
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: Stage order and dispatch boundaries are recorded

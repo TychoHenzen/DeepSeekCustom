@@ -395,6 +395,9 @@ async fn run_one(
             );
         }
     };
+    #[cfg(all(windows, feature = "test-support"))]
+    let isolated_process_group = crate::process_group::adopt_isolated(&child);
+    #[cfg(not(all(windows, feature = "test-support")))]
     crate::process_group::adopt(&child);
 
     let stdout = child.stdout.take();
@@ -413,7 +416,15 @@ async fn run_one(
         }
     };
 
-    let output = collect_output(&mut child, stdout, stderr, interrupt).await;
+    let output = collect_output(
+        &mut child,
+        stdout,
+        stderr,
+        interrupt,
+        #[cfg(all(windows, feature = "test-support"))]
+        isolated_process_group.as_ref(),
+    )
+    .await;
     let duration = started.elapsed();
     let disposition = if output.interrupted {
         VerifierCommandDisposition::Interrupted
@@ -496,6 +507,9 @@ async fn collect_output(
     stdout: ChildStdout,
     stderr: ChildStderr,
     interrupt: &Arc<AtomicBool>,
+    #[cfg(all(windows, feature = "test-support"))] isolated_process_group: Option<
+        &crate::process_group::IsolatedProcessGroup,
+    >,
 ) -> CollectedOutput {
     let (sender, mut receiver) = mpsc::channel(32);
     let stdout_task = tokio::spawn(read_stream(stdout, StreamKind::Stdout, sender.clone()));
@@ -534,7 +548,14 @@ async fn collect_output(
             _ = tokio::time::sleep(INTERRUPT_POLL_INTERVAL), if status.is_none() => {
                 if interrupt.load(Ordering::SeqCst) && !interrupted {
                     interrupted = true;
-                    if let Err(kill_error) = crate::process_group::terminate(child) {
+                    #[cfg(all(windows, feature = "test-support"))]
+                    let terminate_result = crate::process_group::terminate_isolated(
+                        isolated_process_group,
+                        child,
+                    );
+                    #[cfg(not(all(windows, feature = "test-support")))]
+                    let terminate_result = crate::process_group::terminate(child);
+                    if let Err(kill_error) = terminate_result {
                         error.get_or_insert_with(|| format!("could not stop interrupted verifier: {kill_error}"));
                     }
                     match child.wait().await {

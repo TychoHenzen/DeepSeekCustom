@@ -42,6 +42,34 @@ pub fn adopt(child: &tokio::process::Child) {
     let _ = child;
 }
 
+/// Own one Windows job for a single test child tree.
+#[cfg(all(windows, feature = "test-support"))]
+pub struct IsolatedProcessGroup(windows_impl::IsolatedJob);
+
+/// Put a test child in its own Windows job so interruption cannot kill siblings.
+#[cfg(all(windows, feature = "test-support"))]
+pub fn adopt_isolated(child: &tokio::process::Child) -> Option<IsolatedProcessGroup> {
+    match windows_impl::adopt_isolated(child) {
+        Ok(job) => job.map(IsolatedProcessGroup),
+        Err(error) => {
+            tracing::warn!("process group: could not isolate test child: {error}");
+            None
+        }
+    }
+}
+
+/// Stop only the isolated test child tree.
+#[cfg(all(windows, feature = "test-support"))]
+pub fn terminate_isolated(
+    group: Option<&IsolatedProcessGroup>,
+    child: &mut tokio::process::Child,
+) -> std::io::Result<()> {
+    match group {
+        Some(group) => windows_impl::terminate_isolated(&group.0, child),
+        None => windows_impl::terminate_fallback(child),
+    }
+}
+
 /// Configure a child so that interruption can terminate its descendants.
 ///
 /// Windows uses the process tree command in [`terminate`]. Unix platforms
@@ -73,7 +101,7 @@ mod windows_impl {
     use std::process::Command;
     use std::sync::OnceLock;
 
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -134,6 +162,43 @@ mod windows_impl {
         unsafe { AssignProcessToJobObject(job, HANDLE(raw)) }
     }
 
+    #[cfg(feature = "test-support")]
+    pub struct IsolatedJob(isize);
+
+    #[cfg(feature = "test-support")]
+    impl IsolatedJob {
+        fn handle(&self) -> HANDLE {
+            HANDLE(self.0 as *mut core::ffi::c_void)
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    impl Drop for IsolatedJob {
+        fn drop(&mut self) {
+            // SAFETY: this handle was created by `create_job` and is owned here.
+            let _ = unsafe { CloseHandle(self.handle()) };
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn adopt_isolated(
+        child: &tokio::process::Child,
+    ) -> windows::core::Result<Option<IsolatedJob>> {
+        let job = create_job()?;
+        let Some(raw) = child.raw_handle() else {
+            // SAFETY: no child borrowed the newly-created job handle.
+            unsafe { CloseHandle(job)? };
+            return Ok(None);
+        };
+        // SAFETY: both handles are live for the duration of the assignment call.
+        if let Err(error) = unsafe { AssignProcessToJobObject(job, HANDLE(raw)) } {
+            // SAFETY: assignment failed, so this remains our sole job handle.
+            let _ = unsafe { CloseHandle(job) };
+            return Err(error);
+        }
+        Ok(Some(IsolatedJob(job.0 as isize)))
+    }
+
     pub fn terminate(child: &mut tokio::process::Child) -> std::io::Result<()> {
         let Some(job) = job() else {
             return terminate_fallback(child);
@@ -147,7 +212,20 @@ mod windows_impl {
         child.start_kill()
     }
 
-    fn terminate_fallback(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    #[cfg(feature = "test-support")]
+    pub fn terminate_isolated(
+        group: &IsolatedJob,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<()> {
+        // SAFETY: the isolated job handle remains owned by `group`.
+        if let Err(error) = unsafe { TerminateJobObject(group.handle(), 1) } {
+            tracing::warn!("process group: could not terminate isolated test job: {error}");
+            return terminate_fallback(child);
+        }
+        child.start_kill()
+    }
+
+    pub(super) fn terminate_fallback(child: &mut tokio::process::Child) -> std::io::Result<()> {
         if let Some(pid) = child.id() {
             let _ = Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])

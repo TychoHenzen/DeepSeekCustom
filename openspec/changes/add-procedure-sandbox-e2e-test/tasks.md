@@ -43,15 +43,20 @@
 - [x] 4.2 Run the invalid-then-valid localization fixture, assert both attempts and the repaired target, approve the report, and confirm that downstream execution begins only after approval.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: One invalid response is repaired by the bounded retry -->
-- [ ] 4.3 Run invalid-proposal and interrupted cases, assert exact preflight or interruption evidence, and verify that no source promotion occurs.
+- [x] 4.3 Run invalid-proposal and interrupted cases, assert exact preflight or interruption evidence, and verify that no source promotion occurs.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Invalid proposal stops before execution -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Failure does not mutate source files -->
-- [ ] 4.4 Compare sandbox target and unrelated-file bytes before and after every case, and compare the real checkout including the existing `settings.json` before and after the test group.
+- [x] 4.4 Compare sandbox target and unrelated-file bytes before and after every case, and compare the real checkout including the existing `settings.json` before and after the test group.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Promotion is limited to the localized target -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Failure does not mutate source files -->
 
 ## 5. Verification and maintenance
 
-- [ ] 5.1 Register the integration module in the single `tests/it` target, keep all fixture code in `crates/deepseek-custom-tests`, and document the focused serial command for the acceptance cases.
-- [ ] 5.2 Run `cargo test -p deepseek-custom-tests --test it procedure_sandbox_e2e -- --test-threads=1` and repair any test or fixture failures without weakening the production gates.
-- [ ] 5.3 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace` after the focused acceptance test passes.
+- [x] 5.1 Register the integration module in the single `tests/it` target, keep all fixture code in `crates/deepseek-custom-tests`, and document the focused serial command for the acceptance cases.
+<!-- status: completed -->
+- [x] 5.2 Run `cargo test -p deepseek-custom-tests --test it procedure_sandbox_e2e -- --test-threads=1` and repair any test or fixture failures without weakening the production gates.
+<!-- status: completed -->
+- [x] 5.3 Run `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace` after the focused acceptance test passes.
+<!-- status: completed -->

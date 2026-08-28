@@ -46,6 +46,7 @@ Run a focused test with the integration target before its filter:
 
 ```powershell
 cargo test -p deepseek-custom-tests --test it skills
+cargo test -p deepseek-custom-tests --test it procedure_sandbox_e2e -- --test-threads=1
 ```
 
 Do not use `cargo test --lib` as the project test command. The production crate intentionally carries no library tests.
