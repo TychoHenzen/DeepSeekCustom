@@ -9,12 +9,13 @@ use deepseek_custom::procedure::{
     ContractSelection, FrontierPatchDraftError, FrontierRepairDispatch, FrontierRepairRequest,
     LocalPatchDraftDispatch, LocalPatchDraftError, LocalizationDispatch, LocalizationDispatchError,
     LocalizationEnvelope, OpenSpecInput, OpenSpecInputError, PatchCandidate,
-    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad, ProcedureTerminalDisposition,
-    RepositoryIndexEntry, RouteOverride, ValidatedContractInput, VerifierCommandRunner,
-    VerifierRun, VerifierRunProgress, WholeChangeProcedureOutcome, WholeChangeProcedureRequest,
-    WholeChangeProcedureRunner, build_repository_index, check_patch_applicability,
-    validate_patch_boundary,
+    ProcedureAttemptDisposition, ProcedureMetricsDisposition, ProcedureReportStore,
+    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureRunRequest, ProcedureRunner,
+    ProcedureScratchpad, ProcedureTerminalDisposition, RepositoryIndexEntry, RouteOverride,
+    RouteTier, SamplingInputError, SamplingInputGate, SamplingInputRequest, ValidatedContractInput,
+    VerifierCommandRunner, VerifierRun, VerifierRunProgress, WholeChangeProcedureOutcome,
+    WholeChangeProcedureRequest, WholeChangeProcedureRunner, build_repository_index,
+    check_patch_applicability, validate_patch_boundary,
 };
 
 const CHANGE_ID: &str = "sandbox-change";
@@ -644,6 +645,14 @@ fn passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
 
 async fn assert_passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
     let run = run_passing_fixture("task-2-2-lifecycle").await;
+    let report_id: ProcedureRunId = serde_json::from_value(run.report["id"].clone()).unwrap();
+    let persisted = ProcedureReportStore::for_project(&run.fixture.root)
+        .load_with_fingerprints(&report_id)
+        .unwrap();
+    let metrics = persisted
+        .metrics
+        .as_ref()
+        .expect("completed fixture persists bounded metrics");
 
     assert_eq!(
         run.outcome,
@@ -658,18 +667,61 @@ async fn assert_passing_fixture_promotes_one_captured_local_patch_with_terminal_
         std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
         EXPECTED_TARGET_SOURCE
     );
-    assert_eq!(run.report["validation"]["exit_code"], 0);
-    assert_eq!(run.report["review_disposition"], "approved");
+    assert_eq!(persisted.run.selected_task.id, TASK_ID);
+    assert_eq!(persisted.run.selected_task.covers.as_deref(), Some(COVERS));
+    assert_eq!(persisted.run.attempts.len(), 1);
     assert_eq!(
-        run.report["terminal_disposition"]["status"],
-        "awaiting_review"
+        persisted.run.attempts[0].disposition,
+        ProcedureAttemptDisposition::Accepted
     );
-    assert_eq!(run.report["metrics"]["route"]["selected_tier"], "local");
+    assert_eq!(persisted.run.attempts[0].targets.len(), 1);
+    assert_eq!(persisted.run.attempts[0].targets[0].path, TARGET_PATH);
+    assert_eq!(persisted.run.attempts[0].targets[0].symbol, None);
     assert_eq!(
-        run.report["metrics"]["route"]["local_mechanical_success"],
-        true
+        persisted.run.attempts[0].targets[0].evidence,
+        "repository_index"
     );
-    assert_eq!(run.report["metrics"]["terminal_disposition"], "succeeded");
+    assert_eq!(
+        persisted.run.validation.as_ref().unwrap().exit_code,
+        Some(0)
+    );
+    assert_eq!(
+        persisted.run.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    assert_eq!(
+        persisted.run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::AwaitingReview)
+    );
+    assert_eq!(metrics.route.selected_tier, Some(RouteTier::Local));
+    assert_eq!(metrics.route.local_mechanical_success, Some(true));
+    assert!(metrics.route.escalation_triggers.is_empty());
+    assert_eq!(metrics.localization_attempt_count, 1);
+    assert_eq!(metrics.schema_rejection_count, 0);
+    assert_eq!(metrics.candidates.len(), 3);
+    assert_eq!(
+        metrics
+            .candidates
+            .iter()
+            .map(|candidate| candidate.index)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(metrics.candidates.iter().all(|candidate| {
+        candidate.changed_line_count == Some(2) && candidate.verifier_passed == Some(true)
+    }));
+    assert_eq!(
+        metrics
+            .stage_timings
+            .iter()
+            .map(|timing| timing.stage.as_str())
+            .collect::<Vec<_>>(),
+        ["agreement_sampling", "candidate_verification", "promotion"]
+    );
+    assert_eq!(
+        metrics.terminal_disposition,
+        ProcedureMetricsDisposition::Succeeded
+    );
     assert_eq!(run.state.counts(), [4, 3, 0, 0]);
     let patch_capture: serde_json::Value = serde_json::from_str(VALID_PATCH_CAPTURE).unwrap();
     assert_eq!(patch_capture["provenance"]["backend"], "ollama");
@@ -883,13 +935,30 @@ async fn assert_repeated_captured_invalid_symbol_stops_after_two_localization_at
         attempt.disposition == ProcedureAttemptDisposition::Rejected
             && attempt.validation_error.as_deref() == Some(diagnostic.as_str())
     }));
+    let persisted = run.reports.load_with_fingerprints(&run.run.id).unwrap();
+    assert_eq!(persisted.run, run.run);
+    assert_eq!(
+        persisted.run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::Failed {
+            reason: diagnostic.clone(),
+        })
+    );
+    let metrics = persisted
+        .metrics
+        .expect("failed localization persists bounded metrics");
+    assert_eq!(metrics.localization_attempt_count, 2);
+    assert_eq!(metrics.schema_rejection_count, 2);
+    assert_eq!(
+        metrics.terminal_disposition,
+        ProcedureMetricsDisposition::Failed
+    );
     assert_eq!(run.state.counts(), [2, 0, 0, 0]);
-    assert!(!run.state.events().contains(&RecordedEvent::PatchDispatched));
-    assert!(!run.state.events().contains(&RecordedEvent::VerifierStarted));
-    assert!(
-        !run.state
-            .events()
-            .contains(&RecordedEvent::PromotionObserved)
+    assert_eq!(
+        run.state.events(),
+        [
+            RecordedEvent::LocalizationDispatched,
+            RecordedEvent::LocalizationDispatched,
+        ]
     );
     assert_eq!(
         std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
@@ -911,6 +980,16 @@ async fn assert_captured_invalid_then_valid_localization_waits_for_explicit_appr
     let invalid = captured_localization(INVALID_SYMBOL_LOCALIZATION_CAPTURE);
     let valid = captured_localization(VALID_LOCALIZATION_CAPTURE);
     let run = run_localization_fixture("task-2-3-repaired", [Ok(invalid), Ok(valid.clone())]).await;
+    let sampling_gate = SamplingInputGate::new(
+        run.fixture.input(),
+        run.fixture.root.clone(),
+        run.reports.clone(),
+    );
+    let sampling_request = SamplingInputRequest {
+        baseline_localization_run_id: run.run.id,
+        change_id: CHANGE_ID.to_string(),
+        task_id: TASK_ID.to_string(),
+    };
 
     assert_eq!(
         run.run.terminal_disposition,
@@ -937,16 +1016,30 @@ async fn assert_captured_invalid_then_valid_localization_waits_for_explicit_appr
         Some(invalid_symbol_diagnostic().as_str())
     );
     assert_eq!(run.run.attempts[1].targets, valid.targets);
+    assert_eq!(run.run.attempts[1].targets.len(), 1);
+    assert_eq!(run.run.attempts[1].targets[0].path, TARGET_PATH);
+    assert_eq!(run.run.attempts[1].targets[0].symbol, None);
+    assert_eq!(run.run.attempts[1].targets[0].evidence, "repository_index");
+    let pending = run.reports.load(&run.run.id).unwrap();
+    assert_eq!(pending.attempts, run.run.attempts);
+    assert_eq!(
+        sampling_gate.load(&sampling_request).unwrap_err(),
+        SamplingInputError::ReviewDisposition {
+            run_id: run.run.id.as_str(),
+            disposition: ProcedureReviewDisposition::Pending,
+        }
+    );
     assert_eq!(run.state.counts(), [2, 0, 0, 0]);
-    assert!(deepseek_custom::procedure::require_approved_report(&run.run).is_err());
 
     run.reports.approve(&run.run.id).unwrap();
-    let approved = run.reports.load(&run.run.id).unwrap();
+    let approved = sampling_gate.load(&sampling_request).unwrap();
     assert_eq!(
-        approved.review_disposition,
+        approved.report.review_disposition,
         ProcedureReviewDisposition::Approved
     );
-    deepseek_custom::procedure::require_approved_report(&approved).unwrap();
+    assert_eq!(approved.report.attempts, run.run.attempts);
+    assert_eq!(approved.contract.contract.task.id, TASK_ID);
+    assert_eq!(run.state.counts(), [2, 0, 0, 0]);
     assert_eq!(
         std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
         TARGET_SOURCE

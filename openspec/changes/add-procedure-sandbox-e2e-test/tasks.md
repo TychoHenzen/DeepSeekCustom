@@ -31,14 +31,17 @@
 - [x] 3.2 Assert the ordered event log, localization and patch dispatch counts, absence of frontier dispatch, verifier gate execution, and successful terminal evidence.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: Stage order and dispatch boundaries are recorded -->
-- [ ] 3.3 Reload the persisted procedure report and assert the selected target, route metadata, verifier evidence, promotion result, terminal disposition, and bounded metrics.
+- [x] 3.3 Reload the persisted procedure report and assert the selected target, route metadata, verifier evidence, promotion result, terminal disposition, and bounded metrics.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end -->
 
 ## 4. Failure and isolation acceptance paths
 
-- [ ] 4.1 Run the repeated-invalid-symbol fixture and assert exactly the configured localization attempts, the error text `symbol is not present under the indexed path`, failed terminal disposition, and zero patch, verifier, frontier, or promotion calls.
+- [x] 4.1 Run the repeated-invalid-symbol fixture and assert exactly the configured localization attempts, the error text `symbol is not present under the indexed path`, failed terminal disposition, and zero patch, verifier, frontier, or promotion calls.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: Invalid symbol produces the known immediate failure -->
-- [ ] 4.2 Run the invalid-then-valid localization fixture, assert both attempts and the repaired target, approve the report, and confirm that downstream execution begins only after approval.
+- [x] 4.2 Run the invalid-then-valid localization fixture, assert both attempts and the repaired target, approve the report, and confirm that downstream execution begins only after approval.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: One invalid response is repaired by the bounded retry -->
 - [ ] 4.3 Run invalid-proposal and interrupted cases, assert exact preflight or interruption evidence, and verify that no source promotion occurs.
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Invalid proposal stops before execution -->
