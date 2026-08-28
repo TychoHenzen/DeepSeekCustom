@@ -14,18 +14,22 @@
 <!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: Stage order and dispatch boundaries are recorded -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance test is runnable without live model services :: The test runs offline -->
-- [ ] 2.2 Define the valid indexed target, mechanical patch envelope, passing verifier command, and expected local route for the one-task fixture.
+- [x] 2.2 Define the valid indexed target, mechanical patch envelope, passing verifier command, and expected local route for the one-task fixture.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Promotion is limited to the localized target -->
-- [ ] 2.3 Define localization response sequences for repeated invalid symbols and for invalid-then-valid retry recovery, preserving the exact structural diagnostic.
+- [x] 2.3 Define localization response sequences for repeated invalid symbols and for invalid-then-valid retry recovery, preserving the exact structural diagnostic.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: Invalid symbol produces the known immediate failure -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: One invalid response is repaired by the bounded retry -->
 
 ## 3. Passing whole-change acceptance path
 
-- [ ] 3.1 Execute the existing whole-change procedure composition against the sandbox proposal and assert strict validation, localization approval, agreement sampling, local routing, patch generation, isolated verification, promotion, and completion of the single task.
+- [x] 3.1 Execute the existing whole-change procedure composition against the sandbox proposal and assert strict validation, localization approval, agreement sampling, local routing, patch generation, isolated verification, promotion, and completion of the single task.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end -->
-- [ ] 3.2 Assert the ordered event log, localization and patch dispatch counts, absence of frontier dispatch, verifier gate execution, and successful terminal evidence.
+- [x] 3.2 Assert the ordered event log, localization and patch dispatch counts, absence of frontier dispatch, verifier gate execution, and successful terminal evidence.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: Stage order and dispatch boundaries are recorded -->
 - [ ] 3.3 Reload the persisted procedure report and assert the selected target, route metadata, verifier evidence, promotion result, terminal disposition, and bounded metrics.
 <!-- covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end -->

@@ -1,26 +1,46 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use deepseek_custom::config::settings::RepositoryIndexLimits;
+use deepseek_custom::config::settings::{ProcedureSettings, RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     ContractSelection, FrontierPatchDraftError, FrontierRepairDispatch, FrontierRepairRequest,
     LocalPatchDraftDispatch, LocalPatchDraftError, LocalizationDispatch, LocalizationDispatchError,
-    LocalizationEnvelope, OpenSpecInput, OpenSpecInputError, PatchCandidate, RepositoryIndexEntry,
-    ValidatedContractInput, VerifierCommandRunner, VerifierRun, VerifierRunProgress,
-    build_repository_index,
+    LocalizationEnvelope, OpenSpecInput, OpenSpecInputError, PatchCandidate,
+    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad, ProcedureTerminalDisposition,
+    RepositoryIndexEntry, RouteOverride, ValidatedContractInput, VerifierCommandRunner,
+    VerifierRun, VerifierRunProgress, WholeChangeProcedureOutcome, WholeChangeProcedureRequest,
+    WholeChangeProcedureRunner, build_repository_index, check_patch_applicability,
+    validate_patch_boundary,
 };
 
 const CHANGE_ID: &str = "sandbox-change";
 const TASK_ID: &str = "1.1";
 const TARGET_PATH: &str = "src/lib.rs";
 const UNRELATED_PATH: &str = "notes.txt";
-const TARGET_SOURCE: &str = "pub fn target_symbol() -> &'static str {\n    \"before\"\n}\n";
+const TARGET_SOURCE: &str = "pub fn target_symbol() -> &'static str { \"before\" }";
 const UNRELATED_BYTES: &[u8] = b"unrelated fixture bytes\n";
 const COVERS: &str =
     "deepseek-custom/procedure-sandbox-e2e-test :: Apply fixture edit :: Target is updated";
+const VALID_LOCALIZATION_CAPTURE: &str =
+    include_str!("fixtures/procedure_sandbox_valid_localization.json");
+const INVALID_SYMBOL_LOCALIZATION_CAPTURE: &str =
+    include_str!("fixtures/procedure_sandbox_invalid_symbol_localization.json");
+const VALID_PATCH_CAPTURE: &str = include_str!("fixtures/procedure_sandbox_valid_patch.json");
+const EXPECTED_TARGET_SOURCE: &str = "pub fn target_symbol() -> &'static str { \"after\" }";
+
+fn captured_localization(capture: &str) -> LocalizationEnvelope {
+    let document: serde_json::Value = serde_json::from_str(capture).unwrap();
+    serde_json::from_value(document["response"].clone()).unwrap()
+}
+
+fn captured_patch() -> PatchCandidate {
+    let document: serde_json::Value = serde_json::from_str(VALID_PATCH_CAPTURE).unwrap();
+    deepseek_custom::procedure::decode_patch_envelope(&document["response"].to_string()).unwrap()
+}
 
 #[derive(Clone, Copy)]
 enum RequiredArtifact {
@@ -60,11 +80,29 @@ struct RecordingCallCounters {
 struct RecordingState {
     events: Arc<Mutex<Vec<RecordedEvent>>>,
     calls: Arc<RecordingCallCounters>,
+    event_log: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl RecordingState {
+    fn with_event_log(path: PathBuf) -> Self {
+        Self {
+            event_log: Arc::new(Mutex::new(Some(path))),
+            ..Self::default()
+        }
+    }
+
     fn record(&self, event: RecordedEvent) {
         self.events.lock().unwrap().push(event);
+        if let Some(path) = self.event_log.lock().unwrap().as_ref() {
+            use std::io::Write;
+
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(log, "host|{event:?}").unwrap();
+        }
     }
 
     fn events(&self) -> Vec<RecordedEvent> {
@@ -269,17 +307,17 @@ impl SandboxFixture {
         std::fs::write(root.join(UNRELATED_PATH), UNRELATED_BYTES).unwrap();
         std::fs::write(
             change_dir.join("proposal.md"),
-            "## Why\n\nProve the isolated procedure lifecycle.\n\n## What Changes\n\n- Update the fixture target.\n",
+            "## Why\n\nProve the isolated procedure lifecycle.\n\n## What Changes\n\n- Rename before to after using exactly this diff string: diff --git a/src/lib.rs b/src/lib.rs\\n--- a/src/lib.rs\\n+++ b/src/lib.rs\\n@@ -1 +1 @@\\n-pub fn target_symbol() -> &'static str { \"before\" }\\n\\\\ No newline at end of file\\n+pub fn target_symbol() -> &'static str { \"after\" }\\n\\\\ No newline at end of file\n",
         )
         .unwrap();
         std::fs::write(
             change_dir.join("tasks.md"),
-            format!("- [ ] {TASK_ID} Update the fixture target\n  <!-- covers: {COVERS} -->\n"),
+            format!("- [ ] {TASK_ID} Rename before to after with a one-line @@ -1 +1 @@ replacement\n  <!-- covers: {COVERS} -->\n"),
         )
         .unwrap();
         std::fs::write(
             spec_dir.join("spec.md"),
-            "## Purpose\n\nDefine the fixture edit.\n\n## ADDED Requirements\n\n### Requirement: Apply fixture edit\nThe procedure SHALL update the fixture target.\n\n#### Scenario: Target is updated\n- **WHEN** the fixture procedure runs\n- **THEN** only the target is updated\n",
+            "## Purpose\n\nDefine the fixture edit.\n\n## ADDED Requirements\n\n### Requirement: Apply fixture edit\nThe procedure SHALL rename before to after while preserving the one-line function form and missing final newline. The unified_diff SHALL equal `diff --git a/src/lib.rs b/src/lib.rs\\n--- a/src/lib.rs\\n+++ b/src/lib.rs\\n@@ -1 +1 @@\\n-pub fn target_symbol() -> &'static str { \"before\" }\\n\\\\ No newline at end of file\\n+pub fn target_symbol() -> &'static str { \"after\" }\\n\\\\ No newline at end of file`.\n\n#### Scenario: Target is updated\n- **WHEN** the fixture procedure runs\n- **THEN** the diff uses @@ -1 +1 @@ with exactly one removed line and one added line\n",
         )
         .unwrap();
         let openspec_command = write_strict_openspec_fixture(&root);
@@ -416,6 +454,505 @@ fn write_passing_verifier(root: &Path) -> String {
     }
 }
 
+fn sampling_settings() -> deepseek_custom::config::settings::ValidatedProcedureSamplingSettings {
+    Settings {
+        procedure: Some(ProcedureSettings {
+            localization_sample_count: 3,
+            localization_agreement_quorum: 2,
+            local_patch_candidate_count: 3,
+            ..ProcedureSettings::default()
+        }),
+        ..Settings::default()
+    }
+    .validated_procedure_sampling_settings()
+    .unwrap()
+}
+
+fn write_recording_passing_verifier(root: &Path, event_log: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let path = root.join("fixture-recording-verifier.cmd");
+        std::fs::write(
+            &path,
+            format!(
+                "@echo off\r\necho %CD%^|VerifierStarted>>\"{}\"\r\nif not exist src\\lib.rs exit /b 41\r\necho %CD%^|VerifierCompleted>>\"{}\"\r\nexit /b 0\r\n",
+                event_log.display(),
+                event_log.display(),
+            ),
+        )
+        .unwrap();
+        format!("\"{}\"", path.display())
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join("fixture-recording-verifier");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s|VerifierStarted\\n' \"$PWD\" >> \"{}\"\ntest -f src/lib.rs || exit 41\nprintf '%s|VerifierCompleted\\n' \"$PWD\" >> \"{}\"\n",
+                event_log.display(),
+                event_log.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        format!("\"{}\"", path.display())
+    }
+}
+
+fn stable_workspace_files(root: &Path, event_log: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn collect(
+        root: &Path,
+        directory: &Path,
+        event_log: &Path,
+        files: &mut BTreeMap<String, Vec<u8>>,
+    ) {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path == event_log || relative == ".deepseek" || relative.starts_with(".deepseek/") {
+                continue;
+            }
+            if path.is_dir() {
+                collect(root, &path, event_log, files);
+            } else {
+                files.insert(relative, std::fs::read(path).unwrap());
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    collect(root, root, event_log, &mut files);
+    files
+}
+
+fn single_report_document(root: &Path) -> serde_json::Value {
+    let reports = root.join(".deepseek/procedure-runs");
+    let paths = std::fs::read_dir(reports)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1);
+    serde_json::from_str(&std::fs::read_to_string(&paths[0]).unwrap()).unwrap()
+}
+
+struct PassingFixtureRun {
+    fixture: SandboxFixture,
+    state: RecordingState,
+    outcome: WholeChangeProcedureOutcome,
+    before_files: BTreeMap<String, Vec<u8>>,
+    after_files: BTreeMap<String, Vec<u8>>,
+    report: serde_json::Value,
+    event_lines: Vec<String>,
+}
+
+async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
+    let fixture = SandboxFixture::new(tag);
+    let event_log = fixture.root.join("procedure-events.log");
+    let state = RecordingState::with_event_log(event_log.clone());
+    let valid = captured_localization(VALID_LOCALIZATION_CAPTURE);
+    let local = Arc::new(RecordingLocalization::new(
+        state.clone(),
+        [
+            Ok(valid.clone()),
+            Ok(valid.clone()),
+            Ok(valid.clone()),
+            Ok(valid),
+        ],
+    ));
+    let frontier = Arc::new(RecordingLocalization::new(
+        state.clone(),
+        std::iter::empty::<Result<LocalizationEnvelope, LocalizationDispatchError>>(),
+    ));
+    let patch = captured_patch();
+    let boundary = validate_patch_boundary(patch.clone(), &[TARGET_PATH.to_string()]).unwrap();
+    check_patch_applicability(&fixture.root, boundary).unwrap();
+    let patches = RecordingPatch::new(
+        state.clone(),
+        [Ok(patch.clone()), Ok(patch.clone()), Ok(patch)],
+    );
+    let verifier = write_recording_passing_verifier(&fixture.root, &event_log);
+    let before_files = stable_workspace_files(&fixture.root, &event_log);
+    state.record(RecordedEvent::ValidationCompleted);
+    let runner = WholeChangeProcedureRunner::new(
+        fixture.input(),
+        fixture.root.clone(),
+        RepositoryIndexLimits::default(),
+        local,
+        frontier,
+        sampling_settings(),
+        ProcedureReportStore::for_project(&fixture.root),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let outcome = runner
+        .run(
+            WholeChangeProcedureRequest {
+                change_id: CHANGE_ID.to_string(),
+                route_override: RouteOverride::Automatic,
+            },
+            &patches,
+            &[verifier],
+            None,
+        )
+        .await
+        .unwrap();
+    if std::fs::read_to_string(fixture.root.join(TARGET_PATH)).unwrap() == EXPECTED_TARGET_SOURCE {
+        state.record(RecordedEvent::PromotionObserved);
+    }
+    let after_files = stable_workspace_files(&fixture.root, &event_log);
+    let report = single_report_document(&fixture.root);
+    let event_lines = std::fs::read_to_string(event_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    PassingFixtureRun {
+        fixture,
+        state,
+        outcome,
+        before_files,
+        after_files,
+        report,
+        event_lines,
+    }
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end
+#[test]
+fn passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(
+            assert_passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence(),
+        );
+}
+
+async fn assert_passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
+    let run = run_passing_fixture("task-2-2-lifecycle").await;
+
+    assert_eq!(
+        run.outcome,
+        WholeChangeProcedureOutcome::Completed {
+            task_ids: vec![TASK_ID.to_string()],
+        },
+        "report={} events={:?}",
+        serde_json::to_string_pretty(&run.report).unwrap(),
+        run.event_lines,
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
+        EXPECTED_TARGET_SOURCE
+    );
+    assert_eq!(run.report["validation"]["exit_code"], 0);
+    assert_eq!(run.report["review_disposition"], "approved");
+    assert_eq!(
+        run.report["terminal_disposition"]["status"],
+        "awaiting_review"
+    );
+    assert_eq!(run.report["metrics"]["route"]["selected_tier"], "local");
+    assert_eq!(
+        run.report["metrics"]["route"]["local_mechanical_success"],
+        true
+    );
+    assert_eq!(run.report["metrics"]["terminal_disposition"], "succeeded");
+    assert_eq!(run.state.counts(), [4, 3, 0, 0]);
+    let patch_capture: serde_json::Value = serde_json::from_str(VALID_PATCH_CAPTURE).unwrap();
+    assert_eq!(patch_capture["provenance"]["backend"], "ollama");
+    assert_eq!(
+        patch_capture["response"]["route"]["effective_tier"],
+        "local"
+    );
+    assert!(
+        !patch_capture["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("settings.json")
+    );
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Promotion is limited to the localized target
+#[test]
+fn passing_fixture_changes_only_the_localized_source_target() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_passing_fixture_changes_only_the_localized_source_target());
+}
+
+async fn assert_passing_fixture_changes_only_the_localized_source_target() {
+    let run = run_passing_fixture("task-2-2-isolation").await;
+
+    assert_eq!(run.before_files.len(), run.after_files.len());
+    for (path, before) in &run.before_files {
+        let after = &run.after_files[path];
+        if path == TARGET_PATH {
+            assert_ne!(after, before);
+            assert_eq!(after, EXPECTED_TARGET_SOURCE.as_bytes());
+        } else {
+            assert_eq!(after, before, "non-target fixture path changed: {path}");
+        }
+    }
+    assert_eq!(
+        std::fs::read(run.fixture.root.join(UNRELATED_PATH)).unwrap(),
+        UNRELATED_BYTES
+    );
+    let verifier_workspaces = run
+        .event_lines
+        .iter()
+        .filter_map(|line| {
+            let (workspace, event) = line.split_once('|')?;
+            (event == "VerifierStarted").then_some(PathBuf::from(workspace))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(verifier_workspaces.len(), 3);
+    assert!(
+        verifier_workspaces
+            .iter()
+            .all(|workspace| workspace != &run.fixture.root)
+    );
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: A passing fixture proves the complete procedure lifecycle :: One simple task is promoted end to end
+#[test]
+fn whole_change_runner_composes_every_required_stage_for_one_task() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_whole_change_runner_composes_every_required_stage_for_one_task());
+}
+
+async fn assert_whole_change_runner_composes_every_required_stage_for_one_task() {
+    let run = run_passing_fixture("task-3-1-whole-change").await;
+
+    assert_eq!(
+        run.outcome,
+        WholeChangeProcedureOutcome::Completed {
+            task_ids: vec![TASK_ID.to_string()],
+        }
+    );
+    assert_eq!(
+        &run.report["validation"]["command"].as_array().unwrap()[run.report["validation"]["command"]
+            .as_array()
+            .unwrap()
+            .len() - 4..],
+        ["validate", CHANGE_ID, "--strict", "--no-interactive"]
+    );
+    assert_eq!(run.report["validation"]["exit_code"], 0);
+    assert_eq!(run.report["review_disposition"], "approved");
+    assert_eq!(run.report["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(run.report["attempts"][0]["disposition"], "accepted");
+    assert_eq!(run.state.counts(), [4, 3, 0, 0]);
+    assert_eq!(run.report["metrics"]["localization_attempt_count"], 1);
+    assert_eq!(run.report["metrics"]["route"]["selected_tier"], "local");
+    assert_eq!(
+        run.report["metrics"]["route"]["local_mechanical_success"],
+        true
+    );
+    assert!(
+        run.report["metrics"]["route"]["escalation_triggers"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    );
+    let candidates = run.report["metrics"]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 3);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate["verifier_passed"] == true)
+    );
+    let stages = run.report["metrics"]["stage_timings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|timing| timing["stage"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stages,
+        ["agreement_sampling", "candidate_verification", "promotion"]
+    );
+    let verifier_workspaces = run
+        .event_lines
+        .iter()
+        .filter_map(|line| {
+            let (workspace, event) = line.split_once('|')?;
+            (event == "VerifierStarted").then_some(PathBuf::from(workspace))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(verifier_workspaces.len(), 3);
+    assert!(
+        verifier_workspaces
+            .iter()
+            .all(|workspace| workspace != &run.fixture.root)
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
+        EXPECTED_TARGET_SOURCE
+    );
+    assert_eq!(
+        std::fs::read(run.fixture.root.join(UNRELATED_PATH)).unwrap(),
+        UNRELATED_BYTES
+    );
+    assert_eq!(run.report["metrics"]["terminal_disposition"], "succeeded");
+}
+
+struct LocalizationFixtureRun {
+    fixture: SandboxFixture,
+    state: RecordingState,
+    run: ProcedureRun,
+    reports: ProcedureReportStore,
+}
+
+async fn run_localization_fixture(
+    tag: &str,
+    responses: impl IntoIterator<Item = Result<LocalizationEnvelope, LocalizationDispatchError>>,
+) -> LocalizationFixtureRun {
+    let fixture = SandboxFixture::new(tag);
+    let state = RecordingState::default();
+    let reports = ProcedureReportStore::for_project(&fixture.root);
+    let runner = ProcedureRunner::new(
+        fixture.input(),
+        fixture.root.clone(),
+        RepositoryIndexLimits::default(),
+        RecordingLocalization::new(state.clone(), responses),
+        reports.clone(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let run = runner
+        .run(ProcedureRunRequest {
+            change_id: CHANGE_ID.to_string(),
+            task_id: TASK_ID.to_string(),
+            scratchpad: ProcedureScratchpad::default(),
+        })
+        .await
+        .unwrap();
+    LocalizationFixtureRun {
+        fixture,
+        state,
+        run,
+        reports,
+    }
+}
+
+fn invalid_symbol_diagnostic() -> String {
+    "localization target validation failed:\n- target[0] path=\"src/lib.rs\" symbol=\"missing_symbol\": symbol is not present under the indexed path\n"
+        .to_string()
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: Invalid symbol produces the known immediate failure
+#[test]
+fn repeated_captured_invalid_symbol_stops_after_two_localization_attempts() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_repeated_captured_invalid_symbol_stops_after_two_localization_attempts());
+}
+
+async fn assert_repeated_captured_invalid_symbol_stops_after_two_localization_attempts() {
+    let invalid = captured_localization(INVALID_SYMBOL_LOCALIZATION_CAPTURE);
+    let run = run_localization_fixture(
+        "task-2-3-repeated-invalid",
+        [Ok(invalid.clone()), Ok(invalid)],
+    )
+    .await;
+    let diagnostic = invalid_symbol_diagnostic();
+
+    assert!(matches!(
+        run.run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::Failed { ref reason }) if reason == &diagnostic
+    ));
+    assert_eq!(run.run.attempts.len(), 2);
+    assert!(run.run.attempts.iter().all(|attempt| {
+        attempt.disposition == ProcedureAttemptDisposition::Rejected
+            && attempt.validation_error.as_deref() == Some(diagnostic.as_str())
+    }));
+    assert_eq!(run.state.counts(), [2, 0, 0, 0]);
+    assert!(!run.state.events().contains(&RecordedEvent::PatchDispatched));
+    assert!(!run.state.events().contains(&RecordedEvent::VerifierStarted));
+    assert!(
+        !run.state
+            .events()
+            .contains(&RecordedEvent::PromotionObserved)
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
+        TARGET_SOURCE
+    );
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: Localization failures remain diagnosable and bounded :: One invalid response is repaired by the bounded retry
+#[test]
+fn captured_invalid_then_valid_localization_waits_for_explicit_approval() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_captured_invalid_then_valid_localization_waits_for_explicit_approval());
+}
+
+async fn assert_captured_invalid_then_valid_localization_waits_for_explicit_approval() {
+    let invalid = captured_localization(INVALID_SYMBOL_LOCALIZATION_CAPTURE);
+    let valid = captured_localization(VALID_LOCALIZATION_CAPTURE);
+    let run = run_localization_fixture("task-2-3-repaired", [Ok(invalid), Ok(valid.clone())]).await;
+
+    assert_eq!(
+        run.run.terminal_disposition,
+        Some(ProcedureTerminalDisposition::AwaitingReview)
+    );
+    assert_eq!(
+        run.run.review_disposition,
+        ProcedureReviewDisposition::Pending
+    );
+    assert_eq!(run.run.attempts.len(), 2);
+    assert_eq!(
+        run.run
+            .attempts
+            .iter()
+            .map(|attempt| attempt.disposition)
+            .collect::<Vec<_>>(),
+        [
+            ProcedureAttemptDisposition::Rejected,
+            ProcedureAttemptDisposition::Accepted,
+        ]
+    );
+    assert_eq!(
+        run.run.attempts[0].validation_error.as_deref(),
+        Some(invalid_symbol_diagnostic().as_str())
+    );
+    assert_eq!(run.run.attempts[1].targets, valid.targets);
+    assert_eq!(run.state.counts(), [2, 0, 0, 0]);
+    assert!(deepseek_custom::procedure::require_approved_report(&run.run).is_err());
+
+    run.reports.approve(&run.run.id).unwrap();
+    let approved = run.reports.load(&run.run.id).unwrap();
+    assert_eq!(
+        approved.review_disposition,
+        ProcedureReviewDisposition::Approved
+    );
+    deepseek_custom::procedure::require_approved_report(&approved).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
+        TARGET_SOURCE
+    );
+}
+
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Minimal proposal passes the preflight gate
 #[test]
 fn valid_isolated_proposal_passes_preflight_and_indexes_fixture_files() {
@@ -473,6 +1010,16 @@ fn fixture_preflight_uses_only_the_local_deterministic_validator() {
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance fixture uses a valid isolated proposal :: Invalid proposal stops before execution
 #[test]
 fn invalid_required_artifacts_report_exact_preflight_failure_before_downstream_work() {
+    assert_invalid_required_artifacts_report_exact_preflight_failure_before_downstream_work();
+}
+
+// covers: deepseek-custom/procedure-sandbox-e2e-test :: The fixture proves workspace and evidence isolation :: Failure does not mutate source files
+#[test]
+fn invalid_required_artifacts_do_not_mutate_source_files() {
+    assert_invalid_required_artifacts_report_exact_preflight_failure_before_downstream_work();
+}
+
+fn assert_invalid_required_artifacts_report_exact_preflight_failure_before_downstream_work() {
     let cases = [
         (
             "missing-proposal",
@@ -587,11 +1134,84 @@ fn recording_seams_record_stage_order_and_dispatch_boundaries() {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(assert_recording_seams_share_ordered_events_and_bounded_call_counters_offline());
+        .block_on(assert_recording_seams_record_stage_order_and_dispatch_boundaries());
+}
+
+async fn assert_recording_seams_record_stage_order_and_dispatch_boundaries() {
+    let run = run_passing_fixture("task-3-2-stage-order").await;
+    let labels = run
+        .event_lines
+        .iter()
+        .map(|line| line.split_once('|').unwrap().1)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        labels,
+        [
+            "ValidationCompleted",
+            "LocalizationDispatched",
+            "LocalizationDispatched",
+            "LocalizationDispatched",
+            "LocalizationDispatched",
+            "PatchDispatched",
+            "PatchDispatched",
+            "PatchDispatched",
+            "VerifierStarted",
+            "VerifierCompleted",
+            "VerifierStarted",
+            "VerifierCompleted",
+            "VerifierStarted",
+            "VerifierCompleted",
+            "PromotionObserved",
+        ]
+    );
+    assert_eq!(run.state.counts(), [4, 3, 0, 0]);
+    assert!(!labels.contains(&"FrontierDispatched"));
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|event| **event == "VerifierStarted")
+            .count(),
+        3
+    );
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|event| **event == "VerifierCompleted")
+            .count(),
+        3
+    );
+    let promotion = labels
+        .iter()
+        .position(|event| *event == "PromotionObserved")
+        .unwrap();
+    assert!(
+        labels
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| **event == "VerifierCompleted")
+            .all(|(index, _)| index < promotion)
+    );
+    assert_eq!(run.report["metrics"]["terminal_disposition"], "succeeded");
+    assert!(
+        run.report["metrics"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["verifier_passed"] == true)
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.fixture.root.join(TARGET_PATH)).unwrap(),
+        EXPECTED_TARGET_SOURCE
+    );
 }
 
 // covers: deepseek-custom/procedure-sandbox-e2e-test :: The acceptance test is runnable without live model services :: The test runs offline
-#[tokio::test]
-async fn recording_seams_share_ordered_events_and_bounded_call_counters_offline() {
-    assert_recording_seams_share_ordered_events_and_bounded_call_counters_offline().await;
+#[test]
+fn recording_seams_share_ordered_events_and_bounded_call_counters_offline() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_recording_seams_share_ordered_events_and_bounded_call_counters_offline());
 }

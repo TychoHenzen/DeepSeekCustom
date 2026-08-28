@@ -14,16 +14,20 @@
       "status": "completed"
     },
     "2.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "2.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.3": {
       "checked": false
