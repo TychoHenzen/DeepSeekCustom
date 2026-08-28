@@ -1,0 +1,54 @@
+{
+  "v": 1,
+  "tasks": {
+    "1.1": {
+      "checked": true,
+      "status": "completed"
+    },
+    "1.2": {
+      "checked": true,
+      "status": "completed"
+    },
+    "2.1": {
+      "checked": true,
+      "status": "completed"
+    },
+    "2.2": {
+      "checked": false
+    },
+    "2.3": {
+      "checked": false
+    },
+    "3.1": {
+      "checked": false
+    },
+    "3.2": {
+      "checked": false
+    },
+    "3.3": {
+      "checked": false
+    },
+    "4.1": {
+      "checked": false
+    },
+    "4.2": {
+      "checked": false
+    },
+    "4.3": {
+      "checked": false
+    },
+    "4.4": {
+      "checked": false
+    },
+    "5.1": {
+      "checked": false
+    },
+    "5.2": {
+      "checked": false
+    },
+    "5.3": {
+      "checked": false
+    }
+  },
+  "hmac": "a8a8981b15e1f7984dd5b82b9b8def91ab67414d01abe0cc8cedcd03a1b5f5ed"
+}
