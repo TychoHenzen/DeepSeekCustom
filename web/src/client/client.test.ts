@@ -140,6 +140,9 @@ describe('ApplicationClient', () => {
     expect(result).toEqual({ status: 'conflict', current_revision: 3 });
     expect(test.calls.map((call) => call.input)).toEqual(['/api/bootstrap', '/api/commands', '/api/snapshot']);
     expect(test.client.view.snapshot).toMatchObject({ revision: 3, workspace: 'procedure' });
+    expect(test.client.view.message).toBe(
+      'The command was not applied because application state changed. The latest state is now shown.',
+    );
   });
 
   it('applies ordered events exactly once and refreshes when a revision gap appears', async () => {

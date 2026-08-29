@@ -94,6 +94,80 @@ fn lifecycle_reports_url_serves_health_and_fallback_then_releases_port() {
     });
 }
 
+#[test]
+fn production_shell_references_assets_that_the_rust_server_serves() {
+    run_async_test(async {
+        let server = start_production(0, true, None).await.unwrap();
+        let client = reqwest::Client::new();
+        let shell = client
+            .get(server.url())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        let script_path = html_attribute(&shell, "src=\"");
+        let stylesheet_path = html_attribute(&shell, "href=\"");
+        assert!(script_path.starts_with("/assets/"), "{script_path}");
+        assert!(stylesheet_path.starts_with("/assets/"), "{stylesheet_path}");
+
+        let script = client
+            .get(format!(
+                "{}{}",
+                server.url(),
+                script_path.trim_start_matches('/')
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(script.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            script.headers()[reqwest::header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        assert!(
+            script
+                .text()
+                .await
+                .unwrap()
+                .contains("Skip to active workspace")
+        );
+
+        let stylesheet = client
+            .get(format!(
+                "{}{}",
+                server.url(),
+                stylesheet_path.trim_start_matches('/')
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stylesheet.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            stylesheet.headers()[reqwest::header::CONTENT_TYPE],
+            "text/css; charset=utf-8"
+        );
+        let stylesheet = stylesheet.text().await.unwrap();
+        assert!(stylesheet.contains("@media (width<=48rem)"));
+        assert!(stylesheet.contains("overflow-x:hidden"));
+
+        server.shutdown().await.unwrap();
+    });
+}
+
+fn html_attribute<'a>(html: &'a str, prefix: &str) -> &'a str {
+    let value = html
+        .split_once(prefix)
+        .unwrap_or_else(|| panic!("missing {prefix:?} in production shell"))
+        .1;
+    value
+        .split_once('"')
+        .unwrap_or_else(|| panic!("unterminated {prefix:?} in production shell"))
+        .0
+}
+
 #[tokio::test]
 async fn browser_open_can_be_suppressed() {
     let server = start(ephemeral_loopback(), None).await.unwrap();

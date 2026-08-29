@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { App, browserClient } from './app/App.tsx';
+import { AppErrorBoundary } from './app/AppErrorBoundary.tsx';
 import './app/app.css';
 import { ApplicationClient } from './client/client.ts';
 
@@ -12,6 +13,8 @@ if (root === null) {
 
 createRoot(root).render(
   <StrictMode>
-    <App client={browserClient(new ApplicationClient())} />
+    <AppErrorBoundary>
+      <App client={browserClient(new ApplicationClient())} />
+    </AppErrorBoundary>
   </StrictMode>,
 );

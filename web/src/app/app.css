@@ -102,6 +102,26 @@ h3 {
   margin-block: 0.4rem;
 }
 
+.connection-recovery,
+.fatal-fallback section {
+  min-width: 0;
+  border: 2px solid #f4a261;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: #251d18;
+}
+
+.connection-recovery button {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.fatal-fallback {
+  width: min(100%, 48rem);
+  margin-inline: auto;
+  padding: 1rem;
+}
+
 .state-symbol {
   display: inline-block;
   min-width: 1.5rem;

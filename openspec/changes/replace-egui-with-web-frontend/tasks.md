@@ -62,8 +62,10 @@
 - [x] 3.5 Implement visible focus, logical focus order, labelled controls, live status regions, non-colour state cues, and disabled reasons.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Keyboard and assistive navigation -->
-- [ ] 3.6 Add frontend error boundaries and recoverable conflict handling that refreshes a snapshot without repeating the rejected command.
-- [ ] 3.7 Verify the shell milestone from Rust-served assets at desktop and narrow viewports with keyboard-only navigation.
+- [x] 3.6 Add frontend error boundaries and recoverable conflict handling that refreshes a snapshot without repeating the rejected command.
+<!-- status: completed -->
+- [x] 3.7 Verify the shell milestone from Rust-served assets at desktop and narrow viewports with keyboard-only navigation.
+<!-- status: completed -->
 
 ## 4. Move Chat, Sessions, Settings, Attachments, and Voice
 

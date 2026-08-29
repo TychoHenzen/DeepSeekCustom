@@ -94,10 +94,12 @@
       "status": "completed"
     },
     "3.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.1": {
       "checked": false

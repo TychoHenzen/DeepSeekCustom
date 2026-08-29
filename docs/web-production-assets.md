@@ -30,3 +30,33 @@ assets do not use this proxy or require Node after the Rust binary is built.
 The server exposes the application shell, its embedded files, and
 `/api/health` from one reported loopback origin. Unknown non-API routes return
 `index.html` so browser-side routes can load directly.
+
+## Shell milestone practice
+
+Build the production files before starting the practice server:
+
+```powershell
+npm --prefix web run build
+cargo run -p deepseek-custom-tests --bin web_shell_probe
+```
+
+The probe prints its ephemeral loopback URL. It serves the same embedded files
+as the Rust production server. Press Ctrl+C to stop it.
+
+At the printed URL, verify these points without a mouse:
+
+1. Use Tab to reach the skip link, then all eight workspace controls.
+2. Continue to the current workspace action.
+3. Confirm the active workspace has visible `Active` text and an announced current state.
+4. Repeat at a desktop width and at 360 CSS pixels.
+5. Confirm the page does not scroll horizontally. Long workspace content may scroll inside its own container.
+
+The deterministic server check confirms that the HTML references the built script
+and stylesheet, and that Rust serves both files:
+
+```powershell
+cargo test -p deepseek-custom-tests --test it production_shell_references_assets_that_the_rust_server_serves
+```
+
+This automated check does not replace browser observation. Record the browser,
+viewport sizes, focus order, overflow result, and any visual gap with the run.

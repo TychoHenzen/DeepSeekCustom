@@ -18,6 +18,7 @@ export interface UiClient {
   readonly view: ClientView;
   subscribe: (listener: (view: ClientView) => void) => () => void;
   start: () => Promise<void>;
+  reconnect: () => Promise<void>;
   send: (command: AppCommand) => Promise<AppCommandResult>;
   close: () => void;
 }
@@ -45,7 +46,11 @@ export function App({ client }: AppProps) {
 
   async function selectWorkspace(workspace: Workspace): Promise<void> {
     if (navigationDisabled || workspace === selectedWorkspace) return;
-    await client.send({ command: 'select_workspace', payload: { workspace } });
+    try {
+      await client.send({ command: 'select_workspace', payload: { workspace } });
+    } catch {
+      // The client owns and publishes the resulting offline or fatal state.
+    }
   }
 
   return (
@@ -58,6 +63,14 @@ export function App({ client }: AppProps) {
         </div>
         <ConnectionStatus view={view} />
       </header>
+
+      {view.status === 'offline' && (
+        <section aria-labelledby="connection-recovery-title" className="connection-recovery">
+          <h2 id="connection-recovery-title">Connection unavailable</h2>
+          <p>{view.message ?? 'The local application service cannot be reached.'}</p>
+          <button onClick={() => void client.reconnect()} type="button">Retry connection</button>
+        </section>
+      )}
 
       <nav aria-label="Primary workspaces" className="workspace-navigation">
         <ul>
@@ -120,6 +133,7 @@ function ConnectionStatus({ view }: { view: ClientView }) {
           {view.lastError.field !== null && ` Field: ${view.lastError.field}.`}
         </p>
       )}
+      {view.status === 'online' && view.message !== null && <p role="status">Notice: {view.message}</p>}
       {view.status === 'fatal' && view.message !== null && <p role="alert">Fatal error: {view.message}</p>}
     </div>
   );

@@ -127,7 +127,9 @@ export class ApplicationClient {
       throw error;
     }
     if (response.status === 409 && result.status === 'conflict') {
-      await this.#refreshSnapshot();
+      await this.#refreshSnapshot(
+        'The command was not applied because application state changed. The latest state is now shown.',
+      );
       return result;
     }
     if (response.status === 422 && result.status === 'rejected') {
@@ -148,7 +150,7 @@ export class ApplicationClient {
     this.#events = null;
   }
 
-  async #refreshSnapshot(): Promise<void> {
+  async #refreshSnapshot(message: string | null = null): Promise<void> {
     let response: Response;
     try {
       response = await this.#dependencies.fetch('/api/snapshot', {
@@ -166,7 +168,7 @@ export class ApplicationClient {
     }
     try {
       const snapshot = parseSnapshot(await response.json());
-      this.#setView({ ...this.#view, status: 'online', snapshot, message: null });
+      this.#setView({ ...this.#view, status: 'online', snapshot, message });
     } catch (error) {
       this.#fatal(error, 'snapshot contract is incompatible');
       throw error;

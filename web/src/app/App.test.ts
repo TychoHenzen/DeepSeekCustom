@@ -46,6 +46,7 @@ function client(initial: ClientView): UiClient & { send: ReturnType<typeof vi.fn
     get view() { return view; },
     subscribe(listener) { listeners.add(listener); listener(view); return () => listeners.delete(listener); },
     start: vi.fn(() => Promise.resolve()),
+    reconnect: vi.fn(() => Promise.resolve()),
     send,
     close: vi.fn(),
   };
@@ -108,5 +109,62 @@ describe('application shell', () => {
     expect(disabledAction).toHaveAccessibleDescription('Unavailable while this workspace is being migrated.');
     expect(screen.getByRole('button', { name: /^Chat/ })).toHaveTextContent('Active');
     expect(appCss).toMatch(/button:focus-visible,[\s\S]*outline:\s*3px solid/);
+  });
+
+  it('offers an explicit retry only for a recoverable offline state', async () => {
+    const appClient = client({
+      status: 'offline',
+      snapshot: snapshot(),
+      lastError: null,
+      message: 'Connection lost.',
+    });
+    const user = userEvent.setup();
+    render(createElement(App, { client: appClient }));
+
+    expect(screen.getByRole('heading', { name: 'Connection unavailable' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Retry connection' }));
+    expect(appClient.reconnect).toHaveBeenCalledOnce();
+  });
+
+  it('shows refreshed conflict state without dispatching the command twice', async () => {
+    let view: ClientView = { status: 'online', snapshot: snapshot(), lastError: null, message: null };
+    const listeners = new Set<(next: ClientView) => void>();
+    const send = vi.fn(() => {
+      view = {
+        ...view,
+        snapshot: { ...snapshot('procedure'), revision: 9 },
+        message: 'The command was not applied because application state changed. The latest state is now shown.',
+      };
+      listeners.forEach((listener) => listener(view));
+      return Promise.resolve({ status: 'conflict' as const, current_revision: 9 });
+    });
+    const appClient: UiClient = {
+      get view() { return view; },
+      subscribe(listener) { listeners.add(listener); listener(view); return () => listeners.delete(listener); },
+      start: vi.fn(() => Promise.resolve()),
+      reconnect: vi.fn(() => Promise.resolve()),
+      send,
+      close: vi.fn(),
+    };
+    render(createElement(App, { client: appClient }));
+
+    await userEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: /^Procedure/ })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('latest state is now shown'))).toBe(true);
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('revision 9'))).toBe(true);
+  });
+
+  it('keeps fatal contract state distinct and does not offer retry', () => {
+    render(createElement(App, { client: client({
+      status: 'fatal',
+      snapshot: snapshot(),
+      lastError: null,
+      message: 'snapshot contract is incompatible: revision must be a number',
+    }) }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Fatal error: snapshot contract is incompatible');
+    expect(screen.queryByRole('button', { name: 'Retry connection' })).not.toBeInTheDocument();
   });
 });
