@@ -29,9 +29,11 @@
 - [x] 2.5 Implement preferred-port fallback and exact bind-error reporting while proving no non-loopback listener is created.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The application starts as a local web service :: Preferred port is unavailable -->
-- [ ] 2.6 Implement bootstrap and snapshot endpoints that return current visible state and revision for a newly connected or reloaded browser.
+- [x] 2.6 Implement bootstrap and snapshot endpoints that return current visible state and revision for a newly connected or reloaded browser.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser connects during an idle session -->
-- [ ] 2.7 Implement revision-addressed Server-Sent Events, bounded replay, reset snapshots, and reconnect tests during each active operation class.
+- [x] 2.7 Implement revision-addressed Server-Sent Events, bounded replay, reset snapshots, and reconnect tests during each active operation class.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser reconnects during active work -->
 - [ ] 2.8 Require base revisions on commands and return an atomic HTTP 409 conflict with the current revision for stale requests.
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: A stale client sends a command -->

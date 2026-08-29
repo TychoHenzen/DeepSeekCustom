@@ -50,10 +50,12 @@
       "status": "completed"
     },
     "2.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "2.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "2.8": {
       "checked": false

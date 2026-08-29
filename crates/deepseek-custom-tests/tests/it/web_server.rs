@@ -2,8 +2,15 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
+use deepseek_custom::application::actor::AppEvent;
+use deepseek_custom::application::dto::{
+    AppRevision, AppSnapshot, NoticeLevel, OperationKind, OperationPhase, OperationProgress,
+    OperationState, PendingSessionSwitch, SessionSummary, TranscriptBlock, TranscriptContent,
+    VisibleSettings, VisibleStyleSettings, VisibleVoiceSettings, Workspace,
+};
 use deepseek_custom::web::server::{
-    BindPolicy, BrowserOpener, ServerStartError, start, start_production, start_with_policy,
+    BindPolicy, BrowserOpener, ServerStartError, WebAppState, start, start_production,
+    start_with_policy, start_with_policy_and_state,
 };
 
 #[derive(Default)]
@@ -178,4 +185,237 @@ async fn non_loopback_policy_never_creates_a_listener() {
 
 fn run_async_test(future: impl std::future::Future<Output = ()>) {
     tokio::runtime::Runtime::new().unwrap().block_on(future);
+}
+
+fn visible_snapshot() -> AppSnapshot {
+    AppSnapshot {
+        revision: AppRevision::INITIAL,
+        workspace: Workspace::Procedure,
+        transcript: vec![TranscriptBlock {
+            id: 7,
+            content: TranscriptContent::Notice {
+                message: "visible transcript".into(),
+                level: NoticeLevel::Info,
+            },
+        }],
+        session: SessionSummary {
+            id: "session-current".into(),
+            title: "Current session".into(),
+            backend: "stub".into(),
+            model: "deterministic".into(),
+        },
+        pending_session_switch: Some(PendingSessionSwitch::Load("session-next".into())),
+        settings: VisibleSettings {
+            selected_backend: Some("stub".into()),
+            selected_model: Some("deterministic".into()),
+            effort: "high".into(),
+            context_budget: 4096,
+            show_raw_output: true,
+            working_dir: Some("C:/workspace".into()),
+            style: VisibleStyleSettings {
+                plain_language: true,
+                target_grade: 8.0,
+            },
+            voice: VisibleVoiceSettings {
+                enabled: true,
+                stt_enabled: true,
+                tts_enabled: false,
+                trigger_mode: "push_to_talk".into(),
+                wake_phrase: "computer".into(),
+                tts_voice: "af_sarah".into(),
+                tts_speed: 1.0,
+            },
+        },
+        operations: vec![operation(
+            OperationKind::Procedure,
+            OperationPhase::AwaitingReview,
+            1,
+        )],
+    }
+}
+
+fn operation(kind: OperationKind, phase: OperationPhase, completed: u64) -> OperationState {
+    OperationState {
+        kind,
+        operation_id: Some(format!("{kind:?}-run")),
+        phase,
+        progress: Some(OperationProgress {
+            completed,
+            total: Some(2),
+        }),
+        message: Some(format!("{phase:?}")),
+        error: None,
+    }
+}
+
+async fn start_state(state: WebAppState) -> deepseek_custom::web::server::WebServerHandle {
+    start_with_policy_and_state(BindPolicy::strict(ephemeral_loopback()), None, state)
+        .await
+        .unwrap()
+}
+
+async fn read_sse_event(mut response: reqwest::Response) -> String {
+    let mut body = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !body.contains("\n\n") {
+            let bytes = response.chunk().await.unwrap().unwrap();
+            body.push_str(std::str::from_utf8(&bytes).unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    body
+}
+
+// covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser connects during an idle session
+#[test]
+fn bootstrap_and_reload_return_the_complete_current_visible_snapshot() {
+    run_async_test(async {
+        let state = WebAppState::new(visible_snapshot(), 8);
+        state
+            .apply_event(AppEvent::OperationChanged(operation(
+                OperationKind::Procedure,
+                OperationPhase::Completed,
+                2,
+            )))
+            .unwrap();
+        let expected = state.snapshot();
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+
+        let bootstrap = client
+            .get(format!("{}api/bootstrap", server.url()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bootstrap.status(), reqwest::StatusCode::OK);
+        let bootstrap_text = bootstrap.text().await.unwrap();
+        let bootstrap: AppSnapshot = serde_json::from_str(&bootstrap_text).unwrap();
+        let reload: AppSnapshot = client
+            .get(format!("{}api/snapshot", server.url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(bootstrap, expected);
+        assert_eq!(reload, expected);
+        assert_eq!(bootstrap.revision, AppRevision(1));
+        assert_eq!(bootstrap.workspace, Workspace::Procedure);
+        assert_eq!(bootstrap.transcript.len(), 1);
+        assert_eq!(bootstrap.session.id, "session-current");
+        assert_eq!(
+            bootstrap.pending_session_switch,
+            Some(PendingSessionSwitch::Load("session-next".into()))
+        );
+        assert_eq!(
+            bootstrap.settings.working_dir.as_deref(),
+            Some("C:/workspace")
+        );
+        assert_eq!(bootstrap.operations[0].phase, OperationPhase::Completed);
+        assert!(!bootstrap_text.contains("api_key"));
+        assert!(!bootstrap_text.contains("credential"));
+        assert!(!bootstrap_text.contains("secret"));
+
+        server.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser reconnects during active work
+#[test]
+fn reconnect_replays_each_active_operation_once_and_resets_evicted_history() {
+    run_async_test(async {
+        let state = WebAppState::new(visible_snapshot(), 2);
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let kinds = [
+            OperationKind::Chat,
+            OperationKind::Cascade,
+            OperationKind::Evolve,
+            OperationKind::Procedure,
+            OperationKind::Autopilot,
+            OperationKind::Voice,
+            OperationKind::Tests,
+        ];
+
+        for kind in kinds {
+            let before = state.snapshot().revision;
+            let running_revision = state
+                .apply_event(AppEvent::OperationChanged(operation(
+                    kind,
+                    OperationPhase::Running,
+                    1,
+                )))
+                .unwrap();
+            let disconnected = client
+                .get(format!("{}api/events?after={}", server.url(), before.0))
+                .send()
+                .await
+                .unwrap();
+            let first = read_sse_event(disconnected).await;
+            assert!(first.contains("event: change"), "{kind:?}: {first}");
+            assert!(first.contains(&format!("id: {}", running_revision.0)));
+            assert_eq!(
+                first
+                    .matches(&format!("id: {}", running_revision.0))
+                    .count(),
+                1
+            );
+
+            let completed_revision = state
+                .apply_event(AppEvent::OperationChanged(operation(
+                    kind,
+                    OperationPhase::Completed,
+                    2,
+                )))
+                .unwrap();
+            let reconnected = client
+                .get(format!("{}api/events", server.url()))
+                .header("Last-Event-ID", running_revision.0)
+                .send()
+                .await
+                .unwrap();
+            let later = read_sse_event(reconnected).await;
+            assert!(later.contains(&format!("id: {}", completed_revision.0)));
+            assert!(!later.contains(&format!("id: {}\n", running_revision.0)));
+            assert_eq!(
+                state
+                    .snapshot()
+                    .operations
+                    .iter()
+                    .find(|operation| operation.kind == kind)
+                    .unwrap()
+                    .phase,
+                OperationPhase::Completed
+            );
+        }
+
+        let old_revision = AppRevision::INITIAL;
+        let reset = client
+            .get(format!(
+                "{}api/events?after={}",
+                server.url(),
+                old_revision.0
+            ))
+            .send()
+            .await
+            .unwrap();
+        let reset_event = read_sse_event(reset).await;
+        assert!(reset_event.contains("event: reset"));
+        assert!(reset_event.contains(&format!("id: {}", state.snapshot().revision.0)));
+        let snapshot: AppSnapshot = client
+            .get(format!("{}api/snapshot", server.url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(snapshot, state.snapshot());
+        assert_eq!(snapshot.operations.len(), kinds.len());
+
+        server.shutdown().await.unwrap();
+    });
 }

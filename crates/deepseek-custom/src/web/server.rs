@@ -1,23 +1,112 @@
+use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use axum::Router;
-use axum::http::{StatusCode, Uri, header};
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use axum::{Json, Router};
+use futures::stream::{self, Stream, StreamExt};
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
+
+use crate::application::actor::{AppEvent, ApplicationActor, Replay};
+use crate::application::dto::{
+    AppChange, AppRevision, AppSnapshot, SessionSummary, VisibleSettings,
+};
+use crate::config::settings::Settings;
 
 const APPLICATION_SHELL: &str = "index.html";
 
 #[derive(RustEmbed)]
 #[folder = "src/web/assets"]
 struct EmbeddedAssets;
+
+/// Process-owned application state shared by HTTP requests and service event producers.
+/// Browser connection lifetimes do not affect this owner.
+#[derive(Clone)]
+pub struct WebAppState {
+    inner: Arc<WebAppStateInner>,
+}
+
+struct WebAppStateInner {
+    actor: Mutex<ApplicationActor>,
+    changes: broadcast::Sender<AppChange>,
+}
+
+impl WebAppState {
+    pub fn new(snapshot: AppSnapshot, replay_capacity: usize) -> Self {
+        let (changes, _) = broadcast::channel(replay_capacity.max(1));
+        Self {
+            inner: Arc::new(WebAppStateInner {
+                actor: Mutex::new(ApplicationActor::new(snapshot, replay_capacity)),
+                changes,
+            }),
+        }
+    }
+
+    pub fn snapshot(&self) -> AppSnapshot {
+        self.inner.actor.lock().unwrap().snapshot().clone()
+    }
+
+    pub fn apply_event(
+        &self,
+        event: AppEvent,
+    ) -> Result<AppRevision, crate::application::dto::AppError> {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let revision = actor.apply_event(event)?;
+        if let Replay::Changes(changes) = actor.replay_after(previous)
+            && let Some(change) = changes.into_iter().next()
+        {
+            let _ = self.inner.changes.send(change);
+        }
+        Ok(revision)
+    }
+
+    fn replay_and_subscribe(
+        &self,
+        revision: AppRevision,
+    ) -> (Replay, broadcast::Receiver<AppChange>) {
+        let actor = self.inner.actor.lock().unwrap();
+        let replay = actor.replay_after(revision);
+        let receiver = self.inner.changes.subscribe();
+        (replay, receiver)
+    }
+
+    fn snapshot_and_subscribe(&self) -> (AppSnapshot, broadcast::Receiver<AppChange>) {
+        let actor = self.inner.actor.lock().unwrap();
+        let snapshot = actor.snapshot().clone();
+        let receiver = self.inner.changes.subscribe();
+        (snapshot, receiver)
+    }
+}
+
+impl Default for WebAppState {
+    fn default() -> Self {
+        Self::new(
+            AppSnapshot::initial(
+                VisibleSettings::from_settings(&Settings::default(), None, None),
+                SessionSummary {
+                    id: String::new(),
+                    title: "New conversation".into(),
+                    backend: String::new(),
+                    model: String::new(),
+                },
+            ),
+            256,
+        )
+    }
+}
 
 pub trait BrowserOpener: Send + Sync + 'static {
     fn open(&self, url: &str) -> io::Result<()>;
@@ -134,6 +223,14 @@ pub async fn start_with_policy(
     policy: BindPolicy,
     browser: Option<Arc<dyn BrowserOpener>>,
 ) -> Result<WebServerHandle, ServerStartError> {
+    start_with_policy_and_state(policy, browser, WebAppState::default()).await
+}
+
+pub async fn start_with_policy_and_state(
+    policy: BindPolicy,
+    browser: Option<Arc<dyn BrowserOpener>>,
+    state: WebAppState,
+) -> Result<WebServerHandle, ServerStartError> {
     let preferred_address = policy.preferred_address();
     if !preferred_address.ip().is_loopback() {
         return Err(ServerStartError::NonLoopback(preferred_address));
@@ -173,7 +270,7 @@ pub async fn start_with_policy(
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
-        axum::serve(listener, router())
+        axum::serve(listener, router(state))
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
             })
@@ -188,13 +285,86 @@ pub async fn start_with_policy(
     })
 }
 
-fn router() -> Router {
+fn router(state: WebAppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/health", get(health))
+        .route("/api/bootstrap", get(snapshot))
+        .route("/api/snapshot", get(snapshot))
+        .route("/api/events", get(events))
         .route("/api", get(api_not_found))
         .route("/api/{*path}", get(api_not_found))
         .fallback(get(fallback))
+        .with_state(state)
+}
+
+async fn snapshot(State(state): State<WebAppState>) -> Json<AppSnapshot> {
+    Json(state.snapshot())
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    after: Option<AppRevision>,
+}
+
+async fn events(
+    State(state): State<WebAppState>,
+    Query(query): Query<EventsQuery>,
+    headers: HeaderMap,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let header_revision = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(AppRevision);
+    let revision = query.after.or(header_revision).unwrap_or_default();
+    let (replay, receiver) = state.replay_and_subscribe(revision);
+    let initial = match replay {
+        Replay::Changes(changes) => changes,
+        Replay::Reset(snapshot) => vec![AppChange {
+            revision: snapshot.revision,
+            change: crate::application::dto::AppChangeKind::Reset(*snapshot),
+        }],
+    };
+    let initial = stream::iter(initial.into_iter().map(sse_event));
+    let live_state = state.clone();
+    let live = stream::unfold((receiver, live_state), |(mut receiver, state)| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(change) => return Some((sse_event(change), (receiver, state))),
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let (snapshot, fresh_receiver) = state.snapshot_and_subscribe();
+                    let reset = AppChange {
+                        revision: snapshot.revision,
+                        change: crate::application::dto::AppChangeKind::Reset(snapshot),
+                    };
+                    return Some((sse_event(reset), (fresh_receiver, state)));
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(initial.chain(live)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keepalive"),
+    )
+}
+
+fn sse_event(change: AppChange) -> Result<Event, Infallible> {
+    let event_name = if matches!(
+        change.change,
+        crate::application::dto::AppChangeKind::Reset(_)
+    ) {
+        "reset"
+    } else {
+        "change"
+    };
+    Ok(Event::default()
+        .event(event_name)
+        .id(change.revision.0.to_string())
+        .json_data(change)
+        .expect("application changes are serializable"))
 }
 
 async fn health() -> &'static str {
