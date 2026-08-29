@@ -21,10 +21,13 @@
 <!-- status: completed -->
 - [x] 2.2 Implement the loopback server lifecycle, graceful shutdown, reported URL, health response, embedded fallback route, and browser-open integration.
 <!-- status: completed -->
-- [ ] 2.3 Add the Vite production asset contract and a build failure that explains how to create missing or stale embedded assets.
-- [ ] 2.4 Serve the embedded application and API from one reported loopback origin without a frontend development server.
+- [x] 2.3 Add the Vite production asset contract and a build failure that explains how to create missing or stale embedded assets.
+<!-- status: completed -->
+- [x] 2.4 Serve the embedded application and API from one reported loopback origin without a frontend development server.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The application starts as a local web service :: Normal production startup -->
-- [ ] 2.5 Implement preferred-port fallback and exact bind-error reporting while proving no non-loopback listener is created.
+- [x] 2.5 Implement preferred-port fallback and exact bind-error reporting while proving no non-loopback listener is created.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The application starts as a local web service :: Preferred port is unavailable -->
 - [ ] 2.6 Implement bootstrap and snapshot endpoints that return current visible state and revision for a newly connected or reloaded browser.
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser connects during an idle session -->

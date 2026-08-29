@@ -1,0 +1,11 @@
+{
+  "contract_version": 1,
+  "generator": "placeholder-until-vite-workspace-exists",
+  "build_command": "npm --prefix web run build",
+  "assets": [
+    {
+      "path": "index.html",
+      "sha256": "7bf5b9aabcbd0905491c8bef0ce73107cd571233d13a2a2a0bd86e31ab0e2b19"
+    }
+  ]
+}

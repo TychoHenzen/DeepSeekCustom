@@ -14,7 +14,7 @@ pub enum Replay {
     /// Every change after the requested revision is still retained.
     Changes(Vec<AppChange>),
     /// The requested revision predates retained history. Replace local state.
-    Reset(AppSnapshot),
+    Reset(Box<AppSnapshot>),
 }
 
 /// A domain or service event already projected into presentation-neutral data.
@@ -110,7 +110,7 @@ impl ApplicationActor {
 
     pub fn replay_after(&self, revision: AppRevision) -> Replay {
         if revision > self.snapshot.revision {
-            return Replay::Reset(self.snapshot.clone());
+            return Replay::Reset(Box::new(self.snapshot.clone()));
         }
         if revision == self.snapshot.revision {
             return Replay::Changes(Vec::new());
@@ -121,7 +121,7 @@ impl ApplicationActor {
             .map(|change| AppRevision(change.revision.0.saturating_sub(1)))
             .unwrap_or(self.snapshot.revision);
         if revision < oldest_base {
-            return Replay::Reset(self.snapshot.clone());
+            return Replay::Reset(Box::new(self.snapshot.clone()));
         }
         Replay::Changes(
             self.changes

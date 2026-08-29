@@ -41,6 +41,7 @@ path = "src/bin/fake_mcp_server.rs"
 [dependencies]
 deepseek-custom = { path = "../deepseek-custom", features = ["test-support"] }
 serde_json = "1"
+sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 # A binary target cannot use a dev-dependency, and `orphan_probe` needs the
 # same tokio `Command` the production spawn paths use, since that is what
