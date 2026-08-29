@@ -14,11 +14,18 @@ action:
 npm --prefix web run build
 ```
 
-The checked-in manifest currently names
-`placeholder-until-vite-workspace-exists` as its generator. It keeps the Rust
-server independently buildable before task 3.1 creates the Vite workspace. The
-Vite production build must replace that generator value with `vite`, stage its
-hashed output in the same asset directory, and write matching digests.
+The `web/` workspace owns production asset generation. Its Vite build empties and
+recreates the embedded asset directory, then writes a sorted manifest with SHA-256
+digests. Use the locked dependency graph for a clean build:
+
+```powershell
+npm --prefix web ci
+npm --prefix web run build
+```
+
+For local frontend development, `npm --prefix web run dev` proxies `/api` to
+`DEEPSEEK_SERVER_URL`. The default target is `http://127.0.0.1:3000`. Production
+assets do not use this proxy or require Node after the Rust binary is built.
 
 The server exposes the application shell, its embedded files, and
 `/api/health` from one reported loopback origin. Unknown non-API routes return

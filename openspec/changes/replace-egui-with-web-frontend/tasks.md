@@ -44,12 +44,15 @@
 - [x] 2.10 Reject foreign or missing Origin values, invalid tokens, cross-origin preflights, secret serialization, framing, and unsafe content sources before dispatch.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Local web commands are protected from other origins :: Another origin attempts a command -->
-- [ ] 2.11 Run the web-server milestone in practice, reload during a deterministic operation, force replay reset, and verify process shutdown reaps owned children.
+- [x] 2.11 Run the web-server milestone in practice, reload during a deterministic operation, force replay reset, and verify process shutdown reaps owned children.
+<!-- status: completed -->
 
 ## 3. Build the Responsive Frontend Shell
 
-- [ ] 3.1 Create the `web/` React and strict-TypeScript workspace with locked dependencies, Vite build, type checking, linting, and a Rust-server development proxy.
-- [ ] 3.2 Implement the bootstrap, snapshot, command, revision-conflict, event-replay, reconnect, fatal-error, and offline client state paths.
+- [x] 3.1 Create the `web/` React and strict-TypeScript workspace with locked dependencies, Vite build, type checking, linting, and a Rust-server development proxy.
+<!-- status: completed -->
+- [x] 3.2 Implement the bootstrap, snapshot, command, revision-conflict, event-replay, reconnect, fatal-error, and offline client state paths.
+<!-- status: completed -->
 - [ ] 3.3 Build desktop semantic navigation for Chat, Autopilot, Cascade, Evolve, Procedure, Sessions, Tests, and Settings with an identifiable active workspace.
 <!-- covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Desktop navigation -->
 - [ ] 3.4 Build the 360-pixel responsive navigation and workspace layout with reachable actions, contained long content, and no horizontal page overflow.

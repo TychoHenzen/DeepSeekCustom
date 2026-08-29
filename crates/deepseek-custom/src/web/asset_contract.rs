@@ -22,7 +22,6 @@ struct AssetManifest {
 #[serde(rename_all = "kebab-case")]
 enum AssetGenerator {
     Vite,
-    PlaceholderUntilViteWorkspaceExists,
 }
 
 #[derive(Debug, Deserialize)]

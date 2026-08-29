@@ -1,11 +1,15 @@
 {
   "contract_version": 1,
-  "generator": "placeholder-until-vite-workspace-exists",
+  "generator": "vite",
   "build_command": "npm --prefix web run build",
   "assets": [
     {
+      "path": "assets/index-B1WJeoWN.js",
+      "sha256": "2decd222d72393c9de985970b66511376f57402d59a2a0533db9e44e36879116"
+    },
+    {
       "path": "index.html",
-      "sha256": "7bf5b9aabcbd0905491c8bef0ce73107cd571233d13a2a2a0bd86e31ab0e2b19"
+      "sha256": "7695cdc0d812b859cfc829f7a09a655d9ad9cb8717c3034112293406109e3eb5"
     }
   ]
 }

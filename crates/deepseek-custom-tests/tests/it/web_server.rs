@@ -1,6 +1,12 @@
 use std::io;
+#[cfg(windows)]
+use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
@@ -268,6 +274,32 @@ async fn read_sse_event(mut response: reqwest::Response) -> String {
     body
 }
 
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .expect("tasklist should run");
+    String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+}
+
+#[cfg(windows)]
+fn run_process_shutdown_probe() -> u32 {
+    let mut probe = Command::new(env!("CARGO_BIN_EXE_orphan_probe"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("process-shutdown probe should start");
+    let mut line = String::new();
+    BufReader::new(probe.stdout.take().expect("piped probe stdout"))
+        .read_line(&mut line)
+        .expect("probe should report its owned child");
+    assert!(probe.wait().expect("probe should exit").success());
+    line.trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("expected child process id, got {line:?}"))
+}
+
 async fn request_token(client: &reqwest::Client, server_url: &str) -> String {
     client
         .get(format!("{server_url}api/bootstrap"))
@@ -446,6 +478,96 @@ fn reconnect_replays_each_active_operation_once_and_resets_evicted_history() {
         assert_eq!(snapshot.operations.len(), kinds.len());
 
         server.shutdown().await.unwrap();
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn production_server_milestone_survives_reload_resets_and_reaps_process_resources() {
+    run_async_test(async {
+        let browser = Arc::new(RecordingBrowser::default());
+        let state = WebAppState::new(visible_snapshot(), 2);
+        let server = start_with_policy_and_state(
+            BindPolicy::preferred_loopback(0, true),
+            Some(browser.clone()),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let address = server.address();
+        let url = server.url().to_owned();
+        assert_eq!(browser.urls.lock().unwrap().as_slice(), [url.clone()]);
+
+        let client = reqwest::Client::new();
+        let health = client.get(format!("{url}api/health")).send().await.unwrap();
+        assert_eq!(health.status(), reqwest::StatusCode::OK);
+        assert_eq!(health.text().await.unwrap(), "ok");
+
+        let running_revision = state
+            .apply_event(AppEvent::OperationChanged(operation(
+                OperationKind::Procedure,
+                OperationPhase::Running,
+                1,
+            )))
+            .unwrap();
+        let first_connection = client
+            .get(format!("{url}api/events?after=0"))
+            .send()
+            .await
+            .unwrap();
+        let running_event = read_sse_event(first_connection).await;
+        assert!(running_event.contains("event: change"));
+        assert!(running_event.contains(&format!("id: {}", running_revision.0)));
+
+        let reloaded: AppSnapshot = client
+            .get(format!("{url}api/snapshot"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(reloaded.revision, running_revision);
+        assert_eq!(reloaded.operations[0].phase, OperationPhase::Running);
+
+        state
+            .apply_event(AppEvent::OperationChanged(operation(
+                OperationKind::Procedure,
+                OperationPhase::Running,
+                2,
+            )))
+            .unwrap();
+        let completed_revision = state
+            .apply_event(AppEvent::OperationChanged(operation(
+                OperationKind::Procedure,
+                OperationPhase::Completed,
+                2,
+            )))
+            .unwrap();
+        let reset_connection = client
+            .get(format!("{url}api/events?after=0"))
+            .send()
+            .await
+            .unwrap();
+        let reset_event = read_sse_event(reset_connection).await;
+        assert!(reset_event.contains("event: reset"));
+        assert!(reset_event.contains(&format!("id: {}", completed_revision.0)));
+
+        server.shutdown().await.unwrap();
+        let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+
+        let child_pid = run_process_shutdown_probe();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process_is_alive(child_pid) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if process_is_alive(child_pid) {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &child_pid.to_string(), "/T", "/F"])
+                .output();
+            panic!("owned child {child_pid} outlived process shutdown");
+        }
     });
 }
 
