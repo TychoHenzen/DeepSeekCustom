@@ -114,9 +114,17 @@ pub enum TranscriptContent {
         message: String,
         level: NoticeLevel,
     },
+    Error {
+        message: String,
+        recoverable: bool,
+    },
     Image {
         media_type: String,
         data: String,
+    },
+    Terminal {
+        outcome: OperationPhase,
+        message: String,
     },
     Subagent {
         name: String,

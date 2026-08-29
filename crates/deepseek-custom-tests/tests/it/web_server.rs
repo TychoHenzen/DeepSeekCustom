@@ -728,25 +728,31 @@ fn same_origin_current_token_dispatches_through_normal_application_rules() {
         assert_eq!(applied.status(), reqwest::StatusCode::OK);
         assert_eq!(first_state.snapshot().workspace, Workspace::Tests);
 
-        let rejected = post_command(
+        let chat = post_command(
             &client,
             first.url(),
             &first_token,
             &AppCommandRequest {
                 revision: AppRevision(1),
                 command: AppCommand::SendMessage {
-                    text: "not connected yet".into(),
+                    text: "hello".into(),
                     attachment_id: None,
                 },
             },
         )
         .await;
-        assert_eq!(rejected.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(chat.status(), reqwest::StatusCode::OK);
         assert!(matches!(
-            rejected.json::<AppCommandResult>().await.unwrap(),
-            AppCommandResult::Rejected { error } if error.recoverable
+            chat.json::<AppCommandResult>().await.unwrap(),
+            AppCommandResult::Applied {
+                revision: AppRevision(3)
+            }
         ));
-        assert_eq!(first_state.snapshot().revision, AppRevision(1));
+        assert_eq!(first_state.snapshot().revision, AppRevision(3));
+        assert!(matches!(
+            first_state.snapshot().transcript.last(),
+            Some(TranscriptBlock { content: TranscriptContent::User { text, has_image: false }, .. }) if text == "hello"
+        ));
 
         first.shutdown().await.unwrap();
         second.shutdown().await.unwrap();

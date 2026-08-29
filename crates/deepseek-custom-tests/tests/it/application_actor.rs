@@ -137,3 +137,36 @@ fn zero_capacity_always_resets_a_client_that_is_behind() {
         Replay::Reset(_)
     ));
 }
+
+#[test]
+fn send_message_projects_user_then_running_state_in_revision_order() {
+    let mut actor = actor(8);
+    let result = actor.submit(AppCommandRequest {
+        revision: AppRevision::INITIAL,
+        command: AppCommand::SendMessage {
+            text: " hello ".into(),
+            attachment_id: Some("accepted-image-1".into()),
+        },
+    });
+    assert_eq!(
+        result,
+        AppCommandResult::Applied {
+            revision: AppRevision(2)
+        }
+    );
+    let Replay::Changes(changes) = actor.replay_after(AppRevision::INITIAL) else {
+        panic!()
+    };
+    assert_eq!(changes.len(), 2);
+    assert!(
+        matches!(&changes[0].change, deepseek_custom::application::dto::AppChangeKind::TranscriptAppended(TranscriptBlock { content: TranscriptContent::User { text, has_image: true }, .. }) if text == "hello")
+    );
+    assert!(matches!(
+        &changes[1].change,
+        deepseek_custom::application::dto::AppChangeKind::OperationChanged(OperationState {
+            kind: OperationKind::Chat,
+            phase: OperationPhase::Running,
+            ..
+        })
+    ));
+}

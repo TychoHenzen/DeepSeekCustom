@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import type { ApplicationClient, ClientView } from '../client/client.ts';
 import { workspaces, type AppCommand, type AppCommandResult, type Workspace } from '../client/contracts.ts';
+import { ChatWorkspace } from './ChatWorkspace.tsx';
 
 const workspaceLabels: Record<Workspace, string> = {
   chat: 'Chat',
@@ -101,7 +102,13 @@ export function App({ client }: AppProps) {
           <p className="eyebrow">Active workspace</p>
           <h2 id="workspace-title">{workspaceLabel}</h2>
         </header>
-        <section aria-labelledby="workspace-actions-title" className="workspace-actions">
+        {selectedWorkspace === 'chat' && view.snapshot !== null ? (
+          <ChatWorkspace
+            operation={view.snapshot.operations.find((operation) => operation.kind === 'chat') ?? null}
+            send={(command) => client.send(command)}
+            transcript={view.snapshot.transcript}
+          />
+        ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">
           <h3 id="workspace-actions-title">{workspaceLabel} actions</h3>
           <p>Controls for this workspace will appear here.</p>
           <button aria-describedby="workspace-action-reason" disabled type="button">
@@ -110,7 +117,7 @@ export function App({ client }: AppProps) {
           <p className="disabled-reason" id="workspace-action-reason">
             Unavailable while this workspace is being migrated.
           </p>
-        </section>
+        </section>}
       </main>
     </div>
   );

@@ -4,8 +4,9 @@ use std::collections::VecDeque;
 
 use super::dto::{
     AppChange, AppChangeKind, AppCommand, AppCommandRequest, AppCommandResult, AppError,
-    AppErrorCode, AppRevision, AppSnapshot, PendingSessionSwitch, SessionSummary, TranscriptBlock,
-    VisibleSettings, Workspace,
+    AppErrorCode, AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState,
+    PendingSessionSwitch, SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings,
+    Workspace,
 };
 
 /// Result of asking the actor for changes after a known revision.
@@ -62,6 +63,57 @@ impl ApplicationActor {
             AppCommand::SelectWorkspace { workspace } => {
                 self.snapshot.workspace = workspace;
                 match self.publish(AppChangeKind::WorkspaceSelected(workspace)) {
+                    Ok(revision) => AppCommandResult::Applied { revision },
+                    Err(error) => AppCommandResult::Rejected { error },
+                }
+            }
+            AppCommand::SendMessage {
+                text,
+                attachment_id,
+            } => {
+                let text = text.trim().to_string();
+                if text.is_empty() && attachment_id.is_none() {
+                    return AppCommandResult::Rejected {
+                        error: AppError {
+                            code: AppErrorCode::InvalidInput,
+                            message: "Enter a message or choose an accepted image.".into(),
+                            recoverable: true,
+                            field: Some("message".into()),
+                        },
+                    };
+                }
+                let id = self
+                    .snapshot
+                    .transcript
+                    .iter()
+                    .map(|block| block.id)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let user = TranscriptBlock {
+                    id,
+                    content: TranscriptContent::User {
+                        text,
+                        has_image: attachment_id.is_some(),
+                    },
+                };
+                self.snapshot.transcript.push(user.clone());
+                if let Err(error) = self.publish(AppChangeKind::TranscriptAppended(user)) {
+                    return AppCommandResult::Rejected { error };
+                }
+                let operation = OperationState {
+                    kind: OperationKind::Chat,
+                    operation_id: Some(format!("chat-{id}")),
+                    phase: OperationPhase::Running,
+                    progress: None,
+                    message: Some("Generating response".into()),
+                    error: None,
+                };
+                self.snapshot
+                    .operations
+                    .retain(|item| item.kind != OperationKind::Chat);
+                self.snapshot.operations.push(operation.clone());
+                match self.publish(AppChangeKind::OperationChanged(operation)) {
                     Ok(revision) => AppCommandResult::Applied { revision },
                     Err(error) => AppCommandResult::Rejected { error },
                 }

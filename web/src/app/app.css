@@ -184,6 +184,50 @@ button:disabled {
   margin-block-start: 1.5rem;
 }
 
+.transcript {
+  display: grid;
+  gap: 0.75rem;
+  max-height: 32rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem;
+}
+
+.transcript-block {
+  min-width: 0;
+  border-inline-start: 4px solid #657482;
+  padding: 0.75rem;
+  background: #1b232b;
+}
+
+.transcript-block header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.bounded-content pre {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.notice-warning { border-color: #ffd166; }
+.notice-error,
+.error { border-color: #ff7b72; }
+.reasoning { color: #cbd5df; }
+
+.chat-workspace form {
+  display: grid;
+  gap: 0.5rem;
+  margin-block-start: 1rem;
+}
+
+.chat-workspace textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
 .workspace-actions button {
   max-width: 100%;
   padding: 0.75rem 1rem;

@@ -54,7 +54,9 @@ export type TranscriptBlock =
       is_error: boolean;
     }
   | { id: number; type: 'notice'; message: string; level: 'info' | 'warning' | 'error' }
+  | { id: number; type: 'error'; message: string; recoverable: boolean }
   | { id: number; type: 'image'; media_type: string; data: string }
+  | { id: number; type: 'terminal'; outcome: OperationPhase; message: string }
   | { id: number; type: 'subagent'; name: string; state: string; blocks: TranscriptBlock[] };
 
 export interface VisibleSettings {
@@ -263,7 +265,9 @@ function parseBlock(value: unknown): TranscriptBlock {
     }
     case 'tool_call': return { id, type, tool: string(item.tool, 'tool name'), args: string(item.args, 'tool args'), output: nullable(item.output, (output) => string(output, 'tool output')), is_error: boolean(item.is_error, 'tool is_error') };
     case 'notice': return { id, type, message: string(item.message, 'notice message'), level: enumValue(item.level, ['info', 'warning', 'error'] as const, 'notice level') };
+    case 'error': return { id, type, message: string(item.message, 'error message'), recoverable: boolean(item.recoverable, 'error recoverable') };
     case 'image': return { id, type, media_type: string(item.media_type, 'image media type'), data: string(item.data, 'image data') };
+    case 'terminal': return { id, type, outcome: enumValue(item.outcome, operationPhases, 'terminal outcome'), message: string(item.message, 'terminal message') };
     case 'subagent': {
       if (!Array.isArray(item.blocks)) throw new Error('subagent blocks must be an array');
       return { id, type, name: string(item.name, 'subagent name'), state: string(item.state, 'subagent state'), blocks: item.blocks.map(parseBlock) };

@@ -69,8 +69,10 @@
 
 ## 4. Move Chat, Sessions, Settings, Attachments, and Voice
 
-- [ ] 4.1 Build reusable transcript components for user, reasoning, text, tool, notice, error, image, and terminal blocks with bounded long content and follow-output behavior.
-- [ ] 4.2 Connect chat submission and ordered streaming projection for accepted text and image turns, including visible running and terminal states.
+- [x] 4.1 Build reusable transcript components for user, reasoning, text, tool, notice, error, image, and terminal blocks with bounded long content and follow-output behavior.
+<!-- status: completed -->
+- [x] 4.2 Connect chat submission and ordered streaming projection for accepted text and image turns, including visible running and terminal states.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User sends a chat turn -->
 - [ ] 4.3 Connect Stop to the existing backend interrupt boundary and render the interrupted terminal event.
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User interrupts a turn -->

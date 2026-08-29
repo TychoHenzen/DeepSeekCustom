@@ -102,10 +102,12 @@
       "status": "completed"
     },
     "4.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.3": {
       "checked": false

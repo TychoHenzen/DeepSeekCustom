@@ -53,6 +53,15 @@ function client(initial: ClientView): UiClient & { send: ReturnType<typeof vi.fn
 }
 
 describe('application shell', () => {
+  // covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User sends a chat turn
+  it('submits a text turn through the current application command path', async () => {
+    const appClient = client({ status: 'online', snapshot: snapshot(), lastError: null, message: null });
+    render(createElement(App, { client: appClient }));
+    await userEvent.type(screen.getByLabelText('Message'), 'hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(appClient.send).toHaveBeenCalledWith({ command: 'send_message', payload: { text: 'hello', attachment_id: null } });
+  });
+
   // covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Desktop navigation
   it('exposes all primary workspaces directly and identifies authoritative active state', async () => {
     const appClient = client({ status: 'online', snapshot: snapshot('procedure'), lastError: null, message: null });
@@ -77,7 +86,7 @@ describe('application shell', () => {
     render(createElement(App, { client: client({ status: 'online', snapshot: snapshot(), lastError: null, message: null }) }));
 
     expect(screen.getAllByRole('button')).toHaveLength(9);
-    expect(screen.getByRole('button', { name: 'Start Chat' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeVisible();
     expect(appCss).toMatch(/@media \(max-width: 48rem\)[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
     expect(appCss).toMatch(/body\s*{[^}]*overflow-x:\s*hidden/);
     expect(appCss).toMatch(/\.app-shell\s*{[^}]*min-width:\s*0/);
@@ -104,9 +113,9 @@ describe('application shell', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('Connected. Application revision 7.');
     expect(screen.getByRole('alert')).toHaveTextContent('Error: Prompt is required. Field: prompt.');
-    const disabledAction = screen.getByRole('button', { name: 'Start Chat' });
+    const disabledAction = screen.getByRole('button', { name: 'Send message' });
     expect(disabledAction).toBeDisabled();
-    expect(disabledAction).toHaveAccessibleDescription('Unavailable while this workspace is being migrated.');
+    expect(screen.getByLabelText('Message')).toBeVisible();
     expect(screen.getByRole('button', { name: /^Chat/ })).toHaveTextContent('Active');
     expect(appCss).toMatch(/button:focus-visible,[\s\S]*outline:\s*3px solid/);
   });
