@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::{self, Stream, StreamExt};
 use rust_embed::RustEmbed;
@@ -21,11 +22,13 @@ use tokio::task::JoinHandle;
 
 use crate::application::actor::{AppEvent, ApplicationActor, Replay};
 use crate::application::dto::{
-    AppChange, AppRevision, AppSnapshot, SessionSummary, VisibleSettings,
+    AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
+    VisibleSettings,
 };
 use crate::config::settings::Settings;
 
 const APPLICATION_SHELL: &str = "index.html";
+pub const REQUEST_TOKEN_HEADER: &str = "x-deepseek-request-token";
 
 #[derive(RustEmbed)]
 #[folder = "src/web/assets"]
@@ -41,6 +44,7 @@ pub struct WebAppState {
 struct WebAppStateInner {
     actor: Mutex<ApplicationActor>,
     changes: broadcast::Sender<AppChange>,
+    request_token: String,
 }
 
 impl WebAppState {
@@ -50,12 +54,30 @@ impl WebAppState {
             inner: Arc::new(WebAppStateInner {
                 actor: Mutex::new(ApplicationActor::new(snapshot, replay_capacity)),
                 changes,
+                request_token: uuid::Uuid::new_v4().simple().to_string(),
             }),
         }
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
         self.inner.actor.lock().unwrap().snapshot().clone()
+    }
+
+    fn request_token(&self) -> &str {
+        &self.inner.request_token
+    }
+
+    fn submit(&self, request: AppCommandRequest) -> AppCommandResult {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let result = actor.submit(request);
+        if matches!(result, AppCommandResult::Applied { .. })
+            && let Replay::Changes(changes) = actor.replay_after(previous)
+            && let Some(change) = changes.into_iter().next()
+        {
+            let _ = self.inner.changes.send(change);
+        }
+        result
     }
 
     pub fn apply_event(
@@ -269,8 +291,9 @@ pub async fn start_with_policy_and_state(
     }
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let served_origin = url.clone();
     let task = tokio::spawn(async move {
-        axum::serve(listener, router(state))
+        axum::serve(listener, router(state, served_origin))
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
             })
@@ -285,21 +308,69 @@ pub async fn start_with_policy_and_state(
     })
 }
 
-fn router(state: WebAppState) -> Router {
+fn router(state: WebAppState, origin: String) -> Router {
+    let security = WebSecurity {
+        state: state.clone(),
+        origin,
+    };
     Router::new()
         .route("/health", get(health))
         .route("/api/health", get(health))
-        .route("/api/bootstrap", get(snapshot))
+        .route("/api/bootstrap", get(bootstrap))
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
+        .route("/api/commands", post(command))
         .route("/api", get(api_not_found))
         .route("/api/{*path}", get(api_not_found))
         .fallback(get(fallback))
-        .with_state(state)
+        .layer(middleware::from_fn(security_headers))
+        .with_state(security)
 }
 
-async fn snapshot(State(state): State<WebAppState>) -> Json<AppSnapshot> {
-    Json(state.snapshot())
+#[derive(Clone)]
+struct WebSecurity {
+    state: WebAppState,
+    origin: String,
+}
+
+async fn bootstrap(State(security): State<WebSecurity>) -> Response {
+    let mut response = Json(security.state.snapshot()).into_response();
+    response.headers_mut().insert(
+        REQUEST_TOKEN_HEADER,
+        HeaderValue::from_str(security.state.request_token())
+            .expect("generated request tokens contain only header-safe ASCII"),
+    );
+    response
+}
+
+async fn snapshot(State(security): State<WebSecurity>) -> Json<AppSnapshot> {
+    Json(security.state.snapshot())
+}
+
+async fn command(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    Json(request): Json<AppCommandRequest>,
+) -> Response {
+    if headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        != Some(security.origin.trim_end_matches('/'))
+        || headers
+            .get(REQUEST_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            != Some(security.state.request_token())
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let result = security.state.submit(request);
+    let status = match result {
+        AppCommandResult::Applied { .. } => StatusCode::OK,
+        AppCommandResult::Conflict { .. } => StatusCode::CONFLICT,
+        AppCommandResult::Rejected { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, Json(result)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -308,7 +379,7 @@ struct EventsQuery {
 }
 
 async fn events(
-    State(state): State<WebAppState>,
+    State(security): State<WebSecurity>,
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -318,7 +389,7 @@ async fn events(
         .and_then(|value| value.parse::<u64>().ok())
         .map(AppRevision);
     let revision = query.after.or(header_revision).unwrap_or_default();
-    let (replay, receiver) = state.replay_and_subscribe(revision);
+    let (replay, receiver) = security.state.replay_and_subscribe(revision);
     let initial = match replay {
         Replay::Changes(changes) => changes,
         Replay::Reset(snapshot) => vec![AppChange {
@@ -327,21 +398,19 @@ async fn events(
         }],
     };
     let initial = stream::iter(initial.into_iter().map(sse_event));
-    let live_state = state.clone();
+    let live_state = security.state.clone();
     let live = stream::unfold((receiver, live_state), |(mut receiver, state)| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(change) => return Some((sse_event(change), (receiver, state))),
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let (snapshot, fresh_receiver) = state.snapshot_and_subscribe();
-                    let reset = AppChange {
-                        revision: snapshot.revision,
-                        change: crate::application::dto::AppChangeKind::Reset(snapshot),
-                    };
-                    return Some((sse_event(reset), (fresh_receiver, state)));
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
+        match receiver.recv().await {
+            Ok(change) => Some((sse_event(change), (receiver, state))),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                let (snapshot, fresh_receiver) = state.snapshot_and_subscribe();
+                let reset = AppChange {
+                    revision: snapshot.revision,
+                    change: crate::application::dto::AppChangeKind::Reset(snapshot),
+                };
+                Some((sse_event(reset), (fresh_receiver, state)))
             }
+            Err(broadcast::error::RecvError::Closed) => None,
         }
     });
     Sse::new(initial.chain(live)).keep_alive(
@@ -369,6 +438,24 @@ fn sse_event(change: AppChange) -> Result<Event, Infallible> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn security_headers(request: axum::extract::Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        ),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response
 }
 
 async fn api_not_found() -> StatusCode {

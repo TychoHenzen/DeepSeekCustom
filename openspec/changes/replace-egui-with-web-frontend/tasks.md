@@ -35,11 +35,14 @@
 - [x] 2.7 Implement revision-addressed Server-Sent Events, bounded replay, reset snapshots, and reconnect tests during each active operation class.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser reconnects during active work -->
-- [ ] 2.8 Require base revisions on commands and return an atomic HTTP 409 conflict with the current revision for stale requests.
+- [x] 2.8 Require base revisions on commands and return an atomic HTTP 409 conflict with the current revision for stale requests.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: A stale client sends a command -->
-- [ ] 2.9 Generate a process token and accept same-origin JSON commands with the token and current revision through typed routes.
+- [x] 2.9 Generate a process token and accept same-origin JSON commands with the token and current revision through typed routes.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Local web commands are protected from other origins :: Same-origin command is valid -->
-- [ ] 2.10 Reject foreign or missing Origin values, invalid tokens, cross-origin preflights, secret serialization, framing, and unsafe content sources before dispatch.
+- [x] 2.10 Reject foreign or missing Origin values, invalid tokens, cross-origin preflights, secret serialization, framing, and unsafe content sources before dispatch.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Local web commands are protected from other origins :: Another origin attempts a command -->
 - [ ] 2.11 Run the web-server milestone in practice, reload during a deterministic operation, force replay reset, and verify process shutdown reaps owned children.
 

@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex};
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
-    AppRevision, AppSnapshot, NoticeLevel, OperationKind, OperationPhase, OperationProgress,
-    OperationState, PendingSessionSwitch, SessionSummary, TranscriptBlock, TranscriptContent,
-    VisibleSettings, VisibleStyleSettings, VisibleVoiceSettings, Workspace,
+    AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
+    OperationKind, OperationPhase, OperationProgress, OperationState, PendingSessionSwitch,
+    SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings, VisibleStyleSettings,
+    VisibleVoiceSettings, Workspace,
 };
 use deepseek_custom::web::server::{
-    BindPolicy, BrowserOpener, ServerStartError, WebAppState, start, start_production,
-    start_with_policy, start_with_policy_and_state,
+    BindPolicy, BrowserOpener, REQUEST_TOKEN_HEADER, ServerStartError, WebAppState, start,
+    start_production, start_with_policy, start_with_policy_and_state,
 };
 
 #[derive(Default)]
@@ -267,6 +268,34 @@ async fn read_sse_event(mut response: reqwest::Response) -> String {
     body
 }
 
+async fn request_token(client: &reqwest::Client, server_url: &str) -> String {
+    client
+        .get(format!("{server_url}api/bootstrap"))
+        .send()
+        .await
+        .unwrap()
+        .headers()[REQUEST_TOKEN_HEADER]
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn post_command(
+    client: &reqwest::Client,
+    server_url: &str,
+    token: &str,
+    request: &AppCommandRequest,
+) -> reqwest::Response {
+    client
+        .post(format!("{server_url}api/commands"))
+        .header(reqwest::header::ORIGIN, server_url.trim_end_matches('/'))
+        .header(REQUEST_TOKEN_HEADER, token)
+        .json(request)
+        .send()
+        .await
+        .unwrap()
+}
+
 // covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser connects during an idle session
 #[test]
 fn bootstrap_and_reload_return_the_complete_current_visible_snapshot() {
@@ -415,6 +444,239 @@ fn reconnect_replays_each_active_operation_once_and_resets_evicted_history() {
             .unwrap();
         assert_eq!(snapshot, state.snapshot());
         assert_eq!(snapshot.operations.len(), kinds.len());
+
+        server.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: A stale client sends a command
+#[test]
+fn stale_command_returns_atomic_conflict_without_mutating_state() {
+    run_async_test(async {
+        let state = WebAppState::new(visible_snapshot(), 8);
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+
+        let applied = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: AppRevision::INITIAL,
+                command: AppCommand::SelectWorkspace {
+                    workspace: Workspace::Chat,
+                },
+            },
+        )
+        .await;
+        assert_eq!(applied.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            applied.json::<AppCommandResult>().await.unwrap(),
+            AppCommandResult::Applied {
+                revision: AppRevision(1)
+            }
+        );
+        let before_conflict = state.snapshot();
+
+        let stale = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: AppRevision::INITIAL,
+                command: AppCommand::SelectWorkspace {
+                    workspace: Workspace::Settings,
+                },
+            },
+        )
+        .await;
+        assert_eq!(stale.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(
+            stale.json::<AppCommandResult>().await.unwrap(),
+            AppCommandResult::Conflict {
+                current_revision: AppRevision(1)
+            }
+        );
+        assert_eq!(state.snapshot(), before_conflict);
+
+        server.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Local web commands are protected from other origins :: Same-origin command is valid
+#[test]
+fn same_origin_current_token_dispatches_through_normal_application_rules() {
+    run_async_test(async {
+        let first_state = WebAppState::new(visible_snapshot(), 8);
+        let first = start_state(first_state.clone()).await;
+        let second = start_state(WebAppState::new(visible_snapshot(), 8)).await;
+        let client = reqwest::Client::new();
+        let first_token = request_token(&client, first.url()).await;
+        let second_token = request_token(&client, second.url()).await;
+        assert_ne!(first_token, second_token);
+        assert_eq!(first_token.len(), 32);
+
+        let applied = post_command(
+            &client,
+            first.url(),
+            &first_token,
+            &AppCommandRequest {
+                revision: AppRevision::INITIAL,
+                command: AppCommand::SelectWorkspace {
+                    workspace: Workspace::Tests,
+                },
+            },
+        )
+        .await;
+        assert_eq!(applied.status(), reqwest::StatusCode::OK);
+        assert_eq!(first_state.snapshot().workspace, Workspace::Tests);
+
+        let rejected = post_command(
+            &client,
+            first.url(),
+            &first_token,
+            &AppCommandRequest {
+                revision: AppRevision(1),
+                command: AppCommand::SendMessage {
+                    text: "not connected yet".into(),
+                    attachment_id: None,
+                },
+            },
+        )
+        .await;
+        assert_eq!(rejected.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(matches!(
+            rejected.json::<AppCommandResult>().await.unwrap(),
+            AppCommandResult::Rejected { error } if error.recoverable
+        ));
+        assert_eq!(first_state.snapshot().revision, AppRevision(1));
+
+        first.shutdown().await.unwrap();
+        second.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Local web commands are protected from other origins :: Another origin attempts a command
+#[test]
+fn untrusted_command_shapes_fail_without_dispatch_or_data_disclosure() {
+    run_async_test(async {
+        let state = WebAppState::new(visible_snapshot(), 8);
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+        let endpoint = format!("{}api/commands", server.url());
+        let body = serde_json::to_string(&AppCommandRequest {
+            revision: AppRevision::INITIAL,
+            command: AppCommand::SelectWorkspace {
+                workspace: Workspace::Settings,
+            },
+        })
+        .unwrap();
+
+        let responses = vec![
+            client
+                .post(&endpoint)
+                .header(REQUEST_TOKEN_HEADER, &token)
+                .json(&serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(&endpoint)
+                .header(reqwest::header::ORIGIN, "https://attacker.invalid")
+                .header(REQUEST_TOKEN_HEADER, &token)
+                .body(body.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(&endpoint)
+                .header(reqwest::header::ORIGIN, server.url().trim_end_matches('/'))
+                .json(&serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(&endpoint)
+                .header(reqwest::header::ORIGIN, server.url().trim_end_matches('/'))
+                .header(REQUEST_TOKEN_HEADER, "wrong-token")
+                .json(&serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                .send()
+                .await
+                .unwrap(),
+            client
+                .request(reqwest::Method::OPTIONS, &endpoint)
+                .header(reqwest::header::ORIGIN, "https://attacker.invalid")
+                .header(reqwest::header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(&endpoint)
+                .header(reqwest::header::ORIGIN, server.url().trim_end_matches('/'))
+                .header(REQUEST_TOKEN_HEADER, &token)
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap(),
+            client
+                .put(&endpoint)
+                .header(reqwest::header::ORIGIN, server.url().trim_end_matches('/'))
+                .header(REQUEST_TOKEN_HEADER, &token)
+                .json(&serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                .send()
+                .await
+                .unwrap(),
+        ];
+
+        for response in responses {
+            assert!(!response.status().is_success());
+            assert!(
+                response
+                    .headers()
+                    .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none()
+            );
+            assert_eq!(response.headers()["x-frame-options"], "DENY");
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+            assert!(
+                response.headers()["content-security-policy"]
+                    .to_str()
+                    .unwrap()
+                    .contains("frame-ancestors 'none'")
+            );
+            let response_body = response.text().await.unwrap();
+            for forbidden in [
+                "visible transcript",
+                "session-current",
+                "api_key",
+                "credential",
+                "secret",
+                &token,
+            ] {
+                assert!(
+                    !response_body.contains(forbidden),
+                    "leaked {forbidden:?}: {response_body}"
+                );
+            }
+            assert_eq!(state.snapshot().revision, AppRevision::INITIAL);
+            assert_eq!(state.snapshot().workspace, Workspace::Procedure);
+        }
+
+        let bootstrap = client
+            .get(format!("{}api/bootstrap", server.url()))
+            .send()
+            .await
+            .unwrap();
+        let bootstrap_body = bootstrap.text().await.unwrap();
+        assert!(!bootstrap_body.contains(&token));
+        assert!(!bootstrap_body.contains("api_key"));
+        assert!(!bootstrap_body.contains("credential"));
+        assert!(!bootstrap_body.contains("secret"));
 
         server.shutdown().await.unwrap();
     });
