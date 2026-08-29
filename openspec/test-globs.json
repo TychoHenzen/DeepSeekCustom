@@ -1,5 +1,6 @@
 {
   "deepseek-custom": [
-    "crates/deepseek-custom-tests/tests/it/*.rs"
+    "crates/deepseek-custom-tests/tests/it/*.rs",
+    "web/src/**/*.test.ts"
   ]
 }

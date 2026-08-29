@@ -1,6 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { App, browserClient } from './app/App.tsx';
+import './app/app.css';
+import { ApplicationClient } from './client/client.ts';
+
 const root = document.querySelector<HTMLDivElement>('#root');
 if (root === null) {
   throw new Error('DeepSeekCustom frontend root is missing');
@@ -8,9 +12,6 @@ if (root === null) {
 
 createRoot(root).render(
   <StrictMode>
-    <main>
-      <h1>DeepSeekCustom</h1>
-      <p>The web frontend workspace is ready.</p>
-    </main>
+    <App client={browserClient(new ApplicationClient())} />
   </StrictMode>,
 );

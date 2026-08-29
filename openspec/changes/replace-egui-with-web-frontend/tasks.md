@@ -53,11 +53,14 @@
 <!-- status: completed -->
 - [x] 3.2 Implement the bootstrap, snapshot, command, revision-conflict, event-replay, reconnect, fatal-error, and offline client state paths.
 <!-- status: completed -->
-- [ ] 3.3 Build desktop semantic navigation for Chat, Autopilot, Cascade, Evolve, Procedure, Sessions, Tests, and Settings with an identifiable active workspace.
+- [x] 3.3 Build desktop semantic navigation for Chat, Autopilot, Cascade, Evolve, Procedure, Sessions, Tests, and Settings with an identifiable active workspace.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Desktop navigation -->
-- [ ] 3.4 Build the 360-pixel responsive navigation and workspace layout with reachable actions, contained long content, and no horizontal page overflow.
+- [x] 3.4 Build the 360-pixel responsive navigation and workspace layout with reachable actions, contained long content, and no horizontal page overflow.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Narrow navigation -->
-- [ ] 3.5 Implement visible focus, logical focus order, labelled controls, live status regions, non-colour state cues, and disabled reasons.
+- [x] 3.5 Implement visible focus, logical focus order, labelled controls, live status regions, non-colour state cues, and disabled reasons.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: The web frontend is responsive and accessible :: Keyboard and assistive navigation -->
 - [ ] 3.6 Add frontend error boundaries and recoverable conflict handling that refreshes a snapshot without repeating the rejected command.
 - [ ] 3.7 Verify the shell milestone from Rust-served assets at desktop and narrow viewports with keyboard-only navigation.
