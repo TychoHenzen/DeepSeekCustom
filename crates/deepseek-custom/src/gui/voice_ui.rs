@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use super::transcript::{BlockKind, Severity, Transcript};
+use crate::application::services::DomainCommandPort;
 use crate::config::settings::{Settings, TriggerMode};
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
@@ -50,7 +51,7 @@ pub enum PttSignal {
 /// in this case, so no caller has to check first.
 pub struct VoiceUi {
     rx: Option<mpsc::UnboundedReceiver<VoiceEvent>>,
-    tx: Option<mpsc::UnboundedSender<VoiceCommand>>,
+    tx: Option<DomainCommandPort<VoiceCommand>>,
     state: VoiceState,
 
     // ── Sidebar controls ──
@@ -115,7 +116,7 @@ impl VoiceUi {
         tx: mpsc::UnboundedSender<VoiceCommand>,
     ) {
         self.rx = Some(rx);
-        self.tx = Some(tx);
+        self.tx = Some(DomainCommandPort::new(tx));
     }
 
     /// True once both channels are attached. Production code never asks:

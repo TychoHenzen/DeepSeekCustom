@@ -43,6 +43,7 @@ use tracing::warn;
 
 use crate::agent::events::{AgentCommand, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
+use crate::application::services::DomainCommandPort;
 use crate::application::session::ApplicationSession;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
@@ -98,7 +99,7 @@ pub enum ActiveTab {
 /// test_access) can reach them without getters.
 pub struct DeepSeekGui {
     pub(super) rx_events: mpsc::UnboundedReceiver<RoutedEvent>,
-    pub(super) tx_input: mpsc::UnboundedSender<AgentCommand>,
+    pub(super) tx_input: DomainCommandPort<AgentCommand>,
     pub(super) handles: AgentHandles,
     pub(super) settings: Settings,
     pub(super) project_root: PathBuf,
@@ -167,7 +168,7 @@ impl DeepSeekGui {
             procedure: ProcedureTab::new(&settings, &project_root),
             application: ApplicationSession::new(SessionState::new(store, origin)),
             rx_events,
-            tx_input,
+            tx_input: DomainCommandPort::new(tx_input),
             handles,
             settings,
             project_root,

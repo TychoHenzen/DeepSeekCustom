@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::agent::repeat::RepeatCommand;
+use crate::application::services::DomainCommandPort;
 use crate::autopilot::policy::PolicyStore;
 use crate::config::settings::Settings;
 
@@ -44,7 +45,7 @@ pub enum AutopilotProgress {
 pub struct AutopilotTab {
     /// Sends a repeat command to the agent task. `None` until
     /// `DeepSeekGui::with_repeat` is called.
-    repeat_tx: Option<mpsc::UnboundedSender<RepeatCommand>>,
+    repeat_tx: Option<DomainCommandPort<RepeatCommand>>,
     /// Shared with `AgentLoop::repeat_interrupt_flag`. Escape sets this to
     /// stop a running repeat early.
     interrupt_flag: Option<Arc<AtomicBool>>,
@@ -89,7 +90,7 @@ impl AutopilotTab {
         repeat_tx: mpsc::UnboundedSender<RepeatCommand>,
         interrupt_flag: Arc<AtomicBool>,
     ) {
-        self.repeat_tx = Some(repeat_tx);
+        self.repeat_tx = Some(DomainCommandPort::new(repeat_tx));
         self.interrupt_flag = Some(interrupt_flag);
     }
 

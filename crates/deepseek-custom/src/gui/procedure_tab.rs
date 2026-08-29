@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::api::models::list_models;
+use crate::application::services::DomainCommandPort;
 use crate::config::settings::{ApiProvider, BackendConfig, Settings};
 use crate::procedure::{
     BoundedVerifierOutput, GitApplyPhase, GitApplyResult, LocalizationTraceExport, OpenSpecChange,
@@ -113,7 +114,7 @@ impl ProcedureViewState {
 
 /// Selection, channel ownership, progress, and the latest report.
 pub struct ProcedureTab {
-    command_tx: Option<mpsc::UnboundedSender<ProcedureCommand>>,
+    command_tx: Option<DomainCommandPort<ProcedureCommand>>,
     progress_rx: Option<mpsc::UnboundedReceiver<ProcedureProgress>>,
     interrupt: Option<Arc<AtomicBool>>,
     changes: Vec<OpenSpecChange>,
@@ -255,7 +256,7 @@ impl ProcedureTab {
         progress_rx: mpsc::UnboundedReceiver<ProcedureProgress>,
         interrupt: Arc<AtomicBool>,
     ) {
-        self.command_tx = Some(command_tx);
+        self.command_tx = Some(DomainCommandPort::new(command_tx));
         self.progress_rx = Some(progress_rx);
         self.interrupt = Some(interrupt);
     }

@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::application::services::DomainCommandPort;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
 use crate::search::evolve::{EvolveParams, MAX_TOTAL_DISPATCHES, default_mutation_hints};
@@ -25,7 +26,7 @@ use super::search_view::{SearchProgress, progress_label, render_progress};
 pub struct EvolveTab {
     /// Sends a run to the agent task. `None` until `attach`, and Run stays
     /// disabled while it is.
-    search_tx: Option<mpsc::UnboundedSender<SearchCommand>>,
+    search_tx: Option<DomainCommandPort<SearchCommand>>,
     /// Set by Stop, and by Escape, to end a run between generations.
     interrupt: Option<Arc<AtomicBool>>,
     prompt: String,
@@ -76,7 +77,7 @@ impl EvolveTab {
         search_tx: mpsc::UnboundedSender<SearchCommand>,
         interrupt: Arc<AtomicBool>,
     ) {
-        self.search_tx = Some(search_tx);
+        self.search_tx = Some(DomainCommandPort::new(search_tx));
         self.interrupt = Some(interrupt);
     }
 

@@ -56,7 +56,7 @@ impl DeepSeekGui {
     }
 
     pub fn set_tx_input_for_test(&mut self, tx: mpsc::UnboundedSender<AgentCommand>) {
-        self.tx_input = tx;
+        self.tx_input = crate::application::services::DomainCommandPort::new(tx);
     }
 
     pub fn session_status_for_test(&self) -> &str {

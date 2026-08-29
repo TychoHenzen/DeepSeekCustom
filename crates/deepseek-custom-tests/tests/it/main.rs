@@ -55,6 +55,7 @@ mod api_turn;
 mod api_types;
 mod application_actor;
 mod application_dto;
+mod application_services;
 mod application_session;
 mod autopilot_answerer;
 mod autopilot_policy;

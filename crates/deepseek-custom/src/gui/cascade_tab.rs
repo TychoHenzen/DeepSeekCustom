@@ -14,6 +14,7 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::application::services::DomainCommandPort;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
 use crate::search::cascade::{CascadeParams, MAX_ATTEMPTS, default_diversity_hints};
@@ -26,7 +27,7 @@ pub struct CascadeTab {
     /// Sends a run to the agent task. `None` until `attach` is called, and
     /// the Run button stays disabled while it is, so a GUI built without
     /// the channel simply cannot start a run.
-    search_tx: Option<mpsc::UnboundedSender<SearchCommand>>,
+    search_tx: Option<DomainCommandPort<SearchCommand>>,
     /// Set by Stop, and by Escape, to end a run between attempts.
     interrupt: Option<Arc<AtomicBool>>,
     prompt: String,
@@ -75,7 +76,7 @@ impl CascadeTab {
         search_tx: mpsc::UnboundedSender<SearchCommand>,
         interrupt: Arc<AtomicBool>,
     ) {
-        self.search_tx = Some(search_tx);
+        self.search_tx = Some(DomainCommandPort::new(search_tx));
         self.interrupt = Some(interrupt);
     }
 

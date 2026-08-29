@@ -10,8 +10,10 @@
 <!-- status: completed -->
 - [x] 1.5 Move transcript projection and current-session state behind the actor while keeping native startup operational for this migration milestone.
 <!-- status: completed -->
-- [ ] 1.6 Move Autopilot, search, Procedure, voice, backend selection, shared flags, and settings effects behind typed actor service ports without changing their domain contracts.
-- [ ] 1.7 Verify the actor-backed native milestone with focused integration tests and a practical chat, session switch, settings save, and Procedure state run.
+- [x] 1.6 Move Autopilot, search, Procedure, voice, backend selection, shared flags, and settings effects behind typed actor service ports without changing their domain contracts.
+<!-- status: completed -->
+- [x] 1.7 Verify the actor-backed native milestone with focused integration tests and a practical chat, session switch, settings save, and Procedure state run.
+<!-- status: completed -->
 
 ## 2. Serve the Local Web Application
 

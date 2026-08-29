@@ -24,6 +24,7 @@ pub enum AppEvent {
     SessionChanged(SessionSummary),
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
+    OperationChanged(super::dto::OperationState),
     Error(AppError),
 }
 
@@ -88,6 +89,19 @@ impl ApplicationActor {
             AppEvent::SettingsChanged(settings) => {
                 self.snapshot.settings = settings.clone();
                 AppChangeKind::SettingsChanged(settings)
+            }
+            AppEvent::OperationChanged(operation) => {
+                if let Some(existing) = self
+                    .snapshot
+                    .operations
+                    .iter_mut()
+                    .find(|existing| existing.kind == operation.kind)
+                {
+                    *existing = operation.clone();
+                } else {
+                    self.snapshot.operations.push(operation.clone());
+                }
+                AppChangeKind::OperationChanged(operation)
             }
             AppEvent::Error(error) => AppChangeKind::Error(error),
         };

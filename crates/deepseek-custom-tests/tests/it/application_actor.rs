@@ -1,7 +1,8 @@
 use deepseek_custom::application::actor::{AppEvent, ApplicationActor, Replay};
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
-    SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings, Workspace,
+    OperationKind, OperationPhase, OperationState, SessionSummary, TranscriptBlock,
+    TranscriptContent, VisibleSettings, Workspace,
 };
 use deepseek_custom::config::settings::Settings;
 
@@ -18,6 +19,36 @@ fn actor(capacity: usize) -> ApplicationActor {
         ),
         capacity,
     )
+}
+
+#[test]
+fn operation_events_replace_state_for_the_same_service() {
+    let mut actor = actor(4);
+    let running = OperationState {
+        kind: OperationKind::Procedure,
+        operation_id: Some("run-1".into()),
+        phase: OperationPhase::Running,
+        progress: None,
+        message: Some("localizing".into()),
+        error: None,
+    };
+    actor
+        .apply_event(AppEvent::OperationChanged(running))
+        .unwrap();
+    let awaiting_review = OperationState {
+        kind: OperationKind::Procedure,
+        operation_id: Some("run-1".into()),
+        phase: OperationPhase::AwaitingReview,
+        progress: None,
+        message: Some("review evidence ready".into()),
+        error: None,
+    };
+    actor
+        .apply_event(AppEvent::OperationChanged(awaiting_review.clone()))
+        .unwrap();
+
+    assert_eq!(actor.snapshot().operations, vec![awaiting_review]);
+    assert_eq!(actor.snapshot().revision, AppRevision(2));
 }
 
 fn notice(id: u64, message: &str) -> AppEvent {
