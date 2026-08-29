@@ -4,6 +4,7 @@ import type { ApplicationClient, ClientView } from '../client/client.ts';
 import { workspaces, type AppCommand, type AppCommandResult, type Workspace } from '../client/contracts.ts';
 import { ChatWorkspace } from './ChatWorkspace.tsx';
 import { SessionsWorkspace } from './SessionsWorkspace.tsx';
+import { SettingsWorkspace } from './SettingsWorkspace.tsx';
 
 const workspaceLabels: Record<Workspace, string> = {
   chat: 'Chat',
@@ -117,6 +118,8 @@ export function App({ client }: AppProps) {
             saved={view.snapshot.saved_sessions}
             send={(command) => client.send(command)}
           />
+        ) : selectedWorkspace === 'settings' && view.snapshot !== null ? (
+          <SettingsWorkspace key={view.snapshot.revision} settings={view.snapshot.settings} send={(command) => client.send(command)} />
         ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">
           <h3 id="workspace-actions-title">{workspaceLabel} actions</h3>
           <p>Controls for this workspace will appear here.</p>

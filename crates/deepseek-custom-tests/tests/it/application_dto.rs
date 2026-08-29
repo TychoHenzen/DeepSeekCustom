@@ -135,7 +135,9 @@ fn visible_settings_projection_never_serializes_credentials() {
     assert!(!encoded.contains("top-level-secret"));
     assert!(!encoded.contains("backend-secret"));
     assert!(!encoded.contains("api_key"));
-    assert!(!encoded.contains("backends"));
+    assert_eq!(value["backends"][0]["name"], "deepseek");
+    assert_eq!(value["backends"][0]["configured_model"], "deepseek-chat");
+    assert!(value["backends"][0].get("base_url").is_none());
     assert!(!encoded.contains("permissions"));
     assert!(!encoded.contains("hooks"));
 }

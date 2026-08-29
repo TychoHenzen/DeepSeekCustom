@@ -60,11 +60,13 @@ export type TranscriptBlock =
   | { id: number; type: 'subagent'; name: string; state: string; blocks: TranscriptBlock[] };
 
 export interface VisibleSettings {
+  backends: Array<{ name: string; configured_model: string; models: string[] }>;
   selected_backend: string | null;
   selected_model: string | null;
   effort: string;
   context_budget: number;
   show_raw_output: boolean;
+  max_tokens: number;
   working_dir: string | null;
   style: {
     plain_language: boolean;
@@ -78,6 +80,14 @@ export interface VisibleSettings {
     wake_phrase: string;
     tts_voice: string;
     tts_speed: number;
+  };
+  procedure: {
+    localization_backend: string | null;
+    local_patch_backend: string | null;
+    frontier_patch_backend: string | null;
+    index_max_files: number;
+    index_max_total_bytes: number;
+    verifier_commands: string[];
   };
 }
 
@@ -282,12 +292,21 @@ function parseSettings(value: unknown): VisibleSettings {
   const item = record(value);
   const style = record(item.style);
   const voice = record(item.voice);
+  const procedure = record(item.procedure);
+  if (!Array.isArray(item.backends)) throw new Error('backends must be an array');
+  if (!Array.isArray(procedure.verifier_commands)) throw new Error('verifier commands must be an array');
   return {
+    backends: item.backends.map((entry) => {
+      const backend = record(entry);
+      if (!Array.isArray(backend.models)) throw new Error('backend models must be an array');
+      return { name: string(backend.name, 'backend name'), configured_model: string(backend.configured_model, 'configured model'), models: backend.models.map((model) => string(model, 'model')) };
+    }),
     selected_backend: nullable(item.selected_backend, (entry) => string(entry, 'selected backend')),
     selected_model: nullable(item.selected_model, (entry) => string(entry, 'selected model')),
     effort: string(item.effort, 'effort'),
     context_budget: integer(item.context_budget, 'context budget'),
     show_raw_output: boolean(item.show_raw_output, 'show raw output'),
+    max_tokens: integer(item.max_tokens, 'max tokens'),
     working_dir: nullable(item.working_dir, (entry) => string(entry, 'working directory')),
     style: {
       plain_language: boolean(style.plain_language, 'plain language'),
@@ -301,6 +320,14 @@ function parseSettings(value: unknown): VisibleSettings {
       wake_phrase: string(voice.wake_phrase, 'wake phrase'),
       tts_voice: string(voice.tts_voice, 'tts voice'),
       tts_speed: number(voice.tts_speed, 'tts speed'),
+    },
+    procedure: {
+      localization_backend: nullable(procedure.localization_backend, (entry) => string(entry, 'localization backend')),
+      local_patch_backend: nullable(procedure.local_patch_backend, (entry) => string(entry, 'local patch backend')),
+      frontier_patch_backend: nullable(procedure.frontier_patch_backend, (entry) => string(entry, 'frontier patch backend')),
+      index_max_files: integer(procedure.index_max_files, 'index max files'),
+      index_max_total_bytes: integer(procedure.index_max_total_bytes, 'index max total bytes'),
+      verifier_commands: procedure.verifier_commands.map((entry) => string(entry, 'verifier command')),
     },
   };
 }

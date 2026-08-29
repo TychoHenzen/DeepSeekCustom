@@ -118,10 +118,12 @@
       "status": "completed"
     },
     "4.5": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.7": {
       "checked": false

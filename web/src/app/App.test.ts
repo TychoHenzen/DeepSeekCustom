@@ -25,9 +25,11 @@ function snapshot(workspace: AppSnapshot['workspace'] = 'chat'): AppSnapshot {
     pending_session_switch: null,
     saved_sessions: [],
     settings: {
-      selected_backend: 'stub', selected_model: 'deterministic', effort: 'high', context_budget: 4096,
-      show_raw_output: false, working_dir: null, style: { plain_language: true, target_grade: 8 },
+      backends: [{ name: 'stub', configured_model: 'deterministic', models: ['deterministic'] }],
+      selected_backend: 'stub', selected_model: 'deterministic', effort: 'high', context_budget: 32000,
+      show_raw_output: false, max_tokens: 4096, working_dir: null, style: { plain_language: true, target_grade: 8 },
       voice: { enabled: false, stt_enabled: false, tts_enabled: false, trigger_mode: 'push_to_talk', wake_phrase: 'computer', tts_voice: 'af_sarah', tts_speed: 1 },
+      procedure: { localization_backend: null, local_patch_backend: null, frontier_patch_backend: null, index_max_files: 10000, index_max_total_bytes: 67108864, verifier_commands: [] },
     },
     operations: [],
   };
@@ -54,6 +56,16 @@ function client(initial: ClientView): UiClient & { send: ReturnType<typeof vi.fn
 }
 
 describe('application shell', () => {
+  it('edits visible settings and requests the native folder picker', async () => {
+    const appClient = client({ status: 'online', snapshot: snapshot('settings'), lastError: null, message: null });
+    render(createElement(App, { client: appClient }));
+    await userEvent.selectOptions(screen.getByLabelText('Effort'), 'max');
+    await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(appClient.send).toHaveBeenCalledWith(expect.objectContaining({ command: 'update_settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Choose folder' }));
+    expect(appClient.send).toHaveBeenCalledWith({ command: 'pick_working_directory' });
+  });
+
   // covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User sends a chat turn
   it('submits a text turn through the current application command path', async () => {
     const appClient = client({ status: 'online', snapshot: snapshot(), lastError: null, message: null });

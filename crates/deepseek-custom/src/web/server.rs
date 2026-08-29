@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +25,7 @@ use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
     VisibleSettings,
 };
+use crate::application::services::SettingsController;
 use crate::config::settings::Settings;
 
 const APPLICATION_SHELL: &str = "index.html";
@@ -45,6 +46,8 @@ struct WebAppStateInner {
     actor: Mutex<ApplicationActor>,
     changes: broadcast::Sender<AppChange>,
     request_token: String,
+    settings: Option<Arc<SettingsController>>,
+    folder_picker: Option<Arc<dyn NativeFolderPicker>>,
 }
 
 impl WebAppState {
@@ -55,6 +58,28 @@ impl WebAppState {
                 actor: Mutex::new(ApplicationActor::new(snapshot, replay_capacity)),
                 changes,
                 request_token: uuid::Uuid::new_v4().simple().to_string(),
+                settings: None,
+                folder_picker: None,
+            }),
+        }
+    }
+
+    pub fn with_settings(
+        snapshot: AppSnapshot,
+        replay_capacity: usize,
+        settings: Arc<SettingsController>,
+        folder_picker: Arc<dyn NativeFolderPicker>,
+    ) -> Self {
+        let (changes, _) = broadcast::channel(replay_capacity.max(1));
+        let actor = ApplicationActor::new(snapshot, replay_capacity)
+            .with_settings_controller(Arc::clone(&settings));
+        Self {
+            inner: Arc::new(WebAppStateInner {
+                actor: Mutex::new(actor),
+                changes,
+                request_token: uuid::Uuid::new_v4().simple().to_string(),
+                settings: Some(settings),
+                folder_picker: Some(folder_picker),
             }),
         }
     }
@@ -111,6 +136,21 @@ impl WebAppState {
         let snapshot = actor.snapshot().clone();
         let receiver = self.inner.changes.subscribe();
         (snapshot, receiver)
+    }
+}
+
+pub trait NativeFolderPicker: Send + Sync + 'static {
+    fn pick_folder(&self, initial_directory: &Path) -> io::Result<Option<PathBuf>>;
+}
+
+#[derive(Debug, Default)]
+pub struct SystemFolderPicker;
+
+impl NativeFolderPicker for SystemFolderPicker {
+    fn pick_folder(&self, initial_directory: &Path) -> io::Result<Option<PathBuf>> {
+        Ok(rfd::FileDialog::new()
+            .set_directory(initial_directory)
+            .pick_folder())
     }
 }
 
@@ -365,13 +405,73 @@ async fn command(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let result = security.state.submit(request);
+    let result = if matches!(
+        request.command,
+        crate::application::dto::AppCommand::PickWorkingDirectory
+    ) {
+        pick_working_directory(security.state.clone(), request.revision).await
+    } else {
+        security.state.submit(request)
+    };
     let status = match result {
         AppCommandResult::Applied { .. } => StatusCode::OK,
         AppCommandResult::Conflict { .. } => StatusCode::CONFLICT,
         AppCommandResult::Rejected { .. } => StatusCode::UNPROCESSABLE_ENTITY,
     };
     (status, Json(result)).into_response()
+}
+
+async fn pick_working_directory(state: WebAppState, revision: AppRevision) -> AppCommandResult {
+    if state.snapshot().revision != revision {
+        return AppCommandResult::Conflict {
+            current_revision: state.snapshot().revision,
+        };
+    }
+    let (Some(settings), Some(picker)) = (
+        state.inner.settings.clone(),
+        state.inner.folder_picker.clone(),
+    ) else {
+        return AppCommandResult::Rejected {
+            error: crate::application::dto::AppError {
+                code: crate::application::dto::AppErrorCode::Unavailable,
+                message: "native folder picker is not connected".into(),
+                recoverable: true,
+                field: Some("working_dir".into()),
+            },
+        };
+    };
+    let initial = settings.working_dir();
+    let selected = match tokio::task::spawn_blocking(move || picker.pick_folder(&initial)).await {
+        Ok(Ok(selected)) => selected,
+        Ok(Err(error)) => return folder_error(error.to_string()),
+        Err(error) => return folder_error(error.to_string()),
+    };
+    let Some(selected) = selected else {
+        return AppCommandResult::Applied { revision };
+    };
+    if state.snapshot().revision != revision {
+        return AppCommandResult::Conflict {
+            current_revision: state.snapshot().revision,
+        };
+    }
+    match settings.set_working_dir(selected) {
+        Ok(visible) => match state.apply_event(AppEvent::SettingsChanged(visible)) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        },
+        Err(error) => AppCommandResult::Rejected { error },
+    }
+}
+
+fn folder_error(message: String) -> AppCommandResult {
+    AppCommandResult::Rejected {
+        error: crate::application::dto::AppError {
+            code: crate::application::dto::AppErrorCode::ServiceFailed,
+            message,
+            recoverable: true,
+            field: Some("working_dir".into()),
+        },
+    }
 }
 
 #[derive(Deserialize)]

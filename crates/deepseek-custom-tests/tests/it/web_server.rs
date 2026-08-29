@@ -1,9 +1,11 @@
+use std::collections::VecDeque;
 use std::io;
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::time::{Duration, Instant};
@@ -12,13 +14,25 @@ use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
     OperationKind, OperationPhase, OperationProgress, OperationState, PendingSessionSwitch,
-    SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings, VisibleStyleSettings,
-    VisibleVoiceSettings, Workspace,
+    SessionSummary, TranscriptBlock, TranscriptContent, VisibleBackend, VisibleProcedureSettings,
+    VisibleSettings, VisibleStyleSettings, VisibleVoiceSettings, Workspace,
 };
+use deepseek_custom::application::services::{RuntimeSettingsPort, SettingsController};
+use deepseek_custom::config::settings::Settings;
 use deepseek_custom::web::server::{
-    BindPolicy, BrowserOpener, REQUEST_TOKEN_HEADER, ServerStartError, WebAppState, start,
-    start_production, start_with_policy, start_with_policy_and_state,
+    BindPolicy, BrowserOpener, NativeFolderPicker, REQUEST_TOKEN_HEADER, ServerStartError,
+    WebAppState, start, start_production, start_with_policy, start_with_policy_and_state,
 };
+
+struct FixedFolderPicker(Mutex<VecDeque<Option<std::path::PathBuf>>>);
+impl NativeFolderPicker for FixedFolderPicker {
+    fn pick_folder(
+        &self,
+        _initial_directory: &std::path::Path,
+    ) -> io::Result<Option<std::path::PathBuf>> {
+        Ok(self.0.lock().unwrap().pop_front().unwrap())
+    }
+}
 
 #[derive(Default)]
 struct RecordingBrowser {
@@ -288,11 +302,17 @@ fn visible_snapshot() -> AppSnapshot {
         saved_sessions: Vec::new(),
         pending_session_switch: Some(PendingSessionSwitch::Load("session-next".into())),
         settings: VisibleSettings {
+            backends: vec![VisibleBackend {
+                name: "stub".into(),
+                configured_model: "deterministic".into(),
+                models: vec!["deterministic".into()],
+            }],
             selected_backend: Some("stub".into()),
             selected_model: Some("deterministic".into()),
             effort: "high".into(),
             context_budget: 4096,
             show_raw_output: true,
+            max_tokens: 4096,
             working_dir: Some("C:/workspace".into()),
             style: VisibleStyleSettings {
                 plain_language: true,
@@ -306,6 +326,14 @@ fn visible_snapshot() -> AppSnapshot {
                 wake_phrase: "computer".into(),
                 tts_voice: "af_sarah".into(),
                 tts_speed: 1.0,
+            },
+            procedure: VisibleProcedureSettings {
+                localization_backend: None,
+                local_patch_backend: None,
+                frontier_patch_backend: None,
+                index_max_files: 10_000,
+                index_max_total_bytes: 64 * 1024 * 1024,
+                verifier_commands: Vec::new(),
             },
         },
         operations: vec![operation(
@@ -401,6 +429,83 @@ async fn post_command(
         .send()
         .await
         .unwrap()
+}
+
+// covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User requests a working-directory folder
+#[test]
+fn native_folder_request_changes_only_working_dir_and_cancel_is_a_no_op() {
+    run_async_test(async {
+        let root = super::scratch_dir("web-folder-picker", "confirm-cancel");
+        let selected = root.join("selected");
+        std::fs::create_dir_all(&selected).unwrap();
+        let working = Arc::new(Mutex::new(root.clone()));
+        let runtime = RuntimeSettingsPort::new(
+            root.clone(),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(100_000)),
+            Arc::new(Mutex::new("model".into())),
+            Arc::clone(&working),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(8)),
+        );
+        let controller = Arc::new(SettingsController::new(
+            root.clone(),
+            Settings::default(),
+            runtime,
+            None,
+            None,
+        ));
+        let picker = Arc::new(FixedFolderPicker(Mutex::new(VecDeque::from([
+            Some(selected.clone()),
+            None,
+        ]))));
+        let state =
+            WebAppState::with_settings(visible_snapshot(), 8, Arc::clone(&controller), picker);
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+
+        let confirmed: AppCommandResult = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: state.snapshot().revision,
+                command: AppCommand::PickWorkingDirectory,
+            },
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        assert!(matches!(confirmed, AppCommandResult::Applied { .. }));
+        assert_eq!(*working.lock().unwrap(), selected);
+        assert_eq!(controller.project_root(), root.as_path());
+        let persisted_after_confirm = std::fs::read_to_string(root.join("settings.json")).unwrap();
+
+        let cancelled: AppCommandResult = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: state.snapshot().revision,
+                command: AppCommand::PickWorkingDirectory,
+            },
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        assert!(matches!(cancelled, AppCommandResult::Applied { .. }));
+        assert_eq!(*working.lock().unwrap(), selected);
+        assert_eq!(
+            std::fs::read_to_string(root.join("settings.json")).unwrap(),
+            persisted_after_confirm
+        );
+        server.shutdown().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    });
 }
 
 // covers: deepseek-custom/web-application :: Browser state reflects one authoritative application state :: Browser connects during an idle session

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::events::AgentCommand;
-use crate::application::services::DomainCommandPort;
+use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
 use crate::gui::PendingSwitch;
 use crate::gui::session_state::SessionOrigin;
@@ -49,6 +49,7 @@ pub struct ApplicationActor {
     replay_capacity: usize,
     changes: VecDeque<AppChange>,
     chat: Option<ChatLifecycle>,
+    settings: Option<Arc<SettingsController>>,
 }
 
 /// Process-private chat lifecycle dependencies used by every presentation adapter.
@@ -83,7 +84,14 @@ impl ApplicationActor {
             replay_capacity,
             changes: VecDeque::with_capacity(replay_capacity),
             chat: None,
+            settings: None,
         }
+    }
+
+    pub fn with_settings_controller(mut self, settings: Arc<SettingsController>) -> Self {
+        self.snapshot.settings = settings.visible();
+        self.settings = Some(settings);
+        self
     }
 
     pub fn with_chat_lifecycle(mut self, chat: ChatLifecycle) -> Self {
@@ -228,6 +236,23 @@ impl ApplicationActor {
                     self.snapshot.saved_sessions.clone(),
                 )) {
                     Ok(revision) => AppCommandResult::Applied { revision },
+                    Err(error) => AppCommandResult::Rejected { error },
+                }
+            }
+            AppCommand::UpdateSettings { settings } => {
+                let Some(controller) = &self.settings else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("settings lifecycle is not connected"),
+                    };
+                };
+                match controller.update(*settings) {
+                    Ok(settings) => {
+                        self.snapshot.settings = settings.clone();
+                        match self.publish(AppChangeKind::SettingsChanged(settings)) {
+                            Ok(revision) => AppCommandResult::Applied { revision },
+                            Err(error) => AppCommandResult::Rejected { error },
+                        }
+                    }
                     Err(error) => AppCommandResult::Rejected { error },
                 }
             }

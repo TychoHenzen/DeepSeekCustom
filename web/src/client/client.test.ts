@@ -35,11 +35,13 @@ function snapshot(revision = 0, workspace: AppSnapshot['workspace'] = 'chat'): A
     pending_session_switch: null,
     saved_sessions: [],
     settings: {
+      backends: [{ name: 'stub', configured_model: 'deterministic', models: ['deterministic'] }],
       selected_backend: 'stub',
       selected_model: 'deterministic',
       effort: 'high',
-      context_budget: 4096,
+      context_budget: 32000,
       show_raw_output: false,
+      max_tokens: 4096,
       working_dir: null,
       style: { plain_language: true, target_grade: 8 },
       voice: {
@@ -51,6 +53,7 @@ function snapshot(revision = 0, workspace: AppSnapshot['workspace'] = 'chat'): A
         tts_voice: 'af_sarah',
         tts_speed: 1,
       },
+      procedure: { localization_backend: null, local_patch_backend: null, frontier_patch_backend: null, index_max_files: 10000, index_max_total_bytes: 67108864, verifier_commands: [] },
     },
     operations: [],
   };

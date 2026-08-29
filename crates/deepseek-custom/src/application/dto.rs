@@ -153,14 +153,17 @@ pub enum NoticeLevel {
 /// The subset of settings safe and useful for presentation clients.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VisibleSettings {
+    pub backends: Vec<VisibleBackend>,
     pub selected_backend: Option<String>,
     pub selected_model: Option<String>,
     pub effort: String,
     pub context_budget: usize,
     pub show_raw_output: bool,
+    pub max_tokens: u32,
     pub working_dir: Option<String>,
     pub style: VisibleStyleSettings,
     pub voice: VisibleVoiceSettings,
+    pub procedure: VisibleProcedureSettings,
 }
 
 impl VisibleSettings {
@@ -171,11 +174,13 @@ impl VisibleSettings {
         selected_model: Option<String>,
     ) -> Self {
         Self {
+            backends: visible_backends(settings),
             selected_backend,
             selected_model,
             effort: format!("{:?}", settings.effort()).to_lowercase(),
             context_budget: settings.context_budget(),
             show_raw_output: settings.show_raw_output(),
+            max_tokens: settings.max_tokens(),
             working_dir: settings.working_dir(),
             style: VisibleStyleSettings {
                 plain_language: settings.style_plain_language_enabled(),
@@ -185,13 +190,50 @@ impl VisibleSettings {
                 enabled: settings.voice_enabled(),
                 stt_enabled: settings.voice_stt_enabled(),
                 tts_enabled: settings.voice_tts_enabled(),
-                trigger_mode: format!("{:?}", settings.voice_trigger_mode()).to_lowercase(),
+                trigger_mode: match settings.voice_trigger_mode() {
+                    crate::config::settings::TriggerMode::PushToTalk => "push_to_talk",
+                    crate::config::settings::TriggerMode::WakeWord => "wake_word",
+                }
+                .into(),
                 wake_phrase: settings.voice_wake_phrase(),
                 tts_voice: settings.voice_tts_voice(),
                 tts_speed: settings.voice_tts_speed(),
             },
+            procedure: VisibleProcedureSettings::from_settings(settings),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisibleBackend {
+    pub name: String,
+    pub configured_model: String,
+    pub models: Vec<String>,
+}
+
+fn visible_backends(settings: &Settings) -> Vec<VisibleBackend> {
+    let mut values = settings
+        .backends()
+        .into_iter()
+        .flatten()
+        .map(|(name, config)| {
+            let configured_model = config.model().to_owned();
+            let models = match config {
+                crate::config::settings::BackendConfig::Api { models, .. }
+                | crate::config::settings::BackendConfig::ClaudeCli { models, .. }
+                | crate::config::settings::BackendConfig::CodexCli { models, .. } => models
+                    .clone()
+                    .unwrap_or_else(|| vec![configured_model.clone()]),
+            };
+            VisibleBackend {
+                name: name.clone(),
+                configured_model,
+                models,
+            }
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| left.name.cmp(&right.name));
+    values
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +251,30 @@ pub struct VisibleVoiceSettings {
     pub wake_phrase: String,
     pub tts_voice: String,
     pub tts_speed: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisibleProcedureSettings {
+    pub localization_backend: Option<String>,
+    pub local_patch_backend: Option<String>,
+    pub frontier_patch_backend: Option<String>,
+    pub index_max_files: usize,
+    pub index_max_total_bytes: u64,
+    pub verifier_commands: Vec<String>,
+}
+
+impl VisibleProcedureSettings {
+    fn from_settings(settings: &Settings) -> Self {
+        let procedure = settings.procedure().cloned().unwrap_or_default();
+        Self {
+            localization_backend: procedure.localization_backend,
+            local_patch_backend: procedure.local_patch_backend,
+            frontier_patch_backend: procedure.frontier_patch_backend,
+            index_max_files: procedure.repository_index.max_files,
+            index_max_total_bytes: procedure.repository_index.max_total_bytes,
+            verifier_commands: procedure.verifier_commands,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -285,7 +351,7 @@ pub enum AppCommand {
         model: String,
     },
     UpdateSettings {
-        settings: VisibleSettings,
+        settings: Box<VisibleSettings>,
     },
     StartAutopilot {
         task: String,

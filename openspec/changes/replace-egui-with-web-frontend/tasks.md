@@ -80,9 +80,11 @@
 - [x] 4.4 Implement new, list, load, delete, autosave, and deferred mid-turn session switching through the actor and existing session store.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User changes sessions during a turn -->
-- [ ] 4.5 Implement visible settings DTOs and web controls for backend, model, effort, context, style, output, voice, Procedure, and persistence without returning secrets.
+- [x] 4.5 Implement visible settings DTOs and web controls for backend, model, effort, context, style, output, voice, Procedure, and persistence without returning secrets.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User changes an existing setting -->
-- [ ] 4.6 Move folder selection behind one `spawn_blocking` native picker request and preserve confirmation, cancellation, failure, `working_dir`, and fixed `project_root` behavior.
+- [x] 4.6 Move folder selection behind one `spawn_blocking` native picker request and preserve confirmation, cancellation, failure, `working_dir`, and fixed `project_root` behavior.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User requests a working-directory folder -->
 - [ ] 4.7 Add bounded multipart image upload plus paste, drop, select, preview, clear, and existing backend-specific attachment handling.
 <!-- covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User attaches an image -->

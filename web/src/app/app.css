@@ -223,6 +223,25 @@ button:disabled {
   margin-block-start: 1rem;
 }
 
+.settings-workspace form,
+.settings-workspace fieldset {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.settings-workspace label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.settings-workspace input,
+.settings-workspace select,
+.settings-workspace textarea,
+.settings-workspace button {
+  max-width: 100%;
+  min-height: 2.5rem;
+}
+
 .chat-workspace textarea {
   min-height: 6rem;
   resize: vertical;
