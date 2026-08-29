@@ -1,16 +1,18 @@
 //! Serialized ownership of presentation-neutral application state.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::events::AgentCommand;
+use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
 use crate::gui::PendingSwitch;
 use crate::gui::session_state::SessionOrigin;
 use crate::gui::transcript::{BlockKind, Severity};
 use crate::session::SessionId;
+use crate::voice::service::VoiceCommand;
 
 use super::dto::{
     AppChange, AppChangeKind, AppCommand, AppCommandRequest, AppCommandResult, AppError,
@@ -50,6 +52,8 @@ pub struct ApplicationActor {
     changes: VecDeque<AppChange>,
     chat: Option<ChatLifecycle>,
     settings: Option<Arc<SettingsController>>,
+    attachments: HashMap<String, ImageAttachment>,
+    voice: Option<DomainCommandPort<VoiceCommand>>,
 }
 
 /// Process-private chat lifecycle dependencies used by every presentation adapter.
@@ -85,6 +89,8 @@ impl ApplicationActor {
             changes: VecDeque::with_capacity(replay_capacity),
             chat: None,
             settings: None,
+            attachments: HashMap::new(),
+            voice: None,
         }
     }
 
@@ -99,6 +105,23 @@ impl ApplicationActor {
         self.snapshot.saved_sessions = chat.session.saved_session_summaries();
         self.chat = Some(chat);
         self
+    }
+
+    pub fn with_voice_port(mut self, voice: DomainCommandPort<VoiceCommand>) -> Self {
+        self.connect_voice_port(voice);
+        self
+    }
+
+    pub fn connect_voice_port(&mut self, voice: DomainCommandPort<VoiceCommand>) {
+        self.voice = Some(voice);
+    }
+
+    pub fn register_attachment(&mut self, id: String, attachment: ImageAttachment) {
+        self.attachments.insert(id, attachment);
+    }
+
+    pub fn remove_attachment(&mut self, id: &str) -> bool {
+        self.attachments.remove(id).is_some()
     }
 
     pub fn snapshot(&self) -> &AppSnapshot {
@@ -134,6 +157,20 @@ impl ApplicationActor {
                         },
                     };
                 }
+                let image = match attachment_id.as_deref() {
+                    Some(id) => match self.attachments.get(id) {
+                        Some(image) => Some(image.clone()),
+                        None => {
+                            return AppCommandResult::Rejected {
+                                error: invalid(
+                                    "attachment_id",
+                                    "attachment is missing or already used",
+                                ),
+                            };
+                        }
+                    },
+                    None => None,
+                };
                 if let Some(chat) = &mut self.chat {
                     if chat.session.turn_active {
                         return AppCommandResult::Rejected {
@@ -145,7 +182,7 @@ impl ApplicationActor {
                         .agent
                         .send(AgentCommand::UserTurn {
                             text: text.clone(),
-                            image: None,
+                            image,
                         })
                         .is_err()
                     {
@@ -157,6 +194,9 @@ impl ApplicationActor {
                         .transcript
                         .push(BlockKind::User { text: text.clone() });
                     chat.session.turn_active = true;
+                }
+                if let Some(id) = attachment_id.as_deref() {
+                    self.attachments.remove(id);
                 }
                 let id = self
                     .snapshot
@@ -247,6 +287,18 @@ impl ApplicationActor {
                 };
                 match controller.update(*settings) {
                     Ok(settings) => {
+                        if let Some(voice) = &self.voice {
+                            for command in [
+                                VoiceCommand::SetEnabled(settings.voice.enabled),
+                                VoiceCommand::SetSttEnabled(settings.voice.stt_enabled),
+                                VoiceCommand::SetTtsEnabled(settings.voice.tts_enabled),
+                                VoiceCommand::SetWakePhrase(settings.voice.wake_phrase.clone()),
+                                VoiceCommand::SetVoice(settings.voice.tts_voice.clone()),
+                                VoiceCommand::SetSpeed(settings.voice.tts_speed),
+                            ] {
+                                let _ = voice.send(command);
+                            }
+                        }
                         self.snapshot.settings = settings.clone();
                         match self.publish(AppChangeKind::SettingsChanged(settings)) {
                             Ok(revision) => AppCommandResult::Applied { revision },
@@ -256,9 +308,54 @@ impl ApplicationActor {
                     Err(error) => AppCommandResult::Rejected { error },
                 }
             }
+            AppCommand::StartVoiceCapture => {
+                let Some(voice) = &self.voice else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("voice service is not connected"),
+                    };
+                };
+                if voice.send(VoiceCommand::StartListening).is_err() {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("voice command channel is closed"),
+                    };
+                }
+                self.publish_voice_operation("Listening")
+            }
+            AppCommand::StopVoiceCapture => {
+                let Some(voice) = &self.voice else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("voice service is not connected"),
+                    };
+                };
+                if voice.send(VoiceCommand::StopListening).is_err() {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("voice command channel is closed"),
+                    };
+                }
+                self.publish_voice_operation("Transcribing")
+            }
             _ => AppCommandResult::Rejected {
                 error: unavailable("command is not connected to a domain port yet"),
             },
+        }
+    }
+
+    fn publish_voice_operation(&mut self, message: &str) -> AppCommandResult {
+        let operation = OperationState {
+            kind: OperationKind::Voice,
+            operation_id: Some("voice-capture".into()),
+            phase: OperationPhase::Running,
+            progress: None,
+            message: Some(message.to_string()),
+            error: None,
+        };
+        self.snapshot
+            .operations
+            .retain(|item| item.kind != OperationKind::Voice);
+        self.snapshot.operations.push(operation.clone());
+        match self.publish(AppChangeKind::OperationChanged(operation)) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
         }
     }
 

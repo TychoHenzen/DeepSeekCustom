@@ -17,8 +17,10 @@ use deepseek_custom::application::dto::{
     SessionSummary, TranscriptBlock, TranscriptContent, VisibleBackend, VisibleProcedureSettings,
     VisibleSettings, VisibleStyleSettings, VisibleVoiceSettings, Workspace,
 };
+use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::services::{RuntimeSettingsPort, SettingsController};
 use deepseek_custom::config::settings::Settings;
+use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
     BindPolicy, BrowserOpener, NativeFolderPicker, REQUEST_TOKEN_HEADER, ServerStartError,
     WebAppState, start, start_production, start_with_policy, start_with_policy_and_state,
@@ -986,6 +988,143 @@ fn untrusted_command_shapes_fail_without_dispatch_or_data_disclosure() {
         assert!(!bootstrap_body.contains("credential"));
         assert!(!bootstrap_body.contains("secret"));
 
+        server.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User attaches an image
+#[test]
+fn supported_image_upload_is_bounded_previewable_and_consumed_by_chat_submission() {
+    run_async_test(async {
+        let state = WebAppState::new(visible_snapshot(), 8);
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+        let png = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        ).unwrap();
+        let response = client
+            .post(format!("{}api/attachments", server.url()))
+            .header("origin", server.url().trim_end_matches('/'))
+            .header(REQUEST_TOKEN_HEADER, &token)
+            .multipart(
+                reqwest::multipart::Form::new().part(
+                    "image",
+                    reqwest::multipart::Part::bytes(png.clone())
+                        .file_name("pixel.png")
+                        .mime_str("image/png")
+                        .unwrap(),
+                ),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+        let uploaded: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(uploaded["media_type"], "image/png");
+        assert_eq!(uploaded["size"], png.len());
+        let attachment_id = uploaded["attachment_id"].as_str().unwrap().to_owned();
+
+        let result: AppCommandResult = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: state.snapshot().revision,
+                command: AppCommand::SendMessage {
+                    text: "inspect".into(),
+                    attachment_id: Some(attachment_id.clone()),
+                },
+            },
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        assert!(matches!(result, AppCommandResult::Applied { .. }));
+        assert!(matches!(
+            state.snapshot().transcript.last(),
+            Some(TranscriptBlock {
+                content: TranscriptContent::User {
+                    has_image: true,
+                    ..
+                },
+                ..
+            })
+        ));
+
+        let reused: AppCommandResult = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: state.snapshot().revision,
+                command: AppCommand::SendMessage {
+                    text: "reuse".into(),
+                    attachment_id: Some(attachment_id),
+                },
+            },
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        assert!(matches!(reused, AppCommandResult::Rejected { .. }));
+        server.shutdown().await.unwrap();
+    });
+}
+
+// covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User uses push to talk
+#[test]
+fn focused_push_to_talk_commands_and_voice_events_share_the_rust_voice_service_state() {
+    run_async_test(async {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let state =
+            WebAppState::new(visible_snapshot(), 8).with_voice_port(DomainCommandPort::new(tx));
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+        for command in [AppCommand::StartVoiceCapture, AppCommand::StopVoiceCapture] {
+            let result: AppCommandResult = post_command(
+                &client,
+                server.url(),
+                &token,
+                &AppCommandRequest {
+                    revision: state.snapshot().revision,
+                    command,
+                },
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+            assert!(matches!(result, AppCommandResult::Applied { .. }));
+        }
+        assert_eq!(rx.recv().await, Some(VoiceCommand::StartListening));
+        assert_eq!(rx.recv().await, Some(VoiceCommand::StopListening));
+
+        state
+            .apply_voice_event(VoiceEvent::StateChanged(VoiceState::Speaking))
+            .unwrap();
+        state
+            .apply_voice_event(VoiceEvent::Transcript("spoken words".into()))
+            .unwrap();
+        state
+            .apply_voice_event(VoiceEvent::Error("microphone unavailable".into()))
+            .unwrap();
+        let snapshot = state.snapshot();
+        assert_eq!(
+            snapshot
+                .operations
+                .iter()
+                .find(|item| item.kind == OperationKind::Voice)
+                .unwrap()
+                .message
+                .as_deref(),
+            Some("Playing response")
+        );
+        assert!(snapshot.transcript.iter().any(|block| matches!(&block.content, TranscriptContent::Notice { message, .. } if message == "Transcription: spoken words")));
         server.shutdown().await.unwrap();
     });
 }

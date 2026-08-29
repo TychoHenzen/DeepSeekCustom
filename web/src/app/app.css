@@ -223,6 +223,19 @@ button:disabled {
   margin-block-start: 1rem;
 }
 
+.attachment-preview img {
+  display: block;
+  max-block-size: 8rem;
+  max-inline-size: min(100%, 16rem);
+  object-fit: contain;
+}
+
+.voice-controls {
+  border-block-start: 1px solid var(--border);
+  margin-block-start: 1rem;
+  padding-block-start: 1rem;
+}
+
 .settings-workspace form,
 .settings-workspace fieldset {
   display: grid;

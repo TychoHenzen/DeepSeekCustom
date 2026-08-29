@@ -86,9 +86,11 @@
 - [x] 4.6 Move folder selection behind one `spawn_blocking` native picker request and preserve confirmation, cancellation, failure, `working_dir`, and fixed `project_root` behavior.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User requests a working-directory folder -->
-- [ ] 4.7 Add bounded multipart image upload plus paste, drop, select, preview, clear, and existing backend-specific attachment handling.
+- [x] 4.7 Add bounded multipart image upload plus paste, drop, select, preview, clear, and existing backend-specific attachment handling.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User attaches an image -->
-- [ ] 4.8 Connect focused push-to-talk press and release, voice toggles, readiness, transcription, playback, and errors to the existing Rust voice service.
+- [x] 4.8 Connect focused push-to-talk press and release, voice toggles, readiness, transcription, playback, and errors to the existing Rust voice service.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User uses push to talk -->
 - [ ] 4.9 Verify this milestone in practice with deterministic chat streaming, reconnect, deferred session switch, persisted settings, confirmed and cancelled folders, image input, and voice state.
 

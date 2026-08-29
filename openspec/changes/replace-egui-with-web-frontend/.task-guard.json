@@ -126,10 +126,12 @@
       "status": "completed"
     },
     "4.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.8": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.9": {
       "checked": false

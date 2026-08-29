@@ -1,5 +1,12 @@
 # Image support per backend, checked against real requests
 
+## Web attachment limits
+
+The local web app accepts one PNG, JPEG, or BMP image per turn. Paste, drop,
+and file selection use the same multipart endpoint. The decoded upload must be
+between 1 byte and 5 MiB. A new image replaces the pending preview. Submission
+consumes its attachment identity, so it cannot be reused by a later turn.
+
 Tested against the live DeepSeek API, a local Ollama 0.32.5 instance, and the
 real `claude` binary on this machine (`2.1.220 (Claude Code)`, the same
 "tweakcc-fixed, patched" build `docs/notes/claude-effort.md` already noted).

@@ -51,6 +51,8 @@ function client(initial: ClientView): UiClient & { send: ReturnType<typeof vi.fn
     start: vi.fn(() => Promise.resolve()),
     reconnect: vi.fn(() => Promise.resolve()),
     send,
+    uploadAttachment: vi.fn(() => Promise.resolve({ attachment_id: 'image-1', media_type: 'image/png', size: 68 })),
+    clearAttachment: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
   };
 }
@@ -98,7 +100,7 @@ describe('application shell', () => {
   it('keeps navigation and actions in flow and declares a contained 360-pixel layout', () => {
     render(createElement(App, { client: client({ status: 'online', snapshot: snapshot(), lastError: null, message: null }) }));
 
-    expect(screen.getAllByRole('button')).toHaveLength(9);
+    expect(screen.getAllByRole('button')).toHaveLength(11);
     expect(screen.getByRole('button', { name: 'Send message' })).toBeVisible();
     expect(appCss).toMatch(/@media \(max-width: 48rem\)[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
     expect(appCss).toMatch(/body\s*{[^}]*overflow-x:\s*hidden/);
@@ -166,6 +168,8 @@ describe('application shell', () => {
       start: vi.fn(() => Promise.resolve()),
       reconnect: vi.fn(() => Promise.resolve()),
       send,
+      uploadAttachment: vi.fn(() => Promise.resolve({ attachment_id: 'image-1', media_type: 'image/png', size: 68 })),
+      clearAttachment: vi.fn(() => Promise.resolve()),
       close: vi.fn(),
     };
     render(createElement(App, { client: appClient }));

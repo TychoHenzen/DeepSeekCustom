@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import type { ApplicationClient, ClientView } from '../client/client.ts';
+import type { ApplicationClient, ClientView, UploadedAttachment } from '../client/client.ts';
 import { workspaces, type AppCommand, type AppCommandResult, type Workspace } from '../client/contracts.ts';
 import { ChatWorkspace } from './ChatWorkspace.tsx';
 import { SessionsWorkspace } from './SessionsWorkspace.tsx';
@@ -23,6 +23,8 @@ export interface UiClient {
   start: () => Promise<void>;
   reconnect: () => Promise<void>;
   send: (command: AppCommand) => Promise<AppCommandResult>;
+  uploadAttachment: (file: File) => Promise<UploadedAttachment>;
+  clearAttachment: (id: string) => Promise<void>;
   close: () => void;
 }
 
@@ -107,6 +109,12 @@ export function App({ client }: AppProps) {
         {selectedWorkspace === 'chat' && view.snapshot !== null ? (
           <ChatWorkspace
             operation={view.snapshot.operations.find((operation) => operation.kind === 'chat') ?? null}
+            voiceOperation={view.snapshot.operations.find((operation) => operation.kind === 'voice') ?? null}
+            voiceSettings={view.snapshot.settings.voice}
+            uploadAttachment={(file) => client.uploadAttachment(file)}
+            clearAttachment={(id) => client.clearAttachment(id)}
+            startVoice={() => client.send({ command: 'start_voice_capture' })}
+            stopVoice={() => client.send({ command: 'stop_voice_capture' })}
             send={(command) => client.send(command)}
             stop={() => client.send({ command: 'stop_operation', payload: { kind: 'chat' } })}
             transcript={view.snapshot.transcript}

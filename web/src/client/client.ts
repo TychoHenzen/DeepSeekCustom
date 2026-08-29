@@ -24,6 +24,12 @@ export interface EventMessage {
   data: string;
 }
 
+export interface UploadedAttachment {
+  attachment_id: string;
+  media_type: string;
+  size: number;
+}
+
 export interface EventStream {
   close(): void;
   addEventListener(type: 'change' | 'reset', listener: (event: EventMessage) => void): void;
@@ -143,6 +149,25 @@ export class ApplicationClient {
     }
     if (result.revision > snapshot.revision) await this.#refreshSnapshot();
     return result;
+  }
+
+  async uploadAttachment(file: File): Promise<UploadedAttachment> {
+    if (this.#requestToken === null) throw new Error('application client is not bootstrapped');
+    const body = new FormData();
+    body.append('image', file);
+    const response = await this.#dependencies.fetch('/api/attachments', {
+      method: 'POST', credentials: 'same-origin', headers: { [requestTokenHeader]: this.#requestToken }, body,
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return await response.json() as UploadedAttachment;
+  }
+
+  async clearAttachment(id: string): Promise<void> {
+    if (this.#requestToken === null) throw new Error('application client is not bootstrapped');
+    const response = await this.#dependencies.fetch(`/api/attachments/${encodeURIComponent(id)}`, {
+      method: 'DELETE', credentials: 'same-origin', headers: { [requestTokenHeader]: this.#requestToken },
+    });
+    if (!response.ok && response.status !== 404) throw new Error(await response.text());
   }
 
   close(): void {

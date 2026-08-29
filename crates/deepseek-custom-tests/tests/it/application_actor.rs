@@ -149,6 +149,13 @@ fn zero_capacity_always_resets_a_client_that_is_behind() {
 #[test]
 fn send_message_projects_user_then_running_state_in_revision_order() {
     let mut actor = actor(8);
+    actor.register_attachment(
+        "accepted-image-1".into(),
+        deepseek_custom::api::types::ImageAttachment {
+            data: "AA==".into(),
+            media_type: "image/png".into(),
+        },
+    );
     let result = actor.submit(AppCommandRequest {
         revision: AppRevision::INITIAL,
         command: AppCommand::SendMessage {
@@ -205,6 +212,34 @@ fn chat_actor(
         origin,
     ));
     (dir, actor, rx, interrupt)
+}
+
+#[test]
+fn accepted_attachment_reaches_existing_backend_turn_and_is_consumed_once() {
+    let (dir, mut actor, mut commands, _) = chat_actor("attachment");
+    actor.register_attachment(
+        "image-1".into(),
+        deepseek_custom::api::types::ImageAttachment {
+            data: "AA==".into(),
+            media_type: "image/png".into(),
+        },
+    );
+    let sent = actor.submit(AppCommandRequest {
+        revision: actor.snapshot().revision,
+        command: AppCommand::SendMessage {
+            text: "inspect".into(),
+            attachment_id: Some("image-1".into()),
+        },
+    });
+    assert!(matches!(sent, AppCommandResult::Applied { .. }));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(AgentCommand::UserTurn { image: Some(image), .. })
+            if image.media_type == "image/png" && image.data == "AA=="
+    ));
+    assert!(!actor.remove_attachment("image-1"));
+    drop(actor);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User interrupts a turn

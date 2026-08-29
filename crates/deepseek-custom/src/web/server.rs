@@ -5,16 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures::stream::{self, Stream, StreamExt};
 use rust_embed::RustEmbed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
@@ -25,11 +25,15 @@ use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
     VisibleSettings,
 };
+use crate::application::services::DomainCommandPort;
 use crate::application::services::SettingsController;
 use crate::config::settings::Settings;
+use crate::image_bytes::attachment_from_image_bytes;
+use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 
 const APPLICATION_SHELL: &str = "index.html";
 pub const REQUEST_TOKEN_HEADER: &str = "x-deepseek-request-token";
+pub const MAX_IMAGE_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(RustEmbed)]
 #[folder = "src/web/assets"]
@@ -84,6 +88,16 @@ impl WebAppState {
         }
     }
 
+    pub fn with_voice_port(mut self, voice: DomainCommandPort<VoiceCommand>) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("voice port must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_voice_port(voice);
+        self
+    }
+
     pub fn snapshot(&self) -> AppSnapshot {
         self.inner.actor.lock().unwrap().snapshot().clone()
     }
@@ -119,6 +133,79 @@ impl WebAppState {
             }
         }
         Ok(revision)
+    }
+
+    pub fn apply_voice_event(
+        &self,
+        event: VoiceEvent,
+    ) -> Result<AppRevision, crate::application::dto::AppError> {
+        let operation = match event {
+            VoiceEvent::StateChanged(state) => crate::application::dto::OperationState {
+                kind: crate::application::dto::OperationKind::Voice,
+                operation_id: Some("voice-service".into()),
+                phase: if state == VoiceState::Idle {
+                    crate::application::dto::OperationPhase::Completed
+                } else {
+                    crate::application::dto::OperationPhase::Running
+                },
+                progress: None,
+                message: Some(
+                    match state {
+                        VoiceState::Idle => "Voice ready",
+                        VoiceState::Listening => "Listening",
+                        VoiceState::Transcribing => "Transcribing",
+                        VoiceState::Speaking => "Playing response",
+                    }
+                    .into(),
+                ),
+                error: None,
+            },
+            VoiceEvent::Transcript(text) => {
+                return self.apply_event(AppEvent::TranscriptAppended(
+                    crate::application::dto::TranscriptBlock {
+                        id: self
+                            .snapshot()
+                            .transcript
+                            .iter()
+                            .map(|block| block.id)
+                            .max()
+                            .unwrap_or(0)
+                            + 1,
+                        content: crate::application::dto::TranscriptContent::Notice {
+                            message: format!("Transcription: {text}"),
+                            level: crate::application::dto::NoticeLevel::Info,
+                        },
+                    },
+                ));
+            }
+            VoiceEvent::WakeDetected => {
+                return self.apply_event(AppEvent::TranscriptAppended(
+                    crate::application::dto::TranscriptBlock {
+                        id: self
+                            .snapshot()
+                            .transcript
+                            .iter()
+                            .map(|block| block.id)
+                            .max()
+                            .unwrap_or(0)
+                            + 1,
+                        content: crate::application::dto::TranscriptContent::Notice {
+                            message: "Wake phrase detected".into(),
+                            level: crate::application::dto::NoticeLevel::Info,
+                        },
+                    },
+                ));
+            }
+            VoiceEvent::Error(message) => {
+                return self.apply_event(AppEvent::Error(crate::application::dto::AppError {
+                    code: crate::application::dto::AppErrorCode::ServiceFailed,
+                    message,
+                    recoverable: true,
+                    field: Some("voice".into()),
+                }));
+            }
+        };
+        self.apply_event(AppEvent::OperationChanged(operation))
     }
 
     fn replay_and_subscribe(
@@ -361,11 +448,114 @@ fn router(state: WebAppState, origin: String) -> Router {
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
+        .route("/api/attachments", post(upload_attachment))
+        .route("/api/attachments/{id}", delete(clear_attachment))
         .route("/api", get(api_not_found))
         .route("/api/{*path}", get(api_not_found))
         .fallback(get(fallback))
+        .layer(DefaultBodyLimit::max(MAX_IMAGE_UPLOAD_BYTES + 64 * 1024))
         .layer(middleware::from_fn(security_headers))
         .with_state(security)
+}
+
+#[derive(Serialize)]
+struct UploadedAttachment {
+    attachment_id: String,
+    media_type: String,
+    size: usize,
+}
+
+async fn upload_attachment(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => return (StatusCode::BAD_REQUEST, "image field is required").into_response(),
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    if field.name() != Some("image") {
+        return (
+            StatusCode::BAD_REQUEST,
+            "multipart field must be named image",
+        )
+            .into_response();
+    }
+    let bytes = match field.bytes().await {
+        Ok(bytes) if !bytes.is_empty() && bytes.len() <= MAX_IMAGE_UPLOAD_BYTES => bytes,
+        Ok(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "image must be between 1 byte and 5 MiB",
+            )
+                .into_response();
+        }
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    let attachment = match attachment_from_image_bytes(&bytes, "uploaded image") {
+        Ok(attachment)
+            if matches!(
+                attachment.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/bmp"
+            ) =>
+        {
+            attachment
+        }
+        Ok(_) => {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "supported formats are PNG, JPEG, and BMP",
+            )
+                .into_response();
+        }
+        Err(message) => return (StatusCode::UNSUPPORTED_MEDIA_TYPE, message).into_response(),
+    };
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let response = UploadedAttachment {
+        attachment_id: id.clone(),
+        media_type: attachment.media_type.clone(),
+        size: bytes.len(),
+    };
+    let mut actor = security.state.inner.actor.lock().unwrap();
+    actor.register_attachment(id.clone(), attachment);
+    (StatusCode::CREATED, Json(response)).into_response()
+}
+
+async fn clear_attachment(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if security
+        .state
+        .inner
+        .actor
+        .lock()
+        .unwrap()
+        .remove_attachment(&id)
+    {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+fn authorized(security: &WebSecurity, headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        == Some(security.origin.trim_end_matches('/'))
+        && headers
+            .get(REQUEST_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            == Some(security.state.request_token())
 }
 
 #[derive(Clone)]
@@ -393,15 +583,7 @@ async fn command(
     headers: HeaderMap,
     Json(request): Json<AppCommandRequest>,
 ) -> Response {
-    if headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        != Some(security.origin.trim_end_matches('/'))
-        || headers
-            .get(REQUEST_TOKEN_HEADER)
-            .and_then(|value| value.to_str().ok())
-            != Some(security.state.request_token())
-    {
+    if !authorized(&security, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
