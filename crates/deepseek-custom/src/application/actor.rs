@@ -5,12 +5,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::events::AgentCommand;
+use crate::agent::events::StreamEvent;
+use crate::agent::repeat::RepeatCommand;
 use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
 use crate::gui::PendingSwitch;
 use crate::gui::session_state::SessionOrigin;
 use crate::gui::transcript::{BlockKind, Severity};
+use crate::search::cascade::{CascadeParams, MAX_ATTEMPTS};
+use crate::search::evolve::{EvolveParams, MAX_TOTAL_DISPATCHES};
+use crate::search::{SearchCommand, SearchKind};
 use crate::session::SessionId;
 use crate::voice::service::VoiceCommand;
 
@@ -54,6 +59,10 @@ pub struct ApplicationActor {
     settings: Option<Arc<SettingsController>>,
     attachments: HashMap<String, ImageAttachment>,
     voice: Option<DomainCommandPort<VoiceCommand>>,
+    autopilot: Option<DomainCommandPort<RepeatCommand>>,
+    search: Option<DomainCommandPort<SearchCommand>>,
+    repeat_interrupt: Option<Arc<AtomicBool>>,
+    search_interrupt: Option<Arc<AtomicBool>>,
 }
 
 /// Process-private chat lifecycle dependencies used by every presentation adapter.
@@ -91,6 +100,10 @@ impl ApplicationActor {
             settings: None,
             attachments: HashMap::new(),
             voice: None,
+            autopilot: None,
+            search: None,
+            repeat_interrupt: None,
+            search_interrupt: None,
         }
     }
 
@@ -114,6 +127,24 @@ impl ApplicationActor {
 
     pub fn connect_voice_port(&mut self, voice: DomainCommandPort<VoiceCommand>) {
         self.voice = Some(voice);
+    }
+
+    pub fn connect_autopilot(
+        &mut self,
+        autopilot: DomainCommandPort<RepeatCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) {
+        self.autopilot = Some(autopilot);
+        self.repeat_interrupt = Some(interrupt);
+    }
+
+    pub fn connect_search(
+        &mut self,
+        search: DomainCommandPort<SearchCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) {
+        self.search = Some(search);
+        self.search_interrupt = Some(interrupt);
     }
 
     pub fn register_attachment(&mut self, id: String, attachment: ImageAttachment) {
@@ -250,6 +281,12 @@ impl ApplicationActor {
                 chat.interrupt.store(true, Ordering::SeqCst);
                 self.finish_chat(OperationPhase::Interrupted, "Interrupted by user", true)
             }
+            AppCommand::StopOperation {
+                kind: OperationKind::Autopilot,
+            } => self.stop_flagged_operation(OperationKind::Autopilot, false),
+            AppCommand::StopOperation {
+                kind: kind @ (OperationKind::Cascade | OperationKind::Evolve),
+            } => self.stop_flagged_operation(kind, true),
             AppCommand::NewSession => self.request_session_switch(PendingSwitch::New),
             AppCommand::LoadSession { session_id } => {
                 let Ok(id) = SessionId::parse(&session_id) else {
@@ -334,9 +371,260 @@ impl ApplicationActor {
                 }
                 self.publish_voice_operation("Transcribing")
             }
+            AppCommand::StartAutopilot { task, iterations } => {
+                let task = task.trim().to_string();
+                if task.is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("task", "task is required"),
+                    };
+                }
+                if iterations == 0 {
+                    return AppCommandResult::Rejected {
+                        error: invalid("iterations", "iterations must be at least 1"),
+                    };
+                }
+                let Some(port) = &self.autopilot else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("autopilot service is not connected"),
+                    };
+                };
+                if self.has_active_operation() {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("another operation is already running"),
+                    };
+                }
+                if let Some(flag) = &self.repeat_interrupt {
+                    flag.store(false, Ordering::SeqCst);
+                }
+                if port.send(RepeatCommand { task, iterations }).is_err() {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("autopilot command channel is closed"),
+                    };
+                }
+                self.start_operation(
+                    OperationKind::Autopilot,
+                    Some(iterations.into()),
+                    "Autopilot started",
+                )
+            }
+            AppCommand::StartCascade {
+                prompt,
+                backend,
+                n,
+                vote_k,
+                check_cmd,
+                diversity_hints,
+                escalate_backend,
+            } => {
+                if prompt.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("prompt", "prompt is required"),
+                    };
+                }
+                if backend.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("backend", "backend is required"),
+                    };
+                }
+                if n == 0 || n > MAX_ATTEMPTS {
+                    return AppCommandResult::Rejected {
+                        error: invalid("n", "attempts must be between 1 and 16"),
+                    };
+                }
+                if vote_k == 0 || vote_k > 8 {
+                    return AppCommandResult::Rejected {
+                        error: invalid("vote_k", "vote margin must be between 1 and 8"),
+                    };
+                }
+                let params = CascadeParams {
+                    prompt: prompt.trim().into(),
+                    backend,
+                    n,
+                    vote_k,
+                    check_cmd: trimmed_option(check_cmd),
+                    diversity_hints: trimmed_lines(diversity_hints),
+                    escalate_backend: trimmed_option(escalate_backend),
+                    effort: snapshot_effort(&self.snapshot.settings.effort),
+                };
+                self.start_search(
+                    SearchCommand::Cascade(Box::new(params)),
+                    OperationKind::Cascade,
+                    Some(n.into()),
+                )
+            }
+            AppCommand::StartEvolve {
+                prompt,
+                backend,
+                generations,
+                population,
+                fitness_cmd,
+                feature_cmd,
+                islands,
+                migration_interval,
+                mutation_hints,
+            } => {
+                if prompt.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("prompt", "prompt is required"),
+                    };
+                }
+                if backend.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("backend", "backend is required"),
+                    };
+                }
+                if fitness_cmd.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("fitness_cmd", "fitness command is required"),
+                    };
+                }
+                if !(1..=50).contains(&generations) {
+                    return AppCommandResult::Rejected {
+                        error: invalid("generations", "generations must be between 1 and 50"),
+                    };
+                }
+                if !(1..=20).contains(&population) {
+                    return AppCommandResult::Rejected {
+                        error: invalid("population", "population must be between 1 and 20"),
+                    };
+                }
+                if !(1..=8).contains(&islands) {
+                    return AppCommandResult::Rejected {
+                        error: invalid("islands", "islands must be between 1 and 8"),
+                    };
+                }
+                if migration_interval > 20 {
+                    return AppCommandResult::Rejected {
+                        error: invalid(
+                            "migration_interval",
+                            "migration interval must be between 0 and 20",
+                        ),
+                    };
+                }
+                let planned = generations
+                    .saturating_mul(population)
+                    .saturating_mul(islands);
+                let params = EvolveParams {
+                    prompt: prompt.trim().into(),
+                    backend,
+                    generations,
+                    population,
+                    fitness_cmd: fitness_cmd.trim().into(),
+                    feature_cmd: trimmed_option(feature_cmd),
+                    islands,
+                    migration_interval,
+                    mutation_hints: trimmed_lines(mutation_hints),
+                    effort: snapshot_effort(&self.snapshot.settings.effort),
+                };
+                self.start_search(
+                    SearchCommand::Evolve(Box::new(params)),
+                    OperationKind::Evolve,
+                    Some(u64::from(planned.min(MAX_TOTAL_DISPATCHES))),
+                )
+            }
             _ => AppCommandResult::Rejected {
                 error: unavailable("command is not connected to a domain port yet"),
             },
+        }
+    }
+
+    fn has_active_operation(&self) -> bool {
+        self.snapshot.operations.iter().any(|item| {
+            matches!(
+                item.phase,
+                OperationPhase::Running | OperationPhase::AwaitingReview
+            )
+        })
+    }
+
+    fn start_search(
+        &mut self,
+        command: SearchCommand,
+        kind: OperationKind,
+        total: Option<u64>,
+    ) -> AppCommandResult {
+        let Some(port) = &self.search else {
+            return AppCommandResult::Rejected {
+                error: unavailable("search service is not connected"),
+            };
+        };
+        if self.has_active_operation() {
+            return AppCommandResult::Rejected {
+                error: operation_active("another operation is already running"),
+            };
+        }
+        if let Some(flag) = &self.search_interrupt {
+            flag.store(false, Ordering::SeqCst);
+        }
+        if port.send(command).is_err() {
+            return AppCommandResult::Rejected {
+                error: unavailable("search command channel is closed"),
+            };
+        }
+        self.start_operation(kind, total, &format!("{} started", operation_label(kind)))
+    }
+
+    fn start_operation(
+        &mut self,
+        kind: OperationKind,
+        total: Option<u64>,
+        message: &str,
+    ) -> AppCommandResult {
+        let operation = OperationState {
+            kind,
+            operation_id: Some(format!(
+                "{}-{}",
+                operation_label(kind).to_lowercase(),
+                self.snapshot.revision.0 + 1
+            )),
+            phase: OperationPhase::Running,
+            progress: Some(super::dto::OperationProgress {
+                completed: 0,
+                total,
+            }),
+            message: Some(message.into()),
+            error: None,
+        };
+        self.snapshot.operations.retain(|item| item.kind != kind);
+        self.snapshot.operations.push(operation.clone());
+        match self.publish(AppChangeKind::OperationChanged(operation)) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        }
+    }
+
+    fn stop_flagged_operation(&mut self, kind: OperationKind, search: bool) -> AppCommandResult {
+        let running = self
+            .snapshot
+            .operations
+            .iter()
+            .any(|item| item.kind == kind && item.phase == OperationPhase::Running);
+        if !running {
+            return AppCommandResult::Rejected {
+                error: operation_active("operation is not running"),
+            };
+        }
+        let flag = if search {
+            &self.search_interrupt
+        } else {
+            &self.repeat_interrupt
+        };
+        let Some(flag) = flag else {
+            return AppCommandResult::Rejected {
+                error: unavailable("operation stop flag is not connected"),
+            };
+        };
+        flag.store(true, Ordering::SeqCst);
+        match self.publish(AppChangeKind::OperationChanged(
+            self.snapshot
+                .operations
+                .iter()
+                .find(|item| item.kind == kind)
+                .unwrap()
+                .clone(),
+        )) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
         }
     }
 
@@ -412,6 +700,101 @@ impl ApplicationActor {
             AppEvent::Error(error) => AppChangeKind::Error(error),
         };
         self.publish(change)
+    }
+
+    /// Project existing backend-neutral repeat and search events into browser state.
+    pub fn apply_operation_stream_event(
+        &mut self,
+        event: &StreamEvent,
+    ) -> Option<Result<AppRevision, AppError>> {
+        let state = match event {
+            StreamEvent::RepeatIterationStart { index, total, .. } => OperationState {
+                kind: OperationKind::Autopilot,
+                operation_id: self.operation_id(OperationKind::Autopilot),
+                phase: OperationPhase::Running,
+                progress: Some(super::dto::OperationProgress {
+                    completed: u64::from(index.saturating_sub(1)),
+                    total: Some(u64::from(*total)),
+                }),
+                message: Some(format!("Running iteration {index} of {total}")),
+                error: None,
+            },
+            StreamEvent::RepeatFinished { completed, total } => OperationState {
+                kind: OperationKind::Autopilot,
+                operation_id: self.operation_id(OperationKind::Autopilot),
+                phase: if *completed < *total
+                    && self
+                        .repeat_interrupt
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    OperationPhase::Interrupted
+                } else {
+                    OperationPhase::Completed
+                },
+                progress: Some(super::dto::OperationProgress {
+                    completed: u64::from(*completed),
+                    total: Some(u64::from(*total)),
+                }),
+                message: Some(format!(
+                    "Autopilot finished: {completed} of {total} iterations"
+                )),
+                error: None,
+            },
+            StreamEvent::SearchProgress(snapshot) => OperationState {
+                kind: operation_kind(snapshot.kind),
+                operation_id: self.operation_id(operation_kind(snapshot.kind)),
+                phase: OperationPhase::Running,
+                progress: Some(super::dto::OperationProgress {
+                    completed: u64::from(snapshot.done),
+                    total: Some(u64::from(snapshot.total)),
+                }),
+                message: Some(search_message(snapshot)),
+                error: None,
+            },
+            StreamEvent::SearchFinished {
+                kind,
+                summary,
+                is_error,
+            } => OperationState {
+                kind: operation_kind(*kind),
+                operation_id: self.operation_id(operation_kind(*kind)),
+                phase: if self
+                    .search_interrupt
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    OperationPhase::Interrupted
+                } else if *is_error {
+                    OperationPhase::Failed
+                } else {
+                    OperationPhase::Completed
+                },
+                progress: self
+                    .snapshot
+                    .operations
+                    .iter()
+                    .find(|item| item.kind == operation_kind(*kind))
+                    .and_then(|item| item.progress),
+                message: Some(summary.clone()),
+                error: is_error.then(|| AppError {
+                    code: AppErrorCode::ServiceFailed,
+                    message: summary.clone(),
+                    recoverable: true,
+                    field: None,
+                }),
+            },
+            _ => return None,
+        };
+        Some(self.apply_event(AppEvent::OperationChanged(state)))
+    }
+
+    fn operation_id(&self, kind: OperationKind) -> Option<String> {
+        self.snapshot
+            .operations
+            .iter()
+            .find(|item| item.kind == kind)
+            .and_then(|item| item.operation_id.clone())
     }
 
     pub fn replay_after(&self, revision: AppRevision) -> Replay {
@@ -627,6 +1010,61 @@ fn not_found(message: &str) -> AppError {
         recoverable: true,
         field: None,
     }
+}
+
+fn trimmed_option(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn trimmed_lines(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter_map(|value| trimmed_option(Some(value)))
+        .collect()
+}
+
+fn snapshot_effort(value: &str) -> crate::effort::Effort {
+    match value {
+        "low" => crate::effort::Effort::Low,
+        "medium" => crate::effort::Effort::Medium,
+        "high" => crate::effort::Effort::High,
+        "max" => crate::effort::Effort::Max,
+        _ => crate::effort::Effort::None,
+    }
+}
+
+fn operation_kind(kind: SearchKind) -> OperationKind {
+    match kind {
+        SearchKind::Cascade => OperationKind::Cascade,
+        SearchKind::Evolve => OperationKind::Evolve,
+    }
+}
+
+fn operation_label(kind: OperationKind) -> &'static str {
+    match kind {
+        OperationKind::Autopilot => "Autopilot",
+        OperationKind::Cascade => "Cascade",
+        OperationKind::Evolve => "Evolve",
+        _ => "Operation",
+    }
+}
+
+fn search_message(snapshot: &crate::search::SearchSnapshot) -> String {
+    let mut message = snapshot.note.clone();
+    if let Some((used, limit)) = snapshot.dispatches {
+        message.push_str(&format!("\nDispatches: {used} of {limit}"));
+    }
+    for entry in &snapshot.top {
+        let score = entry
+            .score
+            .map(|score| format!(" ({score:.4})"))
+            .unwrap_or_default();
+        message.push_str(&format!("\n{}{}: {}", entry.label, score, entry.preview));
+    }
+    message
 }
 
 impl AppSnapshot {

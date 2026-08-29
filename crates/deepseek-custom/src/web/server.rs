@@ -20,6 +20,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::agent::events::StreamEvent;
+use crate::agent::repeat::RepeatCommand;
 use crate::application::actor::{AppEvent, ApplicationActor, Replay};
 use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
@@ -29,7 +31,9 @@ use crate::application::services::DomainCommandPort;
 use crate::application::services::SettingsController;
 use crate::config::settings::Settings;
 use crate::image_bytes::attachment_from_image_bytes;
+use crate::search::SearchCommand;
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
+use std::sync::atomic::AtomicBool;
 
 const APPLICATION_SHELL: &str = "index.html";
 pub const REQUEST_TOKEN_HEADER: &str = "x-deepseek-request-token";
@@ -98,6 +102,34 @@ impl WebAppState {
         self
     }
 
+    pub fn with_autopilot_port(
+        mut self,
+        port: DomainCommandPort<RepeatCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("autopilot port must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_autopilot(port, interrupt);
+        self
+    }
+
+    pub fn with_search_port(
+        mut self,
+        port: DomainCommandPort<SearchCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("search port must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_search(port, interrupt);
+        self
+    }
+
     pub fn snapshot(&self) -> AppSnapshot {
         self.inner.actor.lock().unwrap().snapshot().clone()
     }
@@ -133,6 +165,23 @@ impl WebAppState {
             }
         }
         Ok(revision)
+    }
+
+    pub fn apply_operation_stream_event(
+        &self,
+        event: &StreamEvent,
+    ) -> Option<Result<AppRevision, crate::application::dto::AppError>> {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let result = actor.apply_operation_stream_event(event)?;
+        if result.is_ok()
+            && let Replay::Changes(changes) = actor.replay_after(previous)
+        {
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
+        }
+        Some(result)
     }
 
     pub fn apply_voice_event(

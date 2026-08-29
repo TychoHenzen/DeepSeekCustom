@@ -150,8 +150,8 @@ export type AppCommand =
   | { command: 'select_backend'; payload: { backend: string; model: string } }
   | { command: 'update_settings'; payload: { settings: VisibleSettings } }
   | { command: 'start_autopilot'; payload: { task: string; iterations: number } }
-  | { command: 'start_cascade'; payload: { prompt: string } }
-  | { command: 'start_evolve'; payload: { prompt: string } }
+  | { command: 'start_cascade'; payload: { prompt: string; backend: string; n: number; vote_k: number; check_cmd: string | null; diversity_hints: string[]; escalate_backend: string | null } }
+  | { command: 'start_evolve'; payload: { prompt: string; backend: string; generations: number; population: number; fitness_cmd: string; feature_cmd: string | null; islands: number; migration_interval: number; mutation_hints: string[] } }
   | { command: 'run_procedure'; payload: { change_id: string; task_id: string } }
   | { command: 'review_procedure'; payload: { run_id: string; decision: 'approve' | 'reject' } }
   | { command: 'start_voice_capture' }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use deepseek_custom::agent::events::AgentCommand;
+use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
@@ -12,7 +13,9 @@ use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::session::ApplicationSession;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::session_state::{SessionOrigin, SessionState};
+use deepseek_custom::search::{SearchCommand, SearchKind, SearchSnapshot};
 use deepseek_custom::session::SessionStore;
+use tokio::sync::mpsc;
 
 fn actor(capacity: usize) -> ApplicationActor {
     ApplicationActor::new(
@@ -27,6 +30,181 @@ fn actor(capacity: usize) -> ApplicationActor {
         ),
         capacity,
     )
+}
+
+#[test]
+fn autopilot_dispatches_repeat_tracks_progress_and_sets_its_stop_flag() {
+    let mut actor = actor(16);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let interrupt = Arc::new(AtomicBool::new(true));
+    actor.connect_autopilot(DomainCommandPort::new(tx), Arc::clone(&interrupt));
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command: AppCommand::StartAutopilot {
+                task: "repair tests".into(),
+                iterations: 4
+            }
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    let command = rx.try_recv().unwrap();
+    assert_eq!(command.task, "repair tests");
+    assert_eq!(command.iterations, 4);
+    assert!(!interrupt.load(Ordering::SeqCst));
+    actor
+        .apply_operation_stream_event(&StreamEvent::RepeatIterationStart {
+            index: 2,
+            total: 4,
+            task: "repair tests".into(),
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        actor.snapshot().operations[0].progress.unwrap().completed,
+        1
+    );
+    let revision = actor.snapshot().revision;
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision,
+            command: AppCommand::StopOperation {
+                kind: OperationKind::Autopilot
+            }
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(interrupt.load(Ordering::SeqCst));
+    actor
+        .apply_operation_stream_event(&StreamEvent::RepeatFinished {
+            completed: 2,
+            total: 4,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        actor.snapshot().operations[0].phase,
+        OperationPhase::Interrupted
+    );
+}
+
+#[test]
+fn search_commands_keep_parameters_share_stop_and_project_results() {
+    let mut actor = actor(16);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let interrupt = Arc::new(AtomicBool::new(true));
+    actor.connect_search(DomainCommandPort::new(tx), Arc::clone(&interrupt));
+    let command = AppCommand::StartCascade {
+        prompt: "solve".into(),
+        backend: "stub".into(),
+        n: 5,
+        vote_k: 2,
+        check_cmd: Some("check".into()),
+        diversity_hints: vec!["different".into()],
+        escalate_backend: Some("strong".into()),
+    };
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    match rx.try_recv().unwrap() {
+        SearchCommand::Cascade(params) => {
+            assert_eq!(params.backend, "stub");
+            assert_eq!(params.n, 5);
+            assert_eq!(params.vote_k, 2);
+            assert_eq!(params.escalate_backend.as_deref(), Some("strong"));
+        }
+        _ => panic!("expected cascade"),
+    }
+    assert!(!interrupt.load(Ordering::SeqCst));
+    let revision = actor.snapshot().revision;
+    actor.submit(AppCommandRequest {
+        revision,
+        command: AppCommand::StopOperation {
+            kind: OperationKind::Cascade,
+        },
+    });
+    assert!(interrupt.load(Ordering::SeqCst));
+    actor
+        .apply_operation_stream_event(&StreamEvent::SearchFinished {
+            kind: SearchKind::Cascade,
+            summary: "best candidate".into(),
+            is_error: false,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        actor.snapshot().operations[0].phase,
+        OperationPhase::Interrupted
+    );
+
+    let revision = actor.snapshot().revision;
+    let evolve = AppCommand::StartEvolve {
+        prompt: "improve".into(),
+        backend: "stub".into(),
+        generations: 3,
+        population: 2,
+        fitness_cmd: "score".into(),
+        feature_cmd: None,
+        islands: 1,
+        migration_interval: 0,
+        mutation_hints: vec![],
+    };
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision,
+            command: evolve
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(matches!(rx.try_recv().unwrap(), SearchCommand::Evolve(_)));
+    let snapshot = SearchSnapshot::starting(SearchKind::Evolve, 3);
+    actor
+        .apply_operation_stream_event(&StreamEvent::SearchProgress(Box::new(snapshot)))
+        .unwrap()
+        .unwrap();
+    actor
+        .apply_operation_stream_event(&StreamEvent::SearchFinished {
+            kind: SearchKind::Evolve,
+            summary: "winner".into(),
+            is_error: false,
+        })
+        .unwrap()
+        .unwrap();
+    let evolve = actor
+        .snapshot()
+        .operations
+        .iter()
+        .find(|item| item.kind == OperationKind::Evolve)
+        .unwrap();
+    assert_eq!(evolve.phase, OperationPhase::Completed);
+    assert_eq!(evolve.message.as_deref(), Some("winner"));
+}
+
+#[test]
+fn invalid_search_parameters_are_rejected_before_dispatch() {
+    let mut actor = actor(4);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    actor.connect_search(DomainCommandPort::new(tx), Arc::new(AtomicBool::new(false)));
+    let result = actor.submit(AppCommandRequest {
+        revision: AppRevision(0),
+        command: AppCommand::StartEvolve {
+            prompt: "seed".into(),
+            backend: "stub".into(),
+            generations: 1,
+            population: 1,
+            fitness_cmd: " ".into(),
+            feature_cmd: None,
+            islands: 1,
+            migration_interval: 0,
+            mutation_hints: vec![],
+        },
+    });
+    assert!(matches!(result, AppCommandResult::Rejected { .. }));
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]

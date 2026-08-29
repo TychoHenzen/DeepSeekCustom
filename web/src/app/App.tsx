@@ -133,8 +133,10 @@ export function App({ client }: AppProps) {
         ) : (selectedWorkspace === 'autopilot' || selectedWorkspace === 'cascade' || selectedWorkspace === 'evolve' || selectedWorkspace === 'procedure') && view.snapshot !== null ? (
           <OperationWorkspace
             activeOperation={activeOperation}
+            backends={view.snapshot.settings.backends.map((backend) => backend.name)}
             kind={selectedWorkspace}
             operation={view.snapshot.operations.find((operation) => operation.kind === selectedWorkspace) ?? null}
+            selectedBackend={view.snapshot.settings.selected_backend}
             send={(command) => client.send(command)}
           />
         ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">

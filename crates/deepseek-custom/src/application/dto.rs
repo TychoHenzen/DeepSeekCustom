@@ -359,9 +359,23 @@ pub enum AppCommand {
     },
     StartCascade {
         prompt: String,
+        backend: String,
+        n: u32,
+        vote_k: u32,
+        check_cmd: Option<String>,
+        diversity_hints: Vec<String>,
+        escalate_backend: Option<String>,
     },
     StartEvolve {
         prompt: String,
+        backend: String,
+        generations: u32,
+        population: u32,
+        fitness_cmd: String,
+        feature_cmd: Option<String>,
+        islands: u32,
+        migration_interval: u32,
+        mutation_hints: Vec<String>,
     },
     RunProcedure {
         change_id: String,

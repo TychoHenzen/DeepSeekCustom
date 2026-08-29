@@ -99,8 +99,10 @@
 
 - [x] 5.1 Build shared operation forms, validation messages, progress timelines, bounded logs, result summaries, stop actions, and active-operation exclusion behavior.
 <!-- status: completed -->
-- [ ] 5.2 Implement the Autopilot workspace over the existing repeat command, iteration progress, stop flag, and backend-independent completion behavior.
-- [ ] 5.3 Implement Cascade and Evolve workspaces over existing parameter validation, commands, counters, progress, results, and shared search stop flag.
+- [x] 5.2 Implement the Autopilot workspace over the existing repeat command, iteration progress, stop flag, and backend-independent completion behavior.
+<!-- status: completed -->
+- [x] 5.3 Implement Cascade and Evolve workspaces over existing parameter validation, commands, counters, progress, results, and shared search stop flag.
+<!-- status: completed -->
 - [ ] 5.4 Implement the Procedure workspace for change selection, run modes, progress, route and patch evidence, diffs, reports, failures, interruption, and terminal outcomes.
 <!-- covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: User runs an operational workflow -->
 - [ ] 5.5 Implement run-scoped Procedure approval and rejection controls with complete review evidence and protection against stale decisions.
