@@ -5,6 +5,7 @@ import { workspaces, type AppCommand, type AppCommandResult, type Workspace } fr
 import { ChatWorkspace } from './ChatWorkspace.tsx';
 import { SessionsWorkspace } from './SessionsWorkspace.tsx';
 import { SettingsWorkspace } from './SettingsWorkspace.tsx';
+import { OperationWorkspace } from './OperationWorkspace.tsx';
 
 const workspaceLabels: Record<Workspace, string> = {
   chat: 'Chat',
@@ -48,6 +49,7 @@ export function App({ client }: AppProps) {
   const workspaceLabel = workspaceLabels[selectedWorkspace];
   const navigationDisabled = view.status !== 'online' || view.snapshot === null;
   const navigationReason = connectionReason(view);
+  const activeOperation = view.snapshot?.operations.find((operation) => operation.phase === 'running' || operation.phase === 'awaiting_review') ?? null;
 
   async function selectWorkspace(workspace: Workspace): Promise<void> {
     if (navigationDisabled || workspace === selectedWorkspace) return;
@@ -128,6 +130,13 @@ export function App({ client }: AppProps) {
           />
         ) : selectedWorkspace === 'settings' && view.snapshot !== null ? (
           <SettingsWorkspace key={view.snapshot.revision} settings={view.snapshot.settings} send={(command) => client.send(command)} />
+        ) : (selectedWorkspace === 'autopilot' || selectedWorkspace === 'cascade' || selectedWorkspace === 'evolve' || selectedWorkspace === 'procedure') && view.snapshot !== null ? (
+          <OperationWorkspace
+            activeOperation={activeOperation}
+            kind={selectedWorkspace}
+            operation={view.snapshot.operations.find((operation) => operation.kind === selectedWorkspace) ?? null}
+            send={(command) => client.send(command)}
+          />
         ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">
           <h3 id="workspace-actions-title">{workspaceLabel} actions</h3>
           <p>Controls for this workspace will appear here.</p>

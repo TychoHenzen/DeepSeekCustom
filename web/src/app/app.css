@@ -255,6 +255,56 @@ button:disabled {
   min-height: 2.5rem;
 }
 
+.operation-workspace form {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 1rem;
+  max-width: 48rem;
+}
+
+.operation-workspace textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.operation-workspace input,
+.operation-workspace textarea,
+.operation-workspace button {
+  max-width: 100%;
+  min-height: 2.5rem;
+}
+
+.validation-message { color: #ffb4ad; }
+
+.operation-progress {
+  border-block-start: 1px solid #52606d;
+  margin-block-start: 1rem;
+  padding-block-start: 1rem;
+}
+
+.progress-timeline { padding-inline-start: 1.5rem; }
+
+.operation-log {
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid #52606d;
+  padding: 0.75rem;
+  background: #101418;
+}
+
+.operation-log pre { margin: 0; white-space: pre-wrap; }
+
+.result-summary {
+  margin-block-start: 1rem;
+  border-inline-start: 4px solid #85d7ff;
+  padding: 0.75rem;
+  background: #1b232b;
+}
+
+.result-failed { border-color: #ff7b72; }
+.result-interrupted,
+.result-cancelled { border-color: #ffd166; }
+
 .chat-workspace textarea {
   min-height: 6rem;
   resize: vertical;

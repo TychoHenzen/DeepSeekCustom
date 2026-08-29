@@ -92,11 +92,13 @@
 - [x] 4.8 Connect focused push-to-talk press and release, voice toggles, readiness, transcription, playback, and errors to the existing Rust voice service.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Attachments and voice controls remain usable :: User uses push to talk -->
-- [ ] 4.9 Verify this milestone in practice with deterministic chat streaming, reconnect, deferred session switch, persisted settings, confirmed and cancelled folders, image input, and voice state.
+- [x] 4.9 Verify this milestone in practice with deterministic chat streaming, reconnect, deferred session switch, persisted settings, confirmed and cancelled folders, image input, and voice state.
+<!-- status: completed -->
 
 ## 5. Move Operational Workspaces
 
-- [ ] 5.1 Build shared operation forms, validation messages, progress timelines, bounded logs, result summaries, stop actions, and active-operation exclusion behavior.
+- [x] 5.1 Build shared operation forms, validation messages, progress timelines, bounded logs, result summaries, stop actions, and active-operation exclusion behavior.
+<!-- status: completed -->
 - [ ] 5.2 Implement the Autopilot workspace over the existing repeat command, iteration progress, stop flag, and backend-independent completion behavior.
 - [ ] 5.3 Implement Cascade and Evolve workspaces over existing parameter validation, commands, counters, progress, results, and shared search stop flag.
 - [ ] 5.4 Implement the Procedure workspace for change selection, run modes, progress, route and patch evidence, diffs, reports, failures, interruption, and terminal outcomes.

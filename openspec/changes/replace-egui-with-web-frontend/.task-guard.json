@@ -134,10 +134,12 @@
       "status": "completed"
     },
     "4.9": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "5.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "5.2": {
       "checked": false
