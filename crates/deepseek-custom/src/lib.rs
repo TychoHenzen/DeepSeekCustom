@@ -25,3 +25,4 @@ pub mod skills;
 pub mod style;
 pub mod tools;
 pub mod voice;
+pub mod web;

@@ -17,8 +17,10 @@
 
 ## 2. Serve the Local Web Application
 
-- [ ] 2.1 Add Axum, static-asset embedding, multipart, token generation, and required serialization dependencies with production defaults and test-support seams.
-- [ ] 2.2 Implement the loopback server lifecycle, graceful shutdown, reported URL, health response, embedded fallback route, and browser-open integration.
+- [x] 2.1 Add Axum, static-asset embedding, multipart, token generation, and required serialization dependencies with production defaults and test-support seams.
+<!-- status: completed -->
+- [x] 2.2 Implement the loopback server lifecycle, graceful shutdown, reported URL, health response, embedded fallback route, and browser-open integration.
+<!-- status: completed -->
 - [ ] 2.3 Add the Vite production asset contract and a build failure that explains how to create missing or stale embedded assets.
 - [ ] 2.4 Serve the embedded application and API from one reported loopback origin without a frontend development server.
 <!-- covers: deepseek-custom/web-application :: The application starts as a local web service :: Normal production startup -->

@@ -170,3 +170,4 @@ mod voice_stt;
 mod voice_tts;
 mod voice_vad;
 mod voice_wake;
+mod web_server;
