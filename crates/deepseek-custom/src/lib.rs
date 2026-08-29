@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod api;
+pub mod application;
 pub mod autopilot;
 pub mod backend;
 pub mod config;

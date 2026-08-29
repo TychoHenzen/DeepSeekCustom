@@ -2,13 +2,16 @@
   "v": 1,
   "tasks": {
     "1.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "1.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "1.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "1.4": {
       "checked": false

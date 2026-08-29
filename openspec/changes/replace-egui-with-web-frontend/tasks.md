@@ -1,8 +1,11 @@
 ## 1. Characterize Behavior and Extract Application State
 
-- [ ] 1.1 Inventory every `DeepSeekGui` field, command path, event path, persisted value, native interaction, and existing external GUI test. Record its destination in an actor, domain service, web component, or deletion list.
-- [ ] 1.2 Add characterization tests for transcript projection, active-operation exclusion, settings effects, pending session switches, and Procedure review before moving ownership.
-- [ ] 1.3 Define serializable application DTOs for snapshots, changes, revisions, command requests, command results, visible settings, operation state, and errors without secret fields.
+- [x] 1.1 Inventory every `DeepSeekGui` field, command path, event path, persisted value, native interaction, and existing external GUI test. Record its destination in an actor, domain service, web component, or deletion list.
+<!-- status: completed -->
+- [x] 1.2 Add characterization tests for transcript projection, active-operation exclusion, settings effects, pending session switches, and Procedure review before moving ownership.
+<!-- status: completed -->
+- [x] 1.3 Define serializable application DTOs for snapshots, changes, revisions, command requests, command results, visible settings, operation state, and errors without secret fields.
+<!-- status: completed -->
 - [ ] 1.4 Implement one application actor that serializes browser commands and domain events, owns the presentation-neutral state, and publishes ordered revisions through bounded replay.
 - [ ] 1.5 Move transcript projection and current-session state behind the actor while keeping native startup operational for this migration milestone.
 - [ ] 1.6 Move Autopilot, search, Procedure, voice, backend selection, shared flags, and settings effects behind typed actor service ports without changing their domain contracts.
