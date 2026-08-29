@@ -51,7 +51,7 @@ impl DeepSeekGui {
         if routed.route.is_empty() {
             self.process_main_event(&routed.event);
         }
-        self.transcript.apply_routed_event(routed);
+        self.application.transcript.apply_routed_event(routed);
         self.unsaved_changes = true;
         self.follow_output = true;
         // A held session switch applies here, after the terminal event has
@@ -59,7 +59,7 @@ impl DeepSeekGui {
         // the outgoing conversation is written whole before the switch
         // replaces it.
         if ends_turn {
-            self.turn_active = false;
+            self.application.turn_active = false;
             self.apply_pending_switch();
         }
     }
@@ -84,7 +84,9 @@ impl DeepSeekGui {
                 messages,
                 claude_session_id,
             } => {
-                self.sessions.record_snapshot(messages, claude_session_id);
+                self.application
+                    .sessions
+                    .record_snapshot(messages, claude_session_id);
             }
             StreamEvent::Interrupted { .. } => {
                 self.session_status = "Interrupted".into();
@@ -150,7 +152,9 @@ impl DeepSeekGui {
         self.total_cache_miss_tokens += cache_miss;
         self.voice.speak_accumulated_reply();
         let origin = self.current_origin();
-        self.sessions.autosave(&mut self.transcript, origin);
+        self.application
+            .sessions
+            .autosave(&mut self.application.transcript, origin);
         self.unsaved_changes = false;
         self.saved_at = Instant::now();
         self.session_status = "Ready".into();
@@ -159,8 +163,9 @@ impl DeepSeekGui {
     fn on_session_reset(&mut self) {
         self.procedure.request_stop();
         let origin = self.current_origin();
-        self.sessions
-            .save_outgoing_and_start_new(&mut self.transcript, origin);
+        self.application
+            .sessions
+            .save_outgoing_and_start_new(&mut self.application.transcript, origin);
         self.total_cache_hit_tokens = 0;
         self.total_cache_miss_tokens = 0;
         self.voice.clear_reply();
@@ -168,13 +173,14 @@ impl DeepSeekGui {
 
     fn on_repeat_iter(&mut self, index: u32, total: u32) {
         let origin = self.current_origin();
-        self.sessions
-            .save_outgoing_and_start_new(&mut self.transcript, origin);
+        self.application
+            .sessions
+            .save_outgoing_and_start_new(&mut self.application.transcript, origin);
         self.autopilot.set_running(index, total);
         // An autopilot iteration is a turn the GUI never sent, so nothing
         // else would mark one as running. Without this, a session switch
         // during a run would apply mid-iteration.
-        self.turn_active = true;
+        self.application.turn_active = true;
     }
 
     /// Write a dirty session once per interval while a turn runs.
@@ -186,7 +192,9 @@ impl DeepSeekGui {
             return;
         }
         let origin = self.current_origin();
-        self.sessions.autosave(&mut self.transcript, origin);
+        self.application
+            .sessions
+            .autosave(&mut self.application.transcript, origin);
         self.unsaved_changes = false;
         self.saved_at = Instant::now();
     }
@@ -200,7 +208,9 @@ impl DeepSeekGui {
     pub(super) fn drain_voice(&mut self) {
         let events = self.voice.drain_events();
         for event in events {
-            let text = self.voice.handle_event(event, &mut self.transcript);
+            let text = self
+                .voice
+                .handle_event(event, &mut self.application.transcript);
             if let Some(text) = text {
                 self.input_buffer = text;
                 self.send_input();
@@ -234,7 +244,7 @@ impl DeepSeekGui {
             self.cascade.request_stop();
             self.procedure.request_stop();
             self.voice.send(VoiceCommand::StopSpeaking);
-            self.transcript.push(BlockKind::Notice {
+            self.application.transcript.push(BlockKind::Notice {
                 text: "[Interrupting...]".into(),
                 severity: Severity::Warning,
             });

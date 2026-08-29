@@ -83,23 +83,25 @@ impl DeepSeekGui {
         let mut toggles: Toggles = Vec::new();
         let mut pins: Toggles = Vec::new();
         chat_scroll_area(self.follow_output).show(ui, |ui| {
-            let blocks = self.transcript.blocks();
+            let blocks = self.application.transcript.blocks();
             for (i, block) in blocks.iter().enumerate() {
                 ui.add_space(gap_before(i, &block.kind));
                 paint_block(ui, block, &[], &mut self.md_cache, &mut toggles, &mut pins);
             }
         });
         for (path, val) in toggles {
-            self.transcript.set_collapsed_by_path(&path, val);
+            self.application
+                .transcript
+                .set_collapsed_by_path(&path, val);
         }
         for (path, val) in pins {
-            self.transcript.set_pinned_by_path(&path, val);
+            self.application.transcript.set_pinned_by_path(&path, val);
         }
     }
 
     fn paint_raw(&self, ui: &mut egui::Ui) {
         chat_scroll_area(self.follow_output).show(ui, |ui| {
-            for block in self.transcript.blocks() {
+            for block in self.application.transcript.blocks() {
                 let text = raw_block_text(block);
                 let color = block_color(&block.kind);
                 ui.label(RichText::new(text).color(color));

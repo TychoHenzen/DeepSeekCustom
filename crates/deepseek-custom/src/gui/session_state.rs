@@ -87,6 +87,11 @@ impl SessionState {
         self.current_id
     }
 
+    /// Current metadata for presentation-neutral session projection.
+    pub fn current_meta(&self) -> &SessionMeta {
+        &self.current_meta
+    }
+
     /// Every saved conversation's metadata, newest first as the store
     /// returns it.
     pub fn saved(&self) -> &[SessionMeta] {

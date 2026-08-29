@@ -48,7 +48,7 @@ impl DeepSeekGui {
 
         ui.add_space(8.0);
 
-        if self.sessions.saved().is_empty() {
+        if self.application.sessions.saved().is_empty() {
             ui.label(
                 RichText::new("No saved conversations yet.")
                     .color(Color32::GRAY)
@@ -61,9 +61,9 @@ impl DeepSeekGui {
         let mut to_open: Option<SessionId> = None;
         let mut to_delete: Option<SessionId> = None;
 
-        for meta in self.sessions.saved() {
+        for meta in self.application.sessions.saved() {
             ui.horizontal(|ui| {
-                let is_current = meta.id == self.sessions.current_id();
+                let is_current = meta.id == self.application.sessions.current_id();
                 // The number leads the row. It is assigned once and never
                 // changes, so it names a conversation across sessions in a
                 // way a title derived from the first message cannot.
@@ -105,6 +105,6 @@ impl DeepSeekGui {
     /// open conversation stays as is, becoming unsaved again until the
     /// next autosave writes it back.
     pub(super) fn delete_saved_session(&mut self, id: SessionId) {
-        self.sessions.delete(id);
+        self.application.sessions.delete(id);
     }
 }

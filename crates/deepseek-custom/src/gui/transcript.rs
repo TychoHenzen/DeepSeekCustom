@@ -21,6 +21,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub struct BlockId(u64);
 
 impl BlockId {
+    /// Stable numeric identity used by presentation-neutral DTOs.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
     /// Build a `BlockId` with an arbitrary inner value. Production code
     /// only ever receives a `BlockId` back from `Transcript::push`, which
     /// keeps the inner counter private so no caller can forge a colliding

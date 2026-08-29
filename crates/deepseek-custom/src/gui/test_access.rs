@@ -28,15 +28,15 @@ use super::{ActiveTab, DeepSeekGui, PendingSwitch};
 
 impl DeepSeekGui {
     pub fn transcript_for_test(&self) -> &Transcript {
-        &self.transcript
+        &self.application.transcript
     }
 
     pub fn transcript_mut_for_test(&mut self) -> &mut Transcript {
-        &mut self.transcript
+        &mut self.application.transcript
     }
 
     pub fn set_attachment_for_test(&mut self, img: ImageAttachment) {
-        self.attachment.set(img, &mut self.transcript);
+        self.attachment.set(img, &mut self.application.transcript);
     }
 
     pub fn attachment_for_test(&self) -> &AttachmentSlot {
@@ -92,7 +92,9 @@ impl DeepSeekGui {
     }
 
     pub fn handle_voice_event_for_test(&mut self, event: VoiceEvent) {
-        let text = self.voice.handle_event(event, &mut self.transcript);
+        let text = self
+            .voice
+            .handle_event(event, &mut self.application.transcript);
         if let Some(text) = text {
             self.input_buffer = text;
             self.send_input();
@@ -160,7 +162,7 @@ impl DeepSeekGui {
     }
 
     pub fn sessions_for_test(&self) -> &SessionState {
-        &self.sessions
+        &self.application.sessions
     }
 
     pub fn start_new_session_for_test(&mut self) {
@@ -195,13 +197,13 @@ impl DeepSeekGui {
     /// the event pump writes it and `defer_switch` consumes it in the same
     /// type, so there is no side-effect-free seam a test could use instead.
     pub fn turn_active_for_test(&self) -> bool {
-        self.turn_active
+        self.application.turn_active
     }
 
     /// The session switch waiting for the running turn, if any. Test-only
     /// for the same reason as `turn_active_for_test`.
     pub fn pending_switch_for_test(&self) -> Option<PendingSwitch> {
-        self.pending_switch.clone()
+        self.application.pending_switch.clone()
     }
 
     /// Send a user turn without a window, so a test can put the GUI into

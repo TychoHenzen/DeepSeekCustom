@@ -43,6 +43,7 @@ use tracing::warn;
 
 use crate::agent::events::{AgentCommand, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
+use crate::application::session::ApplicationSession;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
 use crate::procedure::{ProcedureCommand, ProcedureProgress};
@@ -58,7 +59,7 @@ use cascade_tab::CascadeTab;
 use evolve_tab::EvolveTab;
 use procedure_tab::ProcedureTab;
 use session_state::{SessionOrigin, SessionState};
-use transcript::{BlockKind, Transcript};
+use transcript::BlockKind;
 use voice_ui::VoiceUi;
 
 /// A session change asked for while a turn was still running, held until
@@ -101,7 +102,7 @@ pub struct DeepSeekGui {
     pub(super) handles: AgentHandles,
     pub(super) settings: Settings,
     pub(super) project_root: PathBuf,
-    pub(super) transcript: Transcript,
+    pub(super) application: ApplicationSession,
     pub(super) input_buffer: String,
     pub(super) input_focused: bool,
     pub(super) attachment: AttachmentSlot,
@@ -111,7 +112,6 @@ pub struct DeepSeekGui {
     pub(super) cascade: CascadeTab,
     pub(super) evolve: EvolveTab,
     pub(super) procedure: ProcedureTab,
-    pub(super) sessions: SessionState,
     pub(super) active_tab: ActiveTab,
     pub(super) settings_visible: bool,
     pub(super) show_raw_output: bool,
@@ -129,9 +129,7 @@ pub struct DeepSeekGui {
     /// Whether a turn is in flight. Set when a turn is sent, cleared by the
     /// event that ends it. A session switch asked for while this is true is
     /// held in `pending_switch` instead of applied.
-    pub(super) turn_active: bool,
     /// A session switch waiting for the running turn to end.
-    pub(super) pending_switch: Option<PendingSwitch>,
     pub(super) follow_output: bool,
     pub(super) unsaved_changes: bool,
     pub(super) saved_at: Instant,
@@ -167,13 +165,12 @@ impl DeepSeekGui {
             cascade: CascadeTab::new(&settings),
             evolve: EvolveTab::new(&settings),
             procedure: ProcedureTab::new(&settings, &project_root),
-            sessions: SessionState::new(store, origin),
+            application: ApplicationSession::new(SessionState::new(store, origin)),
             rx_events,
             tx_input,
             handles,
             settings,
             project_root,
-            transcript: Transcript::new(),
             input_buffer: String::new(),
             input_focused: false,
             attachment: AttachmentSlot::new(),
@@ -189,8 +186,6 @@ impl DeepSeekGui {
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,
             session_status: "Ready".into(),
-            turn_active: false,
-            pending_switch: None,
             follow_output: false,
             unsaved_changes: false,
             saved_at: Instant::now(),
@@ -255,8 +250,9 @@ impl DeepSeekGui {
 
     pub(super) fn apply_backend_switch(&mut self, switch: BackendSwitch) {
         self.procedure.request_stop();
-        self.sessions
-            .save_outgoing_and_start_new(&mut self.transcript, switch.outgoing);
+        self.application
+            .sessions
+            .save_outgoing_and_start_new(&mut self.application.transcript, switch.outgoing);
         let _ = self.tx_input.send(switch.command);
     }
 
@@ -273,7 +269,10 @@ impl DeepSeekGui {
             return;
         }
         let origin = self.current_origin();
-        let cmd = self.sessions.start_new(&mut self.transcript, origin);
+        let cmd = self
+            .application
+            .sessions
+            .start_new(&mut self.application.transcript, origin);
         let _ = self.tx_input.send(cmd);
     }
 
@@ -283,7 +282,11 @@ impl DeepSeekGui {
             return;
         }
         let origin = self.current_origin();
-        if let Some(cmd) = self.sessions.load(id, &mut self.transcript, origin) {
+        if let Some(cmd) =
+            self.application
+                .sessions
+                .load(id, &mut self.application.transcript, origin)
+        {
             let _ = self.tx_input.send(cmd);
         }
     }
@@ -296,11 +299,11 @@ impl DeepSeekGui {
     /// for what the old behavior actually did to a record. Escape ends the
     /// turn now, and the held switch applies on the interrupt.
     fn defer_switch(&mut self, switch: PendingSwitch) -> bool {
-        if !self.turn_active {
+        if !self.application.turn_active {
             return false;
         }
-        self.pending_switch = Some(switch);
-        self.transcript.push(BlockKind::Notice {
+        self.application.pending_switch = Some(switch);
+        self.application.transcript.push(BlockKind::Notice {
             text: "[Session switch waiting for this turn to end. Escape to stop the turn now.]"
                 .into(),
             severity: transcript::Severity::Warning,
@@ -313,7 +316,7 @@ impl DeepSeekGui {
     /// applied to the transcript, so the outgoing conversation is saved
     /// whole.
     pub(super) fn apply_pending_switch(&mut self) {
-        let Some(switch) = self.pending_switch.take() else {
+        let Some(switch) = self.application.pending_switch.take() else {
             return;
         };
         match switch {
@@ -331,13 +334,16 @@ impl DeepSeekGui {
         self.procedure.request_stop();
         let text = std::mem::take(&mut self.input_buffer);
         let image = self.attachment.take();
-        self.transcript.push(BlockKind::User { text: text.clone() });
+        self.application
+            .transcript
+            .push(BlockKind::User { text: text.clone() });
         if let Some(ref img) = image {
-            self.transcript
+            self.application
+                .transcript
                 .push(BlockKind::Image { image: img.clone() });
         }
         let _ = self.tx_input.send(AgentCommand::UserTurn { text, image });
-        self.turn_active = true;
+        self.application.turn_active = true;
         self.session_status = "Running...".into();
     }
 }
@@ -350,9 +356,10 @@ impl eframe::App for DeepSeekGui {
         self.drain_voice();
         self.drain_model_lists();
         self.handle_global_keys(ctx);
-        self.attachment.poll_ctrl_v_paste(ctx, &mut self.transcript);
         self.attachment
-            .handle_dropped_files(ctx, &mut self.transcript);
+            .poll_ctrl_v_paste(ctx, &mut self.application.transcript);
+        self.attachment
+            .handle_dropped_files(ctx, &mut self.application.transcript);
         self.render_settings_panel(ctx);
         self.paint_bottom_panels(ctx);
         self.paint_central(ctx);

@@ -6,8 +6,10 @@
 <!-- status: completed -->
 - [x] 1.3 Define serializable application DTOs for snapshots, changes, revisions, command requests, command results, visible settings, operation state, and errors without secret fields.
 <!-- status: completed -->
-- [ ] 1.4 Implement one application actor that serializes browser commands and domain events, owns the presentation-neutral state, and publishes ordered revisions through bounded replay.
-- [ ] 1.5 Move transcript projection and current-session state behind the actor while keeping native startup operational for this migration milestone.
+- [x] 1.4 Implement one application actor that serializes browser commands and domain events, owns the presentation-neutral state, and publishes ordered revisions through bounded replay.
+<!-- status: completed -->
+- [x] 1.5 Move transcript projection and current-session state behind the actor while keeping native startup operational for this migration milestone.
+<!-- status: completed -->
 - [ ] 1.6 Move Autopilot, search, Procedure, voice, backend selection, shared flags, and settings effects behind typed actor service ports without changing their domain contracts.
 - [ ] 1.7 Verify the actor-backed native milestone with focused integration tests and a practical chat, session switch, settings save, and Procedure state run.
 

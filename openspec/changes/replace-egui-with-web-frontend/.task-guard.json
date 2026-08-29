@@ -14,10 +14,12 @@
       "status": "completed"
     },
     "1.4": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "1.5": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "1.6": {
       "checked": false
