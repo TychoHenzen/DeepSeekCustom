@@ -32,6 +32,7 @@ pub struct AppSnapshot {
     pub workspace: Workspace,
     pub transcript: Vec<TranscriptBlock>,
     pub session: SessionSummary,
+    pub saved_sessions: Vec<SessionSummary>,
     pub pending_session_switch: Option<PendingSessionSwitch>,
     pub settings: VisibleSettings,
     pub operations: Vec<OperationState>,
@@ -48,10 +49,11 @@ pub struct AppChange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum AppChangeKind {
-    Reset(AppSnapshot),
+    Reset(Box<AppSnapshot>),
     WorkspaceSelected(Workspace),
     TranscriptAppended(TranscriptBlock),
     SessionChanged(SessionSummary),
+    SavedSessionsChanged(Vec<SessionSummary>),
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
     OperationChanged(OperationState),

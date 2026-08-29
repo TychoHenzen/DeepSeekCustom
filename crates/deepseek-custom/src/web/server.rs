@@ -73,9 +73,10 @@ impl WebAppState {
         let result = actor.submit(request);
         if matches!(result, AppCommandResult::Applied { .. })
             && let Replay::Changes(changes) = actor.replay_after(previous)
-            && let Some(change) = changes.into_iter().next()
         {
-            let _ = self.inner.changes.send(change);
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
         }
         result
     }
@@ -87,10 +88,10 @@ impl WebAppState {
         let mut actor = self.inner.actor.lock().unwrap();
         let previous = actor.snapshot().revision;
         let revision = actor.apply_event(event)?;
-        if let Replay::Changes(changes) = actor.replay_after(previous)
-            && let Some(change) = changes.into_iter().next()
-        {
-            let _ = self.inner.changes.send(change);
+        if let Replay::Changes(changes) = actor.replay_after(previous) {
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
         }
         Ok(revision)
     }
@@ -394,7 +395,7 @@ async fn events(
         Replay::Changes(changes) => changes,
         Replay::Reset(snapshot) => vec![AppChange {
             revision: snapshot.revision,
-            change: crate::application::dto::AppChangeKind::Reset(*snapshot),
+            change: crate::application::dto::AppChangeKind::Reset(snapshot),
         }],
     };
     let initial = stream::iter(initial.into_iter().map(sse_event));
@@ -406,7 +407,7 @@ async fn events(
                 let (snapshot, fresh_receiver) = state.snapshot_and_subscribe();
                 let reset = AppChange {
                     revision: snapshot.revision,
-                    change: crate::application::dto::AppChangeKind::Reset(snapshot),
+                    change: crate::application::dto::AppChangeKind::Reset(Box::new(snapshot)),
                 };
                 Some((sse_event(reset), (fresh_receiver, state)))
             }

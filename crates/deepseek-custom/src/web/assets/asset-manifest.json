@@ -4,8 +4,8 @@
   "build_command": "npm --prefix web run build",
   "assets": [
     {
-      "path": "assets/index-JzteQVbd.js",
-      "sha256": "7bdd6e57f52150f54f025508de520951a7883638fc6717655b67ae26bb373f45"
+      "path": "assets/index-FyWZqy_L.js",
+      "sha256": "0a0732d92ae25f22663aec424402fdab2f623f1183f487ce3c2f3c8212e5f5ee"
     },
     {
       "path": "assets/index-PuOO0v9A.css",
@@ -13,7 +13,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "2243b646c632ab0a54d04b0e1db715c51c255e6118a4c47b370d0d0fd3e32890"
+      "sha256": "3b8a1dc842e1825cd2acaba852fb8142d153433d0933537b2d2ed170e8dea652"
     }
   ]
 }

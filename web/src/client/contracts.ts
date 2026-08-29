@@ -113,6 +113,7 @@ export interface AppSnapshot {
   workspace: Workspace;
   transcript: TranscriptBlock[];
   session: SessionSummary;
+  saved_sessions: SessionSummary[];
   pending_session_switch: PendingSessionSwitch | null;
   settings: VisibleSettings;
   operations: OperationState[];
@@ -123,6 +124,7 @@ export type AppChange =
   | { revision: number; type: 'workspace_selected'; value: Workspace }
   | { revision: number; type: 'transcript_appended'; value: TranscriptBlock }
   | { revision: number; type: 'session_changed'; value: SessionSummary }
+  | { revision: number; type: 'saved_sessions_changed'; value: SessionSummary[] }
   | { revision: number; type: 'pending_session_switch_changed'; value: PendingSessionSwitch | null }
   | { revision: number; type: 'settings_changed'; value: VisibleSettings }
   | { revision: number; type: 'operation_changed'; value: OperationState }
@@ -320,12 +322,13 @@ function parseOperation(value: unknown): OperationState {
 
 export function parseSnapshot(value: unknown): AppSnapshot {
   const item = record(value);
-  if (!Array.isArray(item.transcript) || !Array.isArray(item.operations)) throw new Error('snapshot collections must be arrays');
+  if (!Array.isArray(item.transcript) || !Array.isArray(item.saved_sessions) || !Array.isArray(item.operations)) throw new Error('snapshot collections must be arrays');
   return {
     revision: integer(item.revision, 'snapshot revision'),
     workspace: enumValue(item.workspace, workspaces, 'workspace'),
     transcript: item.transcript.map(parseBlock),
     session: parseSession(item.session),
+    saved_sessions: item.saved_sessions.map(parseSession),
     pending_session_switch: nullable(item.pending_session_switch, parsePending),
     settings: parseSettings(item.settings),
     operations: item.operations.map(parseOperation),
@@ -341,6 +344,10 @@ export function parseChange(value: unknown): AppChange {
     case 'workspace_selected': return { revision, type, value: enumValue(item.value, workspaces, 'workspace') };
     case 'transcript_appended': return { revision, type, value: parseBlock(item.value) };
     case 'session_changed': return { revision, type, value: parseSession(item.value) };
+    case 'saved_sessions_changed': {
+      if (!Array.isArray(item.value)) throw new Error('saved sessions must be an array');
+      return { revision, type, value: item.value.map(parseSession) };
+    }
     case 'pending_session_switch_changed': return { revision, type, value: nullable(item.value, parsePending) };
     case 'settings_changed': return { revision, type, value: parseSettings(item.value) };
     case 'operation_changed': return { revision, type, value: parseOperation(item.value) };

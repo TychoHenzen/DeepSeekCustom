@@ -242,6 +242,7 @@ function applyChange(snapshot: AppSnapshot, change: Exclude<AppChange, { type: '
     case 'workspace_selected': return { ...snapshot, revision: change.revision, workspace: change.value };
     case 'transcript_appended': return { ...snapshot, revision: change.revision, transcript: [...snapshot.transcript, change.value] };
     case 'session_changed': return { ...snapshot, revision: change.revision, session: change.value };
+    case 'saved_sessions_changed': return { ...snapshot, revision: change.revision, saved_sessions: change.value };
     case 'pending_session_switch_changed': return { ...snapshot, revision: change.revision, pending_session_switch: change.value };
     case 'settings_changed': return { ...snapshot, revision: change.revision, settings: change.value };
     case 'operation_changed': {

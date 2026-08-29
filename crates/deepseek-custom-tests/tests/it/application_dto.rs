@@ -79,6 +79,7 @@ fn snapshot_change_operation_and_error_contracts_round_trip() {
             backend: "codex".to_string(),
             model: "gpt-test".to_string(),
         },
+        saved_sessions: Vec::new(),
         pending_session_switch: Some(PendingSessionSwitch::New),
         settings,
         operations: vec![operation.clone()],

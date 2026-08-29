@@ -74,9 +74,11 @@
 - [x] 4.2 Connect chat submission and ordered streaming projection for accepted text and image turns, including visible running and terminal states.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User sends a chat turn -->
-- [ ] 4.3 Connect Stop to the existing backend interrupt boundary and render the interrupted terminal event.
+- [x] 4.3 Connect Stop to the existing backend interrupt boundary and render the interrupted terminal event.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User interrupts a turn -->
-- [ ] 4.4 Implement new, list, load, delete, autosave, and deferred mid-turn session switching through the actor and existing session store.
+- [x] 4.4 Implement new, list, load, delete, autosave, and deferred mid-turn session switching through the actor and existing session store.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Chat and saved sessions preserve their lifecycle :: User changes sessions during a turn -->
 - [ ] 4.5 Implement visible settings DTOs and web controls for backend, model, effort, context, style, output, voice, Procedure, and persistence without returning secrets.
 <!-- covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User changes an existing setting -->

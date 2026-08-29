@@ -7,9 +7,10 @@ export interface ChatWorkspaceProps {
   operation: OperationState | null;
   acceptedAttachmentId?: string | null;
   send(this: void, command: { command: 'send_message'; payload: { text: string; attachment_id: string | null } }): Promise<AppCommandResult>;
+  stop(this: void): Promise<AppCommandResult>;
 }
 
-export function ChatWorkspace({ transcript, operation, acceptedAttachmentId = null, send }: ChatWorkspaceProps) {
+export function ChatWorkspace({ transcript, operation, acceptedAttachmentId = null, send, stop }: ChatWorkspaceProps) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const running = operation?.phase === 'running';
@@ -31,6 +32,7 @@ export function ChatWorkspace({ transcript, operation, acceptedAttachmentId = nu
     <h3 id="chat-title">Conversation</h3>
     <Transcript blocks={transcript} />
     {operation && <p aria-live="polite" className={`turn-state turn-state-${operation.phase}`} role="status">Turn {operation.phase}. {operation.message}</p>}
+    {running && <button onClick={() => void stop()} type="button">Stop</button>}
     <form aria-label="Send a chat turn" onSubmit={(event) => void submit(event)}>
       <label htmlFor="chat-message">Message</label>
       <textarea id="chat-message" onChange={(event) => setText(event.target.value)} value={text} />

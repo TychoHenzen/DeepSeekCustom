@@ -33,6 +33,7 @@ function snapshot(revision = 0, workspace: AppSnapshot['workspace'] = 'chat'): A
     transcript: [],
     session: { id: 'session-1', title: 'Current', backend: 'stub', model: 'deterministic' },
     pending_session_switch: null,
+    saved_sessions: [],
     settings: {
       selected_backend: 'stub',
       selected_model: 'deterministic',

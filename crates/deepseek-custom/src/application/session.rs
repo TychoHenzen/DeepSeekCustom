@@ -39,6 +39,19 @@ impl ApplicationSession {
         }
     }
 
+    pub fn saved_session_summaries(&self) -> Vec<SessionSummary> {
+        self.sessions
+            .saved()
+            .iter()
+            .map(|meta| SessionSummary {
+                id: meta.id.as_str(),
+                title: meta.title.clone(),
+                backend: meta.backend.clone(),
+                model: meta.model.clone(),
+            })
+            .collect()
+    }
+
     pub fn pending_session_switch(&self) -> Option<PendingSessionSwitch> {
         self.pending_switch.as_ref().map(|pending| match pending {
             crate::gui::PendingSwitch::New => PendingSessionSwitch::New,

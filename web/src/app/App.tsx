@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { ApplicationClient, ClientView } from '../client/client.ts';
 import { workspaces, type AppCommand, type AppCommandResult, type Workspace } from '../client/contracts.ts';
 import { ChatWorkspace } from './ChatWorkspace.tsx';
+import { SessionsWorkspace } from './SessionsWorkspace.tsx';
 
 const workspaceLabels: Record<Workspace, string> = {
   chat: 'Chat',
@@ -106,7 +107,15 @@ export function App({ client }: AppProps) {
           <ChatWorkspace
             operation={view.snapshot.operations.find((operation) => operation.kind === 'chat') ?? null}
             send={(command) => client.send(command)}
+            stop={() => client.send({ command: 'stop_operation', payload: { kind: 'chat' } })}
             transcript={view.snapshot.transcript}
+          />
+        ) : selectedWorkspace === 'sessions' && view.snapshot !== null ? (
+          <SessionsWorkspace
+            current={view.snapshot.session}
+            pending={view.snapshot.pending_session_switch}
+            saved={view.snapshot.saved_sessions}
+            send={(command) => client.send(command)}
           />
         ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">
           <h3 id="workspace-actions-title">{workspaceLabel} actions</h3>

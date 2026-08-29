@@ -1,6 +1,16 @@
 //! Serialized ownership of presentation-neutral application state.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::agent::events::AgentCommand;
+use crate::application::services::DomainCommandPort;
+use crate::application::session::ApplicationSession;
+use crate::gui::PendingSwitch;
+use crate::gui::session_state::SessionOrigin;
+use crate::gui::transcript::{BlockKind, Severity};
+use crate::session::SessionId;
 
 use super::dto::{
     AppChange, AppChangeKind, AppCommand, AppCommandRequest, AppCommandResult, AppError,
@@ -23,6 +33,7 @@ pub enum Replay {
 pub enum AppEvent {
     TranscriptAppended(TranscriptBlock),
     SessionChanged(SessionSummary),
+    SavedSessionsChanged(Vec<SessionSummary>),
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
     OperationChanged(super::dto::OperationState),
@@ -37,6 +48,31 @@ pub struct ApplicationActor {
     snapshot: AppSnapshot,
     replay_capacity: usize,
     changes: VecDeque<AppChange>,
+    chat: Option<ChatLifecycle>,
+}
+
+/// Process-private chat lifecycle dependencies used by every presentation adapter.
+pub struct ChatLifecycle {
+    session: ApplicationSession,
+    agent: DomainCommandPort<AgentCommand>,
+    interrupt: Arc<AtomicBool>,
+    origin: SessionOrigin,
+}
+
+impl ChatLifecycle {
+    pub fn new(
+        session: ApplicationSession,
+        agent: DomainCommandPort<AgentCommand>,
+        interrupt: Arc<AtomicBool>,
+        origin: SessionOrigin,
+    ) -> Self {
+        Self {
+            session,
+            agent,
+            interrupt,
+            origin,
+        }
+    }
 }
 
 impl ApplicationActor {
@@ -46,7 +82,15 @@ impl ApplicationActor {
             snapshot,
             replay_capacity,
             changes: VecDeque::with_capacity(replay_capacity),
+            chat: None,
         }
+    }
+
+    pub fn with_chat_lifecycle(mut self, chat: ChatLifecycle) -> Self {
+        self.snapshot.session = chat.session.session_summary();
+        self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.chat = Some(chat);
+        self
     }
 
     pub fn snapshot(&self) -> &AppSnapshot {
@@ -81,6 +125,30 @@ impl ApplicationActor {
                             field: Some("message".into()),
                         },
                     };
+                }
+                if let Some(chat) = &mut self.chat {
+                    if chat.session.turn_active {
+                        return AppCommandResult::Rejected {
+                            error: operation_active("a chat turn is already running"),
+                        };
+                    }
+                    chat.interrupt.store(false, Ordering::SeqCst);
+                    if chat
+                        .agent
+                        .send(AgentCommand::UserTurn {
+                            text: text.clone(),
+                            image: None,
+                        })
+                        .is_err()
+                    {
+                        return AppCommandResult::Rejected {
+                            error: unavailable("agent command channel is closed"),
+                        };
+                    }
+                    chat.session
+                        .transcript
+                        .push(BlockKind::User { text: text.clone() });
+                    chat.session.turn_active = true;
                 }
                 let id = self
                     .snapshot
@@ -118,6 +186,51 @@ impl ApplicationActor {
                     Err(error) => AppCommandResult::Rejected { error },
                 }
             }
+            AppCommand::StopOperation {
+                kind: OperationKind::Chat,
+            } => {
+                let Some(chat) = &mut self.chat else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("chat lifecycle is not connected"),
+                    };
+                };
+                if !chat.session.turn_active {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("no chat turn is running"),
+                    };
+                }
+                chat.interrupt.store(true, Ordering::SeqCst);
+                self.finish_chat(OperationPhase::Interrupted, "Interrupted by user", true)
+            }
+            AppCommand::NewSession => self.request_session_switch(PendingSwitch::New),
+            AppCommand::LoadSession { session_id } => {
+                let Ok(id) = SessionId::parse(&session_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("session_id", "session id is invalid"),
+                    };
+                };
+                self.request_session_switch(PendingSwitch::Load(id))
+            }
+            AppCommand::DeleteSession { session_id } => {
+                let Ok(id) = SessionId::parse(&session_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("session_id", "session id is invalid"),
+                    };
+                };
+                let Some(chat) = &mut self.chat else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("chat lifecycle is not connected"),
+                    };
+                };
+                chat.session.sessions.delete(id);
+                self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+                match self.publish(AppChangeKind::SavedSessionsChanged(
+                    self.snapshot.saved_sessions.clone(),
+                )) {
+                    Ok(revision) => AppCommandResult::Applied { revision },
+                    Err(error) => AppCommandResult::Rejected { error },
+                }
+            }
             _ => AppCommandResult::Rejected {
                 error: unavailable("command is not connected to a domain port yet"),
             },
@@ -125,6 +238,21 @@ impl ApplicationActor {
     }
 
     pub fn apply_event(&mut self, event: AppEvent) -> Result<AppRevision, AppError> {
+        if let AppEvent::TranscriptAppended(TranscriptBlock {
+            content: TranscriptContent::Terminal { outcome, message },
+            ..
+        }) = &event
+            && self
+                .chat
+                .as_ref()
+                .is_some_and(|chat| chat.session.turn_active)
+        {
+            return match self.finish_chat(*outcome, message, true) {
+                AppCommandResult::Applied { revision } => Ok(revision),
+                AppCommandResult::Rejected { error } => Err(error),
+                AppCommandResult::Conflict { .. } => unreachable!(),
+            };
+        }
         let change = match event {
             AppEvent::TranscriptAppended(block) => {
                 self.snapshot.transcript.push(block.clone());
@@ -133,6 +261,10 @@ impl ApplicationActor {
             AppEvent::SessionChanged(session) => {
                 self.snapshot.session = session.clone();
                 AppChangeKind::SessionChanged(session)
+            }
+            AppEvent::SavedSessionsChanged(sessions) => {
+                self.snapshot.saved_sessions = sessions.clone();
+                AppChangeKind::SavedSessionsChanged(sessions)
             }
             AppEvent::PendingSessionSwitchChanged(pending) => {
                 self.snapshot.pending_session_switch = pending.clone();
@@ -204,12 +336,172 @@ impl ApplicationActor {
         }
         Ok(revision)
     }
+
+    fn request_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
+        let Some(chat) = &mut self.chat else {
+            return AppCommandResult::Rejected {
+                error: unavailable("chat lifecycle is not connected"),
+            };
+        };
+        if chat.session.turn_active {
+            chat.session.pending_switch = Some(pending.clone());
+            let projected = chat.session.pending_session_switch();
+            self.snapshot.pending_session_switch = projected.clone();
+            return match self.publish(AppChangeKind::PendingSessionSwitchChanged(projected)) {
+                Ok(revision) => AppCommandResult::Applied { revision },
+                Err(error) => AppCommandResult::Rejected { error },
+            };
+        }
+        self.apply_session_switch(pending)
+    }
+
+    fn apply_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
+        let Some(chat) = &mut self.chat else {
+            unreachable!()
+        };
+        let command = match pending {
+            PendingSwitch::New => Some(
+                chat.session
+                    .sessions
+                    .start_new(&mut chat.session.transcript, chat.origin.clone()),
+            ),
+            PendingSwitch::Load(id) => {
+                chat.session
+                    .sessions
+                    .load(id, &mut chat.session.transcript, chat.origin.clone())
+            }
+        };
+        let Some(command) = command else {
+            return AppCommandResult::Rejected {
+                error: not_found("saved session was not found"),
+            };
+        };
+        if chat.agent.send(command).is_err() {
+            return AppCommandResult::Rejected {
+                error: unavailable("agent command channel is closed"),
+            };
+        }
+        self.snapshot.transcript = chat.session.transcript_projection();
+        self.snapshot.session = chat.session.session_summary();
+        self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.snapshot.pending_session_switch = None;
+        let mut reset = self.snapshot.clone();
+        reset.revision = match self.snapshot.revision.checked_next() {
+            Some(revision) => revision,
+            None => {
+                return AppCommandResult::Rejected {
+                    error: unavailable("application revision exhausted"),
+                };
+            }
+        };
+        match self.publish(AppChangeKind::Reset(Box::new(reset))) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        }
+    }
+
+    fn finish_chat(
+        &mut self,
+        phase: OperationPhase,
+        message: &str,
+        append_terminal: bool,
+    ) -> AppCommandResult {
+        if append_terminal {
+            let terminal = TranscriptBlock {
+                id: self
+                    .snapshot
+                    .transcript
+                    .iter()
+                    .map(|block| block.id)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+                content: TranscriptContent::Terminal {
+                    outcome: phase,
+                    message: message.into(),
+                },
+            };
+            self.snapshot.transcript.push(terminal.clone());
+            if self
+                .publish(AppChangeKind::TranscriptAppended(terminal))
+                .is_err()
+            {
+                return AppCommandResult::Rejected {
+                    error: unavailable("could not publish terminal event"),
+                };
+            }
+        }
+        let pending = {
+            let chat = self.chat.as_mut().expect("checked by caller");
+            chat.session.transcript.push(BlockKind::Notice {
+                text: message.into(),
+                severity: Severity::Info,
+            });
+            chat.session.turn_active = false;
+            chat.session
+                .sessions
+                .autosave(&mut chat.session.transcript, chat.origin.clone());
+            chat.session.pending_switch.take()
+        };
+        let operation = OperationState {
+            kind: OperationKind::Chat,
+            operation_id: self
+                .snapshot
+                .operations
+                .iter()
+                .find(|item| item.kind == OperationKind::Chat)
+                .and_then(|item| item.operation_id.clone()),
+            phase,
+            progress: None,
+            message: Some(message.into()),
+            error: None,
+        };
+        self.snapshot
+            .operations
+            .retain(|item| item.kind != OperationKind::Chat);
+        self.snapshot.operations.push(operation.clone());
+        let revision = match self.publish(AppChangeKind::OperationChanged(operation)) {
+            Ok(revision) => revision,
+            Err(error) => return AppCommandResult::Rejected { error },
+        };
+        if let Some(pending) = pending {
+            return self.apply_session_switch(pending);
+        }
+        AppCommandResult::Applied { revision }
+    }
 }
 
 fn unavailable(message: &str) -> AppError {
     AppError {
         code: AppErrorCode::Unavailable,
         message: message.to_string(),
+        recoverable: true,
+        field: None,
+    }
+}
+
+fn operation_active(message: &str) -> AppError {
+    AppError {
+        code: AppErrorCode::OperationActive,
+        message: message.into(),
+        recoverable: true,
+        field: None,
+    }
+}
+
+fn invalid(field: &str, message: &str) -> AppError {
+    AppError {
+        code: AppErrorCode::InvalidInput,
+        message: message.into(),
+        recoverable: true,
+        field: Some(field.into()),
+    }
+}
+
+fn not_found(message: &str) -> AppError {
+    AppError {
+        code: AppErrorCode::NotFound,
+        message: message.into(),
         recoverable: true,
         field: None,
     }
@@ -223,6 +515,7 @@ impl AppSnapshot {
             workspace: Workspace::Chat,
             transcript: Vec::new(),
             session,
+            saved_sessions: Vec::new(),
             pending_session_switch: None,
             settings,
             operations: Vec::new(),

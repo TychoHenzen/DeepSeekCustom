@@ -285,6 +285,7 @@ fn visible_snapshot() -> AppSnapshot {
             backend: "stub".into(),
             model: "deterministic".into(),
         },
+        saved_sessions: Vec::new(),
         pending_session_switch: Some(PendingSessionSwitch::Load("session-next".into())),
         settings: VisibleSettings {
             selected_backend: Some("stub".into()),
