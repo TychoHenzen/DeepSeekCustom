@@ -198,9 +198,11 @@
 - [x] 7.11 Make missing or incompatible browser startup fail with the exact version-matched installation command instead of skipping.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser prerequisites and failures are explicit :: Browser runtime is missing -->
-- [ ] 7.12 Make the focused browser command build or locate production frontend assets, start the isolated Rust server, and finish without external model calls.
+- [x] 7.12 Make the focused browser command build or locate production frontend assets, start the isolated Rust server, and finish without external model calls.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser prerequisites and failures are explicit :: Focused browser suite runs -->
-- [ ] 7.13 Run the browser milestone from a clean frontend dependency install and inspect generated artifacts for one controlled failure.
+- [x] 7.13 Run the browser milestone from a clean frontend dependency install and inspect generated artifacts for one controlled failure.
+<!-- status: completed -->
 
 ## 8. Cut Over and Remove the Native Frontend
 

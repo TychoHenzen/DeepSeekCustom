@@ -7,6 +7,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "browser:test": "node scripts/run-browser-tests.mjs",
     "build": "vite build && node scripts/write-asset-manifest.mjs",
     "dev": "vite",
     "lint": "eslint src --max-warnings 0",

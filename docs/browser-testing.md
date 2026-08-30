@@ -9,11 +9,27 @@ Install the matching Chromium build from the repository root:
 cargo run -p deepseek-custom-tests --example install_playwright_chromium
 ```
 
-Run the focused Rust harness:
+Run the focused production browser milestone:
+
+```powershell
+npm --prefix web run browser:test
+```
+
+This command builds the production frontend, regenerates its asset manifest,
+then starts each isolated Rust server used by the browser suite. The harness
+uses scripted model events and deterministic service substitutes. It makes no
+external model calls.
+
+The lower-level Rust command remains useful while editing browser assertions:
 
 ```powershell
 cargo test -p deepseek-custom-tests --test it web_browser -- --test-threads=1
 ```
+
+For a disposable clean-install check, copy `web` without `node_modules`, run
+`npm ci` in the copy, and set `DEEPSEEK_BROWSER_CARGO_ROOT` to this repository
+before running its `browser:test` script. The override changes only where Cargo
+runs. Vite still builds production assets inside the disposable copy.
 
 Check the installed runtime against the isolated server:
 

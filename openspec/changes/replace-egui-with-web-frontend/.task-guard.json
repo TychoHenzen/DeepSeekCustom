@@ -278,10 +278,12 @@
       "status": "completed"
     },
     "7.12": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.13": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.1": {
       "checked": false

@@ -80,6 +80,8 @@ mod config_settings;
 mod context_relevance;
 mod effort;
 mod evolution;
+#[path = "web_browser_milestone.rs"]
+mod focused_browser_command;
 mod gui;
 mod gui_attachment;
 mod gui_autopilot_tab;
