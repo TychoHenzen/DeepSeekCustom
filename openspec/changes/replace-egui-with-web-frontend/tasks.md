@@ -124,11 +124,14 @@
 - [x] 6.3 Preserve a stale successful catalogue and show exact command, exit code, and bounded diagnostics when discovery fails.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery fails -->
-- [ ] 6.4 Map the full-suite identity to `cargo test --workspace -j 1 -- --test-threads=1` from fixed `project_root` and record its argument vector.
+- [x] 6.4 Map the full-suite identity to `cargo test --workspace -j 1 -- --test-threads=1` from fixed `project_root` and record its argument vector.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: User runs the full suite -->
-- [ ] 6.5 Map discovered module and exact-test identities to server-owned focused Cargo argument vectors without invoking a shell.
+- [x] 6.5 Map discovered module and exact-test identities to server-owned focused Cargo argument vectors without invoking a shell.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: User runs one module or test -->
-- [ ] 6.6 Reject unknown identities, client paths, commands, arguments, environments, and stale catalogue revisions before process spawn.
+- [x] 6.6 Reject unknown identities, client paths, commands, arguments, environments, and stale catalogue revisions before process spawn.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: Client submits an unknown test identity -->
 - [ ] 6.7 Add the single active-run slot and stream identity, command, start time, elapsed time, and ordered output into actor state.
 <!-- covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run starts -->

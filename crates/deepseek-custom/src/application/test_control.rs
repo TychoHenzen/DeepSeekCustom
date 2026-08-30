@@ -63,8 +63,10 @@ pub enum TestScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestRunRequest {
     pub identity: TestIdentity,
+    pub catalogue_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +146,20 @@ pub struct TestExecutionError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TestRunRequestError {
+    #[error("test catalogue has not been discovered")]
+    CatalogueUnavailable,
+    #[error("test catalogue is stale and must be refreshed")]
+    CatalogueStale,
+    #[error("stale test catalogue revision: expected {expected}, received {received}")]
+    StaleCatalogueRevision { expected: u64, received: u64 },
+    #[error("unknown test identity: {0}")]
+    UnknownIdentity(String),
+    #[error(transparent)]
+    Execution(#[from] TestExecutionError),
+}
+
 /// Active process boundary used by discovery and run coordinators.
 ///
 /// Keeping output, completion, and cancellation separate lets a deterministic
@@ -193,9 +209,37 @@ pub fn full_workspace_test_invocation(project_root: &Path) -> TestInvocation {
         args: vec![
             "test".into(),
             "--workspace".into(),
+            "-j".into(),
+            "1".into(),
             "--".into(),
             "--test-threads=1".into(),
         ],
+        working_dir: project_root.to_path_buf(),
+    }
+}
+
+fn focused_test_invocation(identity: &TestIdentity, project_root: &Path) -> TestInvocation {
+    let filter = match &identity.scope {
+        TestScope::Module { module } => format!("{module}::"),
+        TestScope::Exact { test, .. } => test.clone(),
+        TestScope::FullWorkspace => unreachable!("full workspace uses its own invocation"),
+    };
+    let mut args = vec![
+        "test".into(),
+        "-p".into(),
+        INTEGRATION_PACKAGE.into(),
+        "--test".into(),
+        INTEGRATION_TARGET.into(),
+        filter,
+        "--".into(),
+    ];
+    if matches!(identity.scope, TestScope::Exact { .. }) {
+        args.push("--exact".into());
+    }
+    args.push("--test-threads=1".into());
+    TestInvocation {
+        program: "cargo".into(),
+        args,
         working_dir: project_root.to_path_buf(),
     }
 }
@@ -222,6 +266,55 @@ impl TestDiscoveryState {
                 Err(self.failure.as_ref().expect("failure was just stored"))
             }
         }
+    }
+
+    /// Validate a browser-selected catalogue identity before any process starts.
+    ///
+    /// The client supplies no executable, path, arguments, or environment. The
+    /// invocation is reconstructed here from the current server catalogue.
+    pub fn start_run(
+        &self,
+        request: &TestRunRequest,
+        project_root: &Path,
+        executor: &dyn TestExecutor,
+    ) -> Result<(TestInvocation, Box<dyn TestExecution>), TestRunRequestError> {
+        let catalogue = self
+            .catalogue
+            .as_ref()
+            .ok_or(TestRunRequestError::CatalogueUnavailable)?;
+        if self.catalogue_stale {
+            return Err(TestRunRequestError::CatalogueStale);
+        }
+        if request.catalogue_revision != catalogue.discovered_at_ms {
+            return Err(TestRunRequestError::StaleCatalogueRevision {
+                expected: catalogue.discovered_at_ms,
+                received: request.catalogue_revision,
+            });
+        }
+
+        let known_module = catalogue.modules.iter().any(|module| {
+            request.identity.name == module.name
+                && request.identity.scope
+                    == (TestScope::Module {
+                        module: module.name.clone(),
+                    })
+        });
+        let known_exact = catalogue
+            .modules
+            .iter()
+            .flat_map(|module| &module.tests)
+            .any(|identity| identity == &request.identity);
+        let invocation = if request.identity == catalogue.full_workspace {
+            full_workspace_test_invocation(project_root)
+        } else if known_module || known_exact {
+            focused_test_invocation(&request.identity, project_root)
+        } else {
+            return Err(TestRunRequestError::UnknownIdentity(
+                request.identity.name.clone(),
+            ));
+        };
+        let execution = executor.start(&invocation)?;
+        Ok((invocation, execution))
     }
 }
 

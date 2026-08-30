@@ -1,10 +1,13 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use deepseek_custom::application::test_control::{
     ActiveTestSlot, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES, TestClock,
     TestCounts, TestDiscoveryState, TestExecution, TestExecutionError, TestExecutor, TestIdentity,
     TestInvocation, TestOutcome, TestOutputChunk, TestOutputStream, TestProcessExit,
-    TestRunRequest, TestScope, full_workspace_test_invocation,
+    TestRunRequest, TestRunRequestError, TestScope, full_workspace_test_invocation,
     integration_test_discovery_invocation,
 };
 
@@ -64,6 +67,7 @@ fn test_control_contracts_keep_scope_output_and_time_deterministic() {
     };
     let request = TestRunRequest {
         identity: identity.clone(),
+        catalogue_revision: 1,
     };
     let invocation = TestInvocation {
         program: "cargo".into(),
@@ -186,6 +190,8 @@ fn discovery_groups_exact_names_and_offers_only_the_approved_workspace_shape() {
             args: vec![
                 "test".into(),
                 "--workspace".into(),
+                "-j".into(),
+                "1".into(),
                 "--".into(),
                 "--test-threads=1".into(),
             ],
@@ -198,6 +204,197 @@ fn discovery_groups_exact_names_and_offers_only_the_approved_workspace_shape() {
     );
     assert!(!state.catalogue_stale);
     assert!(state.failure.is_none());
+}
+
+#[derive(Default)]
+struct RecordingExecutor {
+    invocations: Arc<Mutex<Vec<TestInvocation>>>,
+}
+
+impl TestExecutor for RecordingExecutor {
+    fn start(
+        &self,
+        invocation: &TestInvocation,
+    ) -> Result<Box<dyn TestExecution>, TestExecutionError> {
+        self.invocations.lock().unwrap().push(invocation.clone());
+        Ok(Box::new(ScriptedExecution {
+            chunks: Vec::new().into_iter(),
+            exit: TestProcessExit { exit_code: Some(0) },
+        }))
+    }
+}
+
+fn discovered_state(revision: u64) -> TestDiscoveryState {
+    let executor = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: concat!(
+                "application_actor::dispatches: test\n",
+                "web_server::serves_health: test\n"
+            )
+            .into(),
+        }],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut state = TestDiscoveryState::default();
+    state
+        .refresh(
+            PathBuf::from("discovery-root").as_path(),
+            &executor,
+            &FixedClock(revision),
+        )
+        .unwrap();
+    state
+}
+
+// covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: User runs the full suite
+#[test]
+fn full_suite_uses_fixed_root_and_records_serialized_workspace_argv() {
+    let root = PathBuf::from("fixed-project-root");
+    let state = discovered_state(73);
+    let executor = RecordingExecutor::default();
+    let request = TestRunRequest {
+        identity: state.catalogue.as_ref().unwrap().full_workspace.clone(),
+        catalogue_revision: 73,
+    };
+
+    let (invocation, _) = state.start_run(&request, &root, &executor).unwrap();
+
+    assert_eq!(invocation.program, "cargo");
+    assert_eq!(
+        invocation.args,
+        ["test", "--workspace", "-j", "1", "--", "--test-threads=1"]
+    );
+    assert_eq!(invocation.working_dir, root);
+    assert_eq!(
+        executor.invocations.lock().unwrap().as_slice(),
+        &[invocation]
+    );
+}
+
+// covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: User runs one module or test
+#[test]
+fn module_and_exact_runs_use_server_owned_focused_argv() {
+    let root = PathBuf::from("fixed-project-root");
+    let state = discovered_state(74);
+    let executor = RecordingExecutor::default();
+    let catalogue = state.catalogue.as_ref().unwrap();
+    let module = TestIdentity {
+        name: catalogue.modules[0].name.clone(),
+        scope: TestScope::Module {
+            module: catalogue.modules[0].name.clone(),
+        },
+    };
+    let exact = catalogue.modules[1].tests[0].clone();
+
+    let (module_invocation, _) = state
+        .start_run(
+            &TestRunRequest {
+                identity: module,
+                catalogue_revision: 74,
+            },
+            &root,
+            &executor,
+        )
+        .unwrap();
+    let (exact_invocation, _) = state
+        .start_run(
+            &TestRunRequest {
+                identity: exact,
+                catalogue_revision: 74,
+            },
+            &root,
+            &executor,
+        )
+        .unwrap();
+
+    assert_eq!(
+        module_invocation.args,
+        [
+            "test",
+            "-p",
+            "deepseek-custom-tests",
+            "--test",
+            "it",
+            "application_actor::",
+            "--",
+            "--test-threads=1",
+        ]
+    );
+    assert_eq!(
+        exact_invocation.args,
+        [
+            "test",
+            "-p",
+            "deepseek-custom-tests",
+            "--test",
+            "it",
+            "web_server::serves_health",
+            "--",
+            "--exact",
+            "--test-threads=1",
+        ]
+    );
+    assert_eq!(module_invocation.working_dir, root);
+    assert_eq!(exact_invocation.working_dir, root);
+    assert_eq!(executor.invocations.lock().unwrap().len(), 2);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: Client submits an unknown test identity
+#[test]
+fn rejected_client_run_data_never_reaches_process_spawn() {
+    let root = PathBuf::from("fixed-project-root");
+    let state = discovered_state(75);
+    let executor = RecordingExecutor::default();
+    let unknown = TestRunRequest {
+        identity: TestIdentity {
+            name: "application_actor::not_discovered".into(),
+            scope: TestScope::Exact {
+                module: "application_actor".into(),
+                test: "application_actor::not_discovered".into(),
+            },
+        },
+        catalogue_revision: 75,
+    };
+
+    assert!(matches!(
+        state.start_run(&unknown, &root, &executor),
+        Err(TestRunRequestError::UnknownIdentity(_))
+    ));
+    assert!(matches!(
+        state.start_run(
+            &TestRunRequest {
+                identity: state.catalogue.as_ref().unwrap().full_workspace.clone(),
+                catalogue_revision: 74,
+            },
+            &root,
+            &executor,
+        ),
+        Err(TestRunRequestError::StaleCatalogueRevision {
+            expected: 75,
+            received: 74
+        })
+    ));
+
+    let mut stale = state.clone();
+    stale.catalogue_stale = true;
+    assert!(matches!(
+        stale.start_run(
+            &TestRunRequest {
+                identity: stale.catalogue.as_ref().unwrap().full_workspace.clone(),
+                catalogue_revision: 75,
+            },
+            &root,
+            &executor,
+        ),
+        Err(TestRunRequestError::CatalogueStale)
+    ));
+    assert!(serde_json::from_str::<TestRunRequest>(
+        r#"{"identity":{"name":"Full workspace","scope":{"type":"full_workspace"}},"catalogue_revision":75,"working_dir":"C:/client","command":"cmd","args":["/c"],"env":{"SECRET":"x"}}"#
+    )
+    .is_err());
+    assert!(executor.invocations.lock().unwrap().is_empty());
 }
 
 // covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery fails
