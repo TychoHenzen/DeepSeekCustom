@@ -6,7 +6,9 @@
 
 use std::{
     collections::BTreeMap,
+    fs::{self, OpenOptions},
     io,
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
@@ -25,6 +27,7 @@ pub struct TestCatalogue {
 }
 
 pub const TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES: usize = 32 * 1024;
+pub const RETAINED_TEST_RESULT_LIMIT: usize = 20;
 
 const INTEGRATION_PACKAGE: &str = "deepseek-custom-tests";
 const INTEGRATION_TARGET: &str = "it";
@@ -147,6 +150,121 @@ pub struct TestControlSnapshot {
     pub discovery: TestDiscoveryState,
     pub active: Option<ActiveTestSlot>,
     pub latest_result: Option<RetainedTestResult>,
+    /// Newest-first terminal results loaded from the fixed project store.
+    #[serde(default)]
+    pub retained_results: Vec<RetainedTestResult>,
+    /// Files that could not be read or decoded. One bad record does not hide
+    /// the remaining test history from the browser.
+    #[serde(default)]
+    pub retained_result_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadedTestResults {
+    pub results: Vec<RetainedTestResult>,
+    pub warnings: Vec<String>,
+}
+
+/// Atomic, bounded persistence for terminal test results.
+///
+/// Active runs never enter this directory, so pruning cannot cancel or remove
+/// an active process. File names begin with the stable start time to make the
+/// retention order independent of directory enumeration and file timestamps.
+#[derive(Debug, Clone)]
+pub struct TestResultStore {
+    directory: PathBuf,
+}
+
+impl TestResultStore {
+    pub fn new(project_root: &Path) -> Self {
+        Self {
+            directory: project_root.join(".deepseek").join("test-runs"),
+        }
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub fn store(&self, result: &RetainedTestResult) -> io::Result<()> {
+        fs::create_dir_all(&self.directory)?;
+        let stem = retained_result_stem(result);
+        let final_path = self.directory.join(format!("{stem}.json"));
+        let temporary_path = self.directory.join(format!(".{stem}.tmp"));
+        let bytes = serde_json::to_vec_pretty(result).map_err(io::Error::other)?;
+
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            fs::rename(&temporary_path, &final_path)?;
+            self.prune()?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        write_result
+    }
+
+    pub fn load_recent(&self) -> io::Result<LoadedTestResults> {
+        if !self.directory.exists() {
+            return Ok(LoadedTestResults::default());
+        }
+        let mut loaded = LoadedTestResults::default();
+        for path in self.result_paths_newest_first()? {
+            match fs::read(&path).and_then(|bytes| {
+                serde_json::from_slice::<RetainedTestResult>(&bytes).map_err(io::Error::other)
+            }) {
+                Ok(result) => loaded.results.push(result),
+                Err(error) => loaded.warnings.push(format!(
+                    "could not load retained test result {}: {error}",
+                    path.display()
+                )),
+            }
+        }
+        loaded.results.truncate(RETAINED_TEST_RESULT_LIMIT);
+        Ok(loaded)
+    }
+
+    fn prune(&self) -> io::Result<()> {
+        let paths = self.result_paths_newest_first()?;
+        for path in paths.into_iter().skip(RETAINED_TEST_RESULT_LIMIT) {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn result_paths_newest_first(&self) -> io::Result<Vec<PathBuf>> {
+        let mut paths = fs::read_dir(&self.directory)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect::<Vec<_>>();
+        paths.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+        Ok(paths)
+    }
+}
+
+fn retained_result_stem(result: &RetainedTestResult) -> String {
+    let safe_run_id = result
+        .run_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{:020}-{safe_run_id}", result.started_at_ms)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +323,33 @@ impl TestRunCoordinator {
             discovery: discovery.clone(),
             active: self.active.clone(),
             latest_result: self.latest_result.clone(),
+            retained_results: Vec::new(),
+            retained_result_warnings: Vec::new(),
         }
+    }
+
+    /// Capture process state together with durable terminal history.
+    pub fn snapshot_with_results(
+        &self,
+        discovery: &TestDiscoveryState,
+        store: &TestResultStore,
+    ) -> io::Result<TestControlSnapshot> {
+        let loaded = store.load_recent()?;
+        Ok(TestControlSnapshot {
+            discovery: discovery.clone(),
+            active: self.active.clone(),
+            latest_result: self.latest_result.clone(),
+            retained_results: loaded.results,
+            retained_result_warnings: loaded.warnings,
+        })
+    }
+
+    /// Store the current terminal result after poll or cancellation completes.
+    pub fn retain_latest(&self, store: &TestResultStore) -> io::Result<()> {
+        let result = self.latest_result.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "no terminal test result to retain")
+        })?;
+        store.store(result)
     }
 
     /// Validate and start one run. The active-slot check happens before the

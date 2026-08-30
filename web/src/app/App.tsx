@@ -6,6 +6,7 @@ import { ChatWorkspace } from './ChatWorkspace.tsx';
 import { SessionsWorkspace } from './SessionsWorkspace.tsx';
 import { SettingsWorkspace } from './SettingsWorkspace.tsx';
 import { OperationWorkspace } from './OperationWorkspace.tsx';
+import { TestsWorkspace } from './TestsWorkspace.tsx';
 
 const workspaceLabels: Record<Workspace, string> = {
   chat: 'Chat',
@@ -128,6 +129,8 @@ export function App({ client }: AppProps) {
             saved={view.snapshot.saved_sessions}
             send={(command) => client.send(command)}
           />
+        ) : selectedWorkspace === 'tests' && view.snapshot !== null ? (
+          <TestsWorkspace history={view.snapshot.tests ?? { retained_results: [], retained_result_warnings: [] }} />
         ) : selectedWorkspace === 'settings' && view.snapshot !== null ? (
           <SettingsWorkspace key={view.snapshot.revision} settings={view.snapshot.settings} send={(command) => client.send(command)} />
         ) : (selectedWorkspace === 'autopilot' || selectedWorkspace === 'cascade' || selectedWorkspace === 'evolve' || selectedWorkspace === 'procedure') && view.snapshot !== null ? (

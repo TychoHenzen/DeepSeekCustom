@@ -210,10 +210,12 @@
       "status": "completed"
     },
     "6.12": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.13": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.14": {
       "checked": false

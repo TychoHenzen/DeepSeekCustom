@@ -148,9 +148,11 @@
 - [x] 6.11 Keep test execution independent of browser connections and restore current test state from a reconnect snapshot.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: Browser disconnects during a test run -->
-- [ ] 6.12 Atomically store terminal results under `.deepseek/test-runs` and render up to 20 newest identities, outcomes, counts, durations, commands, and outputs.
+- [x] 6.12 Atomically store terminal results under `.deepseek/test-runs` and render up to 20 newest identities, outcomes, counts, durations, commands, and outputs.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: User revisits recent results -->
-- [ ] 6.13 Prune the oldest terminal record on the twenty-first retained result without touching active or newer records.
+- [x] 6.13 Prune the oldest terminal record on the twenty-first retained result without touching active or newer records.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Retention limit is exceeded -->
 - [ ] 6.14 Implement the 4 MiB head-and-tail output buffer, streamed truncation state, omitted-byte count, and explicit marker.
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Output limit is exceeded -->

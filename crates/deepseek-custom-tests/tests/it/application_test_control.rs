@@ -7,8 +7,8 @@ use deepseek_custom::application::test_control::{
     ActiveTestSlot, CargoTestExecutor, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES,
     TestClock, TestControlSnapshot, TestCounts, TestDiscoveryState, TestExecution,
     TestExecutionError, TestExecutor, TestIdentity, TestInvocation, TestOutcome, TestOutputChunk,
-    TestOutputStream, TestProcessExit, TestRunCoordinator, TestRunRequest, TestRunRequestError,
-    TestScope, classify_test_outcome, full_workspace_test_invocation,
+    TestOutputStream, TestProcessExit, TestResultStore, TestRunCoordinator, TestRunRequest,
+    TestRunRequestError, TestScope, classify_test_outcome, full_workspace_test_invocation,
     integration_test_discovery_invocation,
 };
 
@@ -17,6 +17,38 @@ struct FixedClock(u64);
 impl TestClock for FixedClock {
     fn now_ms(&self) -> u64 {
         self.0
+    }
+}
+
+fn retained_result(number: u64) -> RetainedTestResult {
+    RetainedTestResult {
+        run_id: format!("run-{number}"),
+        identity: TestIdentity {
+            name: format!("application_test_control::case_{number}"),
+            scope: TestScope::Exact {
+                module: "application_test_control".into(),
+                test: format!("application_test_control::case_{number}"),
+            },
+        },
+        command: vec!["cargo".into(), "test".into(), format!("case_{number}")],
+        working_dir: PathBuf::from("fixed-project-root"),
+        started_at_ms: number * 100,
+        duration_ms: number * 10,
+        outcome: if number.is_multiple_of(2) {
+            TestOutcome::Passed
+        } else {
+            TestOutcome::Failed
+        },
+        counts: TestCounts {
+            passed: u64::from(number.is_multiple_of(2)),
+            failed: u64::from(!number.is_multiple_of(2)),
+            ignored: 0,
+            filtered: number,
+        },
+        exit_code: Some(if number.is_multiple_of(2) { 0 } else { 101 }),
+        failed_tests: Vec::new(),
+        output: format!("diagnostic output {number}\n"),
+        omitted_output_bytes: 0,
     }
 }
 
@@ -748,4 +780,85 @@ fn failed_discovery_retains_catalogue_and_bounded_exact_diagnostics() {
     assert!(failure.omitted_output_bytes > 0);
     assert_eq!(state.catalogue, Some(original));
     assert!(state.catalogue_stale);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: User revisits recent results
+#[test]
+fn terminal_results_are_atomically_loaded_newest_first_with_complete_details() {
+    let root = super::scratch_dir("test-results", "revisit");
+    let store = TestResultStore::new(&root);
+    let older = retained_result(7);
+    let newer = retained_result(9);
+    store.store(&older).unwrap();
+    store.store(&newer).unwrap();
+
+    let loaded = store.load_recent().unwrap();
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(loaded.results, vec![newer.clone(), older]);
+    assert_eq!(loaded.results[0].identity, newer.identity);
+    assert_eq!(loaded.results[0].outcome, TestOutcome::Failed);
+    assert_eq!(loaded.results[0].counts.failed, 1);
+    assert_eq!(loaded.results[0].duration_ms, 90);
+    assert_eq!(loaded.results[0].command[0], "cargo");
+    assert_eq!(loaded.results[0].output, "diagnostic output 9\n");
+    let entries = std::fs::read_dir(store.directory())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .all(|path| path.extension().unwrap() == "json")
+    );
+
+    let snapshot = TestRunCoordinator::default()
+        .snapshot_with_results(&TestDiscoveryState::default(), &store)
+        .unwrap();
+    let wire = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(wire["retained_results"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        wire["retained_results"][0]["identity"]["name"],
+        newer.identity.name
+    );
+    assert_eq!(wire["retained_results"][0]["command"][0], "cargo");
+    assert_eq!(
+        wire["retained_results"][0]["output"],
+        "diagnostic output 9\n"
+    );
+
+    std::fs::write(
+        store.directory().join("99999999999999999999-broken.json"),
+        b"{",
+    )
+    .unwrap();
+    let with_malformed = store.load_recent().unwrap();
+    assert_eq!(with_malformed.results.len(), 2);
+    assert_eq!(with_malformed.warnings.len(), 1);
+    assert!(with_malformed.warnings[0].contains("broken.json"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Retention limit is exceeded
+#[test]
+fn twenty_first_terminal_result_prunes_only_the_oldest_record() {
+    let root = super::scratch_dir("test-results", "retention");
+    let store = TestResultStore::new(&root);
+    for number in 1..=21 {
+        store.store(&retained_result(number)).unwrap();
+    }
+    let loaded = store.load_recent().unwrap();
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(loaded.results.len(), 20);
+    assert_eq!(loaded.results.first().unwrap().run_id, "run-21");
+    assert_eq!(loaded.results.last().unwrap().run_id, "run-2");
+    assert!(!loaded.results.iter().any(|result| result.run_id == "run-1"));
+    assert_eq!(std::fs::read_dir(store.directory()).unwrap().count(), 20);
+
+    let active_record = root.join("active-run.live");
+    std::fs::write(&active_record, b"owned by the active process slot").unwrap();
+    store.store(&retained_result(22)).unwrap();
+    assert!(active_record.exists());
+    assert_eq!(store.load_recent().unwrap().results[0].run_id, "run-22");
+    std::fs::remove_dir_all(root).unwrap();
 }

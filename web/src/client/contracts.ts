@@ -118,6 +118,26 @@ export interface OperationState {
   error: AppError | null;
 }
 
+export interface RetainedTestResult {
+  run_id: string;
+  identity: { name: string; scope: Record<string, unknown> };
+  command: string[];
+  working_dir: string;
+  started_at_ms: number;
+  duration_ms: number;
+  outcome: 'passed' | 'failed' | 'cancelled' | 'infrastructure_error';
+  counts: { passed: number; failed: number; ignored: number; filtered: number };
+  exit_code: number | null;
+  failed_tests: string[];
+  output: string;
+  omitted_output_bytes: number;
+}
+
+export interface TestResultHistory {
+  retained_results: RetainedTestResult[];
+  retained_result_warnings: string[];
+}
+
 export interface AppSnapshot {
   revision: number;
   workspace: Workspace;
@@ -127,6 +147,8 @@ export interface AppSnapshot {
   pending_session_switch: PendingSessionSwitch | null;
   settings: VisibleSettings;
   operations: OperationState[];
+  /** Optional until the server-side test actor is installed by the next milestone. */
+  tests?: TestResultHistory;
 }
 
 export type AppChange =
@@ -350,9 +372,41 @@ function parseOperation(value: unknown): OperationState {
   };
 }
 
+function parseRetainedTestResult(value: unknown): RetainedTestResult {
+  const item = record(value);
+  const identity = record(item.identity);
+  const counts = record(item.counts);
+  if (!Array.isArray(item.command) || !Array.isArray(item.failed_tests)) throw new Error('retained test result collections must be arrays');
+  return {
+    run_id: string(item.run_id, 'test run id'),
+    identity: { name: string(identity.name, 'test identity'), scope: record(identity.scope) },
+    command: item.command.map((entry) => string(entry, 'test command argument')),
+    working_dir: string(item.working_dir, 'test working directory'),
+    started_at_ms: integer(item.started_at_ms, 'test start time'),
+    duration_ms: integer(item.duration_ms, 'test duration'),
+    outcome: enumValue(item.outcome, ['passed', 'failed', 'cancelled', 'infrastructure_error'] as const, 'test outcome'),
+    counts: {
+      passed: integer(counts.passed, 'passed count'),
+      failed: integer(counts.failed, 'failed count'),
+      ignored: integer(counts.ignored, 'ignored count'),
+      filtered: integer(counts.filtered, 'filtered count'),
+    },
+    exit_code: nullable(item.exit_code, (entry) => number(entry, 'test exit code')),
+    failed_tests: item.failed_tests.map((entry) => string(entry, 'failed test name')),
+    output: string(item.output, 'test output'),
+    omitted_output_bytes: integer(item.omitted_output_bytes, 'omitted output bytes'),
+  };
+}
+
 export function parseSnapshot(value: unknown): AppSnapshot {
   const item = record(value);
   if (!Array.isArray(item.transcript) || !Array.isArray(item.saved_sessions) || !Array.isArray(item.operations)) throw new Error('snapshot collections must be arrays');
+  const tests = item.tests === undefined ? undefined : record(item.tests);
+  const retainedResults = tests?.retained_results;
+  const retainedWarnings = tests?.retained_result_warnings;
+  if (tests !== undefined && (!Array.isArray(retainedResults) || !Array.isArray(retainedWarnings))) {
+    throw new Error('test result history collections must be arrays');
+  }
   return {
     revision: integer(item.revision, 'snapshot revision'),
     workspace: enumValue(item.workspace, workspaces, 'workspace'),
@@ -362,6 +416,12 @@ export function parseSnapshot(value: unknown): AppSnapshot {
     pending_session_switch: nullable(item.pending_session_switch, parsePending),
     settings: parseSettings(item.settings),
     operations: item.operations.map(parseOperation),
+    ...(tests === undefined ? {} : {
+      tests: {
+        retained_results: (retainedResults as unknown[]).map(parseRetainedTestResult),
+        retained_result_warnings: (retainedWarnings as unknown[]).map((entry) => string(entry, 'test result warning')),
+      },
+    }),
   };
 }
 
