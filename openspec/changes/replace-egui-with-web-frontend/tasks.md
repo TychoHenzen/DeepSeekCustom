@@ -180,9 +180,11 @@
 - [x] 7.5 Prove each browser test receives unique temporary state, token, URL, and deterministic success, failure, review, interruption, and reconnect events.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment starts -->
-- [ ] 7.6 Reap each test server, browser context, browser process, and child process tree on pass, failure, timeout, and cancellation while preserving real checkout bytes.
+- [x] 7.6 Reap each test server, browser context, browser process, and child process tree on pass, failure, timeout, and cancellation while preserving real checkout bytes.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment stops -->
-- [ ] 7.7 Add browser coverage for startup, navigation, chat, stop, sessions, settings, folders, attachments, voice, Autopilot, Cascade, Evolve, Procedure, Tests, cancellation, retention, and reconnect.
+- [x] 7.7 Add browser coverage for startup, navigation, chat, stop, sessions, settings, folders, attachments, voice, Autopilot, Cascade, Evolve, Procedure, Tests, cancellation, retention, and reconnect.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Critical workflow contract is changed -->
 - [ ] 7.8 Add assertions that compare visible browser state with the server snapshot and command result for success and conflict paths.
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Browser and service disagree -->

@@ -254,10 +254,12 @@
       "status": "completed"
     },
     "7.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.8": {
       "checked": false

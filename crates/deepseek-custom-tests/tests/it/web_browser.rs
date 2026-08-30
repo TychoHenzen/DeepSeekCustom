@@ -10,11 +10,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
     AppRevision, AppSnapshot, NoticeLevel, OperationKind, OperationPhase, OperationProgress,
-    OperationState, SessionSummary, TranscriptBlock, TranscriptContent, Workspace,
+    OperationState, SessionSummary, TranscriptBlock, TranscriptContent, TranscriptSpan, Workspace,
 };
 use deepseek_custom::application::services::{
     DomainCommandPort, RuntimeSettingsPort, SettingsController,
@@ -51,6 +52,7 @@ impl TestClock for FixedClock {
 struct ScriptedTestExecutor {
     output: String,
     exit_code: Option<i32>,
+    active_children: Arc<AtomicUsize>,
 }
 
 impl TestExecutor for ScriptedTestExecutor {
@@ -58,9 +60,12 @@ impl TestExecutor for ScriptedTestExecutor {
         &self,
         _invocation: &TestInvocation,
     ) -> Result<Box<dyn TestExecution>, TestExecutionError> {
+        self.active_children
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Box::new(ScriptedTestExecution {
             output: Some(self.output.clone()),
             exit_code: self.exit_code,
+            active_children: Arc::clone(&self.active_children),
         }))
     }
 }
@@ -68,6 +73,14 @@ impl TestExecutor for ScriptedTestExecutor {
 struct ScriptedTestExecution {
     output: Option<String>,
     exit_code: Option<i32>,
+    active_children: Arc<AtomicUsize>,
+}
+
+impl Drop for ScriptedTestExecution {
+    fn drop(&mut self) {
+        self.active_children
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl TestExecution for ScriptedTestExecution {
@@ -145,6 +158,7 @@ struct BrowserHarness {
     state: WebAppState,
     backend: ScriptedBackend,
     voice_rx: mpsc::UnboundedReceiver<VoiceCommand>,
+    active_children: Arc<AtomicUsize>,
     server: WebServerHandle,
 }
 
@@ -161,13 +175,16 @@ impl BrowserHarness {
             None,
         ]))));
         let (voice_tx, voice_rx) = mpsc::unbounded_channel();
+        let active_children = Arc::new(AtomicUsize::new(0));
         let discovery = Arc::new(ScriptedTestExecutor {
             output: "web_browser::scripted_case: test\n".into(),
             exit_code: Some(0),
+            active_children: Arc::clone(&active_children),
         });
         let runner = Arc::new(ScriptedTestExecutor {
             output: "running 1 test\ntest web_browser::scripted_case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n".into(),
             exit_code: Some(0),
+            active_children: Arc::clone(&active_children),
         });
         let state = WebAppState::with_settings(
             isolated_snapshot(project_root.path()),
@@ -209,6 +226,7 @@ impl BrowserHarness {
             state,
             backend,
             voice_rx,
+            active_children,
             server,
         }
     }
@@ -235,7 +253,8 @@ impl BrowserPage {
     async fn wait_for_snapshot(&self) -> Locator {
         self.require_unique(
             "connected application snapshot",
-            self.page.get_by_role(AriaRole::Status, None),
+            self.page
+                .get_by_text("Connected. Application revision", false),
         )
         .await
     }
@@ -367,6 +386,7 @@ fn test_settings_controller(project_root: &Path) -> Arc<SettingsController> {
     ))
 }
 
+// covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment starts
 #[test]
 fn browser_harness_uses_unique_ephemeral_state_and_deterministic_services() {
     super::web_server::run_async_test(async {
@@ -423,9 +443,154 @@ fn browser_harness_uses_unique_ephemeral_state_and_deterministic_services() {
         );
         assert!(first.voice_rx.try_recv().is_err());
 
+        let browser_result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(first.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+            app.wait_for_snapshot().await;
+            let transcript = app
+                .require_unique(
+                    "deterministic success, failure, and reconnect events",
+                    app.page.get_by_role(
+                        AriaRole::Log,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Conversation transcript")
+                                .exact(true),
+                        ),
+                    ),
+                )
+                .await;
+            let transcript_text = transcript.inner_text().await?;
+            assert!(transcript_text.contains("scripted success"));
+            assert!(transcript_text.contains("scripted failure"));
+            assert!(transcript_text.contains("scripted reconnect"));
+
+            app.action("Procedure").click(None).await?;
+            let review = app
+                .require_unique("deterministic review event", app.review())
+                .await;
+            assert!(review.inner_text().await?.contains("scripted review"));
+            app.action("Chat").click(None).await?;
+            let interrupted = app
+                .require_unique(
+                    "deterministic interruption event",
+                    app.page
+                        .get_by_text("Turn interrupted. scripted interruption", true),
+                )
+                .await;
+            assert!(interrupted.is_visible().await?);
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+
         first.shutdown().await;
         second.shutdown().await;
+        browser_result.unwrap_or_else(|error| panic!(
+            "isolated deterministic browser environment failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+        ));
     });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment stops
+#[test]
+fn browser_environment_reaps_resources_for_every_terminal_path() {
+    let checkout_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let user_settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../settings.json");
+    let manifest_before = std::fs::read(&checkout_manifest).unwrap();
+    let settings_before = std::fs::read(&user_settings).unwrap();
+
+    for terminal_path in ["pass", "failure", "timeout", "cancel"] {
+        super::web_server::run_async_test(async {
+            let harness = BrowserHarness::start().await;
+            let root = harness.project_root.path().to_path_buf();
+            let address = harness.server.address();
+            let playwright = playwright_rs::Playwright::launch()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("browser runtime unavailable: {error}\nInstall with:\n{INSTALL_COMMAND}")
+                });
+            let browser = playwright.chromium().launch().await.unwrap();
+            let context = browser.new_context().await.unwrap();
+            let page = context.new_page().await.unwrap();
+            page.goto(harness.server.url(), None).await.unwrap();
+            assert_eq!(
+                page.title().await.unwrap(),
+                "DeepSeekCustom",
+                "{terminal_path}"
+            );
+            let app = BrowserPage::new(page.clone());
+            app.wait_for_snapshot().await;
+            app.action("Tests").click(None).await.unwrap();
+            app.action("Refresh catalogue").click(None).await.unwrap();
+            let run = app
+                .require_unique(
+                    "lifecycle child test action",
+                    app.action("Run full workspace"),
+                )
+                .await;
+            run.click(None).await.unwrap();
+            app.require_unique(
+                "lifecycle retained child result",
+                app.page.get_by_role(
+                    AriaRole::List,
+                    Some(
+                        GetByRoleOptions::default()
+                            .name("Newest test results first")
+                            .exact(true),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(
+                harness
+                    .active_children
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "scripted child execution survived {terminal_path}"
+            );
+
+            match terminal_path {
+                "pass" => {}
+                "failure" => {
+                    assert!(page.get_by_text("not present", true).count().await.unwrap() == 0)
+                }
+                "timeout" => assert!(
+                    tokio::time::timeout(Duration::from_millis(1), std::future::pending::<()>())
+                        .await
+                        .is_err()
+                ),
+                "cancel" => {
+                    let cancelled = tokio::spawn(std::future::pending::<()>());
+                    cancelled.abort();
+                    assert!(cancelled.await.unwrap_err().is_cancelled());
+                }
+                _ => unreachable!(),
+            }
+
+            context.close().await.unwrap();
+            browser.close().await.unwrap();
+            harness.shutdown().await;
+            assert!(
+                !root.exists(),
+                "temporary project root survived {terminal_path}"
+            );
+            assert!(
+                tokio::net::TcpStream::connect(address).await.is_err(),
+                "server survived {terminal_path}"
+            );
+            assert!(
+                page.title().await.is_err(),
+                "browser page survived {terminal_path}"
+            );
+        });
+    }
+
+    assert_eq!(std::fs::read(checkout_manifest).unwrap(), manifest_before);
+    assert_eq!(std::fs::read(user_settings).unwrap(), settings_before);
 }
 
 #[test]
@@ -579,5 +744,279 @@ fn disabled_action_exposes_its_visible_reason() {
                 "semantic browser contract failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
             )
         });
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Critical workflow contract is changed
+#[test]
+fn critical_workflows_match_browser_observations_to_rust_state() {
+    super::web_server::run_async_test(async {
+        let mut harness = BrowserHarness::start().await;
+        harness
+            .state
+            .apply_event(AppEvent::SavedSessionsChanged(vec![SessionSummary {
+                id: "saved-one".into(),
+                title: "Saved deterministic session".into(),
+                backend: "scripted".into(),
+                model: "deterministic".into(),
+            }]))
+            .unwrap();
+        harness
+            .state
+            .apply_event(AppEvent::TranscriptAppended(TranscriptBlock {
+                id: 41,
+                content: TranscriptContent::User {
+                    text: "critical chat turn".into(),
+                    has_image: false,
+                },
+            }))
+            .unwrap();
+        harness
+            .state
+            .apply_event(AppEvent::TranscriptAppended(TranscriptBlock {
+                id: 42,
+                content: TranscriptContent::Assistant {
+                    spans: vec![TranscriptSpan::Text("streamed deterministic answer".into())],
+                },
+            }))
+            .unwrap();
+
+        let browser_result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(harness.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+            let connected = app.wait_for_snapshot().await;
+            assert!(
+                connected
+                    .inner_text()
+                    .await?
+                    .contains("Connected. Application revision")
+            );
+
+            let transcript = app
+                .require_unique(
+                    "chat streaming transcript",
+                    app.page.get_by_role(
+                        AriaRole::Log,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Conversation transcript")
+                                .exact(true),
+                        ),
+                    ),
+                )
+                .await;
+            let transcript_text = transcript.inner_text().await?;
+            assert!(transcript_text.contains("critical chat turn"));
+            assert!(transcript_text.contains("streamed deterministic answer"));
+            assert_eq!(
+                app.file_chooser().get_attribute("accept").await?.as_deref(),
+                Some("image/png,image/jpeg,image/bmp")
+            );
+            assert!(
+                app.voice()
+                    .inner_text()
+                    .await?
+                    .contains("Voice unavailable")
+            );
+            assert!(app.action("Hold to talk").is_disabled().await?);
+
+            harness.backend.set_operation(
+                OperationKind::Chat,
+                OperationPhase::Running,
+                "streaming chat",
+            );
+            let stop = app
+                .require_unique("chat stop action", app.action("Stop"))
+                .await;
+            assert!(stop.is_enabled().await?);
+            harness.backend.set_operation(
+                OperationKind::Chat,
+                OperationPhase::Interrupted,
+                "chat cancelled",
+            );
+            app.require_unique(
+                "chat cancellation state",
+                app.page
+                    .get_by_text("Turn interrupted. chat cancelled", true),
+            )
+            .await;
+
+            for (name, workspace) in [
+                ("Sessions", Workspace::Sessions),
+                ("Settings", Workspace::Settings),
+                ("Autopilot", Workspace::Autopilot),
+                ("Cascade", Workspace::Cascade),
+                ("Evolve", Workspace::Evolve),
+                ("Procedure", Workspace::Procedure),
+                ("Tests", Workspace::Tests),
+                ("Chat", Workspace::Chat),
+            ] {
+                app.action(name).click(None).await?;
+                let heading = app
+                    .require_unique(
+                        &format!("{name} navigation heading"),
+                        app.page.get_by_role(
+                            AriaRole::Heading,
+                            Some(GetByRoleOptions::default().name(name).exact(true).level(2)),
+                        ),
+                    )
+                    .await;
+                assert_eq!(heading.inner_text().await?, name);
+                assert_eq!(
+                    harness.state.snapshot().workspace,
+                    workspace,
+                    "browser and Rust service disagreed for {name}"
+                );
+            }
+
+            app.action("Sessions").click(None).await?;
+            assert!(
+                app.require_unique(
+                    "saved session",
+                    app.page.get_by_text("Saved deterministic session", false)
+                )
+                .await
+                .is_visible()
+                .await?
+            );
+            assert!(
+                app.require_unique("session load", app.action("Load"))
+                    .await
+                    .is_enabled()
+                    .await?
+            );
+            assert!(
+                app.require_unique("session delete", app.action("Delete"))
+                    .await
+                    .is_enabled()
+                    .await?
+            );
+            assert!(
+                app.require_unique("new session", app.action("New session"))
+                    .await
+                    .is_enabled()
+                    .await?
+            );
+
+            app.action("Settings").click(None).await?;
+            app.action("Choose folder").click(None).await?;
+            let selected = harness.project_root.path().join("selected-folder");
+            let settings_label = format!("Working directory: {}", selected.display());
+            let settings_text = app.page.get_by_text(&settings_label, true);
+            assert!(
+                app.require_unique("selected working folder", settings_text)
+                    .await
+                    .is_visible()
+                    .await?
+            );
+            assert_eq!(
+                harness.state.snapshot().settings.working_dir.as_deref(),
+                Some(selected.to_string_lossy().as_ref())
+            );
+            assert!(
+                app.require_unique("settings persistence action", app.action("Save settings"))
+                    .await
+                    .is_enabled()
+                    .await?
+            );
+
+            for kind in [
+                OperationKind::Autopilot,
+                OperationKind::Cascade,
+                OperationKind::Evolve,
+            ] {
+                let name = format!("{kind:?}");
+                harness.backend.set_operation(
+                    kind,
+                    OperationPhase::Completed,
+                    &format!("{name} retained result"),
+                );
+                app.action(&name).click(None).await?;
+                let expected_result = format!("{name} retained result");
+                let visible_result = app
+                    .require_unique(
+                        &format!("{name} retained result text"),
+                        app.terminal_result().get_by_text(&expected_result, true),
+                    )
+                    .await;
+                assert_eq!(visible_result.inner_text().await?, expected_result);
+                assert!(app.terminal_result().is_visible().await?);
+                assert_eq!(
+                    harness
+                        .state
+                        .snapshot()
+                        .operations
+                        .iter()
+                        .find(|item| item.kind == kind)
+                        .unwrap()
+                        .phase,
+                    OperationPhase::Completed
+                );
+            }
+
+            harness.backend.set_operation(
+                OperationKind::Procedure,
+                OperationPhase::AwaitingReview,
+                "verifier: deterministic review evidence",
+            );
+            app.action("Procedure").click(None).await?;
+            assert!(
+                app.require_unique("Procedure review", app.review())
+                    .await
+                    .inner_text()
+                    .await?
+                    .contains("deterministic review evidence")
+            );
+
+            app.action("Tests").click(None).await?;
+            let tests = app
+                .require_unique("test discovery workspace", app.tests_workspace())
+                .await;
+            assert!(tests.inner_text().await?.contains("Refresh catalogue"));
+            app.action("Refresh catalogue").click(None).await?;
+            let run = app
+                .require_unique("test execution action", app.action("Run full workspace"))
+                .await;
+            assert!(run.is_enabled().await?);
+            run.click(None).await?;
+            let retained = app
+                .require_unique(
+                    "retained test result",
+                    app.page.get_by_role(
+                        AriaRole::List,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Newest test results first")
+                                .exact(true),
+                        ),
+                    ),
+                )
+                .await;
+            assert!(retained.inner_text().await?.contains("passed"));
+
+            // Closing and opening a page exercises bootstrap after the event stream was disconnected.
+            let reconnect_page = browser.new_page().await?;
+            reconnect_page.goto(harness.server.url(), None).await?;
+            let reconnect_app = BrowserPage::new(reconnect_page);
+            assert!(
+                reconnect_app
+                    .wait_for_snapshot()
+                    .await
+                    .inner_text()
+                    .await?
+                    .contains(&harness.state.snapshot().revision.0.to_string())
+            );
+
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+        harness.shutdown().await;
+        browser_result.unwrap_or_else(|error| panic!(
+            "critical browser workflow failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+        ));
     });
 }
