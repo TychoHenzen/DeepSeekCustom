@@ -153,6 +153,9 @@ export type AppCommand =
   | { command: 'start_cascade'; payload: { prompt: string; backend: string; n: number; vote_k: number; check_cmd: string | null; diversity_hints: string[]; escalate_backend: string | null } }
   | { command: 'start_evolve'; payload: { prompt: string; backend: string; generations: number; population: number; fitness_cmd: string; feature_cmd: string | null; islands: number; migration_interval: number; mutation_hints: string[] } }
   | { command: 'run_procedure'; payload: { change_id: string; task_id: string } }
+  | { command: 'preview_procedure'; payload: { localization_run_id: string; change_id: string; task_id: string; route: 'automatic' | 'force_local' | 'force_frontier'; local_backend: string; local_model: string; frontier_backend: string; frontier_model: string } }
+  | { command: 'run_whole_change_procedure'; payload: { change_id: string; route: 'automatic' | 'force_local' | 'force_frontier'; localization_backend: string; local_backend: string; local_model: string; frontier_backend: string; frontier_model: string } }
+  | { command: 'apply_procedure'; payload: { localization_run_id: string; preview_id: string; change_id: string; task_id: string } }
   | { command: 'review_procedure'; payload: { run_id: string; decision: 'approve' | 'reject' } }
   | { command: 'start_voice_capture' }
   | { command: 'stop_voice_capture' }

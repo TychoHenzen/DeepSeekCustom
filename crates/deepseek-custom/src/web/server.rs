@@ -31,6 +31,8 @@ use crate::application::services::DomainCommandPort;
 use crate::application::services::SettingsController;
 use crate::config::settings::Settings;
 use crate::image_bytes::attachment_from_image_bytes;
+use crate::procedure::ProcedureCommand;
+use crate::procedure::ProcedureProgress;
 use crate::search::SearchCommand;
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use std::sync::atomic::AtomicBool;
@@ -130,6 +132,20 @@ impl WebAppState {
         self
     }
 
+    pub fn with_procedure_port(
+        mut self,
+        port: DomainCommandPort<ProcedureCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("procedure port must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_procedure(port, interrupt);
+        self
+    }
+
     pub fn snapshot(&self) -> AppSnapshot {
         self.inner.actor.lock().unwrap().snapshot().clone()
     }
@@ -174,6 +190,23 @@ impl WebAppState {
         let mut actor = self.inner.actor.lock().unwrap();
         let previous = actor.snapshot().revision;
         let result = actor.apply_operation_stream_event(event)?;
+        if result.is_ok()
+            && let Replay::Changes(changes) = actor.replay_after(previous)
+        {
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
+        }
+        Some(result)
+    }
+
+    pub fn apply_procedure_progress(
+        &self,
+        event: &ProcedureProgress,
+    ) -> Option<Result<AppRevision, crate::application::dto::AppError>> {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let result = actor.apply_procedure_progress(event)?;
         if result.is_ok()
             && let Replay::Changes(changes) = actor.replay_after(previous)
         {

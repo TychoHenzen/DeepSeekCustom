@@ -13,6 +13,10 @@ use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::session::ApplicationSession;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::gui::session_state::{SessionOrigin, SessionState};
+use deepseek_custom::procedure::{
+    PatchPreviewId, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunId,
+    ProcedureStage, ProcedureTerminalDisposition,
+};
 use deepseek_custom::search::{SearchCommand, SearchKind, SearchSnapshot};
 use deepseek_custom::session::SessionStore;
 use tokio::sync::mpsc;
@@ -235,6 +239,272 @@ fn operation_events_replace_state_for_the_same_service() {
 
     assert_eq!(actor.snapshot().operations, vec![awaiting_review]);
     assert_eq!(actor.snapshot().revision, AppRevision(2));
+}
+
+// covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: Procedure waits for review
+#[test]
+fn procedure_commands_preserve_run_identity_and_reject_stale_reviews() {
+    let mut snapshot = AppSnapshot::initial(
+        VisibleSettings::from_settings(&Settings::default(), None, None),
+        SessionSummary {
+            id: "session-1".into(),
+            title: "New conversation".into(),
+            backend: "stub".into(),
+            model: "test".into(),
+        },
+    );
+    snapshot.settings.procedure.localization_backend = Some("localizer".into());
+    let mut actor = ApplicationActor::new(snapshot, 16);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let interrupt = Arc::new(AtomicBool::new(true));
+    actor.connect_procedure(DomainCommandPort::new(tx), Arc::clone(&interrupt));
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command: AppCommand::RunProcedure {
+                change_id: "web-change".into(),
+                task_id: "5.4".into()
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    let run_id = match rx.try_recv().unwrap() {
+        ProcedureCommand::Run {
+            run_id,
+            backend,
+            request,
+        } => {
+            assert_eq!(backend, "localizer");
+            assert_eq!(request.change_id, "web-change");
+            assert_eq!(request.task_id, "5.4");
+            run_id
+        }
+        _ => panic!("expected procedure run"),
+    };
+    assert!(!interrupt.load(Ordering::SeqCst));
+    let run_id_text = run_id.as_str();
+    assert_eq!(
+        actor.snapshot().operations[0].operation_id.as_deref(),
+        Some(run_id_text.as_str())
+    );
+
+    let revision = actor.snapshot().revision;
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision,
+            command: AppCommand::ReviewProcedure {
+                run_id: "00000000-0000-0000-0000-000000000000".into(),
+                decision: deepseek_custom::application::dto::ReviewDecision::Approve
+            },
+        }),
+        AppCommandResult::Rejected { .. }
+    ));
+    assert!(rx.try_recv().is_err());
+
+    actor
+        .apply_procedure_progress(&ProcedureProgress::StageStarted {
+            run_id,
+            stage: ProcedureStage::Localization,
+        })
+        .unwrap()
+        .unwrap();
+    actor
+        .apply_procedure_progress(&ProcedureProgress::AttemptAccepted {
+            run_id,
+            number: 1,
+            targets: 2,
+        })
+        .unwrap()
+        .unwrap();
+    actor
+        .apply_procedure_progress(&ProcedureProgress::RunFinished {
+            run_id,
+            disposition: ProcedureTerminalDisposition::AwaitingReview,
+        })
+        .unwrap()
+        .unwrap();
+    let evidence = actor.snapshot().operations[0].message.as_deref().unwrap();
+    assert!(evidence.contains("Stage started: Localization"));
+    assert!(evidence.contains("Attempt 1 accepted with 2 target(s)"));
+    assert_eq!(
+        actor.snapshot().operations[0].phase,
+        OperationPhase::AwaitingReview
+    );
+    let revision = actor.snapshot().revision;
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision,
+            command: AppCommand::ReviewProcedure {
+                run_id: run_id.as_str(),
+                decision: deepseek_custom::application::dto::ReviewDecision::Reject
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(matches!(rx.try_recv().unwrap(), ProcedureCommand::Review {
+        run_id: actual,
+        decision: ProcedureReviewDecision::Reject,
+    } if actual == run_id));
+}
+
+// covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: User runs an operational workflow
+#[test]
+fn every_operational_workspace_keeps_its_typed_command_and_observable_state() {
+    let commands = [
+        (
+            OperationKind::Autopilot,
+            AppCommand::StartAutopilot {
+                task: "repeat".into(),
+                iterations: 2,
+            },
+        ),
+        (
+            OperationKind::Cascade,
+            AppCommand::StartCascade {
+                prompt: "search".into(),
+                backend: "worker".into(),
+                n: 3,
+                vote_k: 1,
+                check_cmd: None,
+                diversity_hints: vec![],
+                escalate_backend: None,
+            },
+        ),
+        (
+            OperationKind::Evolve,
+            AppCommand::StartEvolve {
+                prompt: "evolve".into(),
+                backend: "worker".into(),
+                generations: 2,
+                population: 2,
+                fitness_cmd: "score".into(),
+                feature_cmd: None,
+                islands: 1,
+                migration_interval: 0,
+                mutation_hints: vec![],
+            },
+        ),
+        (
+            OperationKind::Procedure,
+            AppCommand::RunProcedure {
+                change_id: "web-change".into(),
+                task_id: "5.4".into(),
+            },
+        ),
+    ];
+    let expected_commands = [
+        "start_autopilot",
+        "start_cascade",
+        "start_evolve",
+        "run_procedure",
+    ];
+    for ((kind, command), expected_command) in commands.into_iter().zip(expected_commands) {
+        let encoded = serde_json::to_value(command).unwrap();
+        assert_eq!(encoded["command"], expected_command);
+        let running = OperationState {
+            kind,
+            operation_id: Some(format!("{expected_command}-run")),
+            phase: OperationPhase::Running,
+            progress: Some(deepseek_custom::application::dto::OperationProgress {
+                completed: 1,
+                total: Some(2),
+            }),
+            message: Some("live progress".into()),
+            error: None,
+        };
+        assert_eq!(running.progress.unwrap().completed, 1);
+        assert_eq!(running.phase, OperationPhase::Running);
+        let terminal = OperationState {
+            phase: OperationPhase::Completed,
+            message: Some("terminal outcome".into()),
+            ..running
+        };
+        assert_eq!(terminal.message.as_deref(), Some("terminal outcome"));
+    }
+}
+
+#[test]
+fn procedure_browser_modes_dispatch_existing_preview_whole_change_and_apply_commands() {
+    fn connected() -> (ApplicationActor, mpsc::UnboundedReceiver<ProcedureCommand>) {
+        let mut snapshot = AppSnapshot::initial(
+            VisibleSettings::from_settings(&Settings::default(), None, None),
+            SessionSummary {
+                id: "s".into(),
+                title: "t".into(),
+                backend: "b".into(),
+                model: "m".into(),
+            },
+        );
+        snapshot.settings.procedure.localization_backend = Some("localizer".into());
+        let mut actor = ApplicationActor::new(snapshot, 8);
+        let (tx, rx) = mpsc::unbounded_channel();
+        actor.connect_procedure(DomainCommandPort::new(tx), Arc::new(AtomicBool::new(false)));
+        (actor, rx)
+    }
+    let localization_run_id = ProcedureRunId::new();
+    let preview_id = PatchPreviewId::new();
+
+    let (mut actor, mut rx) = connected();
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command: AppCommand::PreviewProcedure {
+                localization_run_id: localization_run_id.as_str(),
+                change_id: "change".into(),
+                task_id: "1.1".into(),
+                route: deepseek_custom::application::dto::ProcedureRouteOverride::ForceLocal,
+                local_backend: "local".into(),
+                local_model: "lm".into(),
+                frontier_backend: "frontier".into(),
+                frontier_model: "fm".into(),
+            }
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(
+        matches!(rx.try_recv().unwrap(), ProcedureCommand::Preview { request, .. }
+        if request.localization_run_id == localization_run_id && request.local_backend == "local" && request.route_override == deepseek_custom::procedure::RouteOverride::ForceLocal)
+    );
+
+    let (mut actor, mut rx) = connected();
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command: AppCommand::RunWholeChangeProcedure {
+                change_id: "change".into(),
+                route: deepseek_custom::application::dto::ProcedureRouteOverride::ForceFrontier,
+                localization_backend: "localizer".into(),
+                local_backend: "local".into(),
+                local_model: "lm".into(),
+                frontier_backend: "frontier".into(),
+                frontier_model: "fm".into(),
+            }
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(
+        matches!(rx.try_recv().unwrap(), ProcedureCommand::WholeChange { request, .. }
+        if request.change_id == "change" && request.route_override == deepseek_custom::procedure::RouteOverride::ForceFrontier)
+    );
+
+    let (mut actor, mut rx) = connected();
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: AppRevision(0),
+            command: AppCommand::ApplyProcedure {
+                localization_run_id: localization_run_id.as_str(),
+                preview_id: preview_id.as_str(),
+                change_id: "change".into(),
+                task_id: "1.1".into(),
+            }
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(
+        matches!(rx.try_recv().unwrap(), ProcedureCommand::Apply { request, .. }
+        if request.localization_run_id == localization_run_id && request.preview_id == preview_id)
+    );
 }
 
 fn notice(id: u64, message: &str) -> AppEvent {

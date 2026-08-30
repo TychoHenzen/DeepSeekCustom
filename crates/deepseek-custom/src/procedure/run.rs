@@ -19,6 +19,11 @@ impl ProcedureRunId {
     pub fn as_str(&self) -> String {
         self.0.to_string()
     }
+
+    /// Parse the browser-visible UUID back into its typed run identity.
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
 }
 
 impl Default for ProcedureRunId {

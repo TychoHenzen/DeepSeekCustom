@@ -381,6 +381,31 @@ pub enum AppCommand {
         change_id: String,
         task_id: String,
     },
+    PreviewProcedure {
+        localization_run_id: String,
+        change_id: String,
+        task_id: String,
+        route: ProcedureRouteOverride,
+        local_backend: String,
+        local_model: String,
+        frontier_backend: String,
+        frontier_model: String,
+    },
+    RunWholeChangeProcedure {
+        change_id: String,
+        route: ProcedureRouteOverride,
+        localization_backend: String,
+        local_backend: String,
+        local_model: String,
+        frontier_backend: String,
+        frontier_model: String,
+    },
+    ApplyProcedure {
+        localization_run_id: String,
+        preview_id: String,
+        change_id: String,
+        task_id: String,
+    },
     ReviewProcedure {
         run_id: String,
         decision: ReviewDecision,
@@ -395,6 +420,14 @@ pub enum AppCommand {
 pub enum ReviewDecision {
     Approve,
     Reject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureRouteOverride {
+    Automatic,
+    ForceLocal,
+    ForceFrontier,
 }
 
 /// Stable response shape for every state-changing request.

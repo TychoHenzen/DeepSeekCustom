@@ -103,9 +103,11 @@
 <!-- status: completed -->
 - [x] 5.3 Implement Cascade and Evolve workspaces over existing parameter validation, commands, counters, progress, results, and shared search stop flag.
 <!-- status: completed -->
-- [ ] 5.4 Implement the Procedure workspace for change selection, run modes, progress, route and patch evidence, diffs, reports, failures, interruption, and terminal outcomes.
+- [x] 5.4 Implement the Procedure workspace for change selection, run modes, progress, route and patch evidence, diffs, reports, failures, interruption, and terminal outcomes.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: User runs an operational workflow -->
-- [ ] 5.5 Implement run-scoped Procedure approval and rejection controls with complete review evidence and protection against stale decisions.
+- [x] 5.5 Implement run-scoped Procedure approval and rejection controls with complete review evidence and protection against stale decisions.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: Procedure waits for review -->
 - [ ] 5.6 Recreate the maintained Procedure visual states from deterministic reports at desktop and narrow viewports.
 - [ ] 5.7 Verify the operational milestone with deterministic Autopilot, Cascade, Evolve, and Procedure success, stop, failure, review, and terminal runs.

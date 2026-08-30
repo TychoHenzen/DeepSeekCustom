@@ -13,6 +13,11 @@ use crate::application::session::ApplicationSession;
 use crate::gui::PendingSwitch;
 use crate::gui::session_state::SessionOrigin;
 use crate::gui::transcript::{BlockKind, Severity};
+use crate::procedure::{
+    ApplyRequest, PatchPreviewId, PatchPreviewRequest, ProcedureCommand, ProcedureProgress,
+    ProcedureReviewDecision, ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad,
+    ProcedureTerminalDisposition, RouteOverride, WholeChangeCommandRequest,
+};
 use crate::search::cascade::{CascadeParams, MAX_ATTEMPTS};
 use crate::search::evolve::{EvolveParams, MAX_TOTAL_DISPATCHES};
 use crate::search::{SearchCommand, SearchKind};
@@ -22,9 +27,19 @@ use crate::voice::service::VoiceCommand;
 use super::dto::{
     AppChange, AppChangeKind, AppCommand, AppCommandRequest, AppCommandResult, AppError,
     AppErrorCode, AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState,
-    PendingSessionSwitch, SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings,
-    Workspace,
+    PendingSessionSwitch, ProcedureRouteOverride, ReviewDecision, SessionSummary, TranscriptBlock,
+    TranscriptContent, VisibleSettings, Workspace,
 };
+
+impl From<ProcedureRouteOverride> for RouteOverride {
+    fn from(value: ProcedureRouteOverride) -> Self {
+        match value {
+            ProcedureRouteOverride::Automatic => Self::Automatic,
+            ProcedureRouteOverride::ForceLocal => Self::ForceLocal,
+            ProcedureRouteOverride::ForceFrontier => Self::ForceFrontier,
+        }
+    }
+}
 
 /// Result of asking the actor for changes after a known revision.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,8 +76,10 @@ pub struct ApplicationActor {
     voice: Option<DomainCommandPort<VoiceCommand>>,
     autopilot: Option<DomainCommandPort<RepeatCommand>>,
     search: Option<DomainCommandPort<SearchCommand>>,
+    procedure: Option<DomainCommandPort<ProcedureCommand>>,
     repeat_interrupt: Option<Arc<AtomicBool>>,
     search_interrupt: Option<Arc<AtomicBool>>,
+    procedure_interrupt: Option<Arc<AtomicBool>>,
 }
 
 /// Process-private chat lifecycle dependencies used by every presentation adapter.
@@ -102,8 +119,10 @@ impl ApplicationActor {
             voice: None,
             autopilot: None,
             search: None,
+            procedure: None,
             repeat_interrupt: None,
             search_interrupt: None,
+            procedure_interrupt: None,
         }
     }
 
@@ -145,6 +164,15 @@ impl ApplicationActor {
     ) {
         self.search = Some(search);
         self.search_interrupt = Some(interrupt);
+    }
+
+    pub fn connect_procedure(
+        &mut self,
+        procedure: DomainCommandPort<ProcedureCommand>,
+        interrupt: Arc<AtomicBool>,
+    ) {
+        self.procedure = Some(procedure);
+        self.procedure_interrupt = Some(interrupt);
     }
 
     pub fn register_attachment(&mut self, id: String, attachment: ImageAttachment) {
@@ -287,6 +315,9 @@ impl ApplicationActor {
             AppCommand::StopOperation {
                 kind: kind @ (OperationKind::Cascade | OperationKind::Evolve),
             } => self.stop_flagged_operation(kind, true),
+            AppCommand::StopOperation {
+                kind: OperationKind::Procedure,
+            } => self.stop_procedure(),
             AppCommand::NewSession => self.request_session_switch(PendingSwitch::New),
             AppCommand::LoadSession { session_id } => {
                 let Ok(id) = SessionId::parse(&session_id) else {
@@ -522,6 +553,277 @@ impl ApplicationActor {
                     Some(u64::from(planned.min(MAX_TOTAL_DISPATCHES))),
                 )
             }
+            AppCommand::RunProcedure { change_id, task_id } => {
+                let change_id = change_id.trim().to_string();
+                let task_id = task_id.trim().to_string();
+                if change_id.is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("change_id", "change id is required"),
+                    };
+                }
+                if task_id.is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("task_id", "task id is required"),
+                    };
+                }
+                if self.has_active_operation() {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("another operation is already running"),
+                    };
+                }
+                let Some(port) = &self.procedure else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure service is not connected"),
+                    };
+                };
+                let Some(backend) = self
+                    .snapshot
+                    .settings
+                    .procedure
+                    .localization_backend
+                    .clone()
+                else {
+                    return AppCommandResult::Rejected {
+                        error: invalid(
+                            "localization_backend",
+                            "procedure localization backend is required",
+                        ),
+                    };
+                };
+                let run_id = ProcedureRunId::new();
+                if let Some(flag) = &self.procedure_interrupt {
+                    flag.store(false, Ordering::SeqCst);
+                }
+                if port
+                    .send(ProcedureCommand::Run {
+                        run_id,
+                        backend,
+                        request: ProcedureRunRequest {
+                            change_id,
+                            task_id,
+                            scratchpad: ProcedureScratchpad::default(),
+                        },
+                    })
+                    .is_err()
+                {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure command channel is closed"),
+                    };
+                }
+                self.start_operation_with_id(
+                    OperationKind::Procedure,
+                    Some(run_id.as_str()),
+                    None,
+                    "Procedure started",
+                )
+            }
+            AppCommand::PreviewProcedure {
+                localization_run_id,
+                change_id,
+                task_id,
+                route,
+                local_backend,
+                local_model,
+                frontier_backend,
+                frontier_model,
+            } => {
+                let Some(port) = &self.procedure else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure service is not connected"),
+                    };
+                };
+                let Ok(localization_run_id) = ProcedureRunId::parse(&localization_run_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("localization_run_id", "localization run id is invalid"),
+                    };
+                };
+                if [
+                    change_id.as_str(),
+                    task_id.as_str(),
+                    local_backend.as_str(),
+                    local_model.as_str(),
+                    frontier_backend.as_str(),
+                    frontier_model.as_str(),
+                ]
+                .iter()
+                .any(|value| value.trim().is_empty())
+                {
+                    return AppCommandResult::Rejected {
+                        error: invalid("procedure_preview", "all preview fields are required"),
+                    };
+                }
+                if self.has_active_operation() {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("another operation is already running"),
+                    };
+                }
+                let preview_id = PatchPreviewId::new();
+                let request = PatchPreviewRequest {
+                    localization_run_id,
+                    change_id,
+                    task_id,
+                    route_override: route.into(),
+                    local_backend,
+                    local_model,
+                    frontier_backend,
+                    frontier_model,
+                };
+                if port
+                    .send(ProcedureCommand::Preview {
+                        preview_id,
+                        request,
+                    })
+                    .is_err()
+                {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure command channel is closed"),
+                    };
+                }
+                self.start_procedure_command(preview_id.as_str(), "Procedure preview started")
+            }
+            AppCommand::RunWholeChangeProcedure {
+                change_id,
+                route,
+                localization_backend,
+                local_backend,
+                local_model,
+                frontier_backend,
+                frontier_model,
+            } => {
+                let Some(port) = &self.procedure else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure service is not connected"),
+                    };
+                };
+                if [
+                    change_id.as_str(),
+                    localization_backend.as_str(),
+                    local_backend.as_str(),
+                    local_model.as_str(),
+                    frontier_backend.as_str(),
+                    frontier_model.as_str(),
+                ]
+                .iter()
+                .any(|value| value.trim().is_empty())
+                {
+                    return AppCommandResult::Rejected {
+                        error: invalid("whole_change", "all whole-change fields are required"),
+                    };
+                }
+                if self.has_active_operation() {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("another operation is already running"),
+                    };
+                }
+                let run_id = ProcedureRunId::new();
+                let request = WholeChangeCommandRequest {
+                    change_id,
+                    route_override: route.into(),
+                    localization_backend,
+                    local_backend,
+                    local_model,
+                    frontier_backend,
+                    frontier_model,
+                };
+                if port
+                    .send(ProcedureCommand::WholeChange { run_id, request })
+                    .is_err()
+                {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure command channel is closed"),
+                    };
+                }
+                self.start_procedure_command(run_id.as_str(), "Whole-change Procedure started")
+            }
+            AppCommand::ApplyProcedure {
+                localization_run_id,
+                preview_id,
+                change_id,
+                task_id,
+            } => {
+                let Some(port) = &self.procedure else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure service is not connected"),
+                    };
+                };
+                let Ok(localization_run_id) = ProcedureRunId::parse(&localization_run_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("localization_run_id", "localization run id is invalid"),
+                    };
+                };
+                let Ok(preview_id) = PatchPreviewId::parse(&preview_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("preview_id", "preview id is invalid"),
+                    };
+                };
+                if change_id.trim().is_empty() || task_id.trim().is_empty() {
+                    return AppCommandResult::Rejected {
+                        error: invalid("procedure_apply", "change id and task id are required"),
+                    };
+                }
+                if self.has_active_operation() {
+                    return AppCommandResult::Rejected {
+                        error: operation_active("another operation is already running"),
+                    };
+                }
+                let run_id = ProcedureRunId::new();
+                let request = ApplyRequest {
+                    localization_run_id,
+                    preview_id,
+                    change_id,
+                    task_id,
+                };
+                if port
+                    .send(ProcedureCommand::Apply { run_id, request })
+                    .is_err()
+                {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure command channel is closed"),
+                    };
+                }
+                self.start_procedure_command(run_id.as_str(), "Procedure apply started")
+            }
+            AppCommand::ReviewProcedure { run_id, decision } => {
+                let current_run = self.snapshot.operations.iter().find(|operation| {
+                    operation.kind == OperationKind::Procedure
+                        && operation.phase == OperationPhase::AwaitingReview
+                });
+                if current_run.and_then(|operation| operation.operation_id.as_deref())
+                    != Some(run_id.as_str())
+                {
+                    return AppCommandResult::Rejected {
+                        error: invalid("run_id", "procedure review run is no longer current"),
+                    };
+                }
+                let Ok(run_id) = ProcedureRunId::parse(&run_id) else {
+                    return AppCommandResult::Rejected {
+                        error: invalid("run_id", "procedure run id is invalid"),
+                    };
+                };
+                let Some(port) = &self.procedure else {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure service is not connected"),
+                    };
+                };
+                let decision = match decision {
+                    ReviewDecision::Approve => ProcedureReviewDecision::Approve,
+                    ReviewDecision::Reject => ProcedureReviewDecision::Reject,
+                };
+                if port
+                    .send(ProcedureCommand::Review { run_id, decision })
+                    .is_err()
+                {
+                    return AppCommandResult::Rejected {
+                        error: unavailable("procedure command channel is closed"),
+                    };
+                }
+                match self.publish(AppChangeKind::OperationChanged(
+                    current_run.unwrap().clone(),
+                )) {
+                    Ok(revision) => AppCommandResult::Applied { revision },
+                    Err(error) => AppCommandResult::Rejected { error },
+                }
+            }
             _ => AppCommandResult::Rejected {
                 error: unavailable("command is not connected to a domain port yet"),
             },
@@ -570,13 +872,28 @@ impl ApplicationActor {
         total: Option<u64>,
         message: &str,
     ) -> AppCommandResult {
-        let operation = OperationState {
+        self.start_operation_with_id(
             kind,
-            operation_id: Some(format!(
+            Some(format!(
                 "{}-{}",
                 operation_label(kind).to_lowercase(),
                 self.snapshot.revision.0 + 1
             )),
+            total,
+            message,
+        )
+    }
+
+    fn start_operation_with_id(
+        &mut self,
+        kind: OperationKind,
+        operation_id: Option<String>,
+        total: Option<u64>,
+        message: &str,
+    ) -> AppCommandResult {
+        let operation = OperationState {
+            kind,
+            operation_id,
             phase: OperationPhase::Running,
             progress: Some(super::dto::OperationProgress {
                 completed: 0,
@@ -587,6 +904,41 @@ impl ApplicationActor {
         };
         self.snapshot.operations.retain(|item| item.kind != kind);
         self.snapshot.operations.push(operation.clone());
+        match self.publish(AppChangeKind::OperationChanged(operation)) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        }
+    }
+
+    fn start_procedure_command(&mut self, operation_id: String, message: &str) -> AppCommandResult {
+        if let Some(flag) = &self.procedure_interrupt {
+            flag.store(false, Ordering::SeqCst);
+        }
+        self.start_operation_with_id(OperationKind::Procedure, Some(operation_id), None, message)
+    }
+
+    fn stop_procedure(&mut self) -> AppCommandResult {
+        let running = self.snapshot.operations.iter().any(|item| {
+            item.kind == OperationKind::Procedure && item.phase == OperationPhase::Running
+        });
+        if !running {
+            return AppCommandResult::Rejected {
+                error: operation_active("operation is not running"),
+            };
+        }
+        let Some(flag) = &self.procedure_interrupt else {
+            return AppCommandResult::Rejected {
+                error: unavailable("procedure stop flag is not connected"),
+            };
+        };
+        flag.store(true, Ordering::SeqCst);
+        let operation = self
+            .snapshot
+            .operations
+            .iter()
+            .find(|item| item.kind == OperationKind::Procedure)
+            .unwrap()
+            .clone();
         match self.publish(AppChangeKind::OperationChanged(operation)) {
             Ok(revision) => AppCommandResult::Applied { revision },
             Err(error) => AppCommandResult::Rejected { error },
@@ -787,6 +1139,291 @@ impl ApplicationActor {
             _ => return None,
         };
         Some(self.apply_event(AppEvent::OperationChanged(state)))
+    }
+
+    /// Project run-scoped Procedure progress without allowing stale runs to
+    /// replace the evidence or decisions for the currently displayed run.
+    pub fn apply_procedure_progress(
+        &mut self,
+        event: &ProcedureProgress,
+    ) -> Option<Result<AppRevision, AppError>> {
+        match event {
+            ProcedureProgress::PreviewStarted { preview_id } => {
+                return Some(self.apply_procedure_mode_state(
+                    preview_id.as_str(),
+                    OperationPhase::Running,
+                    "Patch preview started".into(),
+                    None,
+                ));
+            }
+            ProcedureProgress::PreviewFinished {
+                preview_id,
+                preview,
+                report_path,
+            } => {
+                let evidence = format!(
+                    "Patch preview completed\nAutomatic route: {}\nOverride: {}\nEffective route: {}\nBackend: {}\nModel: {}\nTargets:\n{}\nRationale: {}\nReport: {}\nComplete unified diff:\n{}",
+                    preview.route.automatic_tier,
+                    preview.route.selected_override,
+                    preview.route.effective_tier,
+                    preview.backend,
+                    preview.model,
+                    preview.targets.join("\n"),
+                    preview.rationale,
+                    report_path.display(),
+                    preview.unified_diff,
+                );
+                return Some(self.apply_procedure_mode_state(
+                    preview_id.as_str(),
+                    OperationPhase::Completed,
+                    evidence,
+                    None,
+                ));
+            }
+            ProcedureProgress::PreviewFailed {
+                preview_id,
+                message,
+            } => {
+                return Some(self.apply_procedure_mode_state(
+                    preview_id.as_str(),
+                    OperationPhase::Failed,
+                    format!("Patch preview failed: {message}"),
+                    Some(AppError {
+                        code: AppErrorCode::ServiceFailed,
+                        message: message.clone(),
+                        recoverable: true,
+                        field: None,
+                    }),
+                ));
+            }
+            ProcedureProgress::SampledFinished {
+                run_id,
+                disposition,
+                message,
+            } => {
+                let (phase, error) = terminal_procedure_state(disposition);
+                return Some(self.apply_procedure_mode_state(
+                    run_id.as_str(),
+                    phase,
+                    format!("{message}\nTerminal disposition: {disposition:?}"),
+                    error,
+                ));
+            }
+            ProcedureProgress::Apply { run_id, progress } => {
+                let (phase, error) = match progress.as_ref() {
+                    crate::procedure::ProcedureApplyProgress::Finished { disposition } => {
+                        terminal_procedure_state(disposition)
+                    }
+                    crate::procedure::ProcedureApplyProgress::PromotionFailed {
+                        message, ..
+                    } => (
+                        OperationPhase::Failed,
+                        Some(AppError {
+                            code: AppErrorCode::ServiceFailed,
+                            message: message.clone(),
+                            recoverable: true,
+                            field: None,
+                        }),
+                    ),
+                    _ => (OperationPhase::Running, None),
+                };
+                return Some(self.apply_procedure_mode_state(
+                    run_id.as_str(),
+                    phase,
+                    format!("Apply evidence: {progress:#?}"),
+                    error,
+                ));
+            }
+            ProcedureProgress::RepairTransition { run_id, event } => {
+                return Some(self.apply_procedure_mode_state(
+                    run_id.as_str(),
+                    OperationPhase::Running,
+                    format!("Repair transition: {event:#?}"),
+                    None,
+                ));
+            }
+            _ => {}
+        }
+        let (run_id, phase, progress, evidence, error) = match event {
+            ProcedureProgress::RunStarted {
+                run_id,
+                change_id,
+                task_id,
+            } => (
+                *run_id,
+                OperationPhase::Running,
+                Some((0, Some(3))),
+                format!("Run started\nChange: {change_id}\nTask: {task_id}"),
+                None,
+            ),
+            ProcedureProgress::StageStarted { run_id, stage } => (
+                *run_id,
+                OperationPhase::Running,
+                None,
+                format!("Stage started: {stage:?}"),
+                None,
+            ),
+            ProcedureProgress::StageCompleted { run_id, stage } => (
+                *run_id,
+                OperationPhase::Running,
+                None,
+                format!("Stage completed: {stage:?}"),
+                None,
+            ),
+            ProcedureProgress::AttemptStarted {
+                run_id,
+                number,
+                backend,
+                model,
+            } => (
+                *run_id,
+                OperationPhase::Running,
+                None,
+                format!("Attempt {number}: {backend} / {model}"),
+                None,
+            ),
+            ProcedureProgress::AttemptRejected {
+                run_id,
+                number,
+                error,
+            } => (
+                *run_id,
+                OperationPhase::Running,
+                None,
+                format!("Attempt {number} rejected: {error}"),
+                None,
+            ),
+            ProcedureProgress::AttemptAccepted {
+                run_id,
+                number,
+                targets,
+            } => (
+                *run_id,
+                OperationPhase::Running,
+                None,
+                format!("Attempt {number} accepted with {targets} target(s)"),
+                None,
+            ),
+            ProcedureProgress::RunFinished {
+                run_id,
+                disposition,
+            } => {
+                let (phase, error) = match disposition {
+                    ProcedureTerminalDisposition::Succeeded => (OperationPhase::Completed, None),
+                    ProcedureTerminalDisposition::AwaitingReview => {
+                        (OperationPhase::AwaitingReview, None)
+                    }
+                    ProcedureTerminalDisposition::Interrupted => {
+                        (OperationPhase::Interrupted, None)
+                    }
+                    ProcedureTerminalDisposition::Failed { reason } => (
+                        OperationPhase::Failed,
+                        Some(AppError {
+                            code: AppErrorCode::ServiceFailed,
+                            message: reason.clone(),
+                            recoverable: true,
+                            field: None,
+                        }),
+                    ),
+                };
+                (
+                    *run_id,
+                    phase,
+                    Some((3, Some(3))),
+                    format!("Terminal disposition: {disposition:?}"),
+                    error,
+                )
+            }
+            ProcedureProgress::ReviewSucceeded {
+                run_id,
+                disposition,
+            } => (
+                *run_id,
+                OperationPhase::Completed,
+                None,
+                format!("Review decision: {disposition}"),
+                None,
+            ),
+            ProcedureProgress::ReviewFailed {
+                run_id,
+                disposition,
+                error,
+            } => (
+                *run_id,
+                OperationPhase::AwaitingReview,
+                None,
+                format!("Review {disposition} failed: {error}"),
+                Some(AppError {
+                    code: AppErrorCode::ServiceFailed,
+                    message: error.clone(),
+                    recoverable: true,
+                    field: None,
+                }),
+            ),
+            ProcedureProgress::RunFailed { run_id, message } => (
+                *run_id,
+                OperationPhase::Failed,
+                None,
+                format!("Run failed: {message}"),
+                Some(AppError {
+                    code: AppErrorCode::ServiceFailed,
+                    message: message.clone(),
+                    recoverable: true,
+                    field: None,
+                }),
+            ),
+            _ => return None,
+        };
+        let run_id = run_id.as_str();
+        let previous = self
+            .snapshot
+            .operations
+            .iter()
+            .find(|operation| operation.kind == OperationKind::Procedure);
+        if !matches!(event, ProcedureProgress::RunStarted { .. })
+            && previous.and_then(|operation| operation.operation_id.as_deref())
+                != Some(run_id.as_str())
+        {
+            return None;
+        }
+        let message = previous
+            .and_then(|operation| operation.message.as_deref())
+            .map_or(evidence.clone(), |current| format!("{current}\n{evidence}"));
+        let progress = progress
+            .map(|(completed, total)| super::dto::OperationProgress { completed, total })
+            .or_else(|| previous.and_then(|operation| operation.progress));
+        Some(self.apply_event(AppEvent::OperationChanged(OperationState {
+            kind: OperationKind::Procedure,
+            operation_id: Some(run_id),
+            phase,
+            progress,
+            message: Some(message),
+            error,
+        })))
+    }
+
+    fn apply_procedure_mode_state(
+        &mut self,
+        operation_id: String,
+        phase: OperationPhase,
+        evidence: String,
+        error: Option<AppError>,
+    ) -> Result<AppRevision, AppError> {
+        let previous = self.snapshot.operations.iter().find(|operation| {
+            operation.kind == OperationKind::Procedure
+                && operation.operation_id.as_deref() == Some(operation_id.as_str())
+        });
+        let message = previous
+            .and_then(|operation| operation.message.as_deref())
+            .map_or(evidence.clone(), |current| format!("{current}\n{evidence}"));
+        self.apply_event(AppEvent::OperationChanged(OperationState {
+            kind: OperationKind::Procedure,
+            operation_id: Some(operation_id),
+            phase,
+            progress: previous.and_then(|operation| operation.progress),
+            message: Some(message),
+            error,
+        }))
     }
 
     fn operation_id(&self, kind: OperationKind) -> Option<String> {
@@ -1040,6 +1677,25 @@ fn operation_kind(kind: SearchKind) -> OperationKind {
     match kind {
         SearchKind::Cascade => OperationKind::Cascade,
         SearchKind::Evolve => OperationKind::Evolve,
+    }
+}
+
+fn terminal_procedure_state(
+    disposition: &ProcedureTerminalDisposition,
+) -> (OperationPhase, Option<AppError>) {
+    match disposition {
+        ProcedureTerminalDisposition::Succeeded => (OperationPhase::Completed, None),
+        ProcedureTerminalDisposition::AwaitingReview => (OperationPhase::AwaitingReview, None),
+        ProcedureTerminalDisposition::Interrupted => (OperationPhase::Interrupted, None),
+        ProcedureTerminalDisposition::Failed { reason } => (
+            OperationPhase::Failed,
+            Some(AppError {
+                code: AppErrorCode::ServiceFailed,
+                message: reason.clone(),
+                recoverable: true,
+                field: None,
+            }),
+        ),
     }
 }
 

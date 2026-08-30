@@ -137,6 +137,7 @@ export function App({ client }: AppProps) {
             kind={selectedWorkspace}
             operation={view.snapshot.operations.find((operation) => operation.kind === selectedWorkspace) ?? null}
             selectedBackend={view.snapshot.settings.selected_backend}
+            selectedModel={view.snapshot.settings.selected_model}
             send={(command) => client.send(command)}
           />
         ) : <section aria-labelledby="workspace-actions-title" className="workspace-actions">

@@ -11,6 +11,7 @@ export interface OperationWorkspaceProps {
   send(this: void, command: AppCommand): Promise<AppCommandResult>;
   backends?: string[];
   selectedBackend?: string | null;
+  selectedModel?: string | null;
 }
 
 const labels: Record<WorkspaceKind, string> = {
@@ -20,7 +21,7 @@ const labels: Record<WorkspaceKind, string> = {
   procedure: 'Procedure',
 };
 
-export function OperationWorkspace({ kind, operation, activeOperation, send, backends = [], selectedBackend = null }: OperationWorkspaceProps) {
+export function OperationWorkspace({ kind, operation, activeOperation, send, backends = [], selectedBackend = null, selectedModel = null }: OperationWorkspaceProps) {
   const [primary, setPrimary] = useState('');
   const [secondary, setSecondary] = useState(kind === 'autopilot' ? '3' : '');
   const [backend, setBackend] = useState(selectedBackend ?? backends[0] ?? '');
@@ -37,6 +38,10 @@ export function OperationWorkspace({ kind, operation, activeOperation, send, bac
   const ownsActiveOperation = active && activeOperation?.kind === kind;
   const blockedBy = active && !ownsActiveOperation ? labels[activeOperation.kind as WorkspaceKind] ?? activeOperation.kind : null;
   const title = labels[kind];
+
+  if (kind === 'procedure') {
+    return <ProcedureWorkspace activeOperation={activeOperation} backends={backends} operation={operation} selectedBackend={selectedBackend} selectedModel={selectedModel} send={send} />;
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -62,9 +67,9 @@ export function OperationWorkspace({ kind, operation, activeOperation, send, bac
     <form aria-label={`Start ${title}`} onSubmit={(event) => void submit(event)}>
       <label htmlFor={`${kind}-primary`}>{primaryLabel(kind)}</label>
       <textarea id={`${kind}-primary`} onChange={(event) => setPrimary(event.target.value)} value={primary} />
-      {(kind === 'autopilot' || kind === 'procedure') && <>
-        <label htmlFor={`${kind}-secondary`}>{kind === 'autopilot' ? 'Iterations' : 'Task ID'}</label>
-        <input id={`${kind}-secondary`} min={kind === 'autopilot' ? 1 : undefined} onChange={(event) => setSecondary(event.target.value)} type={kind === 'autopilot' ? 'number' : 'text'} value={secondary} />
+      {kind === 'autopilot' && <>
+        <label htmlFor={`${kind}-secondary`}>Iterations</label>
+        <input id={`${kind}-secondary`} min={1} onChange={(event) => setSecondary(event.target.value)} type="number" value={secondary} />
       </>}
       {(kind === 'cascade' || kind === 'evolve') && <SearchFields
         backend={backend} backends={backends} command={command} countA={countA}
@@ -78,6 +83,107 @@ export function OperationWorkspace({ kind, operation, activeOperation, send, bac
       {blockedBy !== null && <p className="disabled-reason" id={`${kind}-blocked`}>{blockedBy} is active. Stop or finish it before starting {title}.</p>}
     </form>
     <OperationProgress operation={operation} onStop={() => send({ command: 'stop_operation', payload: { kind } })} showStop={ownsActiveOperation} />
+  </section>;
+}
+
+function ProcedureWorkspace({ operation, activeOperation, send, backends = [], selectedBackend = null, selectedModel = null }: Omit<OperationWorkspaceProps, 'kind'>) {
+  const [changeId, setChangeId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [mode, setMode] = useState<'localize' | 'preview' | 'whole_change' | 'apply'>('localize');
+  const [localizationRunId, setLocalizationRunId] = useState('');
+  const [previewId, setPreviewId] = useState('');
+  const [route, setRoute] = useState<'automatic' | 'force_local' | 'force_frontier'>('automatic');
+  const [localBackend, setLocalBackend] = useState(selectedBackend ?? backends[0] ?? '');
+  const [localModel, setLocalModel] = useState(selectedModel ?? '');
+  const [frontierBackend, setFrontierBackend] = useState(selectedBackend ?? backends[0] ?? '');
+  const [frontierModel, setFrontierModel] = useState(selectedModel ?? '');
+  const [validation, setValidation] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewingRunId, setReviewingRunId] = useState<string | null>(null);
+  const active = activeOperation?.phase === 'running' || activeOperation?.phase === 'awaiting_review';
+  const ownsActiveOperation = active && activeOperation?.kind === 'procedure';
+  const blockedBy = active && !ownsActiveOperation
+    ? labels[activeOperation.kind as WorkspaceKind] ?? activeOperation.kind
+    : null;
+  const reviewRunId = operation?.phase === 'awaiting_review' ? operation.operation_id : null;
+  const reviewInFlight = reviewRunId !== null && reviewingRunId === reviewRunId;
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const required = [changeId.trim()];
+    if (mode !== 'whole_change') required.push(taskId.trim());
+    if (mode === 'preview' || mode === 'apply') required.push(localizationRunId.trim());
+    if (mode === 'preview' || mode === 'whole_change') required.push(localBackend.trim(), localModel.trim(), frontierBackend.trim(), frontierModel.trim());
+    if (mode === 'apply') required.push(previewId.trim());
+    if (required.some((value) => value.length === 0)) {
+      setValidation('All fields for the selected Procedure mode are required.');
+      return;
+    }
+    const command: AppCommand = mode === 'localize'
+      ? { command: 'run_procedure', payload: { change_id: changeId.trim(), task_id: taskId.trim() } }
+      : mode === 'preview'
+        ? { command: 'preview_procedure', payload: { localization_run_id: localizationRunId.trim(), change_id: changeId.trim(), task_id: taskId.trim(), route, local_backend: localBackend.trim(), local_model: localModel.trim(), frontier_backend: frontierBackend.trim(), frontier_model: frontierModel.trim() } }
+        : mode === 'whole_change'
+          ? { command: 'run_whole_change_procedure', payload: { change_id: changeId.trim(), route, localization_backend: localBackend.trim(), local_backend: localBackend.trim(), local_model: localModel.trim(), frontier_backend: frontierBackend.trim(), frontier_model: frontierModel.trim() } }
+          : { command: 'apply_procedure', payload: { localization_run_id: localizationRunId.trim(), preview_id: previewId.trim(), change_id: changeId.trim(), task_id: taskId.trim() } };
+    setValidation(null);
+    setSubmitting(true);
+    try {
+      const result = await send(command);
+      if (result.status === 'rejected') setValidation(result.error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function review(decision: 'approve' | 'reject') {
+    if (reviewRunId === null) return;
+    const selectedRunId = reviewRunId;
+    setReviewingRunId(selectedRunId);
+    try {
+      const result = await send({ command: 'review_procedure', payload: { run_id: selectedRunId, decision } });
+      if (result.status === 'rejected') setValidation(result.error.message);
+    } finally {
+      setReviewingRunId((current) => current === selectedRunId ? null : current);
+    }
+  }
+
+  return <section aria-labelledby="procedure-title" className="operation-workspace procedure-workspace">
+    <h3 id="procedure-title">Procedure operation</h3>
+    <form aria-label="Start Procedure" onSubmit={(event) => void submit(event)}>
+      <fieldset className="operation-parameters">
+        <legend>Run selection</legend>
+        <label htmlFor="procedure-mode">Run mode</label>
+        <select id="procedure-mode" onChange={(event) => setMode(event.target.value as typeof mode)} value={mode}><option value="localize">Localize task</option><option value="preview">Preview patch</option><option value="whole_change">Whole change</option><option value="apply">Apply preview</option></select>
+        <label htmlFor="procedure-change">Change ID</label>
+        <input id="procedure-change" onChange={(event) => setChangeId(event.target.value)} value={changeId} />
+        <label htmlFor="procedure-task">Task ID</label>
+        <input id="procedure-task" onChange={(event) => setTaskId(event.target.value)} value={taskId} />
+        {(mode === 'preview' || mode === 'apply') && <><label htmlFor="procedure-localization-run">Localization run ID</label><input id="procedure-localization-run" onChange={(event) => setLocalizationRunId(event.target.value)} value={localizationRunId} /></>}
+        {mode === 'apply' && <><label htmlFor="procedure-preview-id">Preview ID</label><input id="procedure-preview-id" onChange={(event) => setPreviewId(event.target.value)} value={previewId} /></>}
+        {(mode === 'preview' || mode === 'whole_change') && <>
+          <label htmlFor="procedure-route">Route</label><select id="procedure-route" onChange={(event) => setRoute(event.target.value as typeof route)} value={route}><option value="automatic">Automatic</option><option value="force_local">Force local</option><option value="force_frontier">Force frontier</option></select>
+          <label htmlFor="procedure-local-backend">Local backend</label><input id="procedure-local-backend" onChange={(event) => setLocalBackend(event.target.value)} value={localBackend} />
+          <label htmlFor="procedure-local-model">Local model</label><input id="procedure-local-model" onChange={(event) => setLocalModel(event.target.value)} value={localModel} />
+          <label htmlFor="procedure-frontier-backend">Frontier backend</label><input id="procedure-frontier-backend" onChange={(event) => setFrontierBackend(event.target.value)} value={frontierBackend} />
+          <label htmlFor="procedure-frontier-model">Frontier model</label><input id="procedure-frontier-model" onChange={(event) => setFrontierModel(event.target.value)} value={frontierModel} />
+        </>}
+        <p className="field-help">This run localizes the selected OpenSpec task. Route, patch, diff, report, and failure evidence appears below in execution order.</p>
+      </fieldset>
+      {validation !== null && <p className="validation-message" role="alert">{validation}</p>}
+      <button aria-describedby={blockedBy === null ? undefined : 'procedure-blocked'} disabled={submitting || active} type="submit">Start Procedure</button>
+      {blockedBy !== null && <p className="disabled-reason" id="procedure-blocked">{blockedBy} is active. Stop or finish it before starting Procedure.</p>}
+    </form>
+    <OperationProgress operation={operation} onStop={() => send({ command: 'stop_operation', payload: { kind: 'procedure' } })} showStop={ownsActiveOperation && operation?.phase === 'running'} />
+    {reviewRunId !== null && <section aria-label="Procedure review" className="procedure-review">
+      <h4>Review Procedure run {reviewRunId}</h4>
+      <p>Complete review evidence</p>
+      <pre aria-label="Complete review evidence">{operation?.message ?? 'No review evidence was supplied.'}</pre>
+      <div className="review-actions">
+        <button disabled={reviewInFlight} onClick={() => void review('approve')} type="button">Approve this run</button>
+        <button disabled={reviewInFlight} onClick={() => void review('reject')} type="button">Reject this run</button>
+      </div>
+    </section>}
   </section>;
 }
 
