@@ -172,4 +172,5 @@ mod voice_tts;
 mod voice_vad;
 mod voice_wake;
 mod web_assets;
+mod web_browser;
 mod web_server;

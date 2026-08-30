@@ -230,13 +230,16 @@
       "status": "completed"
     },
     "6.17": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.3": {
       "checked": false

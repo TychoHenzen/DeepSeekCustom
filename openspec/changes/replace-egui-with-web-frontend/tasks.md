@@ -162,12 +162,15 @@
 <!-- covers: deepseek-custom/test-suite-control :: Test results do not imply repository readiness :: Selected tests pass -->
 - [x] 6.16 Build the responsive Tests workspace for catalogue refresh, filtering, full, module, and exact runs, progress, cancellation, history, failures, and output inspection.
 <!-- status: completed -->
-- [ ] 6.17 Verify the test milestone with actual discovery and one exact passing test, plus deterministic discovery failure, test failure, concurrency, cancellation, truncation, retention, and reconnect cases.
+- [x] 6.17 Verify the test milestone with actual discovery and one exact passing test, plus deterministic discovery failure, test failure, concurrency, cancellation, truncation, retention, and reconnect cases.
+<!-- status: completed -->
 
 ## 7. Add Playwright-RS Browser Automation
 
-- [ ] 7.1 Add locked `playwright-rs` test dependencies, a version-matched browser installer, focused command, artifact paths, and direct missing-runtime guidance.
-- [ ] 7.2 Build the isolated browser harness with ephemeral loopback server, temporary project root, scripted backend, and deterministic dialog, voice, clock, and test-executor services.
+- [x] 7.1 Add locked `playwright-rs` test dependencies, a version-matched browser installer, focused command, artifact paths, and direct missing-runtime guidance.
+<!-- status: completed -->
+- [x] 7.2 Build the isolated browser harness with ephemeral loopback server, temporary project root, scripted backend, and deterministic dialog, voice, clock, and test-executor services.
+<!-- status: completed -->
 - [ ] 7.3 Convert primary browser locators to accessible role and name, with documented test identifiers only where no semantic identity exists.
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser controls have stable semantic identities :: Automation locates a primary action -->
 - [ ] 7.4 Assert disabled state and its visible reason for unavailable or conflicting actions.

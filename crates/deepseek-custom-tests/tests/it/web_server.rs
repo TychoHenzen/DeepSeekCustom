@@ -326,11 +326,11 @@ async fn non_loopback_policy_never_creates_a_listener() {
     drop(exclusive_probe);
 }
 
-fn run_async_test(future: impl std::future::Future<Output = ()>) {
+pub(super) fn run_async_test(future: impl std::future::Future<Output = ()>) {
     tokio::runtime::Runtime::new().unwrap().block_on(future);
 }
 
-fn visible_snapshot() -> AppSnapshot {
+pub(super) fn visible_snapshot() -> AppSnapshot {
     AppSnapshot {
         revision: AppRevision::INITIAL,
         workspace: Workspace::Procedure,

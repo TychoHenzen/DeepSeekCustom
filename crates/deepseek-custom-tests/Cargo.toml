@@ -59,6 +59,11 @@ wiremock = "0.6"
 reqwest = { version = "0.12", features = ["multipart"] }
 base64 = "0.22"
 async-trait = "0.1"
+# Exact pin keeps the bundled Playwright 1.62.1 driver and installed Chromium
+# build aligned. Browser installation is explicit; normal Rust tests do not
+# download a browser.
+playwright-rs = "=0.17.0"
+tempfile = "=3.27.0"
 # Same version and feature set as deepseek-custom's own dependency, so this
 # resolves to the one already-locked copy instead of a second one. Needed
 # for gui_attachment.rs, which builds and decodes real PNG/JPEG bytes the
