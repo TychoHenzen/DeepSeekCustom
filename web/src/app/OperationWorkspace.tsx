@@ -175,6 +175,7 @@ function ProcedureWorkspace({ operation, activeOperation, send, backends = [], s
       {blockedBy !== null && <p className="disabled-reason" id="procedure-blocked">{blockedBy} is active. Stop or finish it before starting Procedure.</p>}
     </form>
     <OperationProgress operation={operation} onStop={() => send({ command: 'stop_operation', payload: { kind: 'procedure' } })} showStop={ownsActiveOperation && operation?.phase === 'running'} />
+    {operation?.message !== null && operation?.message !== undefined && <ProcedureEvidence message={operation.message} />}
     {reviewRunId !== null && <section aria-label="Procedure review" className="procedure-review">
       <h4>Review Procedure run {reviewRunId}</h4>
       <p>Complete review evidence</p>
@@ -187,11 +188,24 @@ function ProcedureWorkspace({ operation, activeOperation, send, backends = [], s
   </section>;
 }
 
+function ProcedureEvidence({ message }: { message: string }) {
+  const entries = message.split('\n').map((line) => {
+    const separator = line.indexOf(':');
+    return separator < 1 ? null : { label: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() };
+  }).filter((entry): entry is { label: string; value: string } => entry !== null);
+  if (entries.length === 0) return null;
+  return <section aria-labelledby="procedure-evidence-title" className="procedure-evidence">
+    <h4 id="procedure-evidence-title">Procedure evidence</h4>
+    <dl>{entries.map((entry, index) => <div key={`${entry.label}-${index}`}><dt>{entry.label}</dt><dd>{entry.value}</dd></div>)}</dl>
+  </section>;
+}
+
 function OperationProgress({ operation, onStop, showStop }: { operation: OperationState | null; onStop: () => Promise<AppCommandResult>; showStop: boolean }) {
   if (operation === null || operation.phase === 'idle') return <p className="operation-empty">No operation has run in this workspace.</p>;
   const terminal = ['completed', 'failed', 'interrupted', 'cancelled'].includes(operation.phase);
   return <section aria-labelledby="operation-progress-title" className="operation-progress">
     <h4 id="operation-progress-title">Progress</h4>
+    {operation.operation_id !== null && <p><strong>Run:</strong> <code>{operation.operation_id}</code></p>}
     <ol className="progress-timeline">
       <li><strong>{operation.phase.replace('_', ' ')}</strong>{operation.progress && ` ${operation.progress.completed} of ${operation.progress.total ?? 'unknown'}`}</li>
     </ol>

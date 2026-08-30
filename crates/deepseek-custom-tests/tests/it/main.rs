@@ -57,6 +57,7 @@ mod application_actor;
 mod application_dto;
 mod application_services;
 mod application_session;
+mod application_test_control;
 mod autopilot_answerer;
 mod autopilot_policy;
 mod autopilot_question;

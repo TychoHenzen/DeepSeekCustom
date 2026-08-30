@@ -158,13 +158,16 @@
       "status": "completed"
     },
     "5.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "5.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.2": {
       "checked": false

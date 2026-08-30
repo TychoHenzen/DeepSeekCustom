@@ -305,6 +305,30 @@ button:disabled {
 .result-interrupted,
 .result-cancelled { border-color: #ffd166; }
 
+.procedure-evidence {
+  min-width: 0;
+  margin-block-start: 1rem;
+  border: 1px solid #52606d;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.procedure-evidence dl {
+  display: grid;
+  gap: 0.5rem;
+  margin-block-end: 0;
+}
+
+.procedure-evidence dl > div {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.25fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.procedure-evidence dt { font-weight: 800; text-transform: capitalize; }
+.procedure-evidence dd { min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
 .chat-workspace textarea {
   min-height: 6rem;
   resize: vertical;
@@ -364,5 +388,10 @@ button:disabled {
 
   .app-shell {
     padding: 0.75rem;
+  }
+
+  .procedure-evidence dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
   }
 }

@@ -109,12 +109,15 @@
 - [x] 5.5 Implement run-scoped Procedure approval and rejection controls with complete review evidence and protection against stale decisions.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-application :: Existing operational workspaces remain available :: Procedure waits for review -->
-- [ ] 5.6 Recreate the maintained Procedure visual states from deterministic reports at desktop and narrow viewports.
-- [ ] 5.7 Verify the operational milestone with deterministic Autopilot, Cascade, Evolve, and Procedure success, stop, failure, review, and terminal runs.
+- [x] 5.6 Recreate the maintained Procedure visual states from deterministic reports at desktop and narrow viewports.
+<!-- status: completed -->
+- [x] 5.7 Verify the operational milestone with deterministic Autopilot, Cascade, Evolve, and Procedure success, stop, failure, review, and terminal runs.
+<!-- status: completed -->
 
 ## 6. Add Test Suite Discovery and Control
 
-- [ ] 6.1 Define test catalogue, run request, output chunk, counts, outcome, retained result, and active-slot types plus deterministic executor and clock seams.
+- [x] 6.1 Define test catalogue, run request, output chunk, counts, outcome, retained result, and active-slot types plus deterministic executor and clock seams.
+<!-- status: completed -->
 - [ ] 6.2 Discover the actual integration target, parse exact test names, group module prefixes, and expose the approved full-workspace run.
 <!-- covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds -->
 - [ ] 6.3 Preserve a stale successful catalogue and show exact command, exit code, and bounded diagnostics when discovery fails.
