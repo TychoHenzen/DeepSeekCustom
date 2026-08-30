@@ -7,6 +7,10 @@ Nothing is sent to a cloud speech service.
 This doc covers what to download, where the files go, and how the
 harness finds them.
 
+The browser Settings workspace owns voice controls. Push-to-talk keyboard
+events call the Rust voice service through the typed application port. Audio
+capture, transcription, synthesis, and playback stay in the local Rust process.
+
 ## What you need
 
 Download three things:
@@ -141,15 +145,14 @@ wheels on its own. You do not need to add anything to `PATH`.
 
 ## Running the model-dependent tests
 
-Two tests need the real model files above on disk:
-`voice::stt::tests::transcribe_returns_text_with_a_real_model` and
-`voice::tts::tests::synth_returns_24khz_samples_with_a_real_model`. They
-sit behind the `voice-models` cargo feature, off by default, so a
-fresh checkout with no models downloaded still passes `cargo test`.
+Two integration tests need the real model files above on disk. They sit in
+`crates/deepseek-custom-tests` behind the `voice-models` Cargo feature. The
+feature is off by default. A fresh checkout without models can run the normal
+workspace tests.
 Once the files are in place, run:
 
-```
-cargo test --features voice-models
+```powershell
+cargo test --workspace --features deepseek-custom-tests/voice-models
 ```
 
 ## Build requirements

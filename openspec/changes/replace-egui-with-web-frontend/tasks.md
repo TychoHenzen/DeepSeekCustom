@@ -212,9 +212,12 @@
 <!-- status: completed -->
 - [x] 8.3 Delete `crates/deepseek-custom/src/gui`, native paint and clipboard seams, temporary dual-start wiring, and obsolete GUI-only tests.
 <!-- status: completed -->
-- [ ] 8.4 Remove `egui`, `eframe`, `egui_commonmark`, `egui_extras`, and UI-only transitive support dependencies after proving no production or test references remain.
-- [ ] 8.5 Update `AGENTS.md`, `docs/agent-project-context.md`, build and run documentation, voice and folder-picker notes, test prerequisites, and maintained Procedure visual evidence.
-- [ ] 8.6 Run the exact frontend install, type, lint, and production-build gates and confirm the binary serves only embedded production assets.
+- [x] 8.4 Remove `egui`, `eframe`, `egui_commonmark`, `egui_extras`, and UI-only transitive support dependencies after proving no production or test references remain.
+<!-- status: completed -->
+- [x] 8.5 Update `AGENTS.md`, `docs/agent-project-context.md`, build and run documentation, voice and folder-picker notes, test prerequisites, and maintained Procedure visual evidence.
+<!-- status: completed -->
+- [x] 8.6 Run the exact frontend install, type, lint, and production-build gates and confirm the binary serves only embedded production assets.
+<!-- status: completed -->
 - [ ] 8.7 Run focused actor, HTTP, test-service, and `playwright-rs` tests, then `cargo fmt --all -- --check`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace -j 1 -- --test-threads=1`.
 - [ ] 8.8 Run strict OpenSpec validation and `dod-guard cover replace-egui-with-web-frontend`; require every scenario bound with no regressions.
 - [ ] 8.9 Perform the final practice run from the production binary without Vite: exercise every workspace, reload during active work, run and cancel tests, inspect retained results, and confirm the checkout has no unexpected changes.

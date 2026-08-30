@@ -6,7 +6,7 @@
 //!
 //! That default is expensive here. Cargo builds one linked executable per
 //! `.rs` file directly under `tests/`, and each one statically links the
-//! whole dependency tree: ONNX Runtime, whisper.cpp, egui, eframe, cpal.
+//! whole dependency tree: ONNX Runtime, whisper.cpp, browser support, and cpal.
 //! Measured on this tree at 71 files, that came to 2.1 GB of executables
 //! and 2.9 GB of debug symbols, about 5 GB rebuilt from scratch on every
 //! full test run. Cleaning `target/` could not help, because the next run

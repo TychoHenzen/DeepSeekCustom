@@ -2,7 +2,7 @@
 
 ## Project
 
-DeepSeekCustom is an experimental Rust harness for AI coding agents. It provides four backend kinds behind one egui GUI:
+DeepSeekCustom is an experimental Rust harness for AI coding agents. It provides four backend kinds behind one loopback web application:
 
 - In-process API backends for DeepSeek and Ollama.
 - A Claude CLI backend using a `claude -p` child process.

@@ -19,8 +19,10 @@ recreates the embedded asset directory, then writes a sorted manifest with SHA-2
 digests. Use the locked dependency graph for a clean build:
 
 ```powershell
-npm --prefix web ci
-npm --prefix web run build
+Push-Location web
+npm ci
+npm run build
+Pop-Location
 ```
 
 For local frontend development, `npm --prefix web run dev` proxies `/api` to
@@ -52,7 +54,7 @@ At the printed URL, verify these points without a mouse:
 5. Confirm the page does not scroll horizontally. Long workspace content may scroll inside its own container.
 
 The deterministic server check confirms that the HTML references the built script
-and stylesheet, and that Rust serves both files:
+and stylesheet. It also proves that Rust serves both files without Vite:
 
 ```powershell
 cargo test -p deepseek-custom-tests --test it production_shell_references_assets_that_the_rust_server_serves

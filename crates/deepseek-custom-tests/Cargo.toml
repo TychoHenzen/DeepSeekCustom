@@ -70,18 +70,6 @@ tempfile = "=3.27.0"
 # for gui_attachment.rs, which builds and decodes real PNG/JPEG bytes the
 # same way src/gui/attachment.rs does.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-# Same version and feature set as deepseek-custom's own dependency. Needed
-# for gui_attachment.rs to construct an `arboard::ImageData` directly, the
-# same way the moved clipboard-paste tests already did.
-arboard = { version = "3.6", default-features = false, features = ["image-data"] }
-# Same version as deepseek-custom's own dependency, so this resolves to the
-# one already-locked copy. Needed for gui.rs, which asserts a block's colour
-# against `egui::Color32::WHITE`, the same way the moved inline test did.
-eframe = "0.31"
-# Already present in Cargo.lock through eframe. The visual evidence example
-# uses it directly to render egui into a fixed offscreen texture, without an
-# OS window or changing the production crate's renderer.
-egui-wgpu = "0.31"
 
 [features]
 # Forwards to deepseek-custom's own voice-models feature. Off by default,
