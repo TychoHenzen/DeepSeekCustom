@@ -6,8 +6,11 @@
 
 use std::{
     collections::BTreeMap,
+    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
+    thread,
 };
 
 use serde::{Deserialize, Serialize};
@@ -138,6 +141,14 @@ pub struct ActiveTestSlot {
     pub omitted_output_bytes: u64,
 }
 
+/// Browser-safe projection of the test service's current process-owned state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestControlSnapshot {
+    pub discovery: TestDiscoveryState,
+    pub active: Option<ActiveTestSlot>,
+    pub latest_result: Option<RetainedTestResult>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestProcessExit {
     pub exit_code: Option<i32>,
@@ -188,6 +199,15 @@ impl Default for TestRunCoordinator {
 }
 
 impl TestRunCoordinator {
+    /// Capture reconnect state without transferring ownership of the process.
+    pub fn snapshot(&self, discovery: &TestDiscoveryState) -> TestControlSnapshot {
+        TestControlSnapshot {
+            discovery: discovery.clone(),
+            active: self.active.clone(),
+            latest_result: self.latest_result.clone(),
+        }
+    }
+
     /// Validate and start one run. The active-slot check happens before the
     /// executor boundary, so rejection cannot create a second process.
     pub fn start(
@@ -255,6 +275,31 @@ impl TestRunCoordinator {
         let result = finish_active(active, exit, now_ms, false);
         self.active = None;
         self.execution = None;
+        self.latest_result = Some(result);
+        Ok(self.latest_result.as_ref())
+    }
+
+    /// Stop and reap the complete active process tree, then free the run slot.
+    pub fn cancel(
+        &mut self,
+        clock: &dyn TestClock,
+    ) -> Result<Option<&RetainedTestResult>, TestExecutionError> {
+        let Some(mut active) = self.active.take() else {
+            return Ok(self.latest_result.as_ref());
+        };
+        let mut execution = self.execution.take().expect("active run owns execution");
+        while let Some(chunk) = execution.next_output()? {
+            active.output_chunks.push(chunk);
+        }
+        active.output_chunks.sort_by_key(|chunk| chunk.sequence);
+        active.output = active
+            .output_chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect();
+        active.counts = parse_cargo_test_report(&active.output).0;
+        let exit = execution.cancel_and_wait()?;
+        let result = finish_active(&active, exit, clock.now_ms(), true);
         self.latest_result = Some(result);
         Ok(self.latest_result.as_ref())
     }
@@ -657,6 +702,240 @@ impl TestExecutor for CargoTestDiscoveryExecutor {
                 message: format!("failed to start test discovery: {error}"),
             })?;
         Ok(Box::new(CompletedDiscoveryExecution::new(output)))
+    }
+}
+
+/// Production executor for test runs whose Cargo descendants must be reaped.
+#[derive(Debug, Default)]
+pub struct CargoTestExecutor;
+
+impl TestExecutor for CargoTestExecutor {
+    fn start(
+        &self,
+        invocation: &TestInvocation,
+    ) -> Result<Box<dyn TestExecution>, TestExecutionError> {
+        CargoTestExecution::spawn(invocation).map(|execution| Box::new(execution) as Box<_>)
+    }
+}
+
+enum CargoExecutionEvent {
+    Output(TestOutputChunk),
+    Exit(TestProcessExit),
+    Error(String),
+}
+
+struct CargoTestExecution {
+    events: mpsc::Receiver<CargoExecutionEvent>,
+    cancel: mpsc::Sender<()>,
+    terminal: Option<TestProcessExit>,
+    pending_output: std::collections::VecDeque<TestOutputChunk>,
+}
+
+impl CargoTestExecution {
+    fn spawn(invocation: &TestInvocation) -> Result<Self, TestExecutionError> {
+        let invocation = invocation.clone();
+        let (events_tx, events_rx) = mpsc::channel();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("cargo-test-process".into())
+            .spawn(move || run_cargo_process(invocation, events_tx, cancel_rx, started_tx))
+            .map_err(|error| execution_error("failed to create Cargo process owner", error))?;
+        started_rx.recv().map_err(|error| TestExecutionError {
+            message: format!("Cargo process owner stopped before spawn: {error}"),
+        })??;
+        Ok(Self {
+            events: events_rx,
+            cancel: cancel_tx,
+            terminal: None,
+            pending_output: std::collections::VecDeque::new(),
+        })
+    }
+
+    fn receive(&mut self, blocking: bool) -> Result<Option<TestOutputChunk>, TestExecutionError> {
+        let event = if blocking {
+            self.events.recv().map_err(|error| TestExecutionError {
+                message: format!("Cargo process owner disconnected: {error}"),
+            })?
+        } else {
+            match self.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(TestExecutionError {
+                        message: "Cargo process owner disconnected before exit".into(),
+                    });
+                }
+            }
+        };
+        match event {
+            CargoExecutionEvent::Output(chunk) => Ok(Some(chunk)),
+            CargoExecutionEvent::Exit(exit) => {
+                self.terminal = Some(exit);
+                Ok(None)
+            }
+            CargoExecutionEvent::Error(message) => Err(TestExecutionError { message }),
+        }
+    }
+}
+
+impl TestExecution for CargoTestExecution {
+    fn next_output(&mut self) -> Result<Option<TestOutputChunk>, TestExecutionError> {
+        if let Some(chunk) = self.pending_output.pop_front() {
+            return Ok(Some(chunk));
+        }
+        self.receive(false)
+    }
+
+    fn try_wait(&mut self) -> Result<Option<TestProcessExit>, TestExecutionError> {
+        while self.terminal.is_none() {
+            match self.receive(false)? {
+                Some(chunk) => self.pending_output.push_back(chunk),
+                None => break,
+            }
+        }
+        Ok(self.terminal)
+    }
+
+    fn cancel_and_wait(&mut self) -> Result<TestProcessExit, TestExecutionError> {
+        if let Some(exit) = self.terminal {
+            return Ok(exit);
+        }
+        let _ = self.cancel.send(());
+        while self.terminal.is_none() {
+            let _ = self.receive(true)?;
+        }
+        Ok(self
+            .terminal
+            .expect("blocking receive observed process exit"))
+    }
+}
+
+fn run_cargo_process(
+    invocation: TestInvocation,
+    events: mpsc::Sender<CargoExecutionEvent>,
+    cancel: mpsc::Receiver<()>,
+    started: mpsc::SyncSender<Result<(), TestExecutionError>>,
+) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = started.send(Err(execution_error(
+                "failed to create Cargo runtime",
+                error,
+            )));
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        use tokio::io::AsyncReadExt;
+
+        let resolved = resolve_command(&invocation.program);
+        let mut command = tokio::process::Command::new(&resolved.program);
+        command
+            .args(&resolved.prefix_args)
+            .args(&invocation.args)
+            .current_dir(&invocation.working_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        crate::process_group::prepare(&mut command);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = started.send(Err(execution_error("failed to start Cargo test", error)));
+                return;
+            }
+        };
+        #[cfg(windows)]
+        let isolated_group = crate::process_group::adopt_isolated(&child);
+        #[cfg(not(windows))]
+        crate::process_group::adopt(&child);
+        let mut stdout = child.stdout.take().expect("piped Cargo stdout");
+        let mut stderr = child.stderr.take().expect("piped Cargo stderr");
+        let _ = started.send(Ok(()));
+        let mut sequence = 0_u64;
+        let mut stdout_open = true;
+        let mut stderr_open = true;
+        let mut stdout_buffer = [0_u8; 8192];
+        let mut stderr_buffer = [0_u8; 8192];
+        loop {
+            if cancel.try_recv().is_ok() {
+                #[cfg(windows)]
+                let terminated = crate::process_group::terminate_isolated(
+                    isolated_group.as_ref(),
+                    &mut child,
+                );
+                #[cfg(not(windows))]
+                let terminated = crate::process_group::terminate(&mut child);
+                if let Err(error) = terminated {
+                    let _ = events.send(CargoExecutionEvent::Error(format!(
+                        "failed to terminate Cargo process tree: {error}"
+                    )));
+                    return;
+                }
+                match child.wait().await {
+                    Ok(status) => {
+                        let _ = events.send(CargoExecutionEvent::Exit(TestProcessExit {
+                            exit_code: status.code(),
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = events.send(CargoExecutionEvent::Error(format!(
+                            "failed to reap cancelled Cargo process tree: {error}"
+                        )));
+                    }
+                }
+                return;
+            }
+
+            tokio::select! {
+                read = stdout.read(&mut stdout_buffer), if stdout_open => match read {
+                    Ok(0) => stdout_open = false,
+                    Ok(length) => send_output(&events, &mut sequence, TestOutputStream::Stdout, &stdout_buffer[..length]),
+                    Err(error) => { let _ = events.send(CargoExecutionEvent::Error(format!("failed to read Cargo stdout: {error}"))); return; }
+                },
+                read = stderr.read(&mut stderr_buffer), if stderr_open => match read {
+                    Ok(0) => stderr_open = false,
+                    Ok(length) => send_output(&events, &mut sequence, TestOutputStream::Stderr, &stderr_buffer[..length]),
+                    Err(error) => { let _ = events.send(CargoExecutionEvent::Error(format!("failed to read Cargo stderr: {error}"))); return; }
+                },
+                status = child.wait(), if !stdout_open && !stderr_open => {
+                    match status {
+                        Ok(status) => { let _ = events.send(CargoExecutionEvent::Exit(TestProcessExit { exit_code: status.code() })); }
+                        Err(error) => { let _ = events.send(CargoExecutionEvent::Error(format!("failed to reap Cargo process tree: {error}"))); }
+                    }
+                    return;
+                },
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
+        }
+    });
+}
+
+fn send_output(
+    events: &mpsc::Sender<CargoExecutionEvent>,
+    sequence: &mut u64,
+    stream: TestOutputStream,
+    bytes: &[u8],
+) {
+    let chunk = TestOutputChunk {
+        sequence: *sequence,
+        stream,
+        text: String::from_utf8_lossy(bytes).into_owned(),
+    };
+    *sequence = sequence.saturating_add(1);
+    let _ = events.send(CargoExecutionEvent::Output(chunk));
+}
+
+fn execution_error(context: &str, error: impl Into<io::Error>) -> TestExecutionError {
+    TestExecutionError {
+        message: format!("{context}: {}", error.into()),
     }
 }
 

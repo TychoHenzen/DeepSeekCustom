@@ -4,11 +4,12 @@ use std::{
 };
 
 use deepseek_custom::application::test_control::{
-    ActiveTestSlot, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES, TestClock,
-    TestCounts, TestDiscoveryState, TestExecution, TestExecutionError, TestExecutor, TestIdentity,
-    TestInvocation, TestOutcome, TestOutputChunk, TestOutputStream, TestProcessExit,
-    TestRunCoordinator, TestRunRequest, TestRunRequestError, TestScope, classify_test_outcome,
-    full_workspace_test_invocation, integration_test_discovery_invocation,
+    ActiveTestSlot, CargoTestExecutor, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES,
+    TestClock, TestControlSnapshot, TestCounts, TestDiscoveryState, TestExecution,
+    TestExecutionError, TestExecutor, TestIdentity, TestInvocation, TestOutcome, TestOutputChunk,
+    TestOutputStream, TestProcessExit, TestRunCoordinator, TestRunRequest, TestRunRequestError,
+    TestScope, classify_test_outcome, full_workspace_test_invocation,
+    integration_test_discovery_invocation,
 };
 
 struct FixedClock(u64);
@@ -39,6 +40,41 @@ impl TestExecutor for ScriptedExecutor {
 struct ScriptedExecution {
     chunks: std::vec::IntoIter<TestOutputChunk>,
     exit: TestProcessExit,
+}
+
+struct RunningExecutor;
+
+impl TestExecutor for RunningExecutor {
+    fn start(
+        &self,
+        _invocation: &TestInvocation,
+    ) -> Result<Box<dyn TestExecution>, TestExecutionError> {
+        Ok(Box::new(RunningExecution {
+            output: Some(TestOutputChunk {
+                sequence: 0,
+                stream: TestOutputStream::Stdout,
+                text: "still running\n".into(),
+            }),
+        }))
+    }
+}
+
+struct RunningExecution {
+    output: Option<TestOutputChunk>,
+}
+
+impl TestExecution for RunningExecution {
+    fn next_output(&mut self) -> Result<Option<TestOutputChunk>, TestExecutionError> {
+        Ok(self.output.take())
+    }
+
+    fn try_wait(&mut self) -> Result<Option<TestProcessExit>, TestExecutionError> {
+        Ok(None)
+    }
+
+    fn cancel_and_wait(&mut self) -> Result<TestProcessExit, TestExecutionError> {
+        Ok(TestProcessExit { exit_code: None })
+    }
 }
 
 impl TestExecution for ScriptedExecution {
@@ -281,6 +317,131 @@ fn terminal_run_retains_cargo_counts_failures_exit_duration_and_outcome() {
         ),
         TestOutcome::InfrastructureError
     );
+}
+
+// covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: User cancels an active test run
+#[test]
+fn cancellation_records_terminal_outcome_releases_slot_and_allows_later_run() {
+    let root = PathBuf::from("fixed-project-root");
+    let discovery = discovered_state(83);
+    let request = TestRunRequest {
+        identity: discovery.catalogue.as_ref().unwrap().full_workspace.clone(),
+        catalogue_revision: 83,
+    };
+    let executor = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: "running 1 test\n".into(),
+        }],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut runs = TestRunCoordinator::default();
+    let first_id = runs
+        .start(&discovery, &request, &root, &executor, &FixedClock(4_000))
+        .unwrap()
+        .run_id
+        .clone();
+
+    let cancelled = runs.cancel(&FixedClock(4_025)).unwrap().unwrap();
+
+    assert_eq!(cancelled.run_id, first_id);
+    assert_eq!(cancelled.outcome, TestOutcome::Cancelled);
+    assert_eq!(cancelled.duration_ms, 25);
+    assert!(runs.active.is_none());
+    let later = runs
+        .start(&discovery, &request, &root, &executor, &FixedClock(4_100))
+        .unwrap();
+    assert_ne!(later.run_id, first_id);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: Browser disconnects during a test run
+#[test]
+fn reconnect_snapshot_restores_active_test_without_owning_its_execution() {
+    let root = PathBuf::from("fixed-project-root");
+    let discovery = discovered_state(84);
+    let request = TestRunRequest {
+        identity: discovery.catalogue.as_ref().unwrap().full_workspace.clone(),
+        catalogue_revision: 84,
+    };
+    let executor = RunningExecutor;
+    let mut runs = TestRunCoordinator::default();
+    let active_id = runs
+        .start(&discovery, &request, &root, &executor, &FixedClock(5_000))
+        .unwrap()
+        .run_id
+        .clone();
+
+    // A browser receives only this serialized projection. Dropping it cannot
+    // drop the coordinator's process handle or affect the active slot.
+    let disconnected_projection = runs.snapshot(&discovery);
+    let wire = serde_json::to_string(&disconnected_projection).unwrap();
+    drop(disconnected_projection);
+    assert_eq!(runs.active.as_ref().unwrap().run_id, active_id);
+    runs.poll(&FixedClock(5_020)).unwrap();
+
+    let reconnected: TestControlSnapshot =
+        serde_json::from_str(&serde_json::to_string(&runs.snapshot(&discovery)).unwrap()).unwrap();
+    assert_eq!(reconnected.active.as_ref().unwrap().run_id, active_id);
+    assert_eq!(
+        reconnected.active.as_ref().unwrap().output,
+        "still running\n"
+    );
+    assert!(wire.contains(&active_id));
+}
+
+#[cfg(windows)]
+#[test]
+fn cargo_executor_cancellation_reaps_a_real_windows_descendant() {
+    use std::time::{Duration, Instant};
+
+    let dir = super::scratch_dir("cargo-test-tree", "cancel");
+    let pid_file = dir.join("descendant.pid");
+    let script = format!(
+        "$child = Start-Process ping -ArgumentList '-t','127.0.0.1' -PassThru; Set-Content -LiteralPath '{}' -Value $child.Id; while ($true) {{ Start-Sleep -Milliseconds 100 }}",
+        pid_file.display()
+    );
+    let invocation = TestInvocation {
+        program: "powershell".into(),
+        args: vec!["-NoProfile".into(), "-Command".into(), script],
+        working_dir: dir.clone(),
+    };
+    let mut execution = CargoTestExecutor.start(&invocation).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let descendant_pid: u32 = std::fs::read_to_string(&pid_file)
+        .expect("parent must report its descendant pid")
+        .trim()
+        .parse()
+        .unwrap();
+
+    execution.cancel_and_wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut alive = true;
+    while alive && Instant::now() < deadline {
+        let output = std::process::Command::new("tasklist")
+            .args([
+                "/FI",
+                &format!("PID eq {descendant_pid}"),
+                "/FO",
+                "CSV",
+                "/NH",
+            ])
+            .output()
+            .unwrap();
+        alive = String::from_utf8_lossy(&output.stdout).contains(&descendant_pid.to_string());
+        if alive {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    eprintln!("cancelled Cargo tree descendant pid={descendant_pid}, alive_after_reap={alive}");
+    assert!(
+        !alive,
+        "descendant process {descendant_pid} survived cancellation"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds

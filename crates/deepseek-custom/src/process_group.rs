@@ -42,12 +42,12 @@ pub fn adopt(child: &tokio::process::Child) {
     let _ = child;
 }
 
-/// Own one Windows job for a single test child tree.
-#[cfg(all(windows, feature = "test-support"))]
+/// Own one Windows job for a single child tree.
+#[cfg(windows)]
 pub struct IsolatedProcessGroup(windows_impl::IsolatedJob);
 
-/// Put a test child in its own Windows job so interruption cannot kill siblings.
-#[cfg(all(windows, feature = "test-support"))]
+/// Put a child in its own Windows job so interruption cannot kill siblings.
+#[cfg(windows)]
 pub fn adopt_isolated(child: &tokio::process::Child) -> Option<IsolatedProcessGroup> {
     match windows_impl::adopt_isolated(child) {
         Ok(job) => job.map(IsolatedProcessGroup),
@@ -58,8 +58,8 @@ pub fn adopt_isolated(child: &tokio::process::Child) -> Option<IsolatedProcessGr
     }
 }
 
-/// Stop only the isolated test child tree.
-#[cfg(all(windows, feature = "test-support"))]
+/// Stop only the isolated child tree.
+#[cfg(windows)]
 pub fn terminate_isolated(
     group: Option<&IsolatedProcessGroup>,
     child: &mut tokio::process::Child,
@@ -162,17 +162,14 @@ mod windows_impl {
         unsafe { AssignProcessToJobObject(job, HANDLE(raw)) }
     }
 
-    #[cfg(feature = "test-support")]
     pub struct IsolatedJob(isize);
 
-    #[cfg(feature = "test-support")]
     impl IsolatedJob {
         fn handle(&self) -> HANDLE {
             HANDLE(self.0 as *mut core::ffi::c_void)
         }
     }
 
-    #[cfg(feature = "test-support")]
     impl Drop for IsolatedJob {
         fn drop(&mut self) {
             // SAFETY: this handle was created by `create_job` and is owned here.
@@ -180,7 +177,6 @@ mod windows_impl {
         }
     }
 
-    #[cfg(feature = "test-support")]
     pub fn adopt_isolated(
         child: &tokio::process::Child,
     ) -> windows::core::Result<Option<IsolatedJob>> {
@@ -212,7 +208,6 @@ mod windows_impl {
         child.start_kill()
     }
 
-    #[cfg(feature = "test-support")]
     pub fn terminate_isolated(
         group: &IsolatedJob,
         child: &mut tokio::process::Child,

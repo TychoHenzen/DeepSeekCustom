@@ -142,9 +142,11 @@
 - [x] 6.9 Parse reported counts and failed names, retain exit code and duration, and classify passed, failed, cancelled, and infrastructure-error terminal outcomes.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run finishes -->
-- [ ] 6.10 Adopt the Cargo process tree, implement cancellation and reaping, record cancelled outcome, and release the run slot.
+- [x] 6.10 Adopt the Cargo process tree, implement cancellation and reaping, record cancelled outcome, and release the run slot.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: User cancels an active test run -->
-- [ ] 6.11 Keep test execution independent of browser connections and restore current test state from a reconnect snapshot.
+- [x] 6.11 Keep test execution independent of browser connections and restore current test state from a reconnect snapshot.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: Browser disconnects during a test run -->
 - [ ] 6.12 Atomically store terminal results under `.deepseek/test-runs` and render up to 20 newest identities, outcomes, counts, durations, commands, and outputs.
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: User revisits recent results -->
