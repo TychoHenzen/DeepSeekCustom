@@ -1237,6 +1237,7 @@ dependencies = [
  "deepseek-custom",
  "eframe",
  "egui-wgpu",
+ "futures-util",
  "image",
  "playwright-rs",
  "reqwest",

@@ -24,10 +24,20 @@ cargo test -p deepseek-custom-tests --test it web_browser::installed_chromium_op
 A missing or incompatible runtime fails that command. The failure prints the
 version-matched installer command. It does not skip browser coverage.
 
-Browser failure evidence belongs under `target/playwright-artifacts/<test-name>/`.
-Each test directory will hold its screenshot, Playwright trace, browser console,
-and Rust server log. The artifact capture scenarios are implemented in tasks
-7.9 and 7.10.
+Browser failure evidence belongs under `target/playwright-artifacts/<test-name>/`
+from the workspace root. The path does not depend on Cargo's process working
+directory. Each failing test directory contains these deterministic paths:
+
+- `failure.png` is the full browser screenshot at the failed assertion.
+- `trace.zip` is a Playwright trace for `playwright show-trace`.
+- `browser-console.log` keeps browser messages in observed order.
+- `server.log` records the loopback server, revision, and failure diagnostic.
+
+The responsive matrix routes ordinary browser errors and assertion panics
+through this capture path. A passing run removes stale evidence for its test
+name. The controlled artifact test retains its evidence under
+`target/playwright-artifacts/controlled_responsive_failure/` so the outer
+passing test can inspect every file.
 
 The harness gives each test an ephemeral loopback URL and a temporary project
 root. It uses deterministic folder-dialog, voice, clock, model-event, and test

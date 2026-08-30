@@ -192,9 +192,11 @@
 - [x] 7.9 Run every primary workspace at 360 by 800, 768 by 1024, and 1440 by 900 while checking reachable actions, page overflow, clipping, overlap, and focus reachability.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive matrix passes -->
-- [ ] 7.10 Capture a screenshot, Playwright trace, browser console, and server log for a deliberately failing responsive assertion and for ordinary suite failures.
+- [x] 7.10 Capture a screenshot, Playwright trace, browser console, and server log for a deliberately failing responsive assertion and for ordinary suite failures.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive check fails -->
-- [ ] 7.11 Make missing or incompatible browser startup fail with the exact version-matched installation command instead of skipping.
+- [x] 7.11 Make missing or incompatible browser startup fail with the exact version-matched installation command instead of skipping.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser prerequisites and failures are explicit :: Browser runtime is missing -->
 - [ ] 7.12 Make the focused browser command build or locate production frontend assets, start the isolated Rust server, and finish without external model calls.
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser prerequisites and failures are explicit :: Focused browser suite runs -->

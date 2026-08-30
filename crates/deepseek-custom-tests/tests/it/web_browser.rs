@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
@@ -30,16 +31,167 @@ use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
     BindPolicy, NativeFolderPicker, WebAppState, WebServerHandle, start_with_policy_and_state,
 };
+use futures_util::FutureExt;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
-use playwright_rs::protocol::{AriaRole, GetByRoleOptions, Locator, Page, Viewport};
+use playwright_rs::LaunchOptions;
+use playwright_rs::protocol::{
+    AriaRole, BrowserContext, GetByRoleOptions, Locator, Page, TracingStartOptions,
+    TracingStopOptions, Viewport,
+};
 
 const INSTALL_COMMAND: &str =
     "cargo run -p deepseek-custom-tests --example install_playwright_chromium";
 const FOCUSED_COMMAND: &str =
     "cargo test -p deepseek-custom-tests --test it web_browser -- --test-threads=1";
 const ARTIFACT_ROOT: &str = "target/playwright-artifacts";
+const SCREENSHOT_FILE: &str = "failure.png";
+const TRACE_FILE: &str = "trace.zip";
+const CONSOLE_FILE: &str = "browser-console.log";
+const SERVER_FILE: &str = "server.log";
+
+#[derive(Debug)]
+struct BrowserFailureArtifacts {
+    directory: PathBuf,
+    screenshot: PathBuf,
+    trace: PathBuf,
+    console: PathBuf,
+    server: PathBuf,
+}
+
+impl BrowserFailureArtifacts {
+    fn for_test(test_name: &str) -> Self {
+        assert!(
+            !test_name.is_empty()
+                && test_name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'),
+            "browser artifact test name must be a non-empty Rust identifier"
+        );
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("test crate must remain two levels below the workspace root");
+        let directory = workspace_root.join(ARTIFACT_ROOT).join(test_name);
+        Self {
+            screenshot: directory.join(SCREENSHOT_FILE),
+            trace: directory.join(TRACE_FILE),
+            console: directory.join(CONSOLE_FILE),
+            server: directory.join(SERVER_FILE),
+            directory,
+        }
+    }
+
+    fn clear(&self) {
+        match std::fs::remove_dir_all(&self.directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!(
+                "could not clear browser artifact directory {}: {error}",
+                self.directory.display()
+            ),
+        }
+    }
+}
+
+async fn start_failure_capture(
+    context: &BrowserContext,
+    test_name: &str,
+) -> BrowserFailureArtifacts {
+    let artifacts = BrowserFailureArtifacts::for_test(test_name);
+    artifacts.clear();
+    let tracing = context.tracing().await.unwrap();
+    tracing
+        .start(Some(
+            TracingStartOptions::default()
+                .name(test_name)
+                .screenshots(true)
+                .snapshots(true),
+        ))
+        .await
+        .unwrap();
+    artifacts
+}
+
+async fn finish_failure_capture(
+    outcome: Result<(), String>,
+    context: &BrowserContext,
+    page: &Page,
+    harness: &BrowserHarness,
+    artifacts: &BrowserFailureArtifacts,
+) -> Result<(), String> {
+    let tracing = context.tracing().await.map_err(|error| error.to_string())?;
+    match outcome {
+        Ok(()) => {
+            tracing
+                .stop(Some(TracingStopOptions::default()))
+                .await
+                .map_err(|error| error.to_string())?;
+            artifacts.clear();
+            Ok(())
+        }
+        Err(diagnostic) => {
+            std::fs::create_dir_all(&artifacts.directory).map_err(|error| error.to_string())?;
+            page.screenshot_to_file(&artifacts.screenshot, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            let console = page
+                .console_messages()
+                .into_iter()
+                .map(|message| {
+                    format!(
+                        "{} {} {}:{}:{}",
+                        message.type_(),
+                        message.text(),
+                        message.location().url,
+                        message.location().line_number,
+                        message.location().column_number
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&artifacts.console, format!("{console}\n"))
+                .map_err(|error| error.to_string())?;
+            let snapshot = harness.state.snapshot();
+            std::fs::write(
+                &artifacts.server,
+                format!(
+                    "server_url={}\nserver_address={}\napplication_revision={}\nfailure={diagnostic}\n",
+                    harness.server.url(),
+                    harness.server.address(),
+                    snapshot.revision.0
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+            tracing
+                .stop(Some(
+                    TracingStopOptions::default().path(artifacts.trace.display().to_string()),
+                ))
+                .await
+                .map_err(|error| error.to_string())?;
+            Err(format!(
+                "{diagnostic}\nBrowser failure artifacts: {}",
+                artifacts.directory.display()
+            ))
+        }
+    }
+}
+
+fn browser_runtime_failure(error: &playwright_rs::Error) -> String {
+    format!(
+        "Chromium for locked playwright-rs 0.17.0 / Playwright {} is unavailable: {error}\nInstall it with:\n{INSTALL_COMMAND}",
+        playwright_rs::PLAYWRIGHT_VERSION
+    )
+}
+
+fn panic_diagnostic(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "browser assertion panicked without a string diagnostic".into())
+}
 
 #[derive(Clone)]
 struct FixedClock(u64);
@@ -737,12 +889,7 @@ fn installed_chromium_opens_the_isolated_real_server() {
         }
         .await;
         harness.shutdown().await;
-        let title = result.unwrap_or_else(|error| {
-            panic!(
-                "Chromium for locked playwright-rs 0.17.0 / Playwright {} is unavailable: {error}\nInstall it with:\n{INSTALL_COMMAND}",
-                playwright_rs::PLAYWRIGHT_VERSION
-            )
-        });
+        let title = result.unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
         assert_eq!(title, "DeepSeekCustom");
     });
 }
@@ -1302,12 +1449,24 @@ fn browser_state_matches_success_and_conflict_service_results() {
 fn every_workspace_passes_the_required_responsive_matrix() {
     super::web_server::run_async_test(async {
         let harness = BrowserHarness::start().await;
-        let browser_result = async {
-            let playwright = playwright_rs::Playwright::launch().await?;
-            let browser = playwright.chromium().launch().await?;
-            let page = browser.new_page().await?;
+        let playwright = playwright_rs::Playwright::launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let browser = playwright
+            .chromium()
+            .launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let context = browser.new_context().await.unwrap();
+        let artifacts = start_failure_capture(
+            &context,
+            "every_workspace_passes_the_required_responsive_matrix",
+        )
+        .await;
+        let page = context.new_page().await.unwrap();
+        let browser_result = AssertUnwindSafe(async {
             page.goto(harness.server.url(), None).await?;
-            let app = BrowserPage::new(page);
+            let app = BrowserPage::new(page.clone());
             app.wait_for_snapshot().await;
 
             let workspaces = [
@@ -1434,15 +1593,121 @@ fn every_workspace_passes_the_required_responsive_matrix() {
                 }
             }
 
-            browser.close().await?;
             Ok::<_, playwright_rs::Error>(())
-        }
+        })
+        .catch_unwind()
         .await;
+        let outcome = match browser_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("responsive browser operation failed: {error}")),
+            Err(payload) => Err(panic_diagnostic(payload)),
+        };
+        let retained = finish_failure_capture(outcome, &context, &page, &harness, &artifacts).await;
+        browser.close().await.unwrap();
         harness.shutdown().await;
-        browser_result.unwrap_or_else(|error| {
-            panic!(
-                "responsive browser matrix failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+        retained.unwrap_or_else(|error| panic!("responsive browser matrix failed: {error}"));
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive check fails
+#[test]
+fn controlled_responsive_failure_retains_complete_browser_artifacts() {
+    super::web_server::run_async_test(async {
+        const TEST_NAME: &str = "controlled_responsive_failure";
+
+        let harness = BrowserHarness::start().await;
+        let playwright = playwright_rs::Playwright::launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let browser = playwright
+            .chromium()
+            .launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let context = browser.new_context().await.unwrap();
+        let artifacts = start_failure_capture(&context, TEST_NAME).await;
+        let page = context.new_page().await.unwrap();
+        page.set_viewport_size(Viewport {
+            width: 360,
+            height: 800,
+        })
+        .await
+        .unwrap();
+        page.goto(harness.server.url(), None).await.unwrap();
+        let app = BrowserPage::new(page.clone());
+        app.wait_for_snapshot().await;
+        let _: serde_json::Value = page
+            .evaluate(
+                "() => console.error('controlled responsive diagnostic')",
+                None::<&()>,
             )
-        });
+            .await
+            .unwrap();
+
+        let metrics = document_metrics(&page).await.unwrap();
+        let controlled_failure = Err(format!(
+            "responsive assertion failed at 360x800: expected viewport width 361, observed {}",
+            metrics.viewport_width
+        ));
+        let diagnostic =
+            finish_failure_capture(controlled_failure, &context, &page, &harness, &artifacts)
+                .await
+                .expect_err("the controlled responsive assertion must fail");
+
+        assert!(diagnostic.contains("responsive assertion failed at 360x800"));
+        assert!(diagnostic.contains(&artifacts.directory.display().to_string()));
+        assert!(artifacts.screenshot.is_file());
+        assert!(std::fs::metadata(&artifacts.screenshot).unwrap().len() > 100);
+        assert!(artifacts.trace.is_file());
+        assert!(std::fs::metadata(&artifacts.trace).unwrap().len() > 100);
+        let console = std::fs::read_to_string(&artifacts.console).unwrap();
+        assert!(console.contains("error controlled responsive diagnostic"));
+        let server = std::fs::read_to_string(&artifacts.server).unwrap();
+        assert!(server.contains("server_url=http://127.0.0.1:"));
+        assert!(server.contains("failure=responsive assertion failed at 360x800"));
+
+        let passing_artifacts = BrowserFailureArtifacts::for_test("passing_capture_cleanup");
+        std::fs::create_dir_all(&passing_artifacts.directory).unwrap();
+        std::fs::write(passing_artifacts.directory.join("stale.txt"), "stale").unwrap();
+        let passing_artifacts = start_failure_capture(&context, "passing_capture_cleanup").await;
+        finish_failure_capture(Ok(()), &context, &page, &harness, &passing_artifacts)
+            .await
+            .unwrap();
+        assert!(!passing_artifacts.directory.exists());
+
+        browser.close().await.unwrap();
+        harness.shutdown().await;
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Browser prerequisites and failures are explicit :: Browser runtime is missing
+#[test]
+fn missing_browser_runtime_fails_with_version_matched_installer_guidance() {
+    super::web_server::run_async_test(async {
+        let isolated_runtime = tempfile::Builder::new()
+            .prefix("missing-playwright-browser-")
+            .tempdir()
+            .unwrap();
+        let missing_executable = isolated_runtime.path().join("chromium-not-installed.exe");
+        assert!(!missing_executable.exists());
+
+        let playwright = playwright_rs::Playwright::launch().await.unwrap();
+        let startup = playwright
+            .chromium()
+            .launch_with_options(
+                LaunchOptions::default().executable_path(missing_executable.display().to_string()),
+            )
+            .await;
+        let error = startup.expect_err("an isolated missing executable must fail browser startup");
+        let guidance = browser_runtime_failure(&error);
+
+        assert!(guidance.contains("playwright-rs 0.17.0 / Playwright 1.62.1"));
+        assert!(guidance.contains("Chromium"));
+        assert!(guidance.contains("unavailable"));
+        assert!(guidance.ends_with(INSTALL_COMMAND));
+        assert_eq!(
+            guidance.lines().rev().next().unwrap(),
+            "cargo run -p deepseek-custom-tests --example install_playwright_chromium"
+        );
     });
 }

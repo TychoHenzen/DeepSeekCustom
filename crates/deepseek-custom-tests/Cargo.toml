@@ -59,6 +59,7 @@ wiremock = "0.6"
 reqwest = { version = "0.12", features = ["multipart"] }
 base64 = "0.22"
 async-trait = "0.1"
+futures-util = "0.3"
 # Exact pin keeps the bundled Playwright 1.62.1 driver and installed Chromium
 # build aligned. Browser installation is explicit; normal Rust tests do not
 # download a browser.
