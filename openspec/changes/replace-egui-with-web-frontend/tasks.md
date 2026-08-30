@@ -206,9 +206,12 @@
 
 ## 8. Cut Over and Remove the Native Frontend
 
-- [ ] 8.1 Audit every native GUI test against the parity inventory and move each contract to actor, HTTP, frontend build, or Playwright coverage before deletion.
-- [ ] 8.2 Make local web startup the only production entrypoint and update `run.ps1` to report or open the served URL.
-- [ ] 8.3 Delete `crates/deepseek-custom/src/gui`, native paint and clipboard seams, temporary dual-start wiring, and obsolete GUI-only tests.
+- [x] 8.1 Audit every native GUI test against the parity inventory and move each contract to actor, HTTP, frontend build, or Playwright coverage before deletion.
+<!-- status: completed -->
+- [x] 8.2 Make local web startup the only production entrypoint and update `run.ps1` to report or open the served URL.
+<!-- status: completed -->
+- [x] 8.3 Delete `crates/deepseek-custom/src/gui`, native paint and clipboard seams, temporary dual-start wiring, and obsolete GUI-only tests.
+<!-- status: completed -->
 - [ ] 8.4 Remove `egui`, `eframe`, `egui_commonmark`, `egui_extras`, and UI-only transitive support dependencies after proving no production or test references remain.
 - [ ] 8.5 Update `AGENTS.md`, `docs/agent-project-context.md`, build and run documentation, voice and folder-picker notes, test prerequisites, and maintained Procedure visual evidence.
 - [ ] 8.6 Run the exact frontend install, type, lint, and production-build gates and confirm the binary serves only embedded production assets.

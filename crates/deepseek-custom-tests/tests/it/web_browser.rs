@@ -1331,7 +1331,7 @@ fn browser_state_matches_success_and_conflict_service_results() {
                 )
                 .await;
             let success_browser = settings_heading.inner_text().await?;
-            let success_snapshot = fetch_snapshot(&harness.server.url()).await;
+            let success_snapshot = fetch_snapshot(harness.server.url()).await;
             observable_mismatch(
                 "applied workspace",
                 &success_browser,
@@ -1395,7 +1395,7 @@ fn browser_state_matches_success_and_conflict_service_results() {
                 )
                 .await;
             let conflict_browser = procedure_heading.inner_text().await?;
-            let conflict_snapshot = fetch_snapshot(&harness.server.url()).await;
+            let conflict_snapshot = fetch_snapshot(harness.server.url()).await;
             observable_mismatch(
                 "conflict workspace",
                 &conflict_browser,
@@ -1706,7 +1706,7 @@ fn missing_browser_runtime_fails_with_version_matched_installer_guidance() {
         assert!(guidance.contains("unavailable"));
         assert!(guidance.ends_with(INSTALL_COMMAND));
         assert_eq!(
-            guidance.lines().rev().next().unwrap(),
+            guidance.lines().next_back().unwrap(),
             "cargo run -p deepseek-custom-tests --example install_playwright_chromium"
         );
     });

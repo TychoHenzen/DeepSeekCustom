@@ -1,11 +1,11 @@
-//! Unit tests for `deepseek_custom::gui::transcript` (`src/gui/transcript.rs`).
+//! Tests for the presentation-neutral application transcript model.
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use deepseek_custom::agent::events::{
     RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
 };
 use deepseek_custom::api::types::ImageAttachment;
-use deepseek_custom::gui::transcript::{
+use deepseek_custom::application::transcript::{
     Block, BlockId, BlockKind, Severity, Span, SubagentState, Transcript,
 };
 

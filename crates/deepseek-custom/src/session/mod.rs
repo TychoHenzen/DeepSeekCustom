@@ -3,10 +3,10 @@
 //! This file holds the shapes and the title derivation logic, and does no
 //! disk IO of its own. `store` below reads and writes them as one JSON
 //! file per session under `.deepseek/sessions/`, and
-//! `src/gui/session_state.rs` drives the saving and loading from the GUI.
+//! `src/application/session_state.rs` drives saving and loading for the application actor.
 
 use crate::api::types::{Content, Message, Role};
-use crate::gui::transcript::{BlockKind, Transcript};
+use crate::application::transcript::{BlockKind, Transcript};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;

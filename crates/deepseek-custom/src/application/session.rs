@@ -1,22 +1,19 @@
 //! Actor-owned transcript projection and current-session state.
 
-use crate::gui::session_state::SessionState;
-use crate::gui::transcript::{Block, BlockKind, Severity, Span, Transcript};
+use super::session_state::SessionState;
+use super::transcript::{Block, BlockKind, Severity, Span, Transcript};
 
 use super::dto::{
     NoticeLevel, PendingSessionSwitch, SessionSummary, TranscriptBlock, TranscriptContent,
     TranscriptSpan,
 };
 
-/// Presentation-neutral conversation state temporarily rendered by the native GUI.
-///
-/// The GUI remains an adapter during migration. It no longer owns these values
-/// independently, so a later web adapter can use the same serialized boundary.
+/// Presentation-neutral conversation state rendered through the web adapter.
 pub struct ApplicationSession {
     pub transcript: Transcript,
     pub sessions: SessionState,
     pub turn_active: bool,
-    pub pending_switch: Option<crate::gui::PendingSwitch>,
+    pub pending_switch: Option<PendingSwitch>,
 }
 
 impl ApplicationSession {
@@ -54,14 +51,20 @@ impl ApplicationSession {
 
     pub fn pending_session_switch(&self) -> Option<PendingSessionSwitch> {
         self.pending_switch.as_ref().map(|pending| match pending {
-            crate::gui::PendingSwitch::New => PendingSessionSwitch::New,
-            crate::gui::PendingSwitch::Load(id) => PendingSessionSwitch::Load(id.as_str()),
+            PendingSwitch::New => PendingSessionSwitch::New,
+            PendingSwitch::Load(id) => PendingSessionSwitch::Load(id.as_str()),
         })
     }
 
     pub fn transcript_projection(&self) -> Vec<TranscriptBlock> {
         self.transcript.blocks().iter().map(project_block).collect()
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PendingSwitch {
+    New,
+    Load(crate::session::SessionId),
 }
 
 fn project_block(block: &Block) -> TranscriptBlock {

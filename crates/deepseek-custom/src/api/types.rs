@@ -164,7 +164,7 @@ struct ImageUrlPayload {
 /// against each one.
 ///
 /// `Serialize`/`Deserialize` are derived so this type can sit inside
-/// `BlockKind::Image` in `src/gui/transcript.rs` and round-trip through a
+/// `BlockKind::Image` in `src/application/transcript.rs` and round-trip through a
 /// session file. The base64 `data` field is what actually goes to disk in
 /// that case: a screenshot-sized payload is a real cost per saved session,
 /// noted where the `Image` block is defined.

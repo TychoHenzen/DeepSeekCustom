@@ -1,38 +1,35 @@
 # Procedure localization visual verification
 
-This checklist verifies the rendered Procedure view for localization review. The evidence is captured from the production `ProcedureTab` render path through egui and wgpu.
+This checklist verifies the rendered web Procedure workspace for localization review.
+The maintained browser harness drives production Rust-served assets and browser-visible Procedure states.
 
 ## Capture setup
 
-Use the repository root as the working directory. The capture harness requires the `test-support` feature and creates its disposable OpenSpec fixture under `target/procedure-visual-capture/`.
+Use the repository root as the working directory. Install the version-matched browser once when needed:
 
-The harness uses these deterministic values:
+```powershell
+npm --prefix web run browser:install
+```
+
+Run the maintained browser suite:
+
+```powershell
+npm --prefix web run browser:test
+```
+
+The browser scenarios use deterministic application state and exercise Procedure running,
+awaiting-review, approved, rejected, failed, and interrupted states through the web adapter.
+Failure evidence is written under `target/playwright-artifacts/<test-name>/` as a screenshot,
+Playwright trace, browser console log, and server log. Passing runs remove stale failure artifacts.
+
+The deterministic Procedure state uses these values:
 
 - Window content size: 1280 by 900 pixels.
 - Change: `harden-procedure-localization`.
 - Task: `4.1 Render Procedure review states`.
 - Backend: `ollama-local`.
 - Model: `qwen2.5-coder:7b`.
-- Accepted targets: one target with `ProcedureTab::render_result` and one target without a symbol.
-
-Build the headless harness once:
-
-```powershell
-cargo build -p deepseek-custom-tests --example procedure_visual_capture
-```
-
-Capture every state:
-
-```powershell
-.\target\debug\examples\procedure_visual_capture.exe running docs\evidence\procedure-localization\running.png
-.\target\debug\examples\procedure_visual_capture.exe awaiting-review docs\evidence\procedure-localization\awaiting-review.png
-.\target\debug\examples\procedure_visual_capture.exe approved docs\evidence\procedure-localization\approved.png
-.\target\debug\examples\procedure_visual_capture.exe rejected docs\evidence\procedure-localization\rejected.png
-.\target\debug\examples\procedure_visual_capture.exe failed docs\evidence\procedure-localization\failed.png
-.\target\debug\examples\procedure_visual_capture.exe interrupted docs\evidence\procedure-localization\interrupted.png
-```
-
-Each process uses fixed egui input with a 1280 by 900 viewport, 1.0 pixels per point, and time 1.0. It tessellates the production widget and renders into a no-surface wgpu texture. It reads that texture into a PNG without creating or focusing an OS window.
+- Accepted targets: one target with a localized symbol and one target without a symbol.
 
 ## State checklist
 

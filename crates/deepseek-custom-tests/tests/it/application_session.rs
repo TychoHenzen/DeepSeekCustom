@@ -2,10 +2,9 @@ use deepseek_custom::agent::events::{
     RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
 };
 use deepseek_custom::application::dto::{PendingSessionSwitch, TranscriptContent};
-use deepseek_custom::application::session::ApplicationSession;
-use deepseek_custom::gui::PendingSwitch;
-use deepseek_custom::gui::session_state::{SessionOrigin, SessionState};
-use deepseek_custom::gui::transcript::BlockKind;
+use deepseek_custom::application::session::{ApplicationSession, PendingSwitch};
+use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
+use deepseek_custom::application::transcript::BlockKind;
 use deepseek_custom::session::SessionStore;
 
 fn application(tag: &str) -> (std::path::PathBuf, ApplicationSession) {

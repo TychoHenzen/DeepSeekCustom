@@ -4,15 +4,15 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::session::PendingSwitch;
+use super::session_state::SessionOrigin;
+use super::transcript::{BlockKind, Severity};
 use crate::agent::events::AgentCommand;
 use crate::agent::events::StreamEvent;
 use crate::agent::repeat::RepeatCommand;
 use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
-use crate::gui::PendingSwitch;
-use crate::gui::session_state::SessionOrigin;
-use crate::gui::transcript::{BlockKind, Severity};
 use crate::procedure::{
     ApplyRequest, PatchPreviewId, PatchPreviewRequest, ProcedureCommand, ProcedureProgress,
     ProcedureReviewDecision, ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad,
@@ -138,6 +138,12 @@ impl ApplicationActor {
         self.snapshot.saved_sessions = chat.session.saved_session_summaries();
         self.chat = Some(chat);
         self
+    }
+
+    pub fn connect_chat_lifecycle(&mut self, chat: ChatLifecycle) {
+        self.snapshot.session = chat.session.session_summary();
+        self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.chat = Some(chat);
     }
 
     pub fn with_voice_port(mut self, voice: DomainCommandPort<VoiceCommand>) -> Self {

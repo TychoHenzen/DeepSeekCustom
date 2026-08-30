@@ -1,10 +1,10 @@
-//! Unit tests for `deepseek_custom::gui::session_state` (`src/gui/session_state.rs`).
+//! Tests for presentation-neutral saved-session state.
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use deepseek_custom::agent::events::AgentCommand;
 use deepseek_custom::api::types::Message;
-use deepseek_custom::gui::session_state::{PLACEHOLDER_TITLE, SessionOrigin, SessionState};
-use deepseek_custom::gui::transcript::{BlockKind, Transcript};
+use deepseek_custom::application::session_state::{PLACEHOLDER_TITLE, SessionOrigin, SessionState};
+use deepseek_custom::application::transcript::{BlockKind, Transcript};
 use deepseek_custom::session::{SessionId, SessionStore};
 
 fn origin() -> SessionOrigin {

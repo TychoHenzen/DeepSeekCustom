@@ -11,8 +11,8 @@ use deepseek_custom::application::dto::{
 };
 use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::session::ApplicationSession;
+use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::config::settings::Settings;
-use deepseek_custom::gui::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::procedure::{
     PatchPreviewId, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunId,
     ProcedureStage, ProcedureTerminalDisposition,

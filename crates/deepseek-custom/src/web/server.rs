@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::events::StreamEvent;
 use crate::agent::repeat::RepeatCommand;
-use crate::application::actor::{AppEvent, ApplicationActor, Replay};
+use crate::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
 use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
     VisibleSettings,
@@ -151,6 +151,16 @@ impl WebAppState {
             .get_mut()
             .unwrap()
             .connect_voice_port(voice);
+        self
+    }
+
+    pub fn with_chat_lifecycle(mut self, chat: ChatLifecycle) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("chat lifecycle must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_chat_lifecycle(chat);
         self
     }
 

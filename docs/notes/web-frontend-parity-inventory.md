@@ -178,6 +178,28 @@ deletion surface so later work can prove parity first.
 
 - `crates/deepseek-custom/src/gui/draw.rs`, `draw_block.rs`, `panels.rs`, and native paint branches.
 - `eframe`, `egui`, `egui_commonmark`, `egui_extras`, and native UI-only dependencies.
+
+## Final native-test audit
+
+The cutover audit mapped every external native GUI module before deletion.
+Presentation-neutral transcript and session contracts moved with their source modules.
+The remaining paint, widget, clipboard, and keyboard contracts are browser behavior now.
+
+| Native test module | Maintained contract after cutover |
+|---|---|
+| `gui.rs`, `gui_characterization.rs` | `application_actor.rs`, `application_session.rs`, `web_server.rs`, and `web_browser.rs` cover ordered events, operation ownership, settings, sessions, interruption, and workspace behavior. |
+| `gui_transcript.rs` | Moved to `application_transcript.rs`; browser transcript rendering and follow-output remain in `web_browser.rs`. |
+| `gui_session_state.rs` | Moved to `application_session_state.rs`; actor and browser session lifecycle coverage remains in `application_actor.rs` and `web_browser.rs`. |
+| `gui_attachment.rs` | `image_bytes.rs`, attachment HTTP tests in `web_server.rs`, and upload/preview coverage in `web_browser.rs`; native clipboard polling was deleted. |
+| `gui_backend_picker.rs` | `application_services.rs`, `application_actor.rs`, and Settings browser scenarios cover visible options, persistence, and backend/model commands. |
+| `gui_autopilot_tab.rs` | Actor command tests plus Autopilot browser start, progress, stop, and validation scenarios. |
+| `gui_cascade_tab.rs`, `gui_evolve_tab.rs`, `gui_search_view.rs` | Actor search-port tests plus Cascade and Evolve browser validation, progress, result, and stop scenarios. |
+| `gui_procedure_tab.rs` | Procedure actor/HTTP contracts and Procedure browser preview, review, apply, repair, metrics, trace, stale-event, and terminal-state scenarios. |
+| `gui_sessions_tab.rs` | Session DTO/actor tests and Sessions browser new, load, delete, current-row, and deferred-switch scenarios. |
+| `gui_voice_ui.rs` | Voice service tests, voice HTTP port tests, and browser push-to-talk state and control scenarios. |
+
+No contract remained solely behind native paint accessors. The deleted-only surface was
+egui layout, colors, viewport keys, clipboard polling, native image paint, and widget-local state.
 - Native clipboard polling, egui dropped-file handling, egui image loaders, and paint-only test accessors.
 - `DeepSeekGui`, `ActiveTab`, and `PendingSwitch` from the native module after actor ownership is complete.
 - GUI-specific tests that only assert widgets, colors, layout, or paint implementation details.

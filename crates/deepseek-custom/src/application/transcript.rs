@@ -1,4 +1,4 @@
-//! Structured transcript data model for the Chat tab.
+//! Presentation-neutral structured transcript data model.
 //!
 //! Replaces the flat list of coloured lines the GUI used to hold. That
 //! shape could only express a line's colour, not a message boundary, a

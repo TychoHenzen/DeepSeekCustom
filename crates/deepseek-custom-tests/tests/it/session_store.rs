@@ -5,8 +5,8 @@ use std::io;
 use std::path::PathBuf;
 
 use deepseek_custom::api::types::{Content, Message, Role};
+use deepseek_custom::application::transcript::Transcript;
 use deepseek_custom::error::HarnessError;
-use deepseek_custom::gui::transcript::Transcript;
 use deepseek_custom::session::store::SessionStore;
 use deepseek_custom::session::{SessionId, SessionMeta, SessionRecord};
 

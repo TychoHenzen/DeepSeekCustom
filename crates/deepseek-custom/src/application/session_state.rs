@@ -1,4 +1,4 @@
-//! The current conversation's identity on disk: its id, its metadata, the
+//! The current conversation's presentation-neutral identity and storage state.
 //! saved-session list, and the API history a save needs.
 //!
 //! This owns the six fields `DeepSeekGui` used to hold for saved

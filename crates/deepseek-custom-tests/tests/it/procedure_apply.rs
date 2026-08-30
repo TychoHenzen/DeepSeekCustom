@@ -790,47 +790,6 @@ fn production_apply_progress_matches_the_execution_order() {
     });
 }
 
-pub(crate) fn successful_production_apply_events_for_gui() -> Vec<ProcedureProgress> {
-    let fixture = save_fixture(
-        "gui-production-progress",
-        &["src/target.rs"],
-        UPDATE_DIFF,
-        &[("src/target.rs", b"pub fn value() -> i32 { 1 }\n")],
-    );
-    let interrupt = Arc::new(AtomicBool::new(false));
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let runner = ProcedureApplyRunner::new(
-        VerificationInputGate::new(
-            OpenSpecInput::with_command(
-                &fixture.root,
-                fixture.openspec_command.display().to_string(),
-            ),
-            fixture.root.clone(),
-            ProcedureReportStore::for_project(&fixture.root),
-        ),
-        fixture.root.clone(),
-        interrupt,
-    )
-    .with_progress(sender);
-    let command = command(&fixture.verifier_command, "pass", None);
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            runner
-                .run(ProcedureRunId::new(), request(&fixture), &[command])
-                .await
-                .unwrap();
-        });
-    let mut events = Vec::new();
-    while let Ok(event) = receiver.try_recv() {
-        events.push(event);
-    }
-    std::fs::remove_dir_all(fixture.root).ok();
-    events
-}
-
 #[test]
 fn apply_interrupted_gate_cleans_snapshot_and_never_promotes() {
     run_async(async {

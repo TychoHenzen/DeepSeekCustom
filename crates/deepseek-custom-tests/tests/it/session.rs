@@ -2,7 +2,7 @@
 //! Moved out of the production module as part of the two-crate workspace split.
 
 use deepseek_custom::api::types::{Content, Message, Role};
-use deepseek_custom::gui::transcript::{BlockKind, Transcript};
+use deepseek_custom::application::transcript::{BlockKind, Transcript};
 use deepseek_custom::session::{
     MAX_TITLE_LEN, SessionId, SessionMeta, SessionRecord, derive_title,
 };

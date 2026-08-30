@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 
-use eframe::egui;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -12,12 +11,17 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use deepseek_custom::agent::agent_types::grade_to_u8;
 use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
+use deepseek_custom::application::actor::ChatLifecycle;
+use deepseek_custom::application::dto::AppSnapshot;
+use deepseek_custom::application::services::{
+    DomainCommandPort, RuntimeSettingsPort, SettingsController,
+};
+use deepseek_custom::application::session::ApplicationSession;
+use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::backend::SharedFlags;
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::config::settings::Settings;
-use deepseek_custom::gui::DeepSeekGui;
-use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
 use deepseek_custom::procedure::{
     FrontierRepairDispatcher, LocalPatchDraftDispatcher, LocalizationAgreementResolver,
@@ -29,12 +33,16 @@ use deepseek_custom::procedure::{
     apply_review_decision,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
+use deepseek_custom::session::SessionStore;
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
 use deepseek_custom::voice::stt::WhisperEngine;
 use deepseek_custom::voice::tts::TtsHandle;
 use deepseek_custom::voice::{resolve_kokoro_paths, resolve_whisper_model_path};
+use deepseek_custom::web::server::{
+    BindPolicy, SystemBrowser, SystemFolderPicker, WebAppState, start_with_policy_and_state,
+};
 
 /// Start the MCP servers Claude Code's own config files name, in the
 /// background.
@@ -141,7 +149,7 @@ async fn main() {
     // subagent it builds, main session or `Task`-tool dispatch, shares
     // this one flag. Escape then reaches a running subagent too, not
     // just the turn in front of the user.
-    // The handles the GUI keeps for the life of the process. Created here
+    // The handles the application keeps for the life of the process. Created here
     // rather than read back off the first backend, because the backend can
     // be replaced at runtime and the controls must keep driving whichever
     // one is current. See `SharedFlags`.
@@ -181,12 +189,12 @@ async fn main() {
 
     // ── Channels ────────────────────────────────────────────
 
-    let (tx_events, rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
+    let (tx_events, mut rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
     let (tx_search, mut rx_search) = mpsc::unbounded_channel::<SearchCommand>();
     let (tx_procedure, mut rx_procedure) = mpsc::unbounded_channel::<ProcedureCommand>();
-    let (tx_procedure_progress, rx_procedure_progress) =
+    let (tx_procedure_progress, mut rx_procedure_progress) =
         mpsc::unbounded_channel::<ProcedureProgress>();
     let procedure_interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -705,73 +713,129 @@ async fn main() {
         info!("agent task shutting down");
     });
 
-    // ── Run GUI (blocking, main thread) ─────────────────────
+    // ── Run the loopback web application ────────────────────
 
-    info!("starting GUI");
-    let mut gui = DeepSeekGui::new(
-        rx_events,
-        tx_input,
-        AgentHandles {
-            interrupt: Arc::clone(&flags.interrupt),
-            effort: Arc::clone(&flags.effort),
-            voice_mode: Arc::clone(&flags.voice_mode),
-            context_budget: Arc::clone(&flags.context_budget),
-            model: Arc::clone(&flags.model),
-            working_dir: working_dir_flag,
-            cascade_total: Arc::clone(&flags.cascade_total),
-            cascade_escalated: Arc::clone(&flags.cascade_escalated),
-            style_plain_language: Arc::clone(&flags.style_plain_language),
-            style_target_grade: Arc::clone(&flags.style_target_grade),
-        },
-        settings.clone(),
+    let selected_model = flags.model.lock().unwrap().clone();
+    let origin = SessionOrigin {
+        backend: default_name.clone(),
+        model: selected_model.clone(),
+    };
+    let session = ApplicationSession::new(SessionState::new(
+        SessionStore::for_project(&project_root),
+        origin.clone(),
+    ));
+    let runtime_settings = RuntimeSettingsPort::new(
         project_root.clone(),
-    )
-    .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt))
-    .with_search(tx_search, Arc::clone(&flags.search_interrupt))
-    .with_procedure(
-        tx_procedure,
-        rx_procedure_progress,
-        Arc::clone(&procedure_interrupt),
+        Arc::clone(&flags.effort),
+        Arc::clone(&flags.voice_mode),
+        Arc::clone(&flags.context_budget),
+        Arc::clone(&flags.model),
+        Arc::clone(&working_dir_flag),
+        Arc::clone(&flags.style_plain_language),
+        Arc::clone(&flags.style_target_grade),
     );
-
-    let voice_forwarder = if let Some(v) = voice {
-        let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();
-        gui = gui.with_voice(v.events_rx, tx_voice_cmd);
-        Some(spawn_voice_command_forwarder(
-            rx_voice_cmd,
-            v.service,
-            v.tts_worker,
-        ))
-    } else {
-        None
-    };
-
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 768.0])
-            .with_title("DeepSeekCustom"),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "DeepSeekCustom",
-        native_options,
-        Box::new(|cc| {
-            // Installs the loader that turns `egui::Image::from_bytes` into
-            // an actual texture, for the transcript's `Image` block (see
-            // `render_image_block` in `src/gui/mod.rs`). Without this call
-            // that widget silently shows nothing: the bytes reach the
-            // context, but no loader is registered to decode them.
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(gui))
-        }),
+    let settings_controller = Arc::new(SettingsController::new(
+        project_root.clone(),
+        settings.clone(),
+        runtime_settings,
+        Some(default_name.clone()),
+        Some(selected_model),
+    ));
+    let snapshot = AppSnapshot::initial(settings_controller.visible(), session.session_summary());
+    let mut web_state = WebAppState::with_settings(
+        snapshot,
+        256,
+        Arc::clone(&settings_controller),
+        Arc::new(SystemFolderPicker),
     )
-    .expect("GUI failed");
+    .with_chat_lifecycle(ChatLifecycle::new(
+        session,
+        DomainCommandPort::new(tx_input),
+        Arc::clone(&flags.interrupt),
+        origin,
+    ))
+    .with_autopilot_port(
+        DomainCommandPort::new(tx_repeat),
+        Arc::clone(&flags.repeat_interrupt),
+    )
+    .with_search_port(
+        DomainCommandPort::new(tx_search),
+        Arc::clone(&flags.search_interrupt),
+    )
+    .with_procedure_port(
+        DomainCommandPort::new(tx_procedure),
+        Arc::clone(&procedure_interrupt),
+    )
+    .with_test_control(project_root.clone());
 
-    // The GUI (and its voice command sender) has just been dropped, so the
-    // forwarder's loop has already ended or is about to. Awaiting it here
-    // blocks until the voice thread has actually shut down.
-    if let Some(forwarder) = voice_forwarder {
+    let (voice_forwarder, voice_event_forwarder) = if let Some(runtime) = voice {
+        let VoiceRuntime {
+            mut events_rx,
+            service,
+            tts_worker,
+        } = runtime;
+        let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();
+        let shutdown_voice = tx_voice_cmd.clone();
+        web_state = web_state.with_voice_port(DomainCommandPort::new(tx_voice_cmd));
+        let state = web_state.clone();
+        let event_forwarder = tokio::spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                let _ = state.apply_voice_event(event);
+            }
+        });
+        (
+            Some((
+                spawn_voice_command_forwarder(rx_voice_cmd, service, tts_worker),
+                shutdown_voice,
+            )),
+            Some(event_forwarder),
+        )
+    } else {
+        (None, None)
+    };
+
+    let event_state = web_state.clone();
+    let event_forwarder = tokio::spawn(async move {
+        while let Some(routed) = rx_events.recv().await {
+            let _ = event_state.apply_operation_stream_event(&routed.event);
+        }
+    });
+    let procedure_state = web_state.clone();
+    let procedure_forwarder = tokio::spawn(async move {
+        while let Some(progress) = rx_procedure_progress.recv().await {
+            let _ = procedure_state.apply_procedure_progress(&progress);
+        }
+    });
+
+    let server = start_with_policy_and_state(
+        BindPolicy::preferred_loopback(8765, true),
+        Some(Arc::new(SystemBrowser)),
+        web_state.clone(),
+    )
+    .await
+    .expect("web application failed to start");
+    info!(url = server.url(), "web application ready");
+    println!("DeepSeekCustom web application: {}", server.url());
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to wait for shutdown signal");
+    server
+        .shutdown()
+        .await
+        .expect("web application shutdown failed");
+    event_forwarder.abort();
+    procedure_forwarder.abort();
+    let _ = event_forwarder.await;
+    let _ = procedure_forwarder.await;
+    if let Some(forwarder) = voice_event_forwarder {
+        forwarder.abort();
+        let _ = forwarder.await;
+    }
+    drop(web_state);
+
+    if let Some((forwarder, shutdown_voice)) = voice_forwarder {
+        let _ = shutdown_voice.send(VoiceCommand::Shutdown);
+        drop(shutdown_voice);
         let _ = forwarder.await;
     }
 
@@ -785,7 +849,7 @@ async fn main() {
     info!("DeepSeekCustom harness shutting down");
 }
 
-/// Tell the GUI that a turn failed and is over.
+/// Tell the application actor that a turn failed and is over.
 ///
 /// Two events, because neither one alone says both things. `Error` puts the
 /// failure in the transcript, and it is not terminal on its own: it also
@@ -819,7 +883,7 @@ fn debug_agent_input(input: &str) {
     );
 }
 
-/// Voice subsystem pieces `main` wires into the GUI. `tts_worker` is
+/// Voice subsystem pieces `main` wires into the web application. `tts_worker` is
 /// `None` whenever text to speech never started, so nothing needs joining
 /// at shutdown.
 struct VoiceRuntime {
@@ -922,9 +986,9 @@ fn log_voice_config(settings: &Settings, stt_ready: bool, tts_ready: bool) {
     );
 }
 
-/// Forward GUI voice commands into the synchronous `VoiceService`, until
-/// the GUI drops its sender. That closes `rx_voice_cmd`. That closed
-/// channel is this task's signal that the GUI has exited. It then shuts
+/// Forward web application voice commands into the synchronous `VoiceService`, until
+/// the application drops its sender. That closes `rx_voice_cmd`. That closed
+/// channel is this task's signal that the server has exited. It then shuts
 /// the voice service and its text-to-speech worker down cleanly. That
 /// runs on a blocking task. The join calls inside `VoiceService::shutdown`
 /// must never stall the async runtime.
@@ -937,7 +1001,7 @@ fn spawn_voice_command_forwarder(
         while let Some(cmd) = rx_voice_cmd.recv().await {
             service.send(cmd);
         }
-        info!("voice: GUI closed, shutting down voice service");
+        info!("voice: web application closed, shutting down voice service");
         let _ = tokio::task::spawn_blocking(move || {
             service.shutdown();
             if let Some(worker) = tts_worker {

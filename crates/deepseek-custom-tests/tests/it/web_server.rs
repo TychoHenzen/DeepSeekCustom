@@ -725,7 +725,10 @@ fn production_server_milestone_survives_reload_resets_and_reaps_process_resource
         .unwrap();
         let address = server.address();
         let url = server.url().to_owned();
-        assert_eq!(browser.urls.lock().unwrap().as_slice(), [url.clone()]);
+        assert_eq!(
+            browser.urls.lock().unwrap().as_slice(),
+            std::slice::from_ref(&url)
+        );
 
         let client = reqwest::Client::new();
         let health = client.get(format!("{url}api/health")).send().await.unwrap();

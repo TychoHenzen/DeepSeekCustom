@@ -286,13 +286,16 @@
       "status": "completed"
     },
     "8.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.4": {
       "checked": false
