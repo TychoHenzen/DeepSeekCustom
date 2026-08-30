@@ -130,7 +130,10 @@ pub struct ActiveTestSlot {
     pub command: Vec<String>,
     pub working_dir: PathBuf,
     pub started_at_ms: u64,
+    pub elapsed_ms: u64,
+    pub running: bool,
     pub counts: TestCounts,
+    pub output_chunks: Vec<TestOutputChunk>,
     pub output: String,
     pub omitted_output_bytes: u64,
 }
@@ -148,6 +151,8 @@ pub struct TestExecutionError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TestRunRequestError {
+    #[error("test run {active_run_id} is already active")]
+    ActiveRun { active_run_id: String },
     #[error("test catalogue has not been discovered")]
     CatalogueUnavailable,
     #[error("test catalogue is stale and must be refreshed")]
@@ -158,6 +163,101 @@ pub enum TestRunRequestError {
     UnknownIdentity(String),
     #[error(transparent)]
     Execution(#[from] TestExecutionError),
+}
+
+/// Owns the single process slot and its browser-visible projection.
+///
+/// Persistence and process-tree cancellation are intentionally outside this
+/// coordinator. Those concerns are added by the following migration tasks.
+pub struct TestRunCoordinator {
+    pub active: Option<ActiveTestSlot>,
+    pub latest_result: Option<RetainedTestResult>,
+    execution: Option<Box<dyn TestExecution>>,
+    next_run_number: u64,
+}
+
+impl Default for TestRunCoordinator {
+    fn default() -> Self {
+        Self {
+            active: None,
+            latest_result: None,
+            execution: None,
+            next_run_number: 1,
+        }
+    }
+}
+
+impl TestRunCoordinator {
+    /// Validate and start one run. The active-slot check happens before the
+    /// executor boundary, so rejection cannot create a second process.
+    pub fn start(
+        &mut self,
+        discovery: &TestDiscoveryState,
+        request: &TestRunRequest,
+        project_root: &Path,
+        executor: &dyn TestExecutor,
+        clock: &dyn TestClock,
+    ) -> Result<&ActiveTestSlot, TestRunRequestError> {
+        if let Some(active) = &self.active {
+            return Err(TestRunRequestError::ActiveRun {
+                active_run_id: active.run_id.clone(),
+            });
+        }
+        let (invocation, execution) = discovery.start_run(request, project_root, executor)?;
+        let started_at_ms = clock.now_ms();
+        let run_id = format!("test-run-{}-{}", started_at_ms, self.next_run_number);
+        self.next_run_number = self.next_run_number.saturating_add(1);
+        self.active = Some(ActiveTestSlot {
+            run_id,
+            identity: request.identity.clone(),
+            command: invocation_command(&invocation),
+            working_dir: invocation.working_dir,
+            started_at_ms,
+            elapsed_ms: 0,
+            running: true,
+            counts: TestCounts::default(),
+            output_chunks: Vec::new(),
+            output: String::new(),
+            omitted_output_bytes: 0,
+        });
+        self.execution = Some(execution);
+        Ok(self
+            .active
+            .as_ref()
+            .expect("active test slot was just stored"))
+    }
+
+    /// Consume currently available output and finalize the slot after exit.
+    pub fn poll(
+        &mut self,
+        clock: &dyn TestClock,
+    ) -> Result<Option<&RetainedTestResult>, TestExecutionError> {
+        let Some(active) = &mut self.active else {
+            return Ok(self.latest_result.as_ref());
+        };
+        let execution = self.execution.as_mut().expect("active run owns execution");
+        while let Some(chunk) = execution.next_output()? {
+            active.output.push_str(&chunk.text);
+            active.output_chunks.push(chunk);
+        }
+        active.output_chunks.sort_by_key(|chunk| chunk.sequence);
+        active.output = active
+            .output_chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect();
+        active.counts = parse_cargo_test_report(&active.output).0;
+        let now_ms = clock.now_ms();
+        active.elapsed_ms = now_ms.saturating_sub(active.started_at_ms);
+        let Some(exit) = execution.try_wait()? else {
+            return Ok(None);
+        };
+        let result = finish_active(active, exit, now_ms, false);
+        self.active = None;
+        self.execution = None;
+        self.latest_result = Some(result);
+        Ok(self.latest_result.as_ref())
+    }
 }
 
 /// Active process boundary used by discovery and run coordinators.
@@ -407,6 +507,101 @@ fn invocation_command(invocation: &TestInvocation) -> Vec<String> {
     std::iter::once(invocation.program.clone())
         .chain(invocation.args.iter().cloned())
         .collect()
+}
+
+fn finish_active(
+    active: &ActiveTestSlot,
+    exit: TestProcessExit,
+    finished_at_ms: u64,
+    cancelled: bool,
+) -> RetainedTestResult {
+    let (counts, failed_tests, cargo_reported_result) = parse_cargo_test_report(&active.output);
+    let outcome = classify_test_outcome(exit, cargo_reported_result, cancelled);
+    RetainedTestResult {
+        run_id: active.run_id.clone(),
+        identity: active.identity.clone(),
+        command: active.command.clone(),
+        working_dir: active.working_dir.clone(),
+        started_at_ms: active.started_at_ms,
+        duration_ms: finished_at_ms.saturating_sub(active.started_at_ms),
+        outcome,
+        counts,
+        exit_code: exit.exit_code,
+        failed_tests,
+        output: active.output.clone(),
+        omitted_output_bytes: active.omitted_output_bytes,
+    }
+}
+
+pub fn classify_test_outcome(
+    exit: TestProcessExit,
+    cargo_reported_result: bool,
+    cancelled: bool,
+) -> TestOutcome {
+    if cancelled {
+        TestOutcome::Cancelled
+    } else if exit.exit_code == Some(0) {
+        TestOutcome::Passed
+    } else if cargo_reported_result {
+        TestOutcome::Failed
+    } else {
+        TestOutcome::InfrastructureError
+    }
+}
+
+/// Parse every Cargo/libtest result line because workspace runs can contain
+/// several test binaries. Failed names come from libtest's final failure list.
+pub fn parse_cargo_test_report(output: &str) -> (TestCounts, Vec<String>, bool) {
+    let mut counts = TestCounts::default();
+    let mut failed_tests = Vec::new();
+    let mut cargo_reported_result = false;
+    let mut reading_failed_names = false;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(summary) = trimmed.strip_prefix("test result: ") {
+            cargo_reported_result = true;
+            add_reported_count(summary, "passed", &mut counts.passed);
+            add_reported_count(summary, "failed", &mut counts.failed);
+            add_reported_count(summary, "ignored", &mut counts.ignored);
+            add_reported_count(summary, "filtered out", &mut counts.filtered);
+            reading_failed_names = false;
+            continue;
+        }
+        if trimmed == "failures:" {
+            reading_failed_names = true;
+            continue;
+        }
+        if reading_failed_names {
+            if trimmed.is_empty() || trimmed.starts_with("----") {
+                continue;
+            }
+            if trimmed.starts_with("test result:") || trimmed.contains(" panicked at ") {
+                reading_failed_names = false;
+                continue;
+            }
+            if !trimmed.contains(char::is_whitespace)
+                && trimmed.contains("::")
+                && !failed_tests.iter().any(|name| name == trimmed)
+            {
+                failed_tests.push(trimmed.to_owned());
+            }
+        }
+    }
+    (counts, failed_tests, cargo_reported_result)
+}
+
+fn add_reported_count(summary: &str, label: &str, target: &mut u64) {
+    for field in summary.split(';').map(str::trim) {
+        let Some(value) = field.strip_suffix(label).map(str::trim) else {
+            continue;
+        };
+        if let Some(number) = value.split_whitespace().last()
+            && let Ok(number) = number.parse::<u64>()
+        {
+            *target = target.saturating_add(number);
+        }
+    }
 }
 
 fn discovery_failure(

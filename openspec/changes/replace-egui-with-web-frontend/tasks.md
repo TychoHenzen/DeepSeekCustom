@@ -133,11 +133,14 @@
 - [x] 6.6 Reject unknown identities, client paths, commands, arguments, environments, and stale catalogue revisions before process spawn.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: Client submits an unknown test identity -->
-- [ ] 6.7 Add the single active-run slot and stream identity, command, start time, elapsed time, and ordered output into actor state.
+- [x] 6.7 Add the single active-run slot and stream identity, command, start time, elapsed time, and ordered output into actor state.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run starts -->
-- [ ] 6.8 Reject a concurrent request with the current active run identity and prove no second executor starts.
+- [x] 6.8 Reject a concurrent request with the current active run identity and prove no second executor starts.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: Another run is requested concurrently -->
-- [ ] 6.9 Parse reported counts and failed names, retain exit code and duration, and classify passed, failed, cancelled, and infrastructure-error terminal outcomes.
+- [x] 6.9 Parse reported counts and failed names, retain exit code and duration, and classify passed, failed, cancelled, and infrastructure-error terminal outcomes.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run finishes -->
 - [ ] 6.10 Adopt the Cargo process tree, implement cancellation and reaping, record cancelled outcome, and release the run slot.
 <!-- covers: deepseek-custom/test-suite-control :: Test cancellation reaps the complete process tree :: User cancels an active test run -->

@@ -7,8 +7,8 @@ use deepseek_custom::application::test_control::{
     ActiveTestSlot, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES, TestClock,
     TestCounts, TestDiscoveryState, TestExecution, TestExecutionError, TestExecutor, TestIdentity,
     TestInvocation, TestOutcome, TestOutputChunk, TestOutputStream, TestProcessExit,
-    TestRunRequest, TestRunRequestError, TestScope, full_workspace_test_invocation,
-    integration_test_discovery_invocation,
+    TestRunCoordinator, TestRunRequest, TestRunRequestError, TestScope, classify_test_outcome,
+    full_workspace_test_invocation, integration_test_discovery_invocation,
 };
 
 struct FixedClock(u64);
@@ -120,7 +120,14 @@ fn active_and_retained_results_have_distinct_non_terminal_and_terminal_shapes() 
         command: vec!["cargo".into(), "test".into(), "--workspace".into()],
         working_dir: PathBuf::from("project"),
         started_at_ms: 10,
+        elapsed_ms: 5,
+        running: true,
         counts: TestCounts::default(),
+        output_chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: "running".into(),
+        }],
         output: "running".into(),
         omitted_output_bytes: 0,
     };
@@ -143,9 +150,137 @@ fn active_and_retained_results_have_distinct_non_terminal_and_terminal_shapes() 
     };
 
     assert_eq!(active.output, "running");
+    assert_eq!(active.elapsed_ms, 5);
+    assert!(active.running);
     assert_eq!(retained.outcome, TestOutcome::Passed);
     assert_eq!(retained.counts.passed, 1);
     assert_eq!(retained.duration_ms, 25);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run starts
+#[test]
+fn active_run_projects_identity_command_time_elapsed_and_ordered_output() {
+    let root = PathBuf::from("fixed-project-root");
+    let discovery = discovered_state(80);
+    let identity = discovery.catalogue.as_ref().unwrap().full_workspace.clone();
+    let request = TestRunRequest {
+        identity: identity.clone(),
+        catalogue_revision: 80,
+    };
+    let executor = ScriptedExecutor {
+        chunks: vec![
+            TestOutputChunk {
+                sequence: 1,
+                stream: TestOutputStream::Stderr,
+                text: "second\n".into(),
+            },
+            TestOutputChunk {
+                sequence: 0,
+                stream: TestOutputStream::Stdout,
+                text: "first\n".into(),
+            },
+        ],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut runs = TestRunCoordinator::default();
+
+    let started = runs
+        .start(&discovery, &request, &root, &executor, &FixedClock(1_000))
+        .unwrap();
+    assert_eq!(started.identity, identity);
+    assert_eq!(started.started_at_ms, 1_000);
+    assert_eq!(started.elapsed_ms, 0);
+    assert!(started.running);
+    assert_eq!(started.command[0], "cargo");
+    assert_eq!(started.working_dir, root);
+
+    let result = runs.poll(&FixedClock(1_025)).unwrap().unwrap();
+    assert_eq!(result.output, "first\nsecond\n");
+    assert_eq!(result.duration_ms, 25);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: Another run is requested concurrently
+#[test]
+fn concurrent_run_reports_active_identity_without_starting_another_executor() {
+    let root = PathBuf::from("fixed-project-root");
+    let discovery = discovered_state(81);
+    let request = TestRunRequest {
+        identity: discovery.catalogue.as_ref().unwrap().full_workspace.clone(),
+        catalogue_revision: 81,
+    };
+    let executor = RecordingExecutor::default();
+    let mut runs = TestRunCoordinator::default();
+    let active_id = runs
+        .start(&discovery, &request, &root, &executor, &FixedClock(2_000))
+        .unwrap()
+        .run_id
+        .clone();
+
+    assert!(matches!(
+        runs.start(&discovery, &request, &root, &executor, &FixedClock(2_001)),
+        Err(TestRunRequestError::ActiveRun { active_run_id }) if active_run_id == active_id
+    ));
+    assert_eq!(executor.invocations.lock().unwrap().len(), 1);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test runs are serialized and observable :: A test run finishes
+#[test]
+fn terminal_run_retains_cargo_counts_failures_exit_duration_and_outcome() {
+    let root = PathBuf::from("fixed-project-root");
+    let discovery = discovered_state(82);
+    let request = TestRunRequest {
+        identity: discovery.catalogue.as_ref().unwrap().full_workspace.clone(),
+        catalogue_revision: 82,
+    };
+    let output = concat!(
+        "running 3 tests\n",
+        "test application_actor::passes ... ok\n",
+        "test application_actor::fails ... FAILED\n\n",
+        "failures:\n\n",
+        "---- application_actor::fails stdout ----\n",
+        "assertion failed\n\n",
+        "failures:\n",
+        "    application_actor::fails\n\n",
+        "test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 2 filtered out\n",
+    );
+    let executor = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: output.into(),
+        }],
+        exit: TestProcessExit {
+            exit_code: Some(101),
+        },
+    };
+    let mut runs = TestRunCoordinator::default();
+    runs.start(&discovery, &request, &root, &executor, &FixedClock(3_000))
+        .unwrap();
+
+    let result = runs.poll(&FixedClock(3_075)).unwrap().unwrap();
+    assert_eq!(result.outcome, TestOutcome::Failed);
+    assert_eq!(result.counts.passed, 1);
+    assert_eq!(result.counts.failed, 1);
+    assert_eq!(result.counts.ignored, 1);
+    assert_eq!(result.counts.filtered, 2);
+    assert_eq!(result.failed_tests, ["application_actor::fails"]);
+    assert_eq!(result.exit_code, Some(101));
+    assert_eq!(result.duration_ms, 75);
+    assert!(result.output.contains("assertion failed"));
+    assert_eq!(
+        classify_test_outcome(TestProcessExit { exit_code: None }, false, true),
+        TestOutcome::Cancelled
+    );
+    assert_eq!(
+        classify_test_outcome(
+            TestProcessExit {
+                exit_code: Some(101)
+            },
+            false,
+            false
+        ),
+        TestOutcome::InfrastructureError
+    );
 }
 
 // covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds

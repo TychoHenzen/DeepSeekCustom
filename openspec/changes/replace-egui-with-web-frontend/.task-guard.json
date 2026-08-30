@@ -190,13 +190,16 @@
       "status": "completed"
     },
     "6.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.8": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.9": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.10": {
       "checked": false
