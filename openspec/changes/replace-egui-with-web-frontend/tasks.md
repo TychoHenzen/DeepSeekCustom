@@ -218,6 +218,9 @@
 <!-- status: completed -->
 - [x] 8.6 Run the exact frontend install, type, lint, and production-build gates and confirm the binary serves only embedded production assets.
 <!-- status: completed -->
-- [ ] 8.7 Run focused actor, HTTP, test-service, and `playwright-rs` tests, then `cargo fmt --all -- --check`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace -j 1 -- --test-threads=1`.
-- [ ] 8.8 Run strict OpenSpec validation and `dod-guard cover replace-egui-with-web-frontend`; require every scenario bound with no regressions.
-- [ ] 8.9 Perform the final practice run from the production binary without Vite: exercise every workspace, reload during active work, run and cancel tests, inspect retained results, and confirm the checkout has no unexpected changes.
+- [x] 8.7 Run focused actor, HTTP, test-service, and `playwright-rs` tests, then `cargo fmt --all -- --check`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace -j 1 -- --test-threads=1`.
+<!-- status: completed -->
+- [x] 8.8 Run strict OpenSpec validation and `dod-guard cover replace-egui-with-web-frontend`; require every scenario bound with no regressions.
+<!-- status: completed -->
+- [x] 8.9 Perform the final practice run from the production binary without Vite: exercise every workspace, reload during active work, run and cancel tests, inspect retained results, and confirm the checkout has no unexpected changes.
+<!-- status: completed -->

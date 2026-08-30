@@ -310,13 +310,16 @@
       "status": "completed"
     },
     "8.7": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.8": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "8.9": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     }
   },
   "hmac": "b5a6b3f8828eab63cac3c1b7e9b4f3d4ada03f3906e88237111c7b42d8fa45ac"
