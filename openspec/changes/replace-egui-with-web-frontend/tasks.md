@@ -118,9 +118,11 @@
 
 - [x] 6.1 Define test catalogue, run request, output chunk, counts, outcome, retained result, and active-slot types plus deterministic executor and clock seams.
 <!-- status: completed -->
-- [ ] 6.2 Discover the actual integration target, parse exact test names, group module prefixes, and expose the approved full-workspace run.
+- [x] 6.2 Discover the actual integration target, parse exact test names, group module prefixes, and expose the approved full-workspace run.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds -->
-- [ ] 6.3 Preserve a stale successful catalogue and show exact command, exit code, and bounded diagnostics when discovery fails.
+- [x] 6.3 Preserve a stale successful catalogue and show exact command, exit code, and bounded diagnostics when discovery fails.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery fails -->
 - [ ] 6.4 Map the full-suite identity to `cargo test --workspace -j 1 -- --test-threads=1` from fixed `project_root` and record its argument vector.
 <!-- covers: deepseek-custom/test-suite-control :: Test execution is constrained to approved suite shapes :: User runs the full suite -->

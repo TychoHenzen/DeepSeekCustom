@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use deepseek_custom::application::test_control::{
-    ActiveTestSlot, RetainedTestResult, TestClock, TestCounts, TestExecution, TestExecutionError,
-    TestExecutor, TestIdentity, TestInvocation, TestOutcome, TestOutputChunk, TestOutputStream,
-    TestProcessExit, TestRunRequest, TestScope,
+    ActiveTestSlot, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES, TestClock,
+    TestCounts, TestDiscoveryState, TestExecution, TestExecutionError, TestExecutor, TestIdentity,
+    TestInvocation, TestOutcome, TestOutputChunk, TestOutputStream, TestProcessExit,
+    TestRunRequest, TestScope, full_workspace_test_invocation,
+    integration_test_discovery_invocation,
 };
 
 struct FixedClock(u64);
@@ -140,4 +142,117 @@ fn active_and_retained_results_have_distinct_non_terminal_and_terminal_shapes() 
     assert_eq!(retained.outcome, TestOutcome::Passed);
     assert_eq!(retained.counts.passed, 1);
     assert_eq!(retained.duration_ms, 25);
+}
+
+// covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds
+#[test]
+fn discovery_groups_exact_names_and_offers_only_the_approved_workspace_shape() {
+    let root = PathBuf::from("fixed-project-root");
+    let executor = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: concat!(
+                "application_actor::second: test\n",
+                "application_actor::first: test\n",
+                "web_server::serves_health: test\n",
+                "2 tests, 0 benchmarks\n"
+            )
+            .into(),
+        }],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut state = TestDiscoveryState::default();
+
+    let catalogue = state.refresh(&root, &executor, &FixedClock(42)).unwrap();
+
+    assert_eq!(catalogue.discovered_at_ms, 42);
+    assert_eq!(catalogue.modules.len(), 2);
+    assert_eq!(catalogue.modules[0].name, "application_actor");
+    assert_eq!(
+        catalogue.modules[0].tests[0].name,
+        "application_actor::first"
+    );
+    assert_eq!(
+        catalogue.modules[0].tests[1].name,
+        "application_actor::second"
+    );
+    assert_eq!(catalogue.modules[1].name, "web_server");
+    assert_eq!(catalogue.full_workspace.scope, TestScope::FullWorkspace);
+    assert_eq!(
+        full_workspace_test_invocation(&root),
+        TestInvocation {
+            program: "cargo".into(),
+            args: vec![
+                "test".into(),
+                "--workspace".into(),
+                "--".into(),
+                "--test-threads=1".into(),
+            ],
+            working_dir: root.clone(),
+        }
+    );
+    assert_eq!(
+        integration_test_discovery_invocation(&root).working_dir,
+        root
+    );
+    assert!(!state.catalogue_stale);
+    assert!(state.failure.is_none());
+}
+
+// covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery fails
+#[test]
+fn failed_discovery_retains_catalogue_and_bounded_exact_diagnostics() {
+    let root = PathBuf::from("fixed-project-root");
+    let successful = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text: "application_test_control::known: test\n".into(),
+        }],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut state = TestDiscoveryState::default();
+    state.refresh(&root, &successful, &FixedClock(10)).unwrap();
+    let original = state.catalogue.clone().unwrap();
+    let diagnostic = format!(
+        "compile start\n{}\ncompile end",
+        "x".repeat(TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES * 2)
+    );
+    let failing = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stderr,
+            text: diagnostic,
+        }],
+        exit: TestProcessExit {
+            exit_code: Some(101),
+        },
+    };
+
+    let failure = state.refresh(&root, &failing, &FixedClock(20)).unwrap_err();
+
+    assert_eq!(
+        failure.command,
+        vec![
+            "cargo",
+            "test",
+            "-p",
+            "deepseek-custom-tests",
+            "--test",
+            "it",
+            "--",
+            "--list",
+            "--format",
+            "terse",
+        ]
+    );
+    assert_eq!(failure.exit_code, Some(101));
+    assert_eq!(failure.working_dir, root);
+    assert!(failure.diagnostic_output.starts_with("compile start"));
+    assert!(failure.diagnostic_output.ends_with("compile end"));
+    assert!(failure.diagnostic_output.contains("bytes omitted"));
+    assert!(failure.omitted_output_bytes > 0);
+    assert_eq!(state.catalogue, Some(original));
+    assert!(state.catalogue_stale);
 }

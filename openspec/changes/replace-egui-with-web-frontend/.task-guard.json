@@ -170,10 +170,12 @@
       "status": "completed"
     },
     "6.2": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.4": {
       "checked": false
