@@ -5,11 +5,11 @@ use std::{
 
 use deepseek_custom::application::test_control::{
     ActiveTestSlot, CargoTestExecutor, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES,
-    TestClock, TestControlSnapshot, TestCounts, TestDiscoveryState, TestExecution,
-    TestExecutionError, TestExecutor, TestIdentity, TestInvocation, TestOutcome, TestOutputChunk,
-    TestOutputStream, TestProcessExit, TestResultStore, TestRunCoordinator, TestRunRequest,
-    TestRunRequestError, TestScope, classify_test_outcome, full_workspace_test_invocation,
-    integration_test_discovery_invocation,
+    TEST_OUTPUT_LIMIT_BYTES, TestClock, TestControlSnapshot, TestCounts, TestDiscoveryState,
+    TestExecution, TestExecutionError, TestExecutor, TestIdentity, TestInvocation, TestOutcome,
+    TestOutputChunk, TestOutputStream, TestProcessExit, TestResultStore, TestRunCoordinator,
+    TestRunRequest, TestRunRequestError, TestScope, classify_test_outcome,
+    full_workspace_test_invocation, integration_test_discovery_invocation,
 };
 
 struct FixedClock(u64);
@@ -18,6 +18,66 @@ impl TestClock for FixedClock {
     fn now_ms(&self) -> u64 {
         self.0
     }
+}
+
+// covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Output limit is exceeded
+#[test]
+fn active_and_retained_output_preserve_head_tail_and_exact_omitted_bytes() {
+    let state = discovered_state(901);
+    let identity = state.catalogue.as_ref().unwrap().modules[0].tests[0].clone();
+    let payload = format!("HEAD:{}:TAIL", "x".repeat(TEST_OUTPUT_LIMIT_BYTES + 4096));
+    let executor = ScriptedExecutor {
+        chunks: vec![TestOutputChunk {
+            sequence: 1,
+            stream: TestOutputStream::Stdout,
+            text: payload.clone(),
+        }],
+        exit: TestProcessExit { exit_code: Some(0) },
+    };
+    let mut runs = TestRunCoordinator::default();
+    runs.start(
+        &state,
+        &TestRunRequest {
+            identity,
+            catalogue_revision: 901,
+        },
+        PathBuf::from("fixed-project-root").as_path(),
+        &executor,
+        &FixedClock(10),
+    )
+    .unwrap();
+    runs.poll(&FixedClock(20)).unwrap();
+    let result = runs.latest_result.as_ref().unwrap();
+
+    assert!(result.output.starts_with("HEAD:"));
+    assert!(result.output.ends_with(":TAIL"));
+    assert!(
+        result
+            .output
+            .contains("bytes omitted by 4 MiB output limit")
+    );
+    assert_eq!(
+        result.omitted_output_bytes,
+        (payload.len() - (TEST_OUTPUT_LIMIT_BYTES - 96)) as u64
+    );
+    assert!(result.output.len() <= TEST_OUTPUT_LIMIT_BYTES);
+}
+
+// covers: deepseek-custom/test-suite-control :: Test results do not imply repository readiness :: Selected tests pass
+#[test]
+fn passing_result_serializes_only_the_selected_scope_and_observed_outcome() {
+    let result = retained_result(2);
+    let value = serde_json::to_value(&result).unwrap();
+
+    assert_eq!(value["outcome"], "passed");
+    assert_eq!(value["identity"]["scope"]["type"], "exact");
+    assert_eq!(
+        value["identity"]["scope"]["module"],
+        "application_test_control"
+    );
+    assert!(value.get("repository_ready").is_none());
+    assert!(value.get("change_complete").is_none());
+    assert!(value.get("checkpoint_complete").is_none());
 }
 
 fn retained_result(number: u64) -> RetainedTestResult {

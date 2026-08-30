@@ -154,11 +154,14 @@
 - [x] 6.13 Prune the oldest terminal record on the twenty-first retained result without touching active or newer records.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Retention limit is exceeded -->
-- [ ] 6.14 Implement the 4 MiB head-and-tail output buffer, streamed truncation state, omitted-byte count, and explicit marker.
+- [x] 6.14 Implement the 4 MiB head-and-tail output buffer, streamed truncation state, omitted-byte count, and explicit marker.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test results are retained with explicit limits :: Output limit is exceeded -->
-- [ ] 6.15 Label each result with only its selected scope and prevent focused success from producing repository-wide completion language.
+- [x] 6.15 Label each result with only its selected scope and prevent focused success from producing repository-wide completion language.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/test-suite-control :: Test results do not imply repository readiness :: Selected tests pass -->
-- [ ] 6.16 Build the responsive Tests workspace for catalogue refresh, filtering, full, module, and exact runs, progress, cancellation, history, failures, and output inspection.
+- [x] 6.16 Build the responsive Tests workspace for catalogue refresh, filtering, full, module, and exact runs, progress, cancellation, history, failures, and output inspection.
+<!-- status: completed -->
 - [ ] 6.17 Verify the test milestone with actual discovery and one exact passing test, plus deterministic discovery failure, test failure, concurrency, cancellation, truncation, retention, and reconnect cases.
 
 ## 7. Add Playwright-RS Browser Automation

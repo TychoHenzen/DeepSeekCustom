@@ -130,7 +130,7 @@ export function App({ client }: AppProps) {
             send={(command) => client.send(command)}
           />
         ) : selectedWorkspace === 'tests' && view.snapshot !== null ? (
-          <TestsWorkspace history={view.snapshot.tests ?? { retained_results: [], retained_result_warnings: [] }} />
+          <TestsWorkspace state={view.snapshot.tests ?? emptyTestState()} send={(command) => client.send(command)} />
         ) : selectedWorkspace === 'settings' && view.snapshot !== null ? (
           <SettingsWorkspace key={view.snapshot.revision} settings={view.snapshot.settings} send={(command) => client.send(command)} />
         ) : (selectedWorkspace === 'autopilot' || selectedWorkspace === 'cascade' || selectedWorkspace === 'evolve' || selectedWorkspace === 'procedure') && view.snapshot !== null ? (
@@ -156,6 +156,16 @@ export function App({ client }: AppProps) {
       </main>
     </div>
   );
+}
+
+function emptyTestState() {
+  return {
+    discovery: { catalogue: null, catalogue_stale: false, failure: null },
+    active: null,
+    latest_result: null,
+    retained_results: [],
+    retained_result_warnings: [],
+  };
 }
 
 function ConnectionStatus({ view }: { view: ClientView }) {

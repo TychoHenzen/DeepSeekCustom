@@ -36,6 +36,8 @@ pub struct AppSnapshot {
     pub pending_session_switch: Option<PendingSessionSwitch>,
     pub settings: VisibleSettings,
     pub operations: Vec<OperationState>,
+    #[serde(default)]
+    pub tests: super::test_control::TestControlSnapshot,
 }
 
 /// One ordered update emitted after a snapshot.
@@ -57,6 +59,7 @@ pub enum AppChangeKind {
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
     OperationChanged(OperationState),
+    TestsChanged(Box<super::test_control::TestControlSnapshot>),
     Error(AppError),
 }
 
@@ -413,6 +416,11 @@ pub enum AppCommand {
     StartVoiceCapture,
     StopVoiceCapture,
     PickWorkingDirectory,
+    RefreshTests,
+    StartTestRun {
+        request: super::test_control::TestRunRequest,
+    },
+    CancelTestRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -59,6 +59,7 @@ pub enum AppEvent {
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
     OperationChanged(super::dto::OperationState),
+    TestsChanged(Box<super::test_control::TestControlSnapshot>),
     Error(AppError),
 }
 
@@ -1049,6 +1050,10 @@ impl ApplicationActor {
                 }
                 AppChangeKind::OperationChanged(operation)
             }
+            AppEvent::TestsChanged(tests) => {
+                self.snapshot.tests = tests.as_ref().clone();
+                AppChangeKind::TestsChanged(tests)
+            }
             AppEvent::Error(error) => AppChangeKind::Error(error),
         };
         self.publish(change)
@@ -1735,6 +1740,7 @@ impl AppSnapshot {
             pending_session_switch: None,
             settings,
             operations: Vec::new(),
+            tests: Default::default(),
         }
     }
 }

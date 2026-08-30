@@ -13,6 +13,7 @@ use std::{
     process::{Command, Stdio},
     sync::mpsc,
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ pub struct TestCatalogue {
 
 pub const TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES: usize = 32 * 1024;
 pub const RETAINED_TEST_RESULT_LIMIT: usize = 20;
+pub const TEST_OUTPUT_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
 const INTEGRATION_PACKAGE: &str = "deepseek-custom-tests";
 const INTEGRATION_TARGET: &str = "it";
@@ -303,6 +305,7 @@ pub struct TestRunCoordinator {
     pub latest_result: Option<RetainedTestResult>,
     execution: Option<Box<dyn TestExecution>>,
     next_run_number: u64,
+    output_buffer: Option<BoundedTestOutput>,
 }
 
 impl Default for TestRunCoordinator {
@@ -312,6 +315,7 @@ impl Default for TestRunCoordinator {
             latest_result: None,
             execution: None,
             next_run_number: 1,
+            output_buffer: None,
         }
     }
 }
@@ -385,6 +389,7 @@ impl TestRunCoordinator {
             omitted_output_bytes: 0,
         });
         self.execution = Some(execution);
+        self.output_buffer = Some(BoundedTestOutput::default());
         Ok(self
             .active
             .as_ref()
@@ -400,16 +405,26 @@ impl TestRunCoordinator {
             return Ok(self.latest_result.as_ref());
         };
         let execution = self.execution.as_mut().expect("active run owns execution");
+        let mut new_chunks = Vec::new();
         while let Some(chunk) = execution.next_output()? {
-            active.output.push_str(&chunk.text);
-            active.output_chunks.push(chunk);
+            new_chunks.push(chunk);
         }
-        active.output_chunks.sort_by_key(|chunk| chunk.sequence);
-        active.output = active
-            .output_chunks
-            .iter()
-            .map(|chunk| chunk.text.as_str())
-            .collect();
+        new_chunks.sort_by_key(|chunk| chunk.sequence);
+        for chunk in new_chunks {
+            let sequence = chunk.sequence;
+            self.output_buffer
+                .as_mut()
+                .expect("active run owns an output buffer")
+                .push(chunk.text.as_bytes());
+            let rendered = self.output_buffer.as_ref().unwrap().render();
+            active.output = rendered.text;
+            active.omitted_output_bytes = rendered.omitted_bytes;
+            active.output_chunks = vec![TestOutputChunk {
+                sequence,
+                stream: chunk.stream,
+                text: active.output.clone(),
+            }];
+        }
         active.counts = parse_cargo_test_report(&active.output).0;
         let now_ms = clock.now_ms();
         active.elapsed_ms = now_ms.saturating_sub(active.started_at_ms);
@@ -419,6 +434,7 @@ impl TestRunCoordinator {
         let result = finish_active(active, exit, now_ms, false);
         self.active = None;
         self.execution = None;
+        self.output_buffer = None;
         self.latest_result = Some(result);
         Ok(self.latest_result.as_ref())
     }
@@ -432,20 +448,84 @@ impl TestRunCoordinator {
             return Ok(self.latest_result.as_ref());
         };
         let mut execution = self.execution.take().expect("active run owns execution");
+        let mut new_chunks = Vec::new();
         while let Some(chunk) = execution.next_output()? {
-            active.output_chunks.push(chunk);
+            new_chunks.push(chunk);
         }
-        active.output_chunks.sort_by_key(|chunk| chunk.sequence);
-        active.output = active
-            .output_chunks
-            .iter()
-            .map(|chunk| chunk.text.as_str())
-            .collect();
+        new_chunks.sort_by_key(|chunk| chunk.sequence);
+        for chunk in new_chunks {
+            let sequence = chunk.sequence;
+            self.output_buffer
+                .as_mut()
+                .expect("active run owns an output buffer")
+                .push(chunk.text.as_bytes());
+            let rendered = self.output_buffer.as_ref().unwrap().render();
+            active.output = rendered.text;
+            active.omitted_output_bytes = rendered.omitted_bytes;
+            active.output_chunks = vec![TestOutputChunk {
+                sequence,
+                stream: chunk.stream,
+                text: active.output.clone(),
+            }];
+        }
         active.counts = parse_cargo_test_report(&active.output).0;
         let exit = execution.cancel_and_wait()?;
         let result = finish_active(&active, exit, clock.now_ms(), true);
+        self.output_buffer = None;
         self.latest_result = Some(result);
         Ok(self.latest_result.as_ref())
+    }
+}
+
+#[derive(Default)]
+struct BoundedTestOutput {
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    total_bytes: u64,
+}
+
+struct RenderedTestOutput {
+    text: String,
+    omitted_bytes: u64,
+}
+
+impl BoundedTestOutput {
+    fn push(&mut self, bytes: &[u8]) {
+        const MARKER_RESERVE: usize = 96;
+        let side_limit = (TEST_OUTPUT_LIMIT_BYTES - MARKER_RESERVE) / 2;
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
+        let head_remaining = side_limit.saturating_sub(self.head.len());
+        let head_count = head_remaining.min(bytes.len());
+        self.head.extend_from_slice(&bytes[..head_count]);
+        for byte in &bytes[head_count..] {
+            if self.tail.len() == side_limit {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(*byte);
+        }
+    }
+
+    fn render(&self) -> RenderedTestOutput {
+        let retained = self.head.len() + self.tail.len();
+        let omitted = self.total_bytes.saturating_sub(retained as u64);
+        if omitted == 0 {
+            let mut bytes = self.head.clone();
+            bytes.extend(self.tail.iter());
+            return RenderedTestOutput {
+                text: String::from_utf8_lossy(&bytes).into_owned(),
+                omitted_bytes: 0,
+            };
+        }
+        let marker = format!("\n...[{omitted} bytes omitted by 4 MiB output limit]...\n");
+        let mut text = String::from_utf8_lossy(&self.head).into_owned();
+        text.push_str(&marker);
+        text.push_str(&String::from_utf8_lossy(
+            &self.tail.iter().copied().collect::<Vec<_>>(),
+        ));
+        RenderedTestOutput {
+            text,
+            omitted_bytes: omitted,
+        }
     }
 }
 
@@ -470,6 +550,20 @@ pub trait TestExecutor: Send + Sync {
 /// Time boundary used for stable timestamps and elapsed-time tests.
 pub trait TestClock: Send + Sync {
     fn now_ms(&self) -> u64;
+}
+
+#[derive(Debug, Default)]
+pub struct SystemTestClock;
+
+impl TestClock for SystemTestClock {
+    fn now_ms(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
 }
 
 /// Build the one server-owned command used to enumerate the integration target.

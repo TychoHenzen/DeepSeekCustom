@@ -83,6 +83,7 @@ fn snapshot_change_operation_and_error_contracts_round_trip() {
         pending_session_switch: Some(PendingSessionSwitch::New),
         settings,
         operations: vec![operation.clone()],
+        tests: Default::default(),
     };
     let change = AppChange {
         revision: AppRevision(8),

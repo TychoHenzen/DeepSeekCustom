@@ -19,6 +19,10 @@ use deepseek_custom::application::dto::{
 };
 use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::services::{RuntimeSettingsPort, SettingsController};
+use deepseek_custom::application::test_control::{
+    TestClock, TestExecution, TestExecutionError, TestExecutor, TestInvocation, TestOutputChunk,
+    TestOutputStream, TestProcessExit, TestRunRequest,
+};
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
@@ -39,6 +43,48 @@ impl NativeFolderPicker for FixedFolderPicker {
 #[derive(Default)]
 struct RecordingBrowser {
     urls: Mutex<Vec<String>>,
+}
+
+struct WebTestClock;
+impl TestClock for WebTestClock {
+    fn now_ms(&self) -> u64 {
+        44
+    }
+}
+
+struct WebTestExecutor {
+    output: String,
+}
+impl TestExecutor for WebTestExecutor {
+    fn start(
+        &self,
+        _invocation: &TestInvocation,
+    ) -> Result<Box<dyn TestExecution>, TestExecutionError> {
+        Ok(Box::new(WebTestExecution {
+            output: Some(self.output.clone()),
+        }))
+    }
+}
+struct WebTestExecution {
+    output: Option<String>,
+}
+impl TestExecution for WebTestExecution {
+    fn next_output(&mut self) -> Result<Option<TestOutputChunk>, TestExecutionError> {
+        Ok(self.output.take().map(|text| TestOutputChunk {
+            sequence: 0,
+            stream: TestOutputStream::Stdout,
+            text,
+        }))
+    }
+    fn try_wait(&mut self) -> Result<Option<TestProcessExit>, TestExecutionError> {
+        Ok(self
+            .output
+            .is_none()
+            .then_some(TestProcessExit { exit_code: Some(0) }))
+    }
+    fn cancel_and_wait(&mut self) -> Result<TestProcessExit, TestExecutionError> {
+        Ok(TestProcessExit { exit_code: None })
+    }
 }
 
 impl BrowserOpener for RecordingBrowser {
@@ -343,6 +389,7 @@ fn visible_snapshot() -> AppSnapshot {
             OperationPhase::AwaitingReview,
             1,
         )],
+        tests: Default::default(),
     }
 }
 
@@ -989,6 +1036,96 @@ fn untrusted_command_shapes_fail_without_dispatch_or_data_disclosure() {
         assert!(!bootstrap_body.contains("secret"));
 
         server.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn tests_workspace_commands_refresh_start_and_publish_terminal_reconnect_state() {
+    run_async_test(async {
+        let root = std::env::temp_dir().join(format!(
+            "deepseek-web-tests-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = WebAppState::new(visible_snapshot(), 16).with_test_service(
+            root.clone(),
+            Arc::new(WebTestExecutor { output: "application_actor::updates: test\n".into() }),
+            Arc::new(WebTestExecutor { output: "running 1 test\ntest application_actor::updates ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n".into() }),
+            Arc::new(WebTestClock),
+        );
+        let server = start_state(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = request_token(&client, server.url()).await;
+
+        let refreshed = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: AppRevision::INITIAL,
+                command: AppCommand::RefreshTests,
+            },
+        )
+        .await;
+        assert_eq!(refreshed.status(), reqwest::StatusCode::OK);
+        let snapshot = state.snapshot();
+        let catalogue = snapshot.tests.discovery.catalogue.unwrap();
+        let identity = catalogue.modules[0].tests[0].clone();
+        let started = post_command(
+            &client,
+            server.url(),
+            &token,
+            &AppCommandRequest {
+                revision: snapshot.revision,
+                command: AppCommand::StartTestRun {
+                    request: TestRunRequest {
+                        identity: identity.clone(),
+                        catalogue_revision: catalogue.discovered_at_ms,
+                    },
+                },
+            },
+        )
+        .await;
+        assert_eq!(started.status(), reqwest::StatusCode::OK);
+
+        for _ in 0..30 {
+            if state
+                .snapshot()
+                .tests
+                .retained_results
+                .iter()
+                .any(|result| result.identity == identity)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let reconnected: AppSnapshot = client
+            .get(format!("{}api/snapshot", server.url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let result = reconnected
+            .tests
+            .retained_results
+            .iter()
+            .find(|result| result.identity == identity)
+            .unwrap();
+        assert_eq!(result.counts.passed, 1);
+        assert_eq!(
+            result.output.lines().last().unwrap(),
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        );
+        assert!(reconnected.tests.active.is_none());
+        server.shutdown().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     });
 }
 

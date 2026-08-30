@@ -120,7 +120,7 @@ export interface OperationState {
 
 export interface RetainedTestResult {
   run_id: string;
-  identity: { name: string; scope: Record<string, unknown> };
+  identity: TestIdentity;
   command: string[];
   working_dir: string;
   started_at_ms: number;
@@ -133,7 +133,43 @@ export interface RetainedTestResult {
   omitted_output_bytes: number;
 }
 
-export interface TestResultHistory {
+export type TestScope =
+  | { type: 'full_workspace' }
+  | { type: 'module'; module: string }
+  | { type: 'exact'; module: string; test: string };
+export interface TestIdentity { name: string; scope: TestScope }
+export interface TestModule { name: string; tests: TestIdentity[] }
+export interface TestCatalogue {
+  discovered_at_ms: number;
+  full_workspace: TestIdentity;
+  modules: TestModule[];
+}
+export interface ActiveTestRun {
+  run_id: string;
+  identity: TestIdentity;
+  command: string[];
+  working_dir: string;
+  started_at_ms: number;
+  elapsed_ms: number;
+  running: boolean;
+  counts: RetainedTestResult['counts'];
+  output: string;
+  omitted_output_bytes: number;
+}
+export interface TestControlSnapshot {
+  discovery: {
+    catalogue: TestCatalogue | null;
+    catalogue_stale: boolean;
+    failure: null | {
+      command: string[];
+      working_dir: string;
+      exit_code: number | null;
+      diagnostic_output: string;
+      omitted_output_bytes: number;
+    };
+  };
+  active: ActiveTestRun | null;
+  latest_result: RetainedTestResult | null;
   retained_results: RetainedTestResult[];
   retained_result_warnings: string[];
 }
@@ -147,8 +183,7 @@ export interface AppSnapshot {
   pending_session_switch: PendingSessionSwitch | null;
   settings: VisibleSettings;
   operations: OperationState[];
-  /** Optional until the server-side test actor is installed by the next milestone. */
-  tests?: TestResultHistory;
+  tests?: TestControlSnapshot;
 }
 
 export type AppChange =
@@ -160,6 +195,7 @@ export type AppChange =
   | { revision: number; type: 'pending_session_switch_changed'; value: PendingSessionSwitch | null }
   | { revision: number; type: 'settings_changed'; value: VisibleSettings }
   | { revision: number; type: 'operation_changed'; value: OperationState }
+  | { revision: number; type: 'tests_changed'; value: TestControlSnapshot }
   | { revision: number; type: 'error'; value: AppError };
 
 export type AppCommand =
@@ -181,7 +217,10 @@ export type AppCommand =
   | { command: 'review_procedure'; payload: { run_id: string; decision: 'approve' | 'reject' } }
   | { command: 'start_voice_capture' }
   | { command: 'stop_voice_capture' }
-  | { command: 'pick_working_directory' };
+  | { command: 'pick_working_directory' }
+  | { command: 'refresh_tests' }
+  | { command: 'start_test_run'; payload: { request: { identity: TestIdentity; catalogue_revision: number } } }
+  | { command: 'cancel_test_run' };
 
 export type AppCommandResult =
   | { status: 'applied'; revision: number }
@@ -379,7 +418,7 @@ function parseRetainedTestResult(value: unknown): RetainedTestResult {
   if (!Array.isArray(item.command) || !Array.isArray(item.failed_tests)) throw new Error('retained test result collections must be arrays');
   return {
     run_id: string(item.run_id, 'test run id'),
-    identity: { name: string(identity.name, 'test identity'), scope: record(identity.scope) },
+    identity: { name: string(identity.name, 'test identity'), scope: parseTestScope(identity.scope) },
     command: item.command.map((entry) => string(entry, 'test command argument')),
     working_dir: string(item.working_dir, 'test working directory'),
     started_at_ms: integer(item.started_at_ms, 'test start time'),
@@ -398,15 +437,86 @@ function parseRetainedTestResult(value: unknown): RetainedTestResult {
   };
 }
 
+function parseTestScope(value: unknown): TestScope {
+  const scope = record(value);
+  const type = enumValue(scope.type, ['full_workspace', 'module', 'exact'] as const, 'test scope');
+  if (type === 'full_workspace') return { type };
+  const module = string(scope.module, 'test module');
+  return type === 'module' ? { type, module } : { type, module, test: string(scope.test, 'exact test') };
+}
+
+function parseTestIdentity(value: unknown): TestIdentity {
+  const identity = record(value);
+  return { name: string(identity.name, 'test identity'), scope: parseTestScope(identity.scope) };
+}
+
+function parseTestControl(value: unknown): TestControlSnapshot {
+  const tests = record(value);
+  const discovery = record(tests.discovery);
+  const catalogue = nullable(discovery.catalogue, (entry) => {
+    const item = record(entry);
+    if (!Array.isArray(item.modules)) throw new Error('test catalogue modules must be an array');
+    return {
+      discovered_at_ms: integer(item.discovered_at_ms, 'catalogue revision'),
+      full_workspace: parseTestIdentity(item.full_workspace),
+      modules: item.modules.map((moduleValue) => {
+        const module = record(moduleValue);
+        if (!Array.isArray(module.tests)) throw new Error('module tests must be an array');
+        return { name: string(module.name, 'module name'), tests: module.tests.map(parseTestIdentity) };
+      }),
+    };
+  });
+  const failure = nullable(discovery.failure, (entry) => {
+    const item = record(entry);
+    if (!Array.isArray(item.command)) throw new Error('discovery command must be an array');
+    return {
+      command: item.command.map((part) => string(part, 'discovery argument')),
+      working_dir: string(item.working_dir, 'discovery working directory'),
+      exit_code: nullable(item.exit_code, (code) => number(code, 'discovery exit code')),
+      diagnostic_output: string(item.diagnostic_output, 'discovery output'),
+      omitted_output_bytes: integer(item.omitted_output_bytes, 'discovery omitted bytes'),
+    };
+  });
+  if (!Array.isArray(tests.retained_results) || !Array.isArray(tests.retained_result_warnings)) {
+    throw new Error('test result history collections must be arrays');
+  }
+  return {
+    discovery: {
+      catalogue,
+      catalogue_stale: boolean(discovery.catalogue_stale, 'catalogue stale'),
+      failure,
+    },
+    active: nullable(tests.active, (entry) => {
+      const active = parseRetainedTestResult({
+        ...record(entry),
+        duration_ms: record(entry).elapsed_ms,
+        outcome: 'passed',
+        exit_code: null,
+        failed_tests: [],
+      });
+      const raw = record(entry);
+      return {
+        run_id: active.run_id,
+        identity: active.identity,
+        command: active.command,
+        working_dir: active.working_dir,
+        started_at_ms: active.started_at_ms,
+        elapsed_ms: integer(raw.elapsed_ms, 'test elapsed time'),
+        running: boolean(raw.running, 'test running'),
+        counts: active.counts,
+        output: active.output,
+        omitted_output_bytes: active.omitted_output_bytes,
+      };
+    }),
+    latest_result: nullable(tests.latest_result, parseRetainedTestResult),
+    retained_results: tests.retained_results.map(parseRetainedTestResult),
+    retained_result_warnings: tests.retained_result_warnings.map((entry) => string(entry, 'test result warning')),
+  };
+}
+
 export function parseSnapshot(value: unknown): AppSnapshot {
   const item = record(value);
   if (!Array.isArray(item.transcript) || !Array.isArray(item.saved_sessions) || !Array.isArray(item.operations)) throw new Error('snapshot collections must be arrays');
-  const tests = item.tests === undefined ? undefined : record(item.tests);
-  const retainedResults = tests?.retained_results;
-  const retainedWarnings = tests?.retained_result_warnings;
-  if (tests !== undefined && (!Array.isArray(retainedResults) || !Array.isArray(retainedWarnings))) {
-    throw new Error('test result history collections must be arrays');
-  }
   return {
     revision: integer(item.revision, 'snapshot revision'),
     workspace: enumValue(item.workspace, workspaces, 'workspace'),
@@ -416,12 +526,17 @@ export function parseSnapshot(value: unknown): AppSnapshot {
     pending_session_switch: nullable(item.pending_session_switch, parsePending),
     settings: parseSettings(item.settings),
     operations: item.operations.map(parseOperation),
-    ...(tests === undefined ? {} : {
-      tests: {
-        retained_results: (retainedResults as unknown[]).map(parseRetainedTestResult),
-        retained_result_warnings: (retainedWarnings as unknown[]).map((entry) => string(entry, 'test result warning')),
-      },
-    }),
+    tests: item.tests === undefined ? emptyTestControl() : parseTestControl(item.tests),
+  };
+}
+
+function emptyTestControl(): TestControlSnapshot {
+  return {
+    discovery: { catalogue: null, catalogue_stale: false, failure: null },
+    active: null,
+    latest_result: null,
+    retained_results: [],
+    retained_result_warnings: [],
   };
 }
 
@@ -441,6 +556,7 @@ export function parseChange(value: unknown): AppChange {
     case 'pending_session_switch_changed': return { revision, type, value: nullable(item.value, parsePending) };
     case 'settings_changed': return { revision, type, value: parseSettings(item.value) };
     case 'operation_changed': return { revision, type, value: parseOperation(item.value) };
+    case 'tests_changed': return { revision, type, value: parseTestControl(item.value) };
     case 'error': return { revision, type, value: parseError(item.value) };
     default: throw new Error('change type is not supported');
   }

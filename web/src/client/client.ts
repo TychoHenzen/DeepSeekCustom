@@ -277,6 +277,7 @@ function applyChange(snapshot: AppSnapshot, change: Exclude<AppChange, { type: '
         : snapshot.operations.map((operation, operationIndex) => operationIndex === index ? change.value : operation);
       return { ...snapshot, revision: change.revision, operations };
     }
+    case 'tests_changed': return { ...snapshot, revision: change.revision, tests: change.value };
     case 'error': return { ...snapshot, revision: change.revision };
   }
 }

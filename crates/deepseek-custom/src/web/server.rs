@@ -29,6 +29,10 @@ use crate::application::dto::{
 };
 use crate::application::services::DomainCommandPort;
 use crate::application::services::SettingsController;
+use crate::application::test_control::{
+    CargoTestDiscoveryExecutor, CargoTestExecutor, SystemTestClock, TestClock, TestDiscoveryState,
+    TestExecutor, TestResultStore, TestRunCoordinator, TestRunRequest,
+};
 use crate::config::settings::Settings;
 use crate::image_bytes::attachment_from_image_bytes;
 use crate::procedure::ProcedureCommand;
@@ -58,6 +62,17 @@ struct WebAppStateInner {
     request_token: String,
     settings: Option<Arc<SettingsController>>,
     folder_picker: Option<Arc<dyn NativeFolderPicker>>,
+    tests: Option<Mutex<TestService>>,
+}
+
+struct TestService {
+    project_root: PathBuf,
+    discovery: TestDiscoveryState,
+    runs: TestRunCoordinator,
+    store: TestResultStore,
+    discovery_executor: Arc<dyn TestExecutor>,
+    run_executor: Arc<dyn TestExecutor>,
+    clock: Arc<dyn TestClock>,
 }
 
 impl WebAppState {
@@ -70,6 +85,7 @@ impl WebAppState {
                 request_token: uuid::Uuid::new_v4().simple().to_string(),
                 settings: None,
                 folder_picker: None,
+                tests: None,
             }),
         }
     }
@@ -90,8 +106,42 @@ impl WebAppState {
                 request_token: uuid::Uuid::new_v4().simple().to_string(),
                 settings: Some(settings),
                 folder_picker: Some(folder_picker),
+                tests: None,
             }),
         }
+    }
+
+    pub fn with_test_control(mut self, project_root: PathBuf) -> Self {
+        self = self.with_test_service(
+            project_root,
+            Arc::new(CargoTestDiscoveryExecutor),
+            Arc::new(CargoTestExecutor),
+            Arc::new(SystemTestClock),
+        );
+        self
+    }
+
+    pub fn with_test_service(
+        mut self,
+        project_root: PathBuf,
+        discovery_executor: Arc<dyn TestExecutor>,
+        run_executor: Arc<dyn TestExecutor>,
+        clock: Arc<dyn TestClock>,
+    ) -> Self {
+        let store = TestResultStore::new(&project_root);
+        let service = TestService {
+            project_root,
+            discovery: TestDiscoveryState::default(),
+            runs: TestRunCoordinator::default(),
+            store,
+            discovery_executor,
+            run_executor,
+            clock,
+        };
+        Arc::get_mut(&mut self.inner)
+            .expect("test service must be connected before state is shared")
+            .tests = Some(Mutex::new(service));
+        self
     }
 
     pub fn with_voice_port(mut self, voice: DomainCommandPort<VoiceCommand>) -> Self {
@@ -325,7 +375,7 @@ impl NativeFolderPicker for SystemFolderPicker {
 
 impl Default for WebAppState {
     fn default() -> Self {
-        Self::new(
+        let state = Self::new(
             AppSnapshot::initial(
                 VisibleSettings::from_settings(&Settings::default(), None, None),
                 SessionSummary {
@@ -336,7 +386,11 @@ impl Default for WebAppState {
                 },
             ),
             256,
-        )
+        );
+        match std::env::current_dir() {
+            Ok(project_root) => state.with_test_control(project_root),
+            Err(_) => state,
+        }
     }
 }
 
@@ -670,10 +724,17 @@ async fn command(
     }
 
     let result = if matches!(
-        request.command,
+        &request.command,
         crate::application::dto::AppCommand::PickWorkingDirectory
     ) {
         pick_working_directory(security.state.clone(), request.revision).await
+    } else if matches!(
+        &request.command,
+        crate::application::dto::AppCommand::RefreshTests
+            | crate::application::dto::AppCommand::StartTestRun { .. }
+            | crate::application::dto::AppCommand::CancelTestRun
+    ) {
+        test_command(security.state.clone(), request).await
     } else {
         security.state.submit(request)
     };
@@ -683,6 +744,118 @@ async fn command(
         AppCommandResult::Rejected { .. } => StatusCode::UNPROCESSABLE_ENTITY,
     };
     (status, Json(result)).into_response()
+}
+
+async fn test_command(state: WebAppState, request: AppCommandRequest) -> AppCommandResult {
+    if state.snapshot().revision != request.revision {
+        return AppCommandResult::Conflict {
+            current_revision: state.snapshot().revision,
+        };
+    }
+    let Some(tests) = &state.inner.tests else {
+        return rejected_test_command("test control is not connected", None);
+    };
+    match request.command {
+        crate::application::dto::AppCommand::RefreshTests => {
+            let mut service = tests.lock().unwrap();
+            let project_root = service.project_root.clone();
+            let executor = Arc::clone(&service.discovery_executor);
+            let clock = Arc::clone(&service.clock);
+            let _ = service
+                .discovery
+                .refresh(&project_root, executor.as_ref(), clock.as_ref());
+            publish_test_state(&state, &service)
+        }
+        crate::application::dto::AppCommand::StartTestRun { request } => {
+            let mut service = tests.lock().unwrap();
+            if let Err(message) = start_test_run(&mut service, &request) {
+                return rejected_test_command(&message, Some("identity"));
+            }
+            let published = publish_test_state(&state, &service);
+            drop(service);
+            if matches!(published, AppCommandResult::Applied { .. }) {
+                spawn_test_poll(state.clone());
+            }
+            published
+        }
+        crate::application::dto::AppCommand::CancelTestRun => {
+            let mut service = tests.lock().unwrap();
+            let clock = Arc::clone(&service.clock);
+            if let Err(error) = service.runs.cancel(clock.as_ref()) {
+                return rejected_test_command(&error.to_string(), None);
+            }
+            let _ = service.runs.retain_latest(&service.store);
+            publish_test_state(&state, &service)
+        }
+        _ => unreachable!("test command was filtered by the route"),
+    }
+}
+
+fn start_test_run(service: &mut TestService, request: &TestRunRequest) -> Result<(), String> {
+    let project_root = service.project_root.clone();
+    let executor = Arc::clone(&service.run_executor);
+    let clock = Arc::clone(&service.clock);
+    service
+        .runs
+        .start(
+            &service.discovery,
+            request,
+            &project_root,
+            executor.as_ref(),
+            clock.as_ref(),
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn publish_test_state(state: &WebAppState, service: &TestService) -> AppCommandResult {
+    let snapshot = service
+        .runs
+        .snapshot_with_results(&service.discovery, &service.store)
+        .unwrap_or_else(|error| {
+            let mut snapshot = service.runs.snapshot(&service.discovery);
+            snapshot.retained_result_warnings.push(error.to_string());
+            snapshot
+        });
+    match state.apply_event(AppEvent::TestsChanged(Box::new(snapshot))) {
+        Ok(revision) => AppCommandResult::Applied { revision },
+        Err(error) => AppCommandResult::Rejected { error },
+    }
+}
+
+fn spawn_test_poll(state: WebAppState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            let Some(tests) = &state.inner.tests else {
+                return;
+            };
+            let mut service = tests.lock().unwrap();
+            let clock = Arc::clone(&service.clock);
+            let terminal = match service.runs.poll(clock.as_ref()) {
+                Ok(result) => result.is_some() && service.runs.active.is_none(),
+                Err(_) => true,
+            };
+            if terminal {
+                let _ = service.runs.retain_latest(&service.store);
+            }
+            let _ = publish_test_state(&state, &service);
+            if terminal {
+                return;
+            }
+        }
+    });
+}
+
+fn rejected_test_command(message: &str, field: Option<&str>) -> AppCommandResult {
+    AppCommandResult::Rejected {
+        error: crate::application::dto::AppError {
+            code: crate::application::dto::AppErrorCode::ServiceFailed,
+            message: message.into(),
+            recoverable: true,
+            field: field.map(str::to_owned),
+        },
+    }
 }
 
 async fn pick_working_directory(state: WebAppState, revision: AppRevision) -> AppCommandResult {
