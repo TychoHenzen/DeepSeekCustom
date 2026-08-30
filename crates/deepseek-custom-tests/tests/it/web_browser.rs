@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
-    AppRevision, AppSnapshot, NoticeLevel, OperationKind, OperationPhase, OperationProgress,
-    OperationState, SessionSummary, TranscriptBlock, TranscriptContent, TranscriptSpan, Workspace,
+    AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
+    OperationKind, OperationPhase, OperationProgress, OperationState, SessionSummary,
+    TranscriptBlock, TranscriptContent, TranscriptSpan, Workspace,
 };
 use deepseek_custom::application::services::{
     DomainCommandPort, RuntimeSettingsPort, SettingsController,
@@ -32,7 +33,7 @@ use deepseek_custom::web::server::{
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
-use playwright_rs::protocol::{AriaRole, GetByRoleOptions, Locator, Page};
+use playwright_rs::protocol::{AriaRole, GetByRoleOptions, Locator, Page, Viewport};
 
 const INSTALL_COMMAND: &str =
     "cargo run -p deepseek-custom-tests --example install_playwright_chromium";
@@ -266,6 +267,13 @@ impl BrowserPage {
         )
     }
 
+    fn navigation(&self, name: &str) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Button,
+            Some(GetByRoleOptions::default().name(name).exact(false)),
+        )
+    }
+
     fn progress(&self) -> Locator {
         self.page.get_by_role(
             AriaRole::Region,
@@ -345,6 +353,118 @@ impl BrowserPage {
         }
         locator
     }
+}
+
+#[derive(Debug)]
+struct DocumentMetrics {
+    viewport_width: f64,
+    document_client_width: f64,
+    document_scroll_width: f64,
+    body_client_width: f64,
+    body_scroll_width: f64,
+}
+
+#[derive(Debug)]
+struct ElementMetrics {
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+    width: f64,
+    height: f64,
+    clipped_by_ancestor: bool,
+    focused: bool,
+}
+
+async fn fetch_snapshot(server_url: &str) -> AppSnapshot {
+    reqwest::Client::new()
+        .get(format!("{server_url}api/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn submit_command(harness: &BrowserHarness, request: AppCommandRequest) -> AppCommandResult {
+    reqwest::Client::new()
+        .post(format!("{}api/commands", harness.server.url()))
+        .header(
+            deepseek_custom::web::server::REQUEST_TOKEN_HEADER,
+            &harness.process_token,
+        )
+        .header("origin", harness.server.url().trim_end_matches('/'))
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+fn observable_mismatch<T>(contract: &str, browser: &T, service: &T) -> Result<(), String>
+where
+    T: std::fmt::Debug + PartialEq,
+{
+    if browser == service {
+        Ok(())
+    } else {
+        Err(format!(
+            "{contract}: browser observable {browser:?} != service observable {service:?}"
+        ))
+    }
+}
+
+async fn document_metrics(page: &Page) -> playwright_rs::Result<DocumentMetrics> {
+    let value: serde_json::Value = page
+        .evaluate(
+        "() => ({ viewportWidth: innerWidth, documentClientWidth: document.documentElement.clientWidth, documentScrollWidth: document.documentElement.scrollWidth, bodyClientWidth: document.body.clientWidth, bodyScrollWidth: document.body.scrollWidth })",
+        None::<&()>,
+    )
+    .await?;
+    Ok(DocumentMetrics {
+        viewport_width: metric(&value, "viewportWidth"),
+        document_client_width: metric(&value, "documentClientWidth"),
+        document_scroll_width: metric(&value, "documentScrollWidth"),
+        body_client_width: metric(&value, "bodyClientWidth"),
+        body_scroll_width: metric(&value, "bodyScrollWidth"),
+    })
+}
+
+async fn element_metrics(locator: &Locator) -> playwright_rs::Result<ElementMetrics> {
+    let value: serde_json::Value = locator
+        .evaluate(
+            "(element) => { const rect = element.getBoundingClientRect(); let clippedByAncestor = false; for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) { const style = getComputedStyle(ancestor); if (!/(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowX + style.overflowY)) continue; const parent = ancestor.getBoundingClientRect(); if (rect.left < parent.left - 0.5 || rect.right > parent.right + 0.5 || rect.top < parent.top - 0.5 || rect.bottom > parent.bottom + 0.5) { clippedByAncestor = true; break; } } return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height, clippedByAncestor, focused: document.activeElement === element }; }",
+            None::<()>,
+        )
+        .await?;
+    Ok(ElementMetrics {
+        left: metric(&value, "left"),
+        right: metric(&value, "right"),
+        top: metric(&value, "top"),
+        bottom: metric(&value, "bottom"),
+        width: metric(&value, "width"),
+        height: metric(&value, "height"),
+        clipped_by_ancestor: value["clippedByAncestor"].as_bool().unwrap(),
+        focused: value["focused"].as_bool().unwrap(),
+    })
+}
+
+fn metric(value: &serde_json::Value, field: &str) -> f64 {
+    value[field]
+        .as_f64()
+        .unwrap_or_else(|| panic!("browser metric {field:?} is missing from {value}"))
+}
+
+fn boxes_overlap(left: &ElementMetrics, right: &ElementMetrics) -> bool {
+    left.left < right.right - 0.5
+        && left.right > right.left + 0.5
+        && left.top < right.bottom - 0.5
+        && left.bottom > right.top + 0.5
 }
 
 fn isolated_snapshot(project_root: &Path) -> AppSnapshot {
@@ -751,7 +871,7 @@ fn disabled_action_exposes_its_visible_reason() {
 #[test]
 fn critical_workflows_match_browser_observations_to_rust_state() {
     super::web_server::run_async_test(async {
-        let mut harness = BrowserHarness::start().await;
+        let harness = BrowserHarness::start().await;
         harness
             .state
             .apply_event(AppEvent::SavedSessionsChanged(vec![SessionSummary {
@@ -1018,5 +1138,311 @@ fn critical_workflows_match_browser_observations_to_rust_state() {
         browser_result.unwrap_or_else(|error| panic!(
             "critical browser workflow failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
         ));
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Browser and service disagree
+#[test]
+fn browser_state_matches_success_and_conflict_service_results() {
+    super::web_server::run_async_test(async {
+        let harness = BrowserHarness::start().await;
+        let browser_result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(harness.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+            app.wait_for_snapshot().await;
+
+            let initial_revision = harness.state.snapshot().revision;
+            let success = submit_command(
+                &harness,
+                AppCommandRequest {
+                    revision: initial_revision,
+                    command: AppCommand::SelectWorkspace {
+                        workspace: Workspace::Settings,
+                    },
+                },
+            )
+            .await;
+            let success_revision = match success {
+                AppCommandResult::Applied { revision } => revision,
+                other => panic!("expected applied workspace command, received {other:?}"),
+            };
+            let settings_heading = app
+                .require_unique(
+                    "Settings heading after applied command",
+                    app.page.get_by_role(
+                        AriaRole::Heading,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Settings")
+                                .exact(true)
+                                .level(2),
+                        ),
+                    ),
+                )
+                .await;
+            let success_browser = settings_heading.inner_text().await?;
+            let success_snapshot = fetch_snapshot(&harness.server.url()).await;
+            observable_mismatch(
+                "applied workspace",
+                &success_browser,
+                &format!("{:?}", success_snapshot.workspace),
+            )
+            .unwrap();
+            observable_mismatch(
+                "applied revision",
+                &success_revision,
+                &success_snapshot.revision,
+            )
+            .unwrap();
+
+            let winning = submit_command(
+                &harness,
+                AppCommandRequest {
+                    revision: success_revision,
+                    command: AppCommand::SelectWorkspace {
+                        workspace: Workspace::Procedure,
+                    },
+                },
+            )
+            .await;
+            let winning_revision = match winning {
+                AppCommandResult::Applied { revision } => revision,
+                other => panic!("expected winning workspace command, received {other:?}"),
+            };
+            let conflict = submit_command(
+                &harness,
+                AppCommandRequest {
+                    revision: success_revision,
+                    command: AppCommand::SelectWorkspace {
+                        workspace: Workspace::Evolve,
+                    },
+                },
+            )
+            .await;
+            let conflict_revision = match conflict {
+                AppCommandResult::Conflict { current_revision } => current_revision,
+                other => panic!("expected stale workspace conflict, received {other:?}"),
+            };
+            observable_mismatch(
+                "conflict command revision",
+                &conflict_revision,
+                &winning_revision,
+            )
+            .unwrap();
+
+            let procedure_heading = app
+                .require_unique(
+                    "Procedure heading after conflicting command",
+                    app.page.get_by_role(
+                        AriaRole::Heading,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Procedure")
+                                .exact(true)
+                                .level(2),
+                        ),
+                    ),
+                )
+                .await;
+            let conflict_browser = procedure_heading.inner_text().await?;
+            let conflict_snapshot = fetch_snapshot(&harness.server.url()).await;
+            observable_mismatch(
+                "conflict workspace",
+                &conflict_browser,
+                &format!("{:?}", conflict_snapshot.workspace),
+            )
+            .unwrap();
+            observable_mismatch(
+                "conflict snapshot revision",
+                &conflict_revision,
+                &conflict_snapshot.revision,
+            )
+            .unwrap();
+
+            let failure = std::panic::catch_unwind(|| {
+                if let Err(diagnostic) = observable_mismatch(
+                    "controlled workspace disagreement",
+                    &"Evolve",
+                    &"Procedure",
+                ) {
+                    panic!("{diagnostic}");
+                }
+            })
+            .expect_err("a browser/service disagreement must fail the comparison");
+            let diagnostic = failure
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    failure
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).into())
+                })
+                .expect("controlled mismatch panic must contain a string diagnostic");
+            assert!(diagnostic.contains("browser observable \"Evolve\""));
+            assert!(diagnostic.contains("service observable \"Procedure\""));
+
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+        harness.shutdown().await;
+        browser_result.unwrap_or_else(|error| {
+            panic!(
+                "browser/service comparison failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+            )
+        });
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive matrix passes
+#[test]
+fn every_workspace_passes_the_required_responsive_matrix() {
+    super::web_server::run_async_test(async {
+        let harness = BrowserHarness::start().await;
+        let browser_result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(harness.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+            app.wait_for_snapshot().await;
+
+            let workspaces = [
+                ("Chat", "Attach image"),
+                ("Sessions", "New session"),
+                ("Settings", "Choose folder"),
+                ("Autopilot", "Start Autopilot"),
+                ("Cascade", "Start Cascade"),
+                ("Evolve", "Start Evolve"),
+                ("Procedure", "Start Procedure"),
+                ("Tests", "Refresh catalogue"),
+            ];
+
+            for viewport in [
+                Viewport {
+                    width: 360,
+                    height: 800,
+                },
+                Viewport {
+                    width: 768,
+                    height: 1024,
+                },
+                Viewport {
+                    width: 1440,
+                    height: 900,
+                },
+            ] {
+                let size = format!("{}x{}", viewport.width, viewport.height);
+                let viewport_width = viewport.width;
+                let viewport_height = viewport.height;
+                app.page.set_viewport_size(viewport).await?;
+
+                let mut navigation_boxes = Vec::new();
+                for (workspace, _) in workspaces {
+                    let navigation = app
+                        .require_unique(
+                            &format!("{workspace} navigation at {size}"),
+                            app.navigation(workspace),
+                        )
+                        .await;
+                    assert!(
+                        navigation.is_visible().await?,
+                        "{workspace} navigation is hidden at {size}"
+                    );
+                    let metrics = element_metrics(&navigation).await?;
+                    assert!(
+                        metrics.width > 0.0 && metrics.height > 0.0,
+                        "{workspace} navigation has no rendered area at {size}: {metrics:?}"
+                    );
+                    assert!(
+                        !metrics.clipped_by_ancestor,
+                        "{workspace} navigation is clipped at {size}: {metrics:?}"
+                    );
+                    navigation_boxes.push((workspace, metrics));
+                }
+                for left in 0..navigation_boxes.len() {
+                    for right in left + 1..navigation_boxes.len() {
+                        assert!(
+                            !boxes_overlap(
+                                &navigation_boxes[left].1,
+                                &navigation_boxes[right].1
+                            ),
+                            "workspace navigation overlaps at {size}: {} {:?} and {} {:?}",
+                            navigation_boxes[left].0,
+                            navigation_boxes[left].1,
+                            navigation_boxes[right].0,
+                            navigation_boxes[right].1
+                        );
+                    }
+                }
+
+                for (workspace, primary_action) in workspaces {
+                    app.navigation(workspace).click(None).await?;
+                    app.require_unique(
+                        &format!("{workspace} heading at {size}"),
+                        app.page.get_by_role(
+                            AriaRole::Heading,
+                            Some(
+                                GetByRoleOptions::default()
+                                    .name(workspace)
+                                    .exact(true)
+                                    .level(2),
+                            ),
+                        ),
+                    )
+                    .await;
+                    let action = app
+                        .require_unique(
+                            &format!("{workspace} primary action {primary_action} at {size}"),
+                            app.action(primary_action),
+                        )
+                        .await;
+                    assert!(
+                        action.is_visible().await?,
+                        "{workspace} action {primary_action:?} is hidden at {size}"
+                    );
+                    action.scroll_into_view_if_needed().await?;
+                    action.focus().await?;
+                    let action_metrics = element_metrics(&action).await?;
+                    assert!(
+                        action_metrics.focused,
+                        "keyboard focus cannot reach {workspace} action {primary_action:?} at {size}: {action_metrics:?}"
+                    );
+                    assert!(
+                        action_metrics.left >= -0.5
+                            && action_metrics.right <= f64::from(viewport_width) + 0.5
+                            && action_metrics.top >= -0.5
+                            && action_metrics.bottom <= f64::from(viewport_height) + 0.5,
+                        "{workspace} action {primary_action:?} is outside the viewport after scrolling at {size}: {action_metrics:?}"
+                    );
+                    assert!(
+                        !action_metrics.clipped_by_ancestor,
+                        "{workspace} action {primary_action:?} is clipped at {size}: {action_metrics:?}"
+                    );
+
+                    let document = document_metrics(&app.page).await?;
+                    assert_eq!(document.viewport_width, f64::from(viewport_width));
+                    assert!(
+                        document.document_scroll_width <= document.document_client_width + 0.5
+                            && document.body_scroll_width <= document.body_client_width + 0.5
+                            && document.document_scroll_width <= document.viewport_width + 0.5,
+                        "horizontal page overflow in {workspace} at {size}: {document:?}"
+                    );
+                }
+            }
+
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+        harness.shutdown().await;
+        browser_result.unwrap_or_else(|error| {
+            panic!(
+                "responsive browser matrix failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+            )
+        });
     });
 }

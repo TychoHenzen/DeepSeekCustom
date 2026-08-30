@@ -262,10 +262,12 @@
       "status": "completed"
     },
     "7.8": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.9": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.10": {
       "checked": false

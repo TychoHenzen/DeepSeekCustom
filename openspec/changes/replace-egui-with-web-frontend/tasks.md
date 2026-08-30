@@ -186,9 +186,11 @@
 - [x] 7.7 Add browser coverage for startup, navigation, chat, stop, sessions, settings, folders, attachments, voice, Autopilot, Cascade, Evolve, Procedure, Tests, cancellation, retention, and reconnect.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Critical workflow contract is changed -->
-- [ ] 7.8 Add assertions that compare visible browser state with the server snapshot and command result for success and conflict paths.
+- [x] 7.8 Add assertions that compare visible browser state with the server snapshot and command result for success and conflict paths.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser tests cover critical workflows :: Browser and service disagree -->
-- [ ] 7.9 Run every primary workspace at 360 by 800, 768 by 1024, and 1440 by 900 while checking reachable actions, page overflow, clipping, overlap, and focus reachability.
+- [x] 7.9 Run every primary workspace at 360 by 800, 768 by 1024, and 1440 by 900 while checking reachable actions, page overflow, clipping, overlap, and focus reachability.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive matrix passes -->
 - [ ] 7.10 Capture a screenshot, Playwright trace, browser console, and server log for a deliberately failing responsive assertion and for ordinary suite failures.
 <!-- covers: deepseek-custom/web-frontend-automation :: Responsive layouts have automated visual evidence :: Responsive check fails -->
