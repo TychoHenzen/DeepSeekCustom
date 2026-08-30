@@ -171,11 +171,14 @@
 <!-- status: completed -->
 - [x] 7.2 Build the isolated browser harness with ephemeral loopback server, temporary project root, scripted backend, and deterministic dialog, voice, clock, and test-executor services.
 <!-- status: completed -->
-- [ ] 7.3 Convert primary browser locators to accessible role and name, with documented test identifiers only where no semantic identity exists.
+- [x] 7.3 Convert primary browser locators to accessible role and name, with documented test identifiers only where no semantic identity exists.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser controls have stable semantic identities :: Automation locates a primary action -->
-- [ ] 7.4 Assert disabled state and its visible reason for unavailable or conflicting actions.
+- [x] 7.4 Assert disabled state and its visible reason for unavailable or conflicting actions.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: Browser controls have stable semantic identities :: A control is unavailable -->
-- [ ] 7.5 Prove each browser test receives unique temporary state, token, URL, and deterministic success, failure, review, interruption, and reconnect events.
+- [x] 7.5 Prove each browser test receives unique temporary state, token, URL, and deterministic success, failure, review, interruption, and reconnect events.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment starts -->
 - [ ] 7.6 Reap each test server, browser context, browser process, and child process tree on pass, failure, timeout, and cancellation while preserving real checkout bytes.
 <!-- covers: deepseek-custom/web-frontend-automation :: End-to-end tests run against isolated deterministic services :: Browser test environment stops -->

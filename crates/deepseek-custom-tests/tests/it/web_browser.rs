@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
-    AppRevision, AppSnapshot, NoticeLevel, OperationKind, SessionSummary, TranscriptBlock,
-    TranscriptContent, Workspace,
+    AppRevision, AppSnapshot, NoticeLevel, OperationKind, OperationPhase, OperationProgress,
+    OperationState, SessionSummary, TranscriptBlock, TranscriptContent, Workspace,
 };
 use deepseek_custom::application::services::{
     DomainCommandPort, RuntimeSettingsPort, SettingsController,
@@ -30,6 +30,8 @@ use deepseek_custom::web::server::{
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc;
+
+use playwright_rs::protocol::{AriaRole, GetByRoleOptions, Locator, Page};
 
 const INSTALL_COMMAND: &str =
     "cargo run -p deepseek-custom-tests --example install_playwright_chromium";
@@ -117,12 +119,29 @@ impl ScriptedBackend {
             }))
             .unwrap();
     }
+
+    fn set_operation(&self, kind: OperationKind, phase: OperationPhase, message: &str) {
+        self.state
+            .apply_event(AppEvent::OperationChanged(OperationState {
+                kind,
+                operation_id: Some(format!("scripted-{kind:?}")),
+                phase,
+                progress: Some(OperationProgress {
+                    completed: u64::from(phase != OperationPhase::Running),
+                    total: Some(1),
+                }),
+                message: Some(message.into()),
+                error: None,
+            }))
+            .unwrap();
+    }
 }
 
 /// Owns every resource used by one browser test. Dropping the temporary root
 /// cannot affect the checkout because the server only receives this path.
 struct BrowserHarness {
     project_root: TempDir,
+    process_token: String,
     state: WebAppState,
     backend: ScriptedBackend,
     voice_rx: mpsc::UnboundedReceiver<VoiceCommand>,
@@ -173,8 +192,20 @@ impl BrowserHarness {
         )
         .await
         .unwrap();
+        let process_token = reqwest::Client::new()
+            .get(format!("{}api/bootstrap", server.url()))
+            .send()
+            .await
+            .unwrap()
+            .headers()
+            .get(deepseek_custom::web::server::REQUEST_TOKEN_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
         Self {
             project_root,
+            process_token,
             state,
             backend,
             voice_rx,
@@ -187,12 +218,123 @@ impl BrowserHarness {
     }
 }
 
+/// Semantic browser surface shared by critical-flow tests.
+///
+/// Each method names the user-visible contract. The only non-semantic selector
+/// is the hidden image input, which still has the documented accessible label
+/// `Select image` and is reached through `get_by_label`.
+struct BrowserPage {
+    page: Page,
+}
+
+impl BrowserPage {
+    fn new(page: Page) -> Self {
+        Self { page }
+    }
+
+    async fn wait_for_snapshot(&self) -> Locator {
+        self.require_unique(
+            "connected application snapshot",
+            self.page.get_by_role(AriaRole::Status, None),
+        )
+        .await
+    }
+
+    fn action(&self, name: &str) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Button,
+            Some(GetByRoleOptions::default().name(name).exact(true)),
+        )
+    }
+
+    fn progress(&self) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Region,
+            Some(GetByRoleOptions::default().name("Progress").exact(true)),
+        )
+    }
+
+    fn terminal_result(&self) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Region,
+            Some(
+                GetByRoleOptions::default()
+                    .name("Result summary")
+                    .exact(true),
+            ),
+        )
+    }
+
+    fn reconnect(&self) -> Locator {
+        self.action("Retry connection")
+    }
+
+    fn review(&self) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Region,
+            Some(
+                GetByRoleOptions::default()
+                    .name("Procedure review")
+                    .exact(true),
+            ),
+        )
+    }
+
+    fn file_chooser(&self) -> Locator {
+        self.page.get_by_label("Select image", true)
+    }
+
+    fn voice(&self) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Region,
+            Some(
+                GetByRoleOptions::default()
+                    .name("Voice controls")
+                    .exact(true),
+            ),
+        )
+    }
+
+    fn tests_workspace(&self) -> Locator {
+        self.page.get_by_role(
+            AriaRole::Region,
+            Some(
+                GetByRoleOptions::default()
+                    .name("Repository tests")
+                    .exact(true),
+            ),
+        )
+    }
+
+    async fn require_unique(&self, contract: &str, locator: Locator) -> Locator {
+        locator.wait_for(None).await.unwrap_or_else(|error| {
+            panic!("semantic selector for {contract:?} did not become visible: {error}")
+        });
+        let count = locator
+            .count()
+            .await
+            .unwrap_or_else(|error| panic!("semantic selector for {contract:?} failed: {error}"));
+        if count != 1 {
+            let snapshot = self
+                .page
+                .aria_snapshot(None)
+                .await
+                .unwrap_or_else(|error| format!("<ARIA snapshot failed: {error}>"));
+            panic!(
+                "semantic selector for {contract:?} matched {count} elements; expected 1\nARIA snapshot:\n{snapshot}"
+            );
+        }
+        locator
+    }
+}
+
 fn isolated_snapshot(project_root: &Path) -> AppSnapshot {
     let mut snapshot = super::web_server::visible_snapshot();
     snapshot.revision = AppRevision::INITIAL;
     snapshot.workspace = Workspace::Chat;
     snapshot.transcript.clear();
     snapshot.saved_sessions.clear();
+    snapshot.operations.clear();
     snapshot.pending_session_switch = None;
     snapshot.session = SessionSummary {
         id: "isolated-session".into(),
@@ -233,6 +375,8 @@ fn browser_harness_uses_unique_ephemeral_state_and_deterministic_services() {
 
         assert_ne!(first.project_root.path(), second.project_root.path());
         assert_ne!(first.server.url(), second.server.url());
+        assert_ne!(first.process_token, second.process_token);
+        assert_eq!(first.process_token.len(), 32);
         assert!(first.server.address().ip().is_loopback());
         assert_ne!(first.server.address().port(), 0);
         assert!(first.project_root.path().join("selected-folder").is_dir());
@@ -244,11 +388,31 @@ fn browser_harness_uses_unique_ephemeral_state_and_deterministic_services() {
         first
             .backend
             .emit_notice("scripted failure", NoticeLevel::Error);
+        first.backend.set_operation(
+            OperationKind::Procedure,
+            OperationPhase::AwaitingReview,
+            "scripted review",
+        );
+        first.backend.set_operation(
+            OperationKind::Chat,
+            OperationPhase::Interrupted,
+            "scripted interruption",
+        );
+        first
+            .backend
+            .emit_notice("scripted reconnect", NoticeLevel::Info);
         first
             .state
             .apply_voice_event(VoiceEvent::StateChanged(VoiceState::Listening))
             .unwrap();
-        assert_eq!(first.state.snapshot().transcript.len(), 2);
+        assert_eq!(first.state.snapshot().transcript.len(), 3);
+        assert!(first.state.snapshot().operations.iter().any(|operation| {
+            operation.kind == OperationKind::Procedure
+                && operation.phase == OperationPhase::AwaitingReview
+        }));
+        assert!(first.state.snapshot().operations.iter().any(|operation| {
+            operation.kind == OperationKind::Chat && operation.phase == OperationPhase::Interrupted
+        }));
         assert!(
             first
                 .state
@@ -274,7 +438,6 @@ fn browser_commands_versions_and_artifact_paths_are_explicit() {
 }
 
 #[test]
-#[ignore = "requires the version-matched Chromium runtime"]
 fn installed_chromium_opens_the_isolated_real_server() {
     super::web_server::run_async_test(async {
         let harness = BrowserHarness::start().await;
@@ -296,5 +459,125 @@ fn installed_chromium_opens_the_isolated_real_server() {
             )
         });
         assert_eq!(title, "DeepSeekCustom");
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Browser controls have stable semantic identities :: Automation locates a primary action
+#[test]
+fn primary_action_is_located_by_accessible_role_and_name() {
+    super::web_server::run_async_test(async {
+        let harness = BrowserHarness::start().await;
+        let result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(harness.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+
+            app.wait_for_snapshot().await;
+            let evolve = app
+                .require_unique("Evolve workspace action", app.action("Evolve"))
+                .await;
+            evolve.click(None).await?;
+            let heading = app
+                .require_unique(
+                    "active Evolve workspace heading",
+                    app.page.get_by_role(
+                        AriaRole::Heading,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Evolve")
+                                .exact(true)
+                                .level(2),
+                        ),
+                    ),
+                )
+                .await;
+            assert_eq!(heading.inner_text().await?, "Evolve");
+
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+        harness.shutdown().await;
+        result.unwrap_or_else(|error| {
+            panic!(
+                "semantic browser contract failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+            )
+        });
+    });
+}
+
+// covers: deepseek-custom/web-frontend-automation :: Browser controls have stable semantic identities :: A control is unavailable
+#[test]
+fn disabled_action_exposes_its_visible_reason() {
+    super::web_server::run_async_test(async {
+        let harness = BrowserHarness::start().await;
+        harness.backend.set_operation(
+            OperationKind::Autopilot,
+            OperationPhase::Running,
+            "deterministic Autopilot run",
+        );
+
+        let result = async {
+            let playwright = playwright_rs::Playwright::launch().await?;
+            let browser = playwright.chromium().launch().await?;
+            let page = browser.new_page().await?;
+            page.goto(harness.server.url(), None).await?;
+            let app = BrowserPage::new(page);
+
+            app.wait_for_snapshot().await;
+            let evolve = app
+                .require_unique("Evolve workspace action", app.action("Evolve"))
+                .await;
+            evolve.click(None).await?;
+
+            let unavailable = app.page.get_by_role(
+                AriaRole::Button,
+                Some(
+                    GetByRoleOptions::default()
+                        .name("Start Evolve")
+                        .exact(true)
+                        .disabled(true),
+                ),
+            );
+            let unavailable = app
+                .require_unique("disabled Start Evolve action and reason", unavailable)
+                .await;
+            assert!(unavailable.is_disabled().await?);
+            let reason_id = unavailable
+                .get_attribute("aria-describedby")
+                .await?
+                .expect("disabled action must reference its visible reason");
+            let reason = app
+                .require_unique(
+                    "visible Start Evolve disabled reason",
+                    app.page.locator(format!("#{reason_id}")),
+                )
+                .await;
+            assert!(reason.is_visible().await?);
+            assert_eq!(
+                reason.inner_text().await?,
+                "Autopilot is active. Stop or finish it before starting Evolve."
+            );
+
+            assert_eq!(app.file_chooser().count().await?, 0);
+            assert_eq!(app.voice().count().await?, 0);
+            assert_eq!(app.progress().count().await?, 0);
+            assert_eq!(app.terminal_result().count().await?, 0);
+            assert_eq!(app.reconnect().count().await?, 0);
+            assert_eq!(app.review().count().await?, 0);
+            assert_eq!(app.tests_workspace().count().await?, 0);
+
+            browser.close().await?;
+            Ok::<_, playwright_rs::Error>(())
+        }
+        .await;
+        harness.shutdown().await;
+        result.unwrap_or_else(|error| {
+            panic!(
+                "semantic browser contract failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
+            )
+        });
     });
 }

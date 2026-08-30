@@ -242,13 +242,16 @@
       "status": "completed"
     },
     "7.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.4": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.5": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "7.6": {
       "checked": false
