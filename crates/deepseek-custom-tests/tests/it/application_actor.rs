@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use deepseek_custom::agent::events::AgentCommand;
-use deepseek_custom::agent::events::StreamEvent;
+use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
@@ -687,6 +686,82 @@ fn accepted_attachment_reaches_existing_backend_turn_and_is_consumed_once() {
     ));
     assert!(!actor.remove_attachment("image-1"));
     drop(actor);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn routed_chat_events_project_the_assistant_and_finish_the_browser_turn() {
+    let (dir, mut actor, mut commands, _) = chat_actor("routed-turn");
+    let sent = actor.submit(AppCommandRequest {
+        revision: actor.snapshot().revision,
+        command: AppCommand::SendMessage {
+            text: "live Ollama prompt".into(),
+            attachment_id: None,
+        },
+    });
+    assert!(matches!(sent, AppCommandResult::Applied { .. }));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(AgentCommand::UserTurn { .. })
+    ));
+
+    actor
+        .apply_routed_stream_event(RoutedEvent::own(StreamEvent::Text {
+            turn: 1,
+            text: "OLLAMA_OK".into(),
+        }))
+        .unwrap()
+        .unwrap();
+    assert!(actor.snapshot().transcript.iter().any(|block| {
+        matches!(
+            &block.content,
+            TranscriptContent::Assistant { spans }
+                if format!("{spans:?}").contains("OLLAMA_OK")
+        )
+    }));
+    assert!(matches!(
+        actor
+            .snapshot()
+            .operations
+            .iter()
+            .find(|operation| operation.kind == OperationKind::Chat),
+        Some(OperationState {
+            phase: OperationPhase::Running,
+            ..
+        })
+    ));
+
+    actor
+        .apply_routed_stream_event(RoutedEvent::own(StreamEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "stop".into(),
+            total_tokens: 12,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 0,
+        }))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        actor.snapshot().transcript.last(),
+        Some(TranscriptBlock {
+            content: TranscriptContent::Terminal {
+                outcome: OperationPhase::Completed,
+                ..
+            },
+            ..
+        })
+    ));
+    assert!(matches!(
+        actor
+            .snapshot()
+            .operations
+            .iter()
+            .find(|operation| operation.kind == OperationKind::Chat),
+        Some(OperationState {
+            phase: OperationPhase::Completed,
+            ..
+        })
+    ));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

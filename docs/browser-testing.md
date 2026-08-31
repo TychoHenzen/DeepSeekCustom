@@ -26,6 +26,25 @@ The lower-level Rust command remains useful while editing browser assertions:
 cargo test -p deepseek-custom-tests --test it web_browser -- --test-threads=1
 ```
 
+Run the real production binary against local Ollama with this opt-in practice:
+
+```powershell
+cargo build -p deepseek-custom -j 1
+cargo test -p deepseek-custom-tests --test it web_browser::production_binary_uses_only_ollama_across_browser_workflows -j 1 -- --ignored --exact --nocapture --test-threads=1
+```
+
+The practice creates a disposable project with only the
+`qwen2.5-coder:7b-instruct-q4_K_M` Ollama backend. It does not read or write the
+checkout's `settings.json`. The production child receives
+`DEEPSEEK_DISABLE_BROWSER=1`, so its Windows browser launcher stays disabled.
+Playwright-RS still launches headless Chromium and records the browser state.
+
+Passing and failing live runs retain evidence under
+`target/playwright-artifacts/production_binary_ollama_browser_practice/`.
+The directory contains numbered screenshots for startup, Settings, chat prompt,
+running chat, final chat, reload, Sessions, test discovery, and an exact passing
+test. It also contains `trace.zip`, `browser-console.log`, and `server.log`.
+
 For a disposable clean-install check, copy `web` without `node_modules`, run
 `npm ci` in the copy, and set `DEEPSEEK_BROWSER_CARGO_ROOT` to this repository
 before running its `browser:test` script. The override changes only where Cargo

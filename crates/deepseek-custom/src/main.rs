@@ -41,7 +41,8 @@ use deepseek_custom::voice::stt::WhisperEngine;
 use deepseek_custom::voice::tts::TtsHandle;
 use deepseek_custom::voice::{resolve_kokoro_paths, resolve_whisper_model_path};
 use deepseek_custom::web::server::{
-    BindPolicy, SystemBrowser, SystemFolderPicker, WebAppState, start_with_policy_and_state,
+    BindPolicy, BrowserOpener, SystemBrowser, SystemFolderPicker, WebAppState,
+    start_with_policy_and_state,
 };
 
 /// Start the MCP servers Claude Code's own config files name, in the
@@ -797,7 +798,7 @@ async fn main() {
     let event_state = web_state.clone();
     let event_forwarder = tokio::spawn(async move {
         while let Some(routed) = rx_events.recv().await {
-            let _ = event_state.apply_operation_stream_event(&routed.event);
+            let _ = event_state.apply_routed_stream_event(routed);
         }
     });
     let procedure_state = web_state.clone();
@@ -807,9 +808,12 @@ async fn main() {
         }
     });
 
+    let browser: Option<Arc<dyn BrowserOpener>> = std::env::var_os("DEEPSEEK_DISABLE_BROWSER")
+        .is_none()
+        .then(|| Arc::new(SystemBrowser) as Arc<dyn BrowserOpener>);
     let server = start_with_policy_and_state(
         BindPolicy::preferred_loopback(8765, true),
-        Some(Arc::new(SystemBrowser)),
+        browser,
         web_state.clone(),
     )
     .await

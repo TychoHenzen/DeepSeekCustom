@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::session::PendingSwitch;
 use super::session_state::SessionOrigin;
 use super::transcript::{BlockKind, Severity};
-use crate::agent::events::AgentCommand;
-use crate::agent::events::StreamEvent;
+use crate::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
@@ -1152,6 +1151,84 @@ impl ApplicationActor {
         Some(self.apply_event(AppEvent::OperationChanged(state)))
     }
 
+    /// Apply one backend event to the browser-visible transcript and lifecycle.
+    ///
+    /// Repeat and search events keep their operation projection above. Chat and
+    /// routed subagent events also update the actor-owned transcript. A reset is
+    /// published because streamed deltas can update the last visible block rather
+    /// than only append a new block.
+    pub fn apply_routed_stream_event(
+        &mut self,
+        routed: RoutedEvent,
+    ) -> Option<Result<AppRevision, AppError>> {
+        let operation_result = self.apply_operation_stream_event(&routed.event);
+        let main_session = routed.route.is_empty();
+
+        if main_session {
+            match &routed.event {
+                StreamEvent::ConversationSnapshot {
+                    messages,
+                    claude_session_id,
+                } => {
+                    if let Some(chat) = &mut self.chat {
+                        chat.session
+                            .sessions
+                            .record_snapshot(messages, claude_session_id);
+                    }
+                    return operation_result;
+                }
+                StreamEvent::SessionReset => return Some(self.apply_agent_session_reset()),
+                StreamEvent::SearchProgress(_) => return operation_result,
+                _ => {}
+            }
+        }
+
+        if self.chat.is_none() {
+            return operation_result;
+        }
+        let terminal_event = routed.event.clone();
+        if let Some(chat) = &mut self.chat {
+            chat.session.transcript.apply_routed_event(routed);
+        }
+        let transcript_result = self.publish_chat_transcript_reset();
+
+        if !main_session {
+            return Some(transcript_result);
+        }
+        if let Err(error) = transcript_result {
+            return Some(Err(error));
+        }
+
+        match terminal_event {
+            StreamEvent::TurnEnd { finish_reason, .. }
+                if self
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.session.turn_active) =>
+            {
+                let (phase, message) = if finish_reason == "error" {
+                    (OperationPhase::Failed, "Turn failed")
+                } else {
+                    (OperationPhase::Completed, "Response complete")
+                };
+                Some(command_result(self.finish_chat(phase, message, true)))
+            }
+            StreamEvent::Interrupted { ref message }
+                if self
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.session.turn_active) =>
+            {
+                Some(command_result(self.finish_chat(
+                    OperationPhase::Interrupted,
+                    message,
+                    true,
+                )))
+            }
+            _ => Some(Ok(self.snapshot.revision)),
+        }
+    }
+
     /// Project run-scoped Procedure progress without allowing stale runs to
     /// replace the evidence or decisions for the currently displayed run.
     pub fn apply_procedure_progress(
@@ -1553,6 +1630,57 @@ impl ApplicationActor {
         }
     }
 
+    fn publish_chat_transcript_reset(&mut self) -> Result<AppRevision, AppError> {
+        let mut image_flags = self
+            .snapshot
+            .transcript
+            .iter()
+            .filter_map(|block| match &block.content {
+                TranscriptContent::User { has_image, .. } => Some(*has_image),
+                _ => None,
+            })
+            .collect::<VecDeque<_>>();
+        let mut transcript = self
+            .chat
+            .as_ref()
+            .expect("chat lifecycle checked by caller")
+            .session
+            .transcript_projection();
+        for block in &mut transcript {
+            if let TranscriptContent::User { has_image, .. } = &mut block.content {
+                *has_image = image_flags.pop_front().unwrap_or(false);
+            }
+        }
+        self.snapshot.transcript = transcript;
+        let mut reset = self.snapshot.clone();
+        reset.revision = self
+            .snapshot
+            .revision
+            .checked_next()
+            .ok_or_else(|| unavailable("application revision exhausted"))?;
+        self.publish(AppChangeKind::Reset(Box::new(reset)))
+    }
+
+    fn apply_agent_session_reset(&mut self) -> Result<AppRevision, AppError> {
+        let Some(chat) = &mut self.chat else {
+            return Err(unavailable("chat lifecycle is not connected"));
+        };
+        chat.session
+            .sessions
+            .save_outgoing_and_start_new(&mut chat.session.transcript, chat.origin.clone());
+        self.snapshot.transcript = chat.session.transcript_projection();
+        self.snapshot.session = chat.session.session_summary();
+        self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.snapshot.pending_session_switch = None;
+        let mut reset = self.snapshot.clone();
+        reset.revision = self
+            .snapshot
+            .revision
+            .checked_next()
+            .ok_or_else(|| unavailable("application revision exhausted"))?;
+        self.publish(AppChangeKind::Reset(Box::new(reset)))
+    }
+
     fn finish_chat(
         &mut self,
         phase: OperationPhase,
@@ -1621,6 +1749,14 @@ impl ApplicationActor {
             return self.apply_session_switch(pending);
         }
         AppCommandResult::Applied { revision }
+    }
+}
+
+fn command_result(result: AppCommandResult) -> Result<AppRevision, AppError> {
+    match result {
+        AppCommandResult::Applied { revision } => Ok(revision),
+        AppCommandResult::Rejected { error } => Err(error),
+        AppCommandResult::Conflict { .. } => unreachable!("internal events cannot conflict"),
     }
 }
 

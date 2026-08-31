@@ -20,7 +20,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::agent::events::StreamEvent;
+use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
 use crate::application::dto::{
@@ -250,6 +250,23 @@ impl WebAppState {
         let mut actor = self.inner.actor.lock().unwrap();
         let previous = actor.snapshot().revision;
         let result = actor.apply_operation_stream_event(event)?;
+        if result.is_ok()
+            && let Replay::Changes(changes) = actor.replay_after(previous)
+        {
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
+        }
+        Some(result)
+    }
+
+    pub fn apply_routed_stream_event(
+        &self,
+        routed: RoutedEvent,
+    ) -> Option<Result<AppRevision, crate::application::dto::AppError>> {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let result = actor.apply_routed_stream_event(routed)?;
         if result.is_ok()
             && let Replay::Changes(changes) = actor.replay_after(previous)
         {
