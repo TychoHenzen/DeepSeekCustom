@@ -236,11 +236,7 @@ impl LocalRepairRunner {
             }
             let verifier = VerifierCommandRunner::with_interrupt(Arc::clone(&self.interrupt));
             let verifier_run = verifier.run(applied.path(), verifier_commands).await;
-            if self.interrupted()
-                || verifier_run.commands.iter().any(|command| {
-                    command.disposition == super::VerifierCommandDisposition::Interrupted
-                })
-            {
+            if verifier_was_interrupted(self.interrupted(), &verifier_run) {
                 applied.close().map_err(PatchApplyCheckError::from)?;
                 state.interrupt()?;
                 self.record_event(
@@ -307,11 +303,7 @@ impl LocalRepairRunner {
                 digest.exit_code,
                 digest.diagnostic.clone(),
             ))?;
-            let disposition = if state.disposition() == &AttemptDisposition::LocalExhausted {
-                RepairLadderDisposition::LocalExhausted
-            } else {
-                RepairLadderDisposition::Ready
-            };
+            let disposition = local_failure_disposition(&state);
             self.record_event(
                 input.report.run.id,
                 &mut repair_events,
@@ -389,43 +381,37 @@ impl LocalRepairRunner {
             match prepared {
                 Ok(applied) => return Ok(PreparedCandidate::Applied(Box::new(applied))),
                 Err(CandidatePreparationError::Structural(failure)) => {
-                    if state.structural_retry_count() < state.policy().structural_retries() {
-                        let retry = RepairCandidateId::new(format!(
-                            "local-{attempt_number}-structural-retry"
-                        ))?;
-                        state.retry_structural(failure.evidence(), retry)?;
+                    if state.structural_retry_count() >= state.policy().structural_retries() {
+                        state.structural_retry_exhausted(failure.evidence())?;
+                        let disposition = structural_exhaustion_disposition(state);
                         self.record_event(
                             input.report.run.id,
                             repair_events,
                             structural_event(
-                                RepairLadderTransition::StructuralRetry,
+                                RepairLadderTransition::StructuralRetryExhausted,
                                 attempt_number,
                                 dispatcher,
                                 &failure,
-                                RepairLadderDisposition::CandidateActive,
+                                disposition,
                             ),
                         );
-                        prompt = build_structural_retry_prompt(&prompt, &failure);
-                        continue;
+                        return Ok(PreparedCandidate::StructuralExhausted);
                     }
-                    state.structural_retry_exhausted(failure.evidence())?;
-                    let disposition = match state.disposition() {
-                        AttemptDisposition::Ready => RepairLadderDisposition::FrontierReady,
-                        AttemptDisposition::Blocked { .. } => RepairLadderDisposition::Blocked,
-                        _ => RepairLadderDisposition::Ready,
-                    };
+                    let retry =
+                        RepairCandidateId::new(format!("local-{attempt_number}-structural-retry"))?;
+                    state.retry_structural(failure.evidence(), retry)?;
                     self.record_event(
                         input.report.run.id,
                         repair_events,
                         structural_event(
-                            RepairLadderTransition::StructuralRetryExhausted,
+                            RepairLadderTransition::StructuralRetry,
                             attempt_number,
                             dispatcher,
                             &failure,
-                            disposition,
+                            RepairLadderDisposition::CandidateActive,
                         ),
                     );
-                    return Ok(PreparedCandidate::StructuralExhausted);
+                    prompt = build_structural_retry_prompt(&prompt, &failure);
                 }
                 Err(CandidatePreparationError::Interrupted) => {
                     return Ok(PreparedCandidate::Interrupted);
@@ -450,6 +436,32 @@ impl LocalRepairRunner {
         if let Some(progress) = &self.progress {
             let _ = progress.send(super::ProcedureProgress::RepairTransition { run_id, event });
         }
+    }
+}
+
+pub(super) fn verifier_was_interrupted(
+    interrupt_requested: bool,
+    run: &super::VerifierRun,
+) -> bool {
+    interrupt_requested
+        || run
+            .commands
+            .iter()
+            .any(|command| command.disposition == super::VerifierCommandDisposition::Interrupted)
+}
+
+fn local_failure_disposition(state: &AttemptState) -> RepairLadderDisposition {
+    if state.disposition() == &AttemptDisposition::LocalExhausted {
+        return RepairLadderDisposition::LocalExhausted;
+    }
+    RepairLadderDisposition::Ready
+}
+
+fn structural_exhaustion_disposition(state: &AttemptState) -> RepairLadderDisposition {
+    match state.disposition() {
+        AttemptDisposition::Ready => RepairLadderDisposition::FrontierReady,
+        AttemptDisposition::Blocked { .. } => RepairLadderDisposition::Blocked,
+        _ => RepairLadderDisposition::Ready,
     }
 }
 

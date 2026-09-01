@@ -46,16 +46,16 @@
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->
 
-- [ ] 3.6 Extract Class `OperationWorkspaceView` from `web/src/app/OperationWorkspace.tsx`, keeping operation-specific controls, accessible names, progress rows, disabled reasons, and visual fixture coverage unchanged.
-<!-- status: pending -->
+- [x] 3.6 Extract Class `OperationWorkspaceView` from `web/src/app/OperationWorkspace.tsx`, keeping operation-specific controls, accessible names, progress rows, disabled reasons, and visual fixture coverage unchanged.
+<!-- status: completed -->
 <!-- verify_cmd: cargo test --workspace && npm --prefix web test && node "C:\Users\siriu\.codex\plugins\cache\dod-guard-monorepo\quality-guard\0.5.8\skills\quality-refactor\scripts\quality-scan.mjs" crates web/src --root=. --exclude=crates/deepseek-custom/src/web/assets --test-path=crates/deepseek-custom-tests --baseline=.quality/baseline.json --fail-on=regression -->
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->
 
 ## 4. SIMPLIFY
 
-- [ ] 4.1 Replace Nested Conditional with Guard Clauses and Extract Function across `BoundedRepairCoordinator`, `LocalRepairRunner`, and `FrontierRepairDispatcher`, keeping local, structural, frontier, interruption, and exhaustion transitions bounded and ordered.
-<!-- status: pending -->
+- [x] 4.1 Replace Nested Conditional with Guard Clauses and Extract Function across `BoundedRepairCoordinator`, `LocalRepairRunner`, and `FrontierRepairDispatcher`, keeping local, structural, frontier, interruption, and exhaustion transitions bounded and ordered.
+<!-- status: completed -->
 <!-- verify_cmd: cargo test --workspace && npm --prefix web test && node "C:\Users\siriu\.codex\plugins\cache\dod-guard-monorepo\quality-guard\0.5.8\skills\quality-refactor\scripts\quality-scan.mjs" crates web/src --root=. --exclude=crates/deepseek-custom/src/web/assets --test-path=crates/deepseek-custom-tests --baseline=.quality/baseline.json --fail-on=regression -->
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->

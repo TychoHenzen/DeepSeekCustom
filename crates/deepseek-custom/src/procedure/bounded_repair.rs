@@ -1,5 +1,4 @@
 //! Production orchestration for one complete bounded repair ladder.
-
 use thiserror::Error;
 
 use super::{
@@ -64,17 +63,9 @@ impl<'a> BoundedRepairCoordinator<'a> {
             .local
             .run(request, policy, local_dispatcher, verifier_commands)
             .await?;
-        let frontier = if local.outcome == LocalRepairOutcome::LocalExhausted {
-            let dispatcher =
-                frontier_dispatcher.ok_or(BoundedRepairError::MissingFrontierDispatcher)?;
-            Some(
-                self.frontier
-                    .run(&mut local, dispatcher, verifier_commands)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let frontier = self
+            .frontier_outcome(&mut local, frontier_dispatcher, verifier_commands)
+            .await?;
         local.save_repair_events(self.reports)?;
         let persisted_events = self
             .reports
@@ -85,5 +76,24 @@ impl<'a> BoundedRepairCoordinator<'a> {
             frontier,
             persisted_events,
         })
+    }
+
+    async fn frontier_outcome(
+        &self,
+        local: &mut LocalRepairRun,
+        dispatcher: Option<&dyn FrontierRepairDispatch>,
+        verifier_commands: &[String],
+    ) -> Result<Option<FrontierRepairOutcome>, BoundedRepairError> {
+        if local.outcome != LocalRepairOutcome::LocalExhausted {
+            return Ok(None);
+        }
+        let Some(dispatcher) = dispatcher else {
+            return Err(BoundedRepairError::MissingFrontierDispatcher);
+        };
+        let outcome = self
+            .frontier
+            .run(local, dispatcher, verifier_commands)
+            .await?;
+        Ok(Some(outcome))
     }
 }

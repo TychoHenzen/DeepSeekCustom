@@ -28,7 +28,9 @@ use super::{
     model_promotion_targets, promote_verified_workspace,
 };
 
-use super::local_repair::{CandidateGateError, apply_candidate_in_fresh_workspace};
+use super::local_repair::{
+    CandidateGateError, apply_candidate_in_fresh_workspace, verifier_was_interrupted,
+};
 
 /// Fixed final instruction for every frontier escalation request.
 pub const FRONTIER_REPAIR_INSTRUCTION: &str = "Return one corrected patch envelope for this task. Change only the normalized targets. Use the deterministic failure evidence. Do not include commentary or prior conversation.";
@@ -211,11 +213,7 @@ impl FrontierRepairRunner {
             let verifier = VerifierCommandRunner::with_interrupt(Arc::clone(&self.interrupt));
             let verifier_run = verifier.run(applied.path(), verifier_commands).await;
 
-            if self.interrupted()
-                || verifier_run.commands.iter().any(|command| {
-                    command.disposition == super::VerifierCommandDisposition::Interrupted
-                })
-            {
+            if verifier_was_interrupted(self.interrupted(), &verifier_run) {
                 applied.close().map_err(PatchApplyCheckError::from)?;
                 local_run.state.interrupt()?;
                 let event = frontier_interrupted_event(local_run, dispatcher);
@@ -270,12 +268,7 @@ impl FrontierRepairRunner {
                 ))?;
             let failure_category = digest.error_category;
             local_run.failure_digests.push(digest);
-            let disposition =
-                if local_run.state.disposition() == &AttemptDisposition::FrontierExhausted {
-                    RepairLadderDisposition::FrontierExhausted
-                } else {
-                    RepairLadderDisposition::Ready
-                };
+            let disposition = frontier_failure_disposition(&local_run.state);
             self.record_event(
                 local_run,
                 frontier_event(
@@ -408,20 +401,18 @@ impl FrontierRepairDispatcher {
 #[async_trait]
 impl FrontierRepairDispatch for FrontierRepairDispatcher {
     fn model(&self, backend: &str) -> String {
-        self.factory
-            .resolve(backend, self.model.as_deref())
-            .map(|resolved| match resolved {
+        if let Ok(resolved) = self.factory.resolve(backend, self.model.as_deref()) {
+            return match resolved {
                 ResolvedBackend::Api { model, .. }
                 | ResolvedBackend::ClaudeCli { model, .. }
                 | ResolvedBackend::CodexCli { model, .. } => model,
                 #[cfg(feature = "test-support")]
                 ResolvedBackend::Stub { model, .. } => model,
-            })
-            .unwrap_or_else(|_| {
-                self.model
-                    .clone()
-                    .unwrap_or_else(|| "unresolved backend model".to_string())
-            })
+            };
+        }
+        self.model
+            .clone()
+            .unwrap_or_else(|| "unresolved backend model".to_string())
     }
 
     async fn draft(
@@ -442,6 +433,13 @@ impl FrontierRepairDispatch for FrontierRepairDispatcher {
         )
         .await
     }
+}
+
+fn frontier_failure_disposition(state: &super::AttemptState) -> RepairLadderDisposition {
+    if state.disposition() == &AttemptDisposition::FrontierExhausted {
+        return RepairLadderDisposition::FrontierExhausted;
+    }
+    RepairLadderDisposition::Ready
 }
 
 /// Failure before a frontier candidate can enter deterministic verification.

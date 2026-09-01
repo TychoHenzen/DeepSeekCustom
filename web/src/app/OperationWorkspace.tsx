@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 
 import type { AppCommand, AppCommandResult, OperationKind, OperationState } from '../client/contracts.ts';
+import { OperationProgress, OperationWorkspaceView } from './OperationWorkspaceView.tsx';
 
 type WorkspaceKind = Extract<OperationKind, 'autopilot' | 'cascade' | 'evolve' | 'procedure'>;
 
@@ -62,28 +63,13 @@ export function OperationWorkspace({ kind, operation, activeOperation, send, bac
     }
   }
 
-  return <section aria-labelledby={`${kind}-title`} className="operation-workspace">
-    <h3 id={`${kind}-title`}>{title} operation</h3>
-    <form aria-label={`Start ${title}`} onSubmit={(event) => void submit(event)}>
-      <label htmlFor={`${kind}-primary`}>{primaryLabel(kind)}</label>
-      <textarea id={`${kind}-primary`} onChange={(event) => setPrimary(event.target.value)} value={primary} />
-      {kind === 'autopilot' && <>
-        <label htmlFor={`${kind}-secondary`}>Iterations</label>
-        <input id={`${kind}-secondary`} min={1} onChange={(event) => setSecondary(event.target.value)} type="number" value={secondary} />
-      </>}
-      {(kind === 'cascade' || kind === 'evolve') && <SearchFields
-        backend={backend} backends={backends} command={command} countA={countA}
-        countB={countB} countC={countC} countD={countD} hints={hints} kind={kind}
-        optionalCommand={optionalCommand} setBackend={setBackend} setCommand={setCommand}
-        setCountA={setCountA} setCountB={setCountB} setCountC={setCountC}
-        setCountD={setCountD} setHints={setHints} setOptionalCommand={setOptionalCommand}
-      />}
-      {validation !== null && <p className="validation-message" role="alert">{validation}</p>}
-      <button aria-describedby={blockedBy === null ? undefined : `${kind}-blocked`} disabled={submitting || active} type="submit">Start {title}</button>
-      {blockedBy !== null && <p className="disabled-reason" id={`${kind}-blocked`}>{blockedBy} is active. Stop or finish it before starting {title}.</p>}
-    </form>
-    <OperationProgress operation={operation} onStop={() => send({ command: 'stop_operation', payload: { kind } })} showStop={ownsActiveOperation} />
-  </section>;
+  return <OperationWorkspaceView
+    active={active} blockedBy={blockedBy} kind={kind} onPrimaryChange={setPrimary}
+    onSecondaryChange={setSecondary} onStop={() => send({ command: 'stop_operation', payload: { kind } })}
+    onSubmit={(event) => void submit(event)} operation={operation} ownsActiveOperation={ownsActiveOperation}
+    primary={primary} search={{ backend, backends, command, countA, countB, countC, countD, hints, optionalCommand, setBackend, setCommand, setCountA, setCountB, setCountC, setCountD, setHints, setOptionalCommand }}
+    secondary={secondary} submitting={submitting} title={title} validation={validation}
+  />;
 }
 
 function ProcedureWorkspace({ operation, activeOperation, send, backends = [], selectedBackend = null, selectedModel = null }: Omit<OperationWorkspaceProps, 'kind'>) {
@@ -200,24 +186,6 @@ function ProcedureEvidence({ message }: { message: string }) {
   </section>;
 }
 
-function OperationProgress({ operation, onStop, showStop }: { operation: OperationState | null; onStop: () => Promise<AppCommandResult>; showStop: boolean }) {
-  if (operation === null || operation.phase === 'idle') return <p className="operation-empty">No operation has run in this workspace.</p>;
-  const terminal = ['completed', 'failed', 'interrupted', 'cancelled'].includes(operation.phase);
-  return <section aria-labelledby="operation-progress-title" className="operation-progress">
-    <h4 id="operation-progress-title">Progress</h4>
-    {operation.operation_id !== null && <p><strong>Run:</strong> <code>{operation.operation_id}</code></p>}
-    <ol className="progress-timeline">
-      <li><strong>{operation.phase.replace('_', ' ')}</strong>{operation.progress && ` ${operation.progress.completed} of ${operation.progress.total ?? 'unknown'}`}</li>
-    </ol>
-    <div aria-label="Operation log" className="operation-log" role="log"><pre>{operation.message ?? 'No log output.'}</pre></div>
-    {operation.error !== null && <p className="validation-message" role="alert">{operation.error.message}</p>}
-    {showStop && <button onClick={() => void onStop()} type="button">Stop operation</button>}
-    {terminal && <section aria-label="Result summary" className={`result-summary result-${operation.phase}`}>
-      <h4>Result</h4><p>{operation.message ?? `Operation ${operation.phase}.`}</p>
-    </section>}
-  </section>;
-}
-
 function primaryLabel(kind: WorkspaceKind): string {
   if (kind === 'procedure') return 'Change ID';
   if (kind === 'autopilot') return 'Task';
@@ -262,20 +230,4 @@ function lines(value: string): string[] { return value.split(/\r?\n/).map((line)
 function boundedInteger(value: string, min: number, max: number, label: string): number | string {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : `${label} must be a whole number from ${min} to ${max}.`;
-}
-
-type Setter = (value: string) => void;
-interface SearchFieldsProps extends SearchValues { kind: 'cascade' | 'evolve'; backends: string[]; setBackend: Setter; setCountA: Setter; setCountB: Setter; setCountC: Setter; setCountD: Setter; setCommand: Setter; setOptionalCommand: Setter; setHints: Setter }
-function SearchFields(props: SearchFieldsProps) {
-  const id = props.kind;
-  return <fieldset className="operation-parameters"><legend>{props.kind === 'cascade' ? 'Search parameters' : 'Evolution parameters'}</legend>
-    <label htmlFor={`${id}-backend`}>Backend</label>
-    <select id={`${id}-backend`} onChange={(event) => props.setBackend(event.target.value)} value={props.backend}><option value="">Select backend</option>{props.backends.map((name) => <option key={name} value={name}>{name}</option>)}</select>
-    <label htmlFor={`${id}-count-a`}>{props.kind === 'cascade' ? 'Attempts' : 'Generations'}</label><input id={`${id}-count-a`} min="1" onChange={(event) => props.setCountA(event.target.value)} type="number" value={props.countA} />
-    <label htmlFor={`${id}-count-b`}>{props.kind === 'cascade' ? 'Vote margin' : 'Population'}</label><input id={`${id}-count-b`} min="1" onChange={(event) => props.setCountB(event.target.value)} type="number" value={props.countB} />
-    {props.kind === 'evolve' && <><label htmlFor={`${id}-count-c`}>Islands</label><input id={`${id}-count-c`} min="1" onChange={(event) => props.setCountC(event.target.value)} type="number" value={props.countC} /><label htmlFor={`${id}-count-d`}>Migration interval</label><input id={`${id}-count-d`} min="0" onChange={(event) => props.setCountD(event.target.value)} type="number" value={props.countD} /></>}
-    <label htmlFor={`${id}-command`}>{props.kind === 'cascade' ? 'Check command (optional)' : 'Fitness command'}</label><input id={`${id}-command`} onChange={(event) => props.setCommand(event.target.value)} value={props.command} />
-    <label htmlFor={`${id}-optional-command`}>{props.kind === 'cascade' ? 'Escalation backend (optional)' : 'Feature command (optional)'}</label><input id={`${id}-optional-command`} onChange={(event) => props.setOptionalCommand(event.target.value)} value={props.optionalCommand} />
-    <label htmlFor={`${id}-hints`}>{props.kind === 'cascade' ? 'Diversity hints' : 'Mutation hints'}</label><textarea id={`${id}-hints`} onChange={(event) => props.setHints(event.target.value)} value={props.hints} />
-  </fieldset>;
 }
