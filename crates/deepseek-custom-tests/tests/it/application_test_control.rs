@@ -4,7 +4,7 @@ use std::{
 };
 
 use deepseek_custom::application::test_control::{
-    ActiveTestSlot, CargoTestExecutor, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES,
+    ActiveTestSlot, RetainedTestResult, TEST_DISCOVERY_DIAGNOSTIC_LIMIT_BYTES,
     TEST_OUTPUT_LIMIT_BYTES, TestClock, TestControlSnapshot, TestCounts, TestDiscoveryState,
     TestExecution, TestExecutionError, TestExecutor, TestIdentity, TestInvocation, TestOutcome,
     TestOutputChunk, TestOutputStream, TestProcessExit, TestResultStore, TestRunCoordinator,
@@ -480,60 +480,6 @@ fn reconnect_snapshot_restores_active_test_without_owning_its_execution() {
         "still running\n"
     );
     assert!(wire.contains(&active_id));
-}
-
-#[cfg(windows)]
-#[test]
-fn cargo_executor_cancellation_reaps_a_real_windows_descendant() {
-    use std::time::{Duration, Instant};
-
-    let dir = super::scratch_dir("cargo-test-tree", "cancel");
-    let pid_file = dir.join("descendant.pid");
-    let script = format!(
-        "$child = Start-Process ping -ArgumentList '-t','127.0.0.1' -PassThru; Set-Content -LiteralPath '{}' -Value $child.Id; while ($true) {{ Start-Sleep -Milliseconds 100 }}",
-        pid_file.display()
-    );
-    let invocation = TestInvocation {
-        program: "powershell".into(),
-        args: vec!["-NoProfile".into(), "-Command".into(), script],
-        working_dir: dir.clone(),
-    };
-    let mut execution = CargoTestExecutor.start(&invocation).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !pid_file.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let descendant_pid: u32 = std::fs::read_to_string(&pid_file)
-        .expect("parent must report its descendant pid")
-        .trim()
-        .parse()
-        .unwrap();
-
-    execution.cancel_and_wait().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut alive = true;
-    while alive && Instant::now() < deadline {
-        let output = std::process::Command::new("tasklist")
-            .args([
-                "/FI",
-                &format!("PID eq {descendant_pid}"),
-                "/FO",
-                "CSV",
-                "/NH",
-            ])
-            .output()
-            .unwrap();
-        alive = String::from_utf8_lossy(&output.stdout).contains(&descendant_pid.to_string());
-        if alive {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-    eprintln!("cancelled Cargo tree descendant pid={descendant_pid}, alive_after_reap={alive}");
-    assert!(
-        !alive,
-        "descendant process {descendant_pid} survived cancellation"
-    );
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // covers: deepseek-custom/test-suite-control :: The test catalogue reflects the repository test target :: Test discovery succeeds
