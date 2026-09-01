@@ -126,7 +126,6 @@ mod procedure_sandbox_e2e;
 mod procedure_trace_export;
 mod procedure_verification_input;
 mod procedure_verifier;
-mod process_group;
 mod search_cascade;
 mod search_evolve;
 mod session;

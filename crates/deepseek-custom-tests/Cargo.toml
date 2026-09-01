@@ -22,14 +22,6 @@ path = "src/bin/fake_claude.rs"
 name = "fake_codex"
 path = "src/bin/fake_codex.rs"
 
-# Spawns a long-running child, hands it to `process_group::adopt`, then
-# exits without cleaning it up. `tests/process_group.rs` runs this and then
-# checks the grandchild died anyway. See that test for why the check needs
-# a second process to be meaningful.
-[[bin]]
-name = "orphan_probe"
-path = "src/bin/orphan_probe.rs"
-
 # A fake MCP server, so the client and manager tests can drive a real child
 # process without needing `node`, `npx`, or a network. Same reason
 # `fake_claude` lives here: `env!("CARGO_BIN_EXE_...")` only resolves for a
@@ -49,9 +41,6 @@ deepseek-custom = { path = "../deepseek-custom", features = ["test-support"] }
 serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
-# A binary target cannot use a dev-dependency, and `orphan_probe` needs the
-# same tokio `Command` the production spawn paths use, since that is what
-# `process_group::adopt` takes.
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]

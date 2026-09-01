@@ -18,8 +18,8 @@
       "status": "completed"
     },
     "3.3": {
-      "checked": false,
-      "status": "pending"
+      "checked": true,
+      "status": "completed"
     },
     "3.4": {
       "checked": false,

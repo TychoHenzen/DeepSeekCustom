@@ -32,8 +32,9 @@ use crate::application::services::DomainCommandPort;
 use crate::application::services::SettingsController;
 use crate::application::test_control::{
     CargoTestDiscoveryExecutor, CargoTestExecutor, SystemTestClock, TestClock, TestDiscoveryState,
-    TestExecutor, TestResultStore, TestRunCoordinator, TestRunRequest,
+    TestExecutor, TestResultStore, TestRunRequest,
 };
+use crate::application::test_run_coordinator::TestRunCoordinator;
 use crate::config::settings::Settings;
 use crate::image_bytes::attachment_from_image_bytes;
 use crate::procedure::ProcedureCommand;
