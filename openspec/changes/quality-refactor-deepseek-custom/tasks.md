@@ -22,8 +22,8 @@
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->
 
-- [ ] 3.2 Extract Class `ApplicationEventProjector` from actor and transcript event handling, migrate routed-event callers, and preserve ordered transcript text, tool, notice, error, and terminal projections.
-<!-- status: pending -->
+- [x] 3.2 Extract Class `ApplicationEventProjector` from actor and transcript event handling, migrate routed-event callers, and preserve ordered transcript text, tool, notice, error, and terminal projections.
+<!-- status: completed -->
 <!-- verify_cmd: cargo test --workspace && npm --prefix web test && node "C:\Users\siriu\.codex\plugins\cache\dod-guard-monorepo\quality-guard\0.5.8\skills\quality-refactor\scripts\quality-scan.mjs" crates web/src --root=. --exclude=crates/deepseek-custom/src/web/assets --test-path=crates/deepseek-custom-tests --baseline=.quality/baseline.json --fail-on=regression -->
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->

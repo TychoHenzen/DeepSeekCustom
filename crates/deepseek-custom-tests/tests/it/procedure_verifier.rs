@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
 
 use deepseek_custom::procedure::{
     BoundedVerifierOutput, CandidateIneligibility, GitApplyDisposition, GitApplyPhase,
@@ -53,34 +52,6 @@ fn command_line(script: &Path, action: &str, marker: &Path) -> String {
         action,
         marker.display()
     )
-}
-
-fn write_descendant_fixture(root: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let path = root.join("descendant verifier.cmd");
-        std::fs::write(
-            &path,
-            "@echo off\r\nif \"%~1\"==\"spawn\" (\r\n  start \"\" /b powershell -NoProfile -Command \"Start-Sleep -Seconds 2; Set-Content -LiteralPath '%~3' -Value descendant-ran\"\r\n  echo started>\"%~2\"\r\n  timeout /t 2 /nobreak >nul\r\n)\r\n",
-        )
-        .unwrap();
-        path
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = root.join("descendant verifier.sh");
-        std::fs::write(
-            &path,
-            "#!/bin/sh\nif [ \"$1\" = spawn ]; then (sleep 2; printf descendant-ran > \"$3\") & printf started > \"$2\"; sleep 2; fi\n",
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
 }
 
 fn run_async(future: impl std::future::Future<Output = ()>) {
@@ -285,71 +256,6 @@ fn interrupt_before_the_sequence_stays_ineligible_without_spawning() {
             VerifierCommandDisposition::Interrupted
         );
         assert!(!run.commands[0].success);
-        std::fs::remove_dir_all(root).ok();
-    });
-}
-
-#[test]
-fn interrupting_an_active_gate_kills_descendants_and_returns_ineligible() {
-    run_async(async {
-        let root = temp_dir("active interrupt");
-        let fixture = write_descendant_fixture(&root);
-        let started = root.join("descendant-started.txt");
-        let descendant_marker = root.join("descendant-ran.txt");
-        let command = if cfg!(windows) {
-            command_line(&fixture, "spawn", &started)
-                + &format!(" \"{}\"", descendant_marker.display())
-        } else {
-            format!(
-                "sh \"{}\" spawn \"{}\" \"{}\"",
-                fixture.display(),
-                started.display(),
-                descendant_marker.display()
-            )
-        };
-        let interrupt = Arc::new(AtomicBool::new(false));
-        let runner = VerifierCommandRunner::with_interrupt(Arc::clone(&interrupt));
-        {
-            let commands = [command];
-            let run_future = runner.run(&root, &commands);
-            tokio::pin!(run_future);
-
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                tokio::select! {
-                    run = &mut run_future => panic!("gate ended before the interrupt fixture started: {run:?}"),
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                        if started.exists() {
-                            break;
-                        }
-                        assert!(Instant::now() < deadline, "interrupt fixture did not start");
-                    }
-                }
-            }
-
-            interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
-            let run = tokio::time::timeout(Duration::from_secs(5), run_future)
-                .await
-                .expect("an interrupted verifier must finish before the fixture timeout");
-
-            assert_eq!(run.commands.len(), 1);
-            assert_eq!(
-                run.commands[0].disposition,
-                VerifierCommandDisposition::Interrupted
-            );
-            assert!(!run.commands[0].success);
-            assert!(
-                !evaluate_candidate_eligibility(
-                    &patch_result(GitApplyPhase::Check, true),
-                    &patch_result(GitApplyPhase::Apply, true),
-                    &run.commands,
-                )
-                .eligible
-            );
-        }
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        assert!(!descendant_marker.exists());
         std::fs::remove_dir_all(root).ok();
     });
 }

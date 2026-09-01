@@ -4,9 +4,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::event_projector::ApplicationEventProjector;
 use super::session::PendingSwitch;
 use super::session_state::SessionOrigin;
-use super::transcript::{BlockKind, Severity};
 use crate::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::api::types::ImageAttachment;
@@ -15,14 +15,13 @@ use crate::application::session::ApplicationSession;
 use crate::procedure::{
     ProcedureCommand, ProcedureProgress, ProcedureTerminalDisposition, RouteOverride,
 };
-use crate::search::{SearchCommand, SearchKind};
+use crate::search::SearchCommand;
 use crate::voice::service::VoiceCommand;
 
 use super::dto::{
     AppChange, AppChangeKind, AppCommandRequest, AppCommandResult, AppError, AppErrorCode,
     AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState, PendingSessionSwitch,
-    ProcedureRouteOverride, SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings,
-    Workspace,
+    ProcedureRouteOverride, SessionSummary, TranscriptBlock, VisibleSettings, Workspace,
 };
 
 impl From<ProcedureRouteOverride> for RouteOverride {
@@ -82,7 +81,7 @@ pub struct ChatLifecycle {
     pub(super) session: ApplicationSession,
     pub(super) agent: DomainCommandPort<AgentCommand>,
     pub(super) interrupt: Arc<AtomicBool>,
-    origin: SessionOrigin,
+    pub(super) origin: SessionOrigin,
 }
 
 impl ChatLifecycle {
@@ -371,62 +370,7 @@ impl ApplicationActor {
     }
 
     pub fn apply_event(&mut self, event: AppEvent) -> Result<AppRevision, AppError> {
-        if let AppEvent::TranscriptAppended(TranscriptBlock {
-            content: TranscriptContent::Terminal { outcome, message },
-            ..
-        }) = &event
-            && self
-                .chat
-                .as_ref()
-                .is_some_and(|chat| chat.session.turn_active)
-        {
-            return match self.finish_chat(*outcome, message, true) {
-                AppCommandResult::Applied { revision } => Ok(revision),
-                AppCommandResult::Rejected { error } => Err(error),
-                AppCommandResult::Conflict { .. } => unreachable!(),
-            };
-        }
-        let change = match event {
-            AppEvent::TranscriptAppended(block) => {
-                self.snapshot.transcript.push(block.clone());
-                AppChangeKind::TranscriptAppended(block)
-            }
-            AppEvent::SessionChanged(session) => {
-                self.snapshot.session = session.clone();
-                AppChangeKind::SessionChanged(session)
-            }
-            AppEvent::SavedSessionsChanged(sessions) => {
-                self.snapshot.saved_sessions = sessions.clone();
-                AppChangeKind::SavedSessionsChanged(sessions)
-            }
-            AppEvent::PendingSessionSwitchChanged(pending) => {
-                self.snapshot.pending_session_switch = pending.clone();
-                AppChangeKind::PendingSessionSwitchChanged(pending)
-            }
-            AppEvent::SettingsChanged(settings) => {
-                self.snapshot.settings = settings.clone();
-                AppChangeKind::SettingsChanged(settings)
-            }
-            AppEvent::OperationChanged(operation) => {
-                if let Some(existing) = self
-                    .snapshot
-                    .operations
-                    .iter_mut()
-                    .find(|existing| existing.kind == operation.kind)
-                {
-                    *existing = operation.clone();
-                } else {
-                    self.snapshot.operations.push(operation.clone());
-                }
-                AppChangeKind::OperationChanged(operation)
-            }
-            AppEvent::TestsChanged(tests) => {
-                self.snapshot.tests = tests.as_ref().clone();
-                AppChangeKind::TestsChanged(tests)
-            }
-            AppEvent::Error(error) => AppChangeKind::Error(error),
-        };
-        self.publish(change)
+        ApplicationEventProjector::new(self).apply_event(event)
     }
 
     /// Project existing backend-neutral repeat and search events into browser state.
@@ -434,86 +378,7 @@ impl ApplicationActor {
         &mut self,
         event: &StreamEvent,
     ) -> Option<Result<AppRevision, AppError>> {
-        let state = match event {
-            StreamEvent::RepeatIterationStart { index, total, .. } => OperationState {
-                kind: OperationKind::Autopilot,
-                operation_id: self.operation_id(OperationKind::Autopilot),
-                phase: OperationPhase::Running,
-                progress: Some(super::dto::OperationProgress {
-                    completed: u64::from(index.saturating_sub(1)),
-                    total: Some(u64::from(*total)),
-                }),
-                message: Some(format!("Running iteration {index} of {total}")),
-                error: None,
-            },
-            StreamEvent::RepeatFinished { completed, total } => OperationState {
-                kind: OperationKind::Autopilot,
-                operation_id: self.operation_id(OperationKind::Autopilot),
-                phase: if *completed < *total
-                    && self
-                        .repeat_interrupt
-                        .as_ref()
-                        .is_some_and(|flag| flag.load(Ordering::SeqCst))
-                {
-                    OperationPhase::Interrupted
-                } else {
-                    OperationPhase::Completed
-                },
-                progress: Some(super::dto::OperationProgress {
-                    completed: u64::from(*completed),
-                    total: Some(u64::from(*total)),
-                }),
-                message: Some(format!(
-                    "Autopilot finished: {completed} of {total} iterations"
-                )),
-                error: None,
-            },
-            StreamEvent::SearchProgress(snapshot) => OperationState {
-                kind: operation_kind(snapshot.kind),
-                operation_id: self.operation_id(operation_kind(snapshot.kind)),
-                phase: OperationPhase::Running,
-                progress: Some(super::dto::OperationProgress {
-                    completed: u64::from(snapshot.done),
-                    total: Some(u64::from(snapshot.total)),
-                }),
-                message: Some(search_message(snapshot)),
-                error: None,
-            },
-            StreamEvent::SearchFinished {
-                kind,
-                summary,
-                is_error,
-            } => OperationState {
-                kind: operation_kind(*kind),
-                operation_id: self.operation_id(operation_kind(*kind)),
-                phase: if self
-                    .search_interrupt
-                    .as_ref()
-                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
-                {
-                    OperationPhase::Interrupted
-                } else if *is_error {
-                    OperationPhase::Failed
-                } else {
-                    OperationPhase::Completed
-                },
-                progress: self
-                    .snapshot
-                    .operations
-                    .iter()
-                    .find(|item| item.kind == operation_kind(*kind))
-                    .and_then(|item| item.progress),
-                message: Some(summary.clone()),
-                error: is_error.then(|| AppError {
-                    code: AppErrorCode::ServiceFailed,
-                    message: summary.clone(),
-                    recoverable: true,
-                    field: None,
-                }),
-            },
-            _ => return None,
-        };
-        Some(self.apply_event(AppEvent::OperationChanged(state)))
+        ApplicationEventProjector::new(self).apply_operation_stream_event(event)
     }
 
     /// Apply one backend event to the browser-visible transcript and lifecycle.
@@ -526,72 +391,7 @@ impl ApplicationActor {
         &mut self,
         routed: RoutedEvent,
     ) -> Option<Result<AppRevision, AppError>> {
-        let operation_result = self.apply_operation_stream_event(&routed.event);
-        let main_session = routed.route.is_empty();
-
-        if main_session {
-            match &routed.event {
-                StreamEvent::ConversationSnapshot {
-                    messages,
-                    claude_session_id,
-                } => {
-                    if let Some(chat) = &mut self.chat {
-                        chat.session
-                            .sessions
-                            .record_snapshot(messages, claude_session_id);
-                    }
-                    return operation_result;
-                }
-                StreamEvent::SessionReset => return Some(self.apply_agent_session_reset()),
-                StreamEvent::SearchProgress(_) => return operation_result,
-                _ => {}
-            }
-        }
-
-        if self.chat.is_none() {
-            return operation_result;
-        }
-        let terminal_event = routed.event.clone();
-        if let Some(chat) = &mut self.chat {
-            chat.session.transcript.apply_routed_event(routed);
-        }
-        let transcript_result = self.publish_chat_transcript_reset();
-
-        if !main_session {
-            return Some(transcript_result);
-        }
-        if let Err(error) = transcript_result {
-            return Some(Err(error));
-        }
-
-        match terminal_event {
-            StreamEvent::TurnEnd { finish_reason, .. }
-                if self
-                    .chat
-                    .as_ref()
-                    .is_some_and(|chat| chat.session.turn_active) =>
-            {
-                let (phase, message) = if finish_reason == "error" {
-                    (OperationPhase::Failed, "Turn failed")
-                } else {
-                    (OperationPhase::Completed, "Response complete")
-                };
-                Some(command_result(self.finish_chat(phase, message, true)))
-            }
-            StreamEvent::Interrupted { ref message }
-                if self
-                    .chat
-                    .as_ref()
-                    .is_some_and(|chat| chat.session.turn_active) =>
-            {
-                Some(command_result(self.finish_chat(
-                    OperationPhase::Interrupted,
-                    message,
-                    true,
-                )))
-            }
-            _ => Some(Ok(self.snapshot.revision)),
-        }
+        ApplicationEventProjector::new(self).apply_routed_stream_event(routed)
     }
 
     /// Project run-scoped Procedure progress without allowing stale runs to
@@ -879,7 +679,7 @@ impl ApplicationActor {
         }))
     }
 
-    fn operation_id(&self, kind: OperationKind) -> Option<String> {
+    pub(super) fn operation_id(&self, kind: OperationKind) -> Option<String> {
         self.snapshot
             .operations
             .iter()
@@ -950,7 +750,7 @@ impl ApplicationActor {
         self.apply_session_switch(pending)
     }
 
-    fn apply_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
+    pub(super) fn apply_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
         let Some(chat) = &mut self.chat else {
             unreachable!()
         };
@@ -995,133 +795,13 @@ impl ApplicationActor {
         }
     }
 
-    fn publish_chat_transcript_reset(&mut self) -> Result<AppRevision, AppError> {
-        let mut image_flags = self
-            .snapshot
-            .transcript
-            .iter()
-            .filter_map(|block| match &block.content {
-                TranscriptContent::User { has_image, .. } => Some(*has_image),
-                _ => None,
-            })
-            .collect::<VecDeque<_>>();
-        let mut transcript = self
-            .chat
-            .as_ref()
-            .expect("chat lifecycle checked by caller")
-            .session
-            .transcript_projection();
-        for block in &mut transcript {
-            if let TranscriptContent::User { has_image, .. } = &mut block.content {
-                *has_image = image_flags.pop_front().unwrap_or(false);
-            }
-        }
-        self.snapshot.transcript = transcript;
-        let mut reset = self.snapshot.clone();
-        reset.revision = self
-            .snapshot
-            .revision
-            .checked_next()
-            .ok_or_else(|| unavailable("application revision exhausted"))?;
-        self.publish(AppChangeKind::Reset(Box::new(reset)))
-    }
-
-    fn apply_agent_session_reset(&mut self) -> Result<AppRevision, AppError> {
-        let Some(chat) = &mut self.chat else {
-            return Err(unavailable("chat lifecycle is not connected"));
-        };
-        chat.session
-            .sessions
-            .save_outgoing_and_start_new(&mut chat.session.transcript, chat.origin.clone());
-        self.snapshot.transcript = chat.session.transcript_projection();
-        self.snapshot.session = chat.session.session_summary();
-        self.snapshot.saved_sessions = chat.session.saved_session_summaries();
-        self.snapshot.pending_session_switch = None;
-        let mut reset = self.snapshot.clone();
-        reset.revision = self
-            .snapshot
-            .revision
-            .checked_next()
-            .ok_or_else(|| unavailable("application revision exhausted"))?;
-        self.publish(AppChangeKind::Reset(Box::new(reset)))
-    }
-
     pub(super) fn finish_chat(
         &mut self,
         phase: OperationPhase,
         message: &str,
         append_terminal: bool,
     ) -> AppCommandResult {
-        if append_terminal {
-            let terminal = TranscriptBlock {
-                id: self
-                    .snapshot
-                    .transcript
-                    .iter()
-                    .map(|block| block.id)
-                    .max()
-                    .unwrap_or(0)
-                    + 1,
-                content: TranscriptContent::Terminal {
-                    outcome: phase,
-                    message: message.into(),
-                },
-            };
-            self.snapshot.transcript.push(terminal.clone());
-            if self
-                .publish(AppChangeKind::TranscriptAppended(terminal))
-                .is_err()
-            {
-                return AppCommandResult::Rejected {
-                    error: unavailable("could not publish terminal event"),
-                };
-            }
-        }
-        let pending = {
-            let chat = self.chat.as_mut().expect("checked by caller");
-            chat.session.transcript.push(BlockKind::Notice {
-                text: message.into(),
-                severity: Severity::Info,
-            });
-            chat.session.turn_active = false;
-            chat.session
-                .sessions
-                .autosave(&mut chat.session.transcript, chat.origin.clone());
-            chat.session.pending_switch.take()
-        };
-        let operation = OperationState {
-            kind: OperationKind::Chat,
-            operation_id: self
-                .snapshot
-                .operations
-                .iter()
-                .find(|item| item.kind == OperationKind::Chat)
-                .and_then(|item| item.operation_id.clone()),
-            phase,
-            progress: None,
-            message: Some(message.into()),
-            error: None,
-        };
-        self.snapshot
-            .operations
-            .retain(|item| item.kind != OperationKind::Chat);
-        self.snapshot.operations.push(operation.clone());
-        let revision = match self.publish(AppChangeKind::OperationChanged(operation)) {
-            Ok(revision) => revision,
-            Err(error) => return AppCommandResult::Rejected { error },
-        };
-        if let Some(pending) = pending {
-            return self.apply_session_switch(pending);
-        }
-        AppCommandResult::Applied { revision }
-    }
-}
-
-fn command_result(result: AppCommandResult) -> Result<AppRevision, AppError> {
-    match result {
-        AppCommandResult::Applied { revision } => Ok(revision),
-        AppCommandResult::Rejected { error } => Err(error),
-        AppCommandResult::Conflict { .. } => unreachable!("internal events cannot conflict"),
+        ApplicationEventProjector::new(self).finish_chat(phase, message, append_terminal)
     }
 }
 
@@ -1185,13 +865,6 @@ pub(super) fn snapshot_effort(value: &str) -> crate::effort::Effort {
     }
 }
 
-fn operation_kind(kind: SearchKind) -> OperationKind {
-    match kind {
-        SearchKind::Cascade => OperationKind::Cascade,
-        SearchKind::Evolve => OperationKind::Evolve,
-    }
-}
-
 fn terminal_procedure_state(
     disposition: &ProcedureTerminalDisposition,
 ) -> (OperationPhase, Option<AppError>) {
@@ -1218,21 +891,6 @@ fn operation_label(kind: OperationKind) -> &'static str {
         OperationKind::Evolve => "Evolve",
         _ => "Operation",
     }
-}
-
-fn search_message(snapshot: &crate::search::SearchSnapshot) -> String {
-    let mut message = snapshot.note.clone();
-    if let Some((used, limit)) = snapshot.dispatches {
-        message.push_str(&format!("\nDispatches: {used} of {limit}"));
-    }
-    for entry in &snapshot.top {
-        let score = entry
-            .score
-            .map(|score| format!(" ({score:.4})"))
-            .unwrap_or_default();
-        message.push_str(&format!("\n{}{}: {}", entry.label, score, entry.preview));
-    }
-    message
 }
 
 impl AppSnapshot {
