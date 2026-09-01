@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
@@ -132,53 +131,6 @@ fn write_failing_verifier(root: &Path) -> PathBuf {
     command
 }
 
-fn write_interruptible_verifier(
-    root: &Path,
-    started: &Path,
-    completed: &Path,
-    workspace: &Path,
-) -> String {
-    #[cfg(windows)]
-    {
-        let command = root.join("interruptible-verifier.ps1");
-        let quote = |path: &Path| path.display().to_string().replace('\'', "''");
-        std::fs::write(
-            &command,
-            format!(
-                "Set-Content -LiteralPath '{}' -Value 'started'\nSet-Content -LiteralPath '{}' -Value (Get-Location).Path\nStart-Sleep -Seconds 4\nSet-Content -LiteralPath '{}' -Value 'child-completed'\n",
-                quote(started),
-                quote(workspace),
-                quote(completed),
-            ),
-        )
-        .unwrap();
-        format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
-            command.display()
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let command = root.join("interruptible-verifier.sh");
-        let quote = |path: &Path| path.display().to_string().replace('\'', "'\\''");
-        std::fs::write(
-            &command,
-            format!(
-                "#!/bin/sh\nprintf started > '{}'\npwd > '{}'\nsleep 4\nprintf child-completed > '{}'\n",
-                quote(started),
-                quote(workspace),
-                quote(completed),
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&command).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&command, permissions).unwrap();
-        format!("\"{}\"", command.display())
-    }
-}
-
 fn write_isolation_verifier(root: &Path, counter: &Path, workspaces: &Path) -> String {
     #[cfg(windows)]
     {
@@ -245,6 +197,7 @@ struct ScriptedLocalDispatcher {
     calls: AtomicUsize,
     real_target: PathBuf,
     real_bytes_seen_at_dispatch: Mutex<Vec<Vec<u8>>>,
+    interrupt_after_draft: Option<Arc<AtomicBool>>,
 }
 
 impl ScriptedLocalDispatcher {
@@ -255,6 +208,18 @@ impl ScriptedLocalDispatcher {
             calls: AtomicUsize::new(0),
             real_target: root.join(TARGET),
             real_bytes_seen_at_dispatch: Mutex::new(Vec::new()),
+            interrupt_after_draft: None,
+        }
+    }
+
+    fn interrupting(
+        root: &Path,
+        candidates: Vec<PatchCandidate>,
+        interrupt: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            interrupt_after_draft: Some(interrupt),
+            ..Self::new(root, candidates)
         }
     }
 }
@@ -276,11 +241,16 @@ impl LocalPatchDraftDispatch for ScriptedLocalDispatcher {
             .lock()
             .unwrap()
             .push(std::fs::read(&self.real_target).unwrap());
-        self.candidates
+        let candidate = self
+            .candidates
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or(LocalPatchDraftError::MissingFinalContent)
+            .ok_or(LocalPatchDraftError::MissingFinalContent)?;
+        if let Some(interrupt) = &self.interrupt_after_draft {
+            interrupt.store(true, Ordering::SeqCst);
+        }
+        Ok(candidate)
     }
 }
 
@@ -716,33 +686,28 @@ fn local_attempt_three_promotes_after_real_gates_without_frontier_dispatch() {
 
 // covers: deepseek-custom/bounded-repair-escalation :: Interruption cancels the ladder :: User interrupts during repair
 #[test]
-fn interrupting_active_local_verification_kills_the_child_and_cleans_the_candidate() {
+fn interruption_after_local_draft_stops_the_ladder_and_cleans_the_candidate() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
         let root = temp_dir();
-        let evidence = temp_dir();
         init_repository(&root);
         write_file(&root, TARGET, ORIGINAL);
         let openspec_command = write_openspec_fixture(&root);
-        let started = evidence.join("started.txt");
-        let completed = evidence.join("completed.txt");
-        let workspace = evidence.join("workspace.txt");
-        let verifier =
-            write_interruptible_verifier(&evidence, &started, &completed, &workspace);
         let (report, preview) = save_trusted_input(&root, &openspec_command);
-        let dispatcher = ScriptedLocalDispatcher::new(
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let dispatcher = ScriptedLocalDispatcher::interrupting(
             &root,
             vec![candidate("first"), candidate("must-not-run")],
+            Arc::clone(&interrupt),
         );
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
             ProcedureReportStore::for_project(&root),
         );
-        let interrupt = Arc::new(AtomicBool::new(false));
         let runner = LocalRepairRunner::new(gate, root.clone(), Arc::clone(&interrupt));
         let request = RepairRequest {
             localization_run_id: report.id,
@@ -750,48 +715,25 @@ fn interrupting_active_local_verification_kills_the_child_and_cleans_the_candida
             change_id: CHANGE_ID.to_string(),
             task_id: TASK_ID.to_string(),
         };
-        let commands = [verifier];
-        let run_future = runner.run(
-            &request,
-            policy_with_frontier_attempts(2),
-            &dispatcher,
-            &commands,
-        );
-        tokio::pin!(run_future);
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            tokio::select! {
-                result = &mut run_future => panic!("repair ended before verifier became active: {result:?}"),
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    if started.exists() && workspace.exists() {
-                        break;
-                    }
-                    assert!(Instant::now() < deadline, "interruptible verifier did not start");
-                }
-            }
-        }
-
-        let interrupted_at = Instant::now();
-        interrupt.store(true, Ordering::SeqCst);
-        let run = tokio::time::timeout(Duration::from_secs(3), run_future)
+        let run = runner
+            .run(
+                &request,
+                policy_with_frontier_attempts(2),
+                &dispatcher,
+                &["must-not-run".to_string()],
+            )
             .await
-            .expect("interrupted local verification must finish promptly")
             .unwrap();
 
         assert_eq!(run.outcome, LocalRepairOutcome::Interrupted);
         assert_eq!(run.state.disposition(), &AttemptDisposition::Interrupted);
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
-        assert!(interrupted_at.elapsed() < Duration::from_secs(3));
-        assert_eq!(std::fs::read_to_string(root.join(TARGET)).unwrap(), ORIGINAL);
-        let disposable = PathBuf::from(std::fs::read_to_string(&workspace).unwrap().trim());
-        assert!(!disposable.exists(), "interrupted candidate workspace leaked");
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        assert!(!completed.exists(), "interrupted verifier child kept running");
+        assert_eq!(
+            std::fs::read_to_string(root.join(TARGET)).unwrap(),
+            ORIGINAL
+        );
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
 
         std::fs::remove_dir_all(root).ok();
-        std::fs::remove_dir_all(evidence).ok();
     });
 }

@@ -23,6 +23,7 @@ use tokio::task::JoinHandle;
 use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
+use crate::application::command_dispatcher::ApplicationCommandDispatcher;
 use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
     VisibleSettings,
@@ -217,7 +218,8 @@ impl WebAppState {
     fn submit(&self, request: AppCommandRequest) -> AppCommandResult {
         let mut actor = self.inner.actor.lock().unwrap();
         let previous = actor.snapshot().revision;
-        let result = actor.submit(request);
+        let mut dispatcher = ApplicationCommandDispatcher::new(&mut actor);
+        let result = dispatcher.dispatch(request);
         if matches!(result, AppCommandResult::Applied { .. })
             && let Replay::Changes(changes) = actor.replay_after(previous)
         {

@@ -13,21 +13,16 @@ use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
 use crate::procedure::{
-    ApplyRequest, PatchPreviewId, PatchPreviewRequest, ProcedureCommand, ProcedureProgress,
-    ProcedureReviewDecision, ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad,
-    ProcedureTerminalDisposition, RouteOverride, WholeChangeCommandRequest,
+    ProcedureCommand, ProcedureProgress, ProcedureTerminalDisposition, RouteOverride,
 };
-use crate::search::cascade::{CascadeParams, MAX_ATTEMPTS};
-use crate::search::evolve::{EvolveParams, MAX_TOTAL_DISPATCHES};
 use crate::search::{SearchCommand, SearchKind};
-use crate::session::SessionId;
 use crate::voice::service::VoiceCommand;
 
 use super::dto::{
-    AppChange, AppChangeKind, AppCommand, AppCommandRequest, AppCommandResult, AppError,
-    AppErrorCode, AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState,
-    PendingSessionSwitch, ProcedureRouteOverride, ReviewDecision, SessionSummary, TranscriptBlock,
-    TranscriptContent, VisibleSettings, Workspace,
+    AppChange, AppChangeKind, AppCommandRequest, AppCommandResult, AppError, AppErrorCode,
+    AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState, PendingSessionSwitch,
+    ProcedureRouteOverride, SessionSummary, TranscriptBlock, TranscriptContent, VisibleSettings,
+    Workspace,
 };
 
 impl From<ProcedureRouteOverride> for RouteOverride {
@@ -67,26 +62,26 @@ pub enum AppEvent {
 /// Callers need mutable access to submit work. This makes command and event
 /// order explicit even before the actor is placed behind its later async loop.
 pub struct ApplicationActor {
-    snapshot: AppSnapshot,
+    pub(super) snapshot: AppSnapshot,
     replay_capacity: usize,
     changes: VecDeque<AppChange>,
-    chat: Option<ChatLifecycle>,
-    settings: Option<Arc<SettingsController>>,
-    attachments: HashMap<String, ImageAttachment>,
-    voice: Option<DomainCommandPort<VoiceCommand>>,
-    autopilot: Option<DomainCommandPort<RepeatCommand>>,
-    search: Option<DomainCommandPort<SearchCommand>>,
-    procedure: Option<DomainCommandPort<ProcedureCommand>>,
-    repeat_interrupt: Option<Arc<AtomicBool>>,
-    search_interrupt: Option<Arc<AtomicBool>>,
-    procedure_interrupt: Option<Arc<AtomicBool>>,
+    pub(super) chat: Option<ChatLifecycle>,
+    pub(super) settings: Option<Arc<SettingsController>>,
+    pub(super) attachments: HashMap<String, ImageAttachment>,
+    pub(super) voice: Option<DomainCommandPort<VoiceCommand>>,
+    pub(super) autopilot: Option<DomainCommandPort<RepeatCommand>>,
+    pub(super) search: Option<DomainCommandPort<SearchCommand>>,
+    pub(super) procedure: Option<DomainCommandPort<ProcedureCommand>>,
+    pub(super) repeat_interrupt: Option<Arc<AtomicBool>>,
+    pub(super) search_interrupt: Option<Arc<AtomicBool>>,
+    pub(super) procedure_interrupt: Option<Arc<AtomicBool>>,
 }
 
 /// Process-private chat lifecycle dependencies used by every presentation adapter.
 pub struct ChatLifecycle {
-    session: ApplicationSession,
-    agent: DomainCommandPort<AgentCommand>,
-    interrupt: Arc<AtomicBool>,
+    pub(super) session: ApplicationSession,
+    pub(super) agent: DomainCommandPort<AgentCommand>,
+    pub(super) interrupt: Arc<AtomicBool>,
     origin: SessionOrigin,
 }
 
@@ -193,650 +188,12 @@ impl ApplicationActor {
         &self.snapshot
     }
 
+    /// Compatibility entry point for direct actor integrations.
     pub fn submit(&mut self, request: AppCommandRequest) -> AppCommandResult {
-        if request.revision != self.snapshot.revision {
-            return AppCommandResult::Conflict {
-                current_revision: self.snapshot.revision,
-            };
-        }
-        match request.command {
-            AppCommand::SelectWorkspace { workspace } => {
-                self.snapshot.workspace = workspace;
-                match self.publish(AppChangeKind::WorkspaceSelected(workspace)) {
-                    Ok(revision) => AppCommandResult::Applied { revision },
-                    Err(error) => AppCommandResult::Rejected { error },
-                }
-            }
-            AppCommand::SendMessage {
-                text,
-                attachment_id,
-            } => {
-                let text = text.trim().to_string();
-                if text.is_empty() && attachment_id.is_none() {
-                    return AppCommandResult::Rejected {
-                        error: AppError {
-                            code: AppErrorCode::InvalidInput,
-                            message: "Enter a message or choose an accepted image.".into(),
-                            recoverable: true,
-                            field: Some("message".into()),
-                        },
-                    };
-                }
-                let image = match attachment_id.as_deref() {
-                    Some(id) => match self.attachments.get(id) {
-                        Some(image) => Some(image.clone()),
-                        None => {
-                            return AppCommandResult::Rejected {
-                                error: invalid(
-                                    "attachment_id",
-                                    "attachment is missing or already used",
-                                ),
-                            };
-                        }
-                    },
-                    None => None,
-                };
-                if let Some(chat) = &mut self.chat {
-                    if chat.session.turn_active {
-                        return AppCommandResult::Rejected {
-                            error: operation_active("a chat turn is already running"),
-                        };
-                    }
-                    chat.interrupt.store(false, Ordering::SeqCst);
-                    if chat
-                        .agent
-                        .send(AgentCommand::UserTurn {
-                            text: text.clone(),
-                            image,
-                        })
-                        .is_err()
-                    {
-                        return AppCommandResult::Rejected {
-                            error: unavailable("agent command channel is closed"),
-                        };
-                    }
-                    chat.session
-                        .transcript
-                        .push(BlockKind::User { text: text.clone() });
-                    chat.session.turn_active = true;
-                }
-                if let Some(id) = attachment_id.as_deref() {
-                    self.attachments.remove(id);
-                }
-                let id = self
-                    .snapshot
-                    .transcript
-                    .iter()
-                    .map(|block| block.id)
-                    .max()
-                    .unwrap_or(0)
-                    + 1;
-                let user = TranscriptBlock {
-                    id,
-                    content: TranscriptContent::User {
-                        text,
-                        has_image: attachment_id.is_some(),
-                    },
-                };
-                self.snapshot.transcript.push(user.clone());
-                if let Err(error) = self.publish(AppChangeKind::TranscriptAppended(user)) {
-                    return AppCommandResult::Rejected { error };
-                }
-                let operation = OperationState {
-                    kind: OperationKind::Chat,
-                    operation_id: Some(format!("chat-{id}")),
-                    phase: OperationPhase::Running,
-                    progress: None,
-                    message: Some("Generating response".into()),
-                    error: None,
-                };
-                self.snapshot
-                    .operations
-                    .retain(|item| item.kind != OperationKind::Chat);
-                self.snapshot.operations.push(operation.clone());
-                match self.publish(AppChangeKind::OperationChanged(operation)) {
-                    Ok(revision) => AppCommandResult::Applied { revision },
-                    Err(error) => AppCommandResult::Rejected { error },
-                }
-            }
-            AppCommand::StopOperation {
-                kind: OperationKind::Chat,
-            } => {
-                let Some(chat) = &mut self.chat else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("chat lifecycle is not connected"),
-                    };
-                };
-                if !chat.session.turn_active {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("no chat turn is running"),
-                    };
-                }
-                chat.interrupt.store(true, Ordering::SeqCst);
-                self.finish_chat(OperationPhase::Interrupted, "Interrupted by user", true)
-            }
-            AppCommand::StopOperation {
-                kind: OperationKind::Autopilot,
-            } => self.stop_flagged_operation(OperationKind::Autopilot, false),
-            AppCommand::StopOperation {
-                kind: kind @ (OperationKind::Cascade | OperationKind::Evolve),
-            } => self.stop_flagged_operation(kind, true),
-            AppCommand::StopOperation {
-                kind: OperationKind::Procedure,
-            } => self.stop_procedure(),
-            AppCommand::NewSession => self.request_session_switch(PendingSwitch::New),
-            AppCommand::LoadSession { session_id } => {
-                let Ok(id) = SessionId::parse(&session_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("session_id", "session id is invalid"),
-                    };
-                };
-                self.request_session_switch(PendingSwitch::Load(id))
-            }
-            AppCommand::DeleteSession { session_id } => {
-                let Ok(id) = SessionId::parse(&session_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("session_id", "session id is invalid"),
-                    };
-                };
-                let Some(chat) = &mut self.chat else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("chat lifecycle is not connected"),
-                    };
-                };
-                chat.session.sessions.delete(id);
-                self.snapshot.saved_sessions = chat.session.saved_session_summaries();
-                match self.publish(AppChangeKind::SavedSessionsChanged(
-                    self.snapshot.saved_sessions.clone(),
-                )) {
-                    Ok(revision) => AppCommandResult::Applied { revision },
-                    Err(error) => AppCommandResult::Rejected { error },
-                }
-            }
-            AppCommand::UpdateSettings { settings } => {
-                let Some(controller) = &self.settings else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("settings lifecycle is not connected"),
-                    };
-                };
-                match controller.update(*settings) {
-                    Ok(settings) => {
-                        if let Some(voice) = &self.voice {
-                            for command in [
-                                VoiceCommand::SetEnabled(settings.voice.enabled),
-                                VoiceCommand::SetSttEnabled(settings.voice.stt_enabled),
-                                VoiceCommand::SetTtsEnabled(settings.voice.tts_enabled),
-                                VoiceCommand::SetWakePhrase(settings.voice.wake_phrase.clone()),
-                                VoiceCommand::SetVoice(settings.voice.tts_voice.clone()),
-                                VoiceCommand::SetSpeed(settings.voice.tts_speed),
-                            ] {
-                                let _ = voice.send(command);
-                            }
-                        }
-                        self.snapshot.settings = settings.clone();
-                        match self.publish(AppChangeKind::SettingsChanged(settings)) {
-                            Ok(revision) => AppCommandResult::Applied { revision },
-                            Err(error) => AppCommandResult::Rejected { error },
-                        }
-                    }
-                    Err(error) => AppCommandResult::Rejected { error },
-                }
-            }
-            AppCommand::StartVoiceCapture => {
-                let Some(voice) = &self.voice else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("voice service is not connected"),
-                    };
-                };
-                if voice.send(VoiceCommand::StartListening).is_err() {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("voice command channel is closed"),
-                    };
-                }
-                self.publish_voice_operation("Listening")
-            }
-            AppCommand::StopVoiceCapture => {
-                let Some(voice) = &self.voice else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("voice service is not connected"),
-                    };
-                };
-                if voice.send(VoiceCommand::StopListening).is_err() {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("voice command channel is closed"),
-                    };
-                }
-                self.publish_voice_operation("Transcribing")
-            }
-            AppCommand::StartAutopilot { task, iterations } => {
-                let task = task.trim().to_string();
-                if task.is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("task", "task is required"),
-                    };
-                }
-                if iterations == 0 {
-                    return AppCommandResult::Rejected {
-                        error: invalid("iterations", "iterations must be at least 1"),
-                    };
-                }
-                let Some(port) = &self.autopilot else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("autopilot service is not connected"),
-                    };
-                };
-                if self.has_active_operation() {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("another operation is already running"),
-                    };
-                }
-                if let Some(flag) = &self.repeat_interrupt {
-                    flag.store(false, Ordering::SeqCst);
-                }
-                if port.send(RepeatCommand { task, iterations }).is_err() {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("autopilot command channel is closed"),
-                    };
-                }
-                self.start_operation(
-                    OperationKind::Autopilot,
-                    Some(iterations.into()),
-                    "Autopilot started",
-                )
-            }
-            AppCommand::StartCascade {
-                prompt,
-                backend,
-                n,
-                vote_k,
-                check_cmd,
-                diversity_hints,
-                escalate_backend,
-            } => {
-                if prompt.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("prompt", "prompt is required"),
-                    };
-                }
-                if backend.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("backend", "backend is required"),
-                    };
-                }
-                if n == 0 || n > MAX_ATTEMPTS {
-                    return AppCommandResult::Rejected {
-                        error: invalid("n", "attempts must be between 1 and 16"),
-                    };
-                }
-                if vote_k == 0 || vote_k > 8 {
-                    return AppCommandResult::Rejected {
-                        error: invalid("vote_k", "vote margin must be between 1 and 8"),
-                    };
-                }
-                let params = CascadeParams {
-                    prompt: prompt.trim().into(),
-                    backend,
-                    n,
-                    vote_k,
-                    check_cmd: trimmed_option(check_cmd),
-                    diversity_hints: trimmed_lines(diversity_hints),
-                    escalate_backend: trimmed_option(escalate_backend),
-                    effort: snapshot_effort(&self.snapshot.settings.effort),
-                };
-                self.start_search(
-                    SearchCommand::Cascade(Box::new(params)),
-                    OperationKind::Cascade,
-                    Some(n.into()),
-                )
-            }
-            AppCommand::StartEvolve {
-                prompt,
-                backend,
-                generations,
-                population,
-                fitness_cmd,
-                feature_cmd,
-                islands,
-                migration_interval,
-                mutation_hints,
-            } => {
-                if prompt.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("prompt", "prompt is required"),
-                    };
-                }
-                if backend.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("backend", "backend is required"),
-                    };
-                }
-                if fitness_cmd.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("fitness_cmd", "fitness command is required"),
-                    };
-                }
-                if !(1..=50).contains(&generations) {
-                    return AppCommandResult::Rejected {
-                        error: invalid("generations", "generations must be between 1 and 50"),
-                    };
-                }
-                if !(1..=20).contains(&population) {
-                    return AppCommandResult::Rejected {
-                        error: invalid("population", "population must be between 1 and 20"),
-                    };
-                }
-                if !(1..=8).contains(&islands) {
-                    return AppCommandResult::Rejected {
-                        error: invalid("islands", "islands must be between 1 and 8"),
-                    };
-                }
-                if migration_interval > 20 {
-                    return AppCommandResult::Rejected {
-                        error: invalid(
-                            "migration_interval",
-                            "migration interval must be between 0 and 20",
-                        ),
-                    };
-                }
-                let planned = generations
-                    .saturating_mul(population)
-                    .saturating_mul(islands);
-                let params = EvolveParams {
-                    prompt: prompt.trim().into(),
-                    backend,
-                    generations,
-                    population,
-                    fitness_cmd: fitness_cmd.trim().into(),
-                    feature_cmd: trimmed_option(feature_cmd),
-                    islands,
-                    migration_interval,
-                    mutation_hints: trimmed_lines(mutation_hints),
-                    effort: snapshot_effort(&self.snapshot.settings.effort),
-                };
-                self.start_search(
-                    SearchCommand::Evolve(Box::new(params)),
-                    OperationKind::Evolve,
-                    Some(u64::from(planned.min(MAX_TOTAL_DISPATCHES))),
-                )
-            }
-            AppCommand::RunProcedure { change_id, task_id } => {
-                let change_id = change_id.trim().to_string();
-                let task_id = task_id.trim().to_string();
-                if change_id.is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("change_id", "change id is required"),
-                    };
-                }
-                if task_id.is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("task_id", "task id is required"),
-                    };
-                }
-                if self.has_active_operation() {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("another operation is already running"),
-                    };
-                }
-                let Some(port) = &self.procedure else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure service is not connected"),
-                    };
-                };
-                let Some(backend) = self
-                    .snapshot
-                    .settings
-                    .procedure
-                    .localization_backend
-                    .clone()
-                else {
-                    return AppCommandResult::Rejected {
-                        error: invalid(
-                            "localization_backend",
-                            "procedure localization backend is required",
-                        ),
-                    };
-                };
-                let run_id = ProcedureRunId::new();
-                if let Some(flag) = &self.procedure_interrupt {
-                    flag.store(false, Ordering::SeqCst);
-                }
-                if port
-                    .send(ProcedureCommand::Run {
-                        run_id,
-                        backend,
-                        request: ProcedureRunRequest {
-                            change_id,
-                            task_id,
-                            scratchpad: ProcedureScratchpad::default(),
-                        },
-                    })
-                    .is_err()
-                {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure command channel is closed"),
-                    };
-                }
-                self.start_operation_with_id(
-                    OperationKind::Procedure,
-                    Some(run_id.as_str()),
-                    None,
-                    "Procedure started",
-                )
-            }
-            AppCommand::PreviewProcedure {
-                localization_run_id,
-                change_id,
-                task_id,
-                route,
-                local_backend,
-                local_model,
-                frontier_backend,
-                frontier_model,
-            } => {
-                let Some(port) = &self.procedure else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure service is not connected"),
-                    };
-                };
-                let Ok(localization_run_id) = ProcedureRunId::parse(&localization_run_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("localization_run_id", "localization run id is invalid"),
-                    };
-                };
-                if [
-                    change_id.as_str(),
-                    task_id.as_str(),
-                    local_backend.as_str(),
-                    local_model.as_str(),
-                    frontier_backend.as_str(),
-                    frontier_model.as_str(),
-                ]
-                .iter()
-                .any(|value| value.trim().is_empty())
-                {
-                    return AppCommandResult::Rejected {
-                        error: invalid("procedure_preview", "all preview fields are required"),
-                    };
-                }
-                if self.has_active_operation() {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("another operation is already running"),
-                    };
-                }
-                let preview_id = PatchPreviewId::new();
-                let request = PatchPreviewRequest {
-                    localization_run_id,
-                    change_id,
-                    task_id,
-                    route_override: route.into(),
-                    local_backend,
-                    local_model,
-                    frontier_backend,
-                    frontier_model,
-                };
-                if port
-                    .send(ProcedureCommand::Preview {
-                        preview_id,
-                        request,
-                    })
-                    .is_err()
-                {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure command channel is closed"),
-                    };
-                }
-                self.start_procedure_command(preview_id.as_str(), "Procedure preview started")
-            }
-            AppCommand::RunWholeChangeProcedure {
-                change_id,
-                route,
-                localization_backend,
-                local_backend,
-                local_model,
-                frontier_backend,
-                frontier_model,
-            } => {
-                let Some(port) = &self.procedure else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure service is not connected"),
-                    };
-                };
-                if [
-                    change_id.as_str(),
-                    localization_backend.as_str(),
-                    local_backend.as_str(),
-                    local_model.as_str(),
-                    frontier_backend.as_str(),
-                    frontier_model.as_str(),
-                ]
-                .iter()
-                .any(|value| value.trim().is_empty())
-                {
-                    return AppCommandResult::Rejected {
-                        error: invalid("whole_change", "all whole-change fields are required"),
-                    };
-                }
-                if self.has_active_operation() {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("another operation is already running"),
-                    };
-                }
-                let run_id = ProcedureRunId::new();
-                let request = WholeChangeCommandRequest {
-                    change_id,
-                    route_override: route.into(),
-                    localization_backend,
-                    local_backend,
-                    local_model,
-                    frontier_backend,
-                    frontier_model,
-                };
-                if port
-                    .send(ProcedureCommand::WholeChange { run_id, request })
-                    .is_err()
-                {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure command channel is closed"),
-                    };
-                }
-                self.start_procedure_command(run_id.as_str(), "Whole-change Procedure started")
-            }
-            AppCommand::ApplyProcedure {
-                localization_run_id,
-                preview_id,
-                change_id,
-                task_id,
-            } => {
-                let Some(port) = &self.procedure else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure service is not connected"),
-                    };
-                };
-                let Ok(localization_run_id) = ProcedureRunId::parse(&localization_run_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("localization_run_id", "localization run id is invalid"),
-                    };
-                };
-                let Ok(preview_id) = PatchPreviewId::parse(&preview_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("preview_id", "preview id is invalid"),
-                    };
-                };
-                if change_id.trim().is_empty() || task_id.trim().is_empty() {
-                    return AppCommandResult::Rejected {
-                        error: invalid("procedure_apply", "change id and task id are required"),
-                    };
-                }
-                if self.has_active_operation() {
-                    return AppCommandResult::Rejected {
-                        error: operation_active("another operation is already running"),
-                    };
-                }
-                let run_id = ProcedureRunId::new();
-                let request = ApplyRequest {
-                    localization_run_id,
-                    preview_id,
-                    change_id,
-                    task_id,
-                };
-                if port
-                    .send(ProcedureCommand::Apply { run_id, request })
-                    .is_err()
-                {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure command channel is closed"),
-                    };
-                }
-                self.start_procedure_command(run_id.as_str(), "Procedure apply started")
-            }
-            AppCommand::ReviewProcedure { run_id, decision } => {
-                let current_run = self.snapshot.operations.iter().find(|operation| {
-                    operation.kind == OperationKind::Procedure
-                        && operation.phase == OperationPhase::AwaitingReview
-                });
-                if current_run.and_then(|operation| operation.operation_id.as_deref())
-                    != Some(run_id.as_str())
-                {
-                    return AppCommandResult::Rejected {
-                        error: invalid("run_id", "procedure review run is no longer current"),
-                    };
-                }
-                let Ok(run_id) = ProcedureRunId::parse(&run_id) else {
-                    return AppCommandResult::Rejected {
-                        error: invalid("run_id", "procedure run id is invalid"),
-                    };
-                };
-                let Some(port) = &self.procedure else {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure service is not connected"),
-                    };
-                };
-                let decision = match decision {
-                    ReviewDecision::Approve => ProcedureReviewDecision::Approve,
-                    ReviewDecision::Reject => ProcedureReviewDecision::Reject,
-                };
-                if port
-                    .send(ProcedureCommand::Review { run_id, decision })
-                    .is_err()
-                {
-                    return AppCommandResult::Rejected {
-                        error: unavailable("procedure command channel is closed"),
-                    };
-                }
-                match self.publish(AppChangeKind::OperationChanged(
-                    current_run.unwrap().clone(),
-                )) {
-                    Ok(revision) => AppCommandResult::Applied { revision },
-                    Err(error) => AppCommandResult::Rejected { error },
-                }
-            }
-            _ => AppCommandResult::Rejected {
-                error: unavailable("command is not connected to a domain port yet"),
-            },
-        }
+        super::command_dispatcher::ApplicationCommandDispatcher::new(self).dispatch(request)
     }
 
-    fn has_active_operation(&self) -> bool {
+    pub(super) fn has_active_operation(&self) -> bool {
         self.snapshot.operations.iter().any(|item| {
             matches!(
                 item.phase,
@@ -845,7 +202,7 @@ impl ApplicationActor {
         })
     }
 
-    fn start_search(
+    pub(super) fn start_search(
         &mut self,
         command: SearchCommand,
         kind: OperationKind,
@@ -872,7 +229,7 @@ impl ApplicationActor {
         self.start_operation(kind, total, &format!("{} started", operation_label(kind)))
     }
 
-    fn start_operation(
+    pub(super) fn start_operation(
         &mut self,
         kind: OperationKind,
         total: Option<u64>,
@@ -890,7 +247,7 @@ impl ApplicationActor {
         )
     }
 
-    fn start_operation_with_id(
+    pub(super) fn start_operation_with_id(
         &mut self,
         kind: OperationKind,
         operation_id: Option<String>,
@@ -916,14 +273,18 @@ impl ApplicationActor {
         }
     }
 
-    fn start_procedure_command(&mut self, operation_id: String, message: &str) -> AppCommandResult {
+    pub(super) fn start_procedure_command(
+        &mut self,
+        operation_id: String,
+        message: &str,
+    ) -> AppCommandResult {
         if let Some(flag) = &self.procedure_interrupt {
             flag.store(false, Ordering::SeqCst);
         }
         self.start_operation_with_id(OperationKind::Procedure, Some(operation_id), None, message)
     }
 
-    fn stop_procedure(&mut self) -> AppCommandResult {
+    pub(super) fn stop_procedure(&mut self) -> AppCommandResult {
         let running = self.snapshot.operations.iter().any(|item| {
             item.kind == OperationKind::Procedure && item.phase == OperationPhase::Running
         });
@@ -951,7 +312,11 @@ impl ApplicationActor {
         }
     }
 
-    fn stop_flagged_operation(&mut self, kind: OperationKind, search: bool) -> AppCommandResult {
+    pub(super) fn stop_flagged_operation(
+        &mut self,
+        kind: OperationKind,
+        search: bool,
+    ) -> AppCommandResult {
         let running = self
             .snapshot
             .operations
@@ -986,7 +351,7 @@ impl ApplicationActor {
         }
     }
 
-    fn publish_voice_operation(&mut self, message: &str) -> AppCommandResult {
+    pub(super) fn publish_voice_operation(&mut self, message: &str) -> AppCommandResult {
         let operation = OperationState {
             kind: OperationKind::Voice,
             operation_id: Some("voice-capture".into()),
@@ -1546,7 +911,7 @@ impl ApplicationActor {
         )
     }
 
-    fn publish(&mut self, change: AppChangeKind) -> Result<AppRevision, AppError> {
+    pub(super) fn publish(&mut self, change: AppChangeKind) -> Result<AppRevision, AppError> {
         let revision = self
             .snapshot
             .revision
@@ -1567,7 +932,7 @@ impl ApplicationActor {
         Ok(revision)
     }
 
-    fn request_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
+    pub(super) fn request_session_switch(&mut self, pending: PendingSwitch) -> AppCommandResult {
         let Some(chat) = &mut self.chat else {
             return AppCommandResult::Rejected {
                 error: unavailable("chat lifecycle is not connected"),
@@ -1681,7 +1046,7 @@ impl ApplicationActor {
         self.publish(AppChangeKind::Reset(Box::new(reset)))
     }
 
-    fn finish_chat(
+    pub(super) fn finish_chat(
         &mut self,
         phase: OperationPhase,
         message: &str,
@@ -1760,7 +1125,7 @@ fn command_result(result: AppCommandResult) -> Result<AppRevision, AppError> {
     }
 }
 
-fn unavailable(message: &str) -> AppError {
+pub(super) fn unavailable(message: &str) -> AppError {
     AppError {
         code: AppErrorCode::Unavailable,
         message: message.to_string(),
@@ -1769,7 +1134,7 @@ fn unavailable(message: &str) -> AppError {
     }
 }
 
-fn operation_active(message: &str) -> AppError {
+pub(super) fn operation_active(message: &str) -> AppError {
     AppError {
         code: AppErrorCode::OperationActive,
         message: message.into(),
@@ -1778,7 +1143,7 @@ fn operation_active(message: &str) -> AppError {
     }
 }
 
-fn invalid(field: &str, message: &str) -> AppError {
+pub(super) fn invalid(field: &str, message: &str) -> AppError {
     AppError {
         code: AppErrorCode::InvalidInput,
         message: message.into(),
@@ -1796,21 +1161,21 @@ fn not_found(message: &str) -> AppError {
     }
 }
 
-fn trimmed_option(value: Option<String>) -> Option<String> {
+pub(super) fn trimmed_option(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
 }
 
-fn trimmed_lines(values: Vec<String>) -> Vec<String> {
+pub(super) fn trimmed_lines(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
         .filter_map(|value| trimmed_option(Some(value)))
         .collect()
 }
 
-fn snapshot_effort(value: &str) -> crate::effort::Effort {
+pub(super) fn snapshot_effort(value: &str) -> crate::effort::Effort {
     match value {
         "low" => crate::effort::Effort::Low,
         "medium" => crate::effort::Effort::Medium,
