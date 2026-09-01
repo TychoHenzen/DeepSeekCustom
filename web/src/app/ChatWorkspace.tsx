@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react';
-import type { UploadedAttachment } from '../client/client.ts';
+import type { UploadedAttachment } from '../client/browser/client-types.ts';
 import type { AppCommandResult, OperationState, TranscriptBlock } from '../client/contracts.ts';
 import { Transcript } from './Transcript.tsx';
 

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApplicationClient, type ClientDependencies, type EventMessage, type EventStream } from './client.ts';
+import { BrowserEventClient } from './browser/BrowserEventClient.ts';
+import type {
+  ClientDependencies,
+  EventMessage,
+  EventStream,
+} from './browser/client-types.ts';
 import type { AppSnapshot } from './contracts.ts';
 
 const requestTokenHeader = 'x-deepseek-request-token';
@@ -89,7 +94,7 @@ function harness(responses: Array<Response | Error>) {
     },
     scheduleReconnect: (callback) => scheduled.push(callback),
   };
-  return { client: new ApplicationClient(dependencies), calls, eventUrls, scheduled, streams };
+  return { client: new BrowserEventClient(dependencies), calls, eventUrls, scheduled, streams };
 }
 
 async function settle(): Promise<void> {
@@ -97,7 +102,7 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-describe('ApplicationClient', () => {
+describe('BrowserEventClient', () => {
   it('bootstraps a complete snapshot, captures the header token, and opens replay after its revision', async () => {
     const test = harness([response(snapshot(4), 200, { [requestTokenHeader]: 'process-token' })]);
 
@@ -169,6 +174,32 @@ describe('ApplicationClient', () => {
       expect(test.client.view.snapshot).toMatchObject({ revision: 4, workspace: 'evolve' });
     });
     expect(test.calls.map((call) => call.input)).toContain('/api/snapshot');
+  });
+
+  it('preserves terminal transcript fields received through the event stream', async () => {
+    const test = harness([
+      response(snapshot(), 200, { [requestTokenHeader]: 'process-token' }),
+    ]);
+    await test.client.start();
+
+    test.streams[0]?.emit('change', {
+      revision: 1,
+      type: 'transcript_appended',
+      value: {
+        id: 7,
+        type: 'terminal',
+        outcome: 'completed',
+        message: 'Response complete',
+      },
+    });
+    await settle();
+
+    expect(test.client.view.snapshot?.transcript).toEqual([{
+      id: 7,
+      type: 'terminal',
+      outcome: 'completed',
+      message: 'Response complete',
+    }]);
   });
 
   it('replaces all state on reset and reconnects from the last applied revision', async () => {

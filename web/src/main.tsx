@@ -1,10 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { App, browserClient } from './app/App.tsx';
+import { App } from './app/App.tsx';
 import { AppErrorBoundary } from './app/AppErrorBoundary.tsx';
 import './app/app.css';
-import { ApplicationClient } from './client/client.ts';
+import { BrowserEventClient } from './client/browser/BrowserEventClient.ts';
 
 const root = document.querySelector<HTMLDivElement>('#root');
 if (root === null) {
@@ -14,7 +14,7 @@ if (root === null) {
 createRoot(root).render(
   <StrictMode>
     <AppErrorBoundary>
-      <App client={browserClient(new ApplicationClient())} />
+      <App client={new BrowserEventClient()} />
     </AppErrorBoundary>
   </StrictMode>,
 );

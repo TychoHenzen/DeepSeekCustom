@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
-import type { ApplicationClient, ClientView, UploadedAttachment } from '../client/client.ts';
-import { workspaces, type AppCommand, type AppCommandResult, type Workspace } from '../client/contracts.ts';
+import type { BrowserClient, ClientView } from '../client/browser/client-types.ts';
+import { workspaces, type Workspace } from '../client/contracts.ts';
 import { ChatWorkspace } from './ChatWorkspace.tsx';
 import { SessionsWorkspace } from './SessionsWorkspace.tsx';
 import { SettingsWorkspace } from './SettingsWorkspace.tsx';
@@ -19,16 +19,7 @@ const workspaceLabels: Record<Workspace, string> = {
   settings: 'Settings',
 };
 
-export interface UiClient {
-  readonly view: ClientView;
-  subscribe: (listener: (view: ClientView) => void) => () => void;
-  start: () => Promise<void>;
-  reconnect: () => Promise<void>;
-  send: (command: AppCommand) => Promise<AppCommandResult>;
-  uploadAttachment: (file: File) => Promise<UploadedAttachment>;
-  clearAttachment: (id: string) => Promise<void>;
-  close: () => void;
-}
+export type UiClient = BrowserClient;
 
 export interface AppProps {
   client: UiClient;
@@ -209,8 +200,4 @@ function statusSymbol(status: ClientView['status']): string {
     case 'offline': return '!';
     case 'fatal': return '×';
   }
-}
-
-export function browserClient(client: ApplicationClient): UiClient {
-  return client;
 }

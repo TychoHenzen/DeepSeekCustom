@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App, type UiClient } from './App.tsx';
-import type { ClientView } from '../client/client.ts';
+import type { ClientView } from '../client/browser/client-types.ts';
 import type { AppCommand, AppSnapshot } from '../client/contracts.ts';
 
 afterEach(cleanup);
