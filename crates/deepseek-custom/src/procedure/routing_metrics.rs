@@ -167,11 +167,6 @@ impl ProcedureMetricsSummary {
         )
     }
 
-    /// Percentage of terminal runs that needed a frontier escalation.
-    pub fn frontier_escalation_percent(&self) -> Option<u8> {
-        percentage(self.frontier_escalation_count, self.completed_run_count)
-    }
-
     pub fn record(&mut self, metrics: &ProcedureRunMetrics) {
         self.completed_run_count += 1;
         if let Some(success) = metrics.route.local_mechanical_success {

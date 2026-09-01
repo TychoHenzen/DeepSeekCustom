@@ -182,14 +182,6 @@ impl VerifierReport {
         self.patch_gates = patch_gates;
         self
     }
-
-    pub fn with_terminal_disposition(
-        mut self,
-        terminal_disposition: ProcedureTerminalDisposition,
-    ) -> Self {
-        self.terminal_disposition = Some(terminal_disposition);
-        self
-    }
 }
 
 /// Serializable evidence for an executed or skipped configured gate.

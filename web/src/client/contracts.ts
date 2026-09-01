@@ -144,7 +144,7 @@ export interface TestCatalogue {
   full_workspace: TestIdentity;
   modules: TestModule[];
 }
-export interface ActiveTestRun {
+interface ActiveTestRun {
   run_id: string;
   identity: TestIdentity;
   command: string[];

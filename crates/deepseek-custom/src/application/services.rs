@@ -75,16 +75,6 @@ impl ApplicationServicePorts {
         self
     }
 
-    pub fn with_search(mut self, sender: mpsc::UnboundedSender<SearchCommand>) -> Self {
-        self.search = Some(sender);
-        self
-    }
-
-    pub fn with_procedure(mut self, sender: mpsc::UnboundedSender<ProcedureCommand>) -> Self {
-        self.procedure = Some(sender);
-        self
-    }
-
     pub fn with_voice(mut self, sender: mpsc::UnboundedSender<VoiceCommand>) -> Self {
         self.voice = Some(sender);
         self

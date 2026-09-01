@@ -3,7 +3,7 @@ import type { UploadedAttachment } from '../client/client.ts';
 import type { AppCommandResult, OperationState, TranscriptBlock } from '../client/contracts.ts';
 import { Transcript } from './Transcript.tsx';
 
-export interface ChatWorkspaceProps {
+interface ChatWorkspaceProps {
   transcript: TranscriptBlock[];
   operation: OperationState | null;
   acceptedAttachmentId?: string | null;

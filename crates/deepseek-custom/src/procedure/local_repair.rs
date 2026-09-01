@@ -100,11 +100,6 @@ impl LocalRepairRunner {
         }
     }
 
-    pub fn with_failure_character_cap(mut self, cap: usize) -> Self {
-        self.failure_character_cap = cap;
-        self
-    }
-
     pub fn with_progress(
         mut self,
         progress: mpsc::UnboundedSender<super::ProcedureProgress>,

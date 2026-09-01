@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApplicationClient, requestTokenHeader, type ClientDependencies, type EventMessage, type EventStream } from './client.ts';
+import { ApplicationClient, type ClientDependencies, type EventMessage, type EventStream } from './client.ts';
 import type { AppSnapshot } from './contracts.ts';
+
+const requestTokenHeader = 'x-deepseek-request-token';
 
 class FakeEvents implements EventStream {
   readonly listeners = new Map<string, (event: EventMessage) => void>();

@@ -178,7 +178,7 @@ impl ProcedureApplyRunner {
                 Ok(applied) => applied,
                 Err(error) => {
                     if let Some(result) = error.result() {
-                        append_not_run_patch_gates(&mut patch_gates, result.phase);
+                        patch_gates = error.gate_evidence();
                         let eligibility = if error.is_deterministic_rejection() {
                             CandidateEligibility::ineligible(match result.phase {
                                 GitApplyPhase::Check => CandidateIneligibility::PatchCheckFailed,
@@ -239,6 +239,7 @@ impl ProcedureApplyRunner {
         let mut report = verifier_run
             .report(eligibility.clone())
             .with_patch_gates(patch_gates);
+        let report_id = &request.localization_run_id;
         self.emit(
             run_id,
             ProcedureApplyProgress::VerificationFinished {
@@ -255,16 +256,14 @@ impl ProcedureApplyRunner {
             })
         {
             let terminal = ProcedureTerminalDisposition::Interrupted;
-            report.terminal_disposition = Some(terminal.clone());
-            self.save_verification(&request.localization_run_id, &report)?;
+            self.save_terminal_verification(report_id, &mut report, &terminal)?;
             drop(applied);
             return Ok(self.finish(run_id, terminal));
         }
         if !eligibility.eligible {
             let reason = format!("verification failed: {:?}", eligibility.reason);
             let terminal = ProcedureTerminalDisposition::Failed { reason };
-            report.terminal_disposition = Some(terminal.clone());
-            self.save_verification(&request.localization_run_id, &report)?;
+            self.save_terminal_verification(report_id, &mut report, &terminal)?;
             drop(applied);
             return Ok(self.finish(run_id, terminal));
         }
@@ -279,8 +278,7 @@ impl ProcedureApplyRunner {
         ) {
             Ok(result) => {
                 let terminal = ProcedureTerminalDisposition::Succeeded;
-                report.terminal_disposition = Some(terminal.clone());
-                self.save_verification(&request.localization_run_id, &report)?;
+                self.save_terminal_verification(report_id, &mut report, &terminal)?;
                 drop(applied);
                 self.emit(
                     run_id,
@@ -294,8 +292,7 @@ impl ProcedureApplyRunner {
                 let terminal = ProcedureTerminalDisposition::Failed {
                     reason: "promotion baseline is stale".to_string(),
                 };
-                report.terminal_disposition = Some(terminal.clone());
-                self.save_verification(&request.localization_run_id, &report)?;
+                self.save_terminal_verification(report_id, &mut report, &terminal)?;
                 drop(applied);
                 self.emit(
                     run_id,
@@ -310,8 +307,7 @@ impl ProcedureApplyRunner {
                 let terminal = ProcedureTerminalDisposition::Failed {
                     reason: "promotion endpoint became stale".to_string(),
                 };
-                report.terminal_disposition = Some(terminal.clone());
-                self.save_verification(&request.localization_run_id, &report)?;
+                self.save_terminal_verification(report_id, &mut report, &terminal)?;
                 drop(applied);
                 self.emit(
                     run_id,
@@ -323,9 +319,8 @@ impl ProcedureApplyRunner {
                 let terminal = ProcedureTerminalDisposition::Failed {
                     reason: error.to_string(),
                 };
-                report.terminal_disposition = Some(terminal.clone());
-                self.save_verification(&request.localization_run_id, &report)?;
-                let recovery = promotion_recovery(&error);
+                self.save_terminal_verification(report_id, &mut report, &terminal)?;
+                let recovery = error.recovery();
                 self.emit(
                     run_id,
                     ProcedureApplyProgress::PromotionFailed {
@@ -397,6 +392,16 @@ impl ProcedureApplyRunner {
             })
     }
 
+    fn save_terminal_verification(
+        &self,
+        localization_run_id: &super::ProcedureRunId,
+        report: &mut VerifierReport,
+        terminal: &ProcedureTerminalDisposition,
+    ) -> Result<(), ProcedureApplyError> {
+        report.terminal_disposition = Some(terminal.clone());
+        self.save_verification(localization_run_id, report)
+    }
+
     fn finish(
         &self,
         run_id: super::ProcedureRunId,
@@ -419,15 +424,6 @@ impl ProcedureApplyRunner {
 impl From<PatchApplyCheckError> for ProcedureApplyError {
     fn from(error: PatchApplyCheckError) -> Self {
         Self::PatchApply(Box::new(error))
-    }
-}
-
-fn append_not_run_patch_gates(patch_gates: &mut Vec<PatchGateEvidence>, failed: GitApplyPhase) {
-    if failed == GitApplyPhase::Check {
-        patch_gates.push(PatchGateEvidence::not_run(
-            GitApplyPhase::Apply,
-            GitApplyPhase::Check,
-        ));
     }
 }
 
@@ -480,18 +476,4 @@ fn decode_preview_patch(
         .map_err(|error| ProcedureApplyError::PatchDecode(error.to_string()))?;
     decode_patch_envelope(&encoded)
         .map_err(|error| ProcedureApplyError::PatchDecode(error.to_string()))
-}
-
-fn promotion_recovery(error: &PromotionError) -> Option<super::PromotionRecoveryEvidence> {
-    match error {
-        PromotionError::Transaction { recovery, .. }
-        | PromotionError::FinalFingerprint { recovery, .. }
-        | PromotionError::FinalMismatch { recovery, .. }
-        | PromotionError::ConcurrentEdit { recovery, .. }
-        | PromotionError::EndpointFingerprint { recovery, .. } => Some(recovery.clone()),
-        PromotionError::Baseline(_)
-        | PromotionError::InvalidTargets { .. }
-        | PromotionError::InvalidVerifiedResult { .. }
-        | PromotionError::VerifiedFingerprint { .. } => None,
-    }
 }

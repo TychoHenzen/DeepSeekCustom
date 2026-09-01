@@ -4,7 +4,7 @@ import type { AppCommand, AppCommandResult, OperationKind, OperationState } from
 
 type WorkspaceKind = Extract<OperationKind, 'autopilot' | 'cascade' | 'evolve' | 'procedure'>;
 
-export interface OperationWorkspaceProps {
+interface OperationWorkspaceProps {
   kind: WorkspaceKind;
   operation: OperationState | null;
   activeOperation: OperationState | null;

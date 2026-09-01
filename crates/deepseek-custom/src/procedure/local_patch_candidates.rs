@@ -309,15 +309,5 @@ fn rejected(
 }
 
 fn patch_gate_evidence(error: &PatchApplyCheckError) -> Vec<PatchGateEvidence> {
-    let Some(result) = error.result() else {
-        return Vec::new();
-    };
-    let mut gates = vec![result.evidence()];
-    if result.phase == super::GitApplyPhase::Check {
-        gates.push(PatchGateEvidence::not_run(
-            super::GitApplyPhase::Apply,
-            super::GitApplyPhase::Check,
-        ));
-    }
-    gates
+    error.gate_evidence()
 }

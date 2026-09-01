@@ -306,17 +306,6 @@ impl Settings {
         self.autopilot.get_or_insert_with(AutopilotConfig::default)
     }
 
-    /// The Cascade tab's saved form, creating the block when it is missing
-    /// so a first change is never dropped.
-    pub fn cascade_mut(&mut self) -> &mut CascadeSettings {
-        self.cascade.get_or_insert_with(CascadeSettings::default)
-    }
-
-    /// The Evolve tab's saved form, same rule as `cascade_mut`.
-    pub fn evolve_mut(&mut self) -> &mut EvolveSettings {
-        self.evolve.get_or_insert_with(EvolveSettings::default)
-    }
-
     /// The Procedure tab's settings, creating the optional block on demand.
     pub fn procedure_mut(&mut self) -> &mut ProcedureSettings {
         self.procedure
@@ -696,8 +685,8 @@ pub struct RepositoryIndexLimits {
 impl Default for RepositoryIndexLimits {
     fn default() -> Self {
         Self {
-            max_files: DEFAULT_PROCEDURE_INDEX_MAX_FILES,
-            max_total_bytes: DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES,
+            max_files: default_procedure_index_max_files(),
+            max_total_bytes: default_procedure_index_max_total_bytes(),
         }
     }
 }
@@ -795,22 +784,23 @@ pub struct ProcedureSettings {
 
 impl Default for ProcedureSettings {
     fn default() -> Self {
+        let verifier_attempts = default_procedure_local_verifier_attempts();
         Self {
             localization_backend: None,
             local_patch_backend: None,
             frontier_patch_backend: None,
             repository_index: RepositoryIndexLimits::default(),
             verifier_commands: Vec::new(),
-            structural_retries: DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
-            local_verifier_attempts: DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
-            frontier_attempts: DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
-            localization_sample_count: DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
-            localization_agreement_quorum: DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM,
-            local_patch_candidate_count: DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
-            metrics_window_runs: DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS,
-            local_success_warning_percent: DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT,
+            structural_retries: default_procedure_structural_retries(),
+            local_verifier_attempts: verifier_attempts,
+            frontier_attempts: default_procedure_frontier_attempts(),
+            localization_sample_count: default_procedure_localization_sample_count(),
+            localization_agreement_quorum: default_procedure_localization_agreement_quorum(),
+            local_patch_candidate_count: default_procedure_local_patch_candidate_count(),
+            metrics_window_runs: default_procedure_metrics_window_runs(),
+            local_success_warning_percent: default_procedure_local_success_warning_percent(),
             frontier_escalation_warning_percent:
-                DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT,
+                default_procedure_frontier_escalation_warning_percent(),
         }
     }
 }

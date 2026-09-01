@@ -141,20 +141,6 @@ impl DisposableDraftWorkspace {
         )
     }
 
-    /// Copy draft text with project-specific output exclusions.
-    pub fn create_draft_with_options(
-        source_root: &Path,
-        options: &DisposableWorkspaceOptions,
-    ) -> Result<Self, DisposableWorkspaceError> {
-        let mut progress = |_| {};
-        Self::create_with_contents(
-            source_root,
-            SnapshotContents::DraftText,
-            options,
-            &mut progress,
-        )
-    }
-
     fn create_with_contents(
         source_root: &Path,
         contents: SnapshotContents,

@@ -363,6 +363,24 @@ pub enum PromotionError {
     },
 }
 
+impl PromotionError {
+    /// Return durable recovery evidence for failures that touched
+    /// transaction paths.
+    pub fn recovery(&self) -> Option<PromotionRecoveryEvidence> {
+        match self {
+            Self::Transaction { recovery, .. }
+            | Self::FinalFingerprint { recovery, .. }
+            | Self::FinalMismatch { recovery, .. }
+            | Self::ConcurrentEdit { recovery, .. } => Some(recovery.clone()),
+            Self::EndpointFingerprint { recovery: r, .. } => Some(r.clone()),
+            Self::Baseline(_)
+            | Self::InvalidTargets { .. }
+            | Self::InvalidVerifiedResult { .. }
+            | Self::VerifiedFingerprint { .. } => None,
+        }
+    }
+}
+
 /// Install all verified endpoint results after the concurrent-edit gate passes.
 ///
 /// Every file result is staged beside its real target before existing targets

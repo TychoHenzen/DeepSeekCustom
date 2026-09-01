@@ -54,11 +54,11 @@ function Output({ output, omitted }: { output: string; omitted: number }) {
   return <div className="test-output"><h5>Output</h5>{omitted > 0 && <p role="status">Output was truncated. {omitted} bytes are omitted. The beginning and end are preserved.</p>}<pre tabIndex={0}>{output || 'No process output was captured.'}</pre></div>;
 }
 
-export function scopeLabel(scope: TestScope): string {
+function scopeLabel(scope: TestScope): string {
   switch (scope.type) { case 'full_workspace': return 'Full workspace suite'; case 'module': return `Module ${scope.module}`; case 'exact': return `Exact test ${scope.test}`; }
 }
 
-export function resultLabel(result: RetainedTestResult): string {
+function resultLabel(result: RetainedTestResult): string {
   const scope = scopeLabel(result.identity.scope);
   switch (result.outcome) { case 'passed': return `${scope} passed`; case 'failed': return `${scope} failed`; case 'cancelled': return `${scope} cancelled`; case 'infrastructure_error': return `${scope} infrastructure error`; }
 }

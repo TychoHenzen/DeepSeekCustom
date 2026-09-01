@@ -32,7 +32,7 @@ export function Transcript({ blocks }: { blocks: TranscriptBlock[] }) {
   );
 }
 
-export function TranscriptItem({ block }: { block: TranscriptBlock }) {
+function TranscriptItem({ block }: { block: TranscriptBlock }) {
   switch (block.type) {
     case 'user': return <Block label="You"><p>{block.text}</p>{block.has_image && <p>Image attached</p>}</Block>;
     case 'assistant': return <Block label="Assistant">{block.spans.map((span, index) => span.type === 'reasoning'
@@ -51,7 +51,7 @@ function Block({ children, label, status }: { children: ReactNode; label: string
   return <article className="transcript-block"><header><strong>{label}</strong>{status && <span className="block-status">{status}</span>}</header>{children}</article>;
 }
 
-export function BoundedText({ text }: { text: string }) {
+function BoundedText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const bounded = text.length > longContent;
   return <div className="bounded-content"><pre>{bounded && !expanded ? `${text.slice(0, longContent)}…` : text}</pre>{bounded && <button aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} type="button">{expanded ? 'Collapse' : 'Expand'}</button>}</div>;

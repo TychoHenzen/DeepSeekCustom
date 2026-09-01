@@ -1,6 +1,6 @@
 import type { OperationState } from '../client/contracts.ts';
 
-export interface ProcedureVisualFixture {
+interface ProcedureVisualFixture {
   name: string;
   report: OperationState;
 }

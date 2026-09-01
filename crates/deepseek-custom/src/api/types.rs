@@ -331,12 +331,3 @@ pub struct Delta {
     #[serde(default)]
     pub reasoning_content: Option<String>,
 }
-
-// ── Tool result (for feeding back into agent loop) ──
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolResult {
-    pub tool_call_id: String,
-    pub role: String,
-    pub content: String,
-}

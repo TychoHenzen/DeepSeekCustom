@@ -135,10 +135,6 @@ impl ApplyCheckedPatch {
     pub fn boundary_patch(&self) -> &BoundaryValidatedPatch {
         &self.patch
     }
-
-    pub fn into_boundary_patch(self) -> BoundaryValidatedPatch {
-        self.patch
-    }
 }
 
 /// A patch applied to an owned verification workspace.
@@ -225,6 +221,21 @@ impl PatchApplyCheckError {
 
     pub fn is_deterministic_rejection(&self) -> bool {
         matches!(self, Self::Rejected { .. })
+    }
+
+    /// Preserve the attempted gate and any later gate skipped by its failure.
+    pub fn gate_evidence(&self) -> Vec<PatchGateEvidence> {
+        let mut gates = Vec::new();
+        if let Some(result) = self.result() {
+            gates.push(result.evidence());
+            if result.phase == GitApplyPhase::Check {
+                gates.push(PatchGateEvidence::not_run(
+                    GitApplyPhase::Apply,
+                    GitApplyPhase::Check,
+                ));
+            }
+        }
+        gates
     }
 }
 

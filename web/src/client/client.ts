@@ -9,7 +9,7 @@ import {
   parseSnapshot,
 } from './contracts.ts';
 
-export const requestTokenHeader = 'x-deepseek-request-token';
+const requestTokenHeader = 'x-deepseek-request-token';
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline' | 'fatal';
 
