@@ -27,7 +27,7 @@ export function OperationWorkspaceView(props: OperationWorkspaceViewProps) {
   const { kind, title } = props;
   return <section aria-labelledby={`${kind}-title`} className="operation-workspace">
     <h3 id={`${kind}-title`}>{title} operation</h3>
-    <form aria-label={`Start ${title}`} onSubmit={props.onSubmit}>
+    <form aria-label={`Start ${title}`} onSubmit={(event) => props.onSubmit(event)}>
       <label htmlFor={`${kind}-primary`}>{kind === 'autopilot' ? 'Task' : 'Prompt'}</label>
       <textarea id={`${kind}-primary`} onChange={(event) => props.onPrimaryChange(event.target.value)} value={props.primary} />
       {kind === 'autopilot' && <>
@@ -39,7 +39,7 @@ export function OperationWorkspaceView(props: OperationWorkspaceViewProps) {
       <button aria-describedby={props.blockedBy === null ? undefined : `${kind}-blocked`} disabled={props.submitting || props.active} type="submit">Start {title}</button>
       {props.blockedBy !== null && <p className="disabled-reason" id={`${kind}-blocked`}>{props.blockedBy} is active. Stop or finish it before starting {title}.</p>}
     </form>
-    <OperationProgress operation={props.operation} onStop={props.onStop} showStop={props.ownsActiveOperation} />
+    <OperationProgress operation={props.operation} onStop={() => props.onStop()} showStop={props.ownsActiveOperation} />
   </section>;
 }
 
