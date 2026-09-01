@@ -23,11 +23,13 @@ use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::mcp::McpManager;
+use deepseek_custom::procedure::ProcedureRunCoordinator;
+use deepseek_custom::procedure::ProcedureRunCoordinatorParams;
 use deepseek_custom::procedure::{
     FrontierRepairDispatcher, LocalPatchDraftDispatcher, LocalizationAgreementResolver,
     LocalizationDispatcher, LocalizationSampler, OpenSpecInput, PatchPreviewInputGate,
     PatchPreviewRunner, ProcedureApplyRunner, ProcedureCommand, ProcedureProgress,
-    ProcedureReportRepository, ProcedureRunner, SampledProcedureOutcome, SampledProcedureRequest,
+    ProcedureReportRepository, SampledProcedureOutcome, SampledProcedureRequest,
     SampledProcedureRunner, SampledRepairContext, SamplingInputGate, VerificationInputGate,
     WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
     apply_review_decision,
@@ -384,21 +386,25 @@ async fn main() {
                                 &procedure_project_root,
                             ) {
                                 Ok(dispatcher) => {
-                                    let working_dir =
-                                        procedure_working_dir.lock().unwrap().clone();
+                                    let working_dir = procedure_working_dir
+                                        .lock()
+                                        .unwrap()
+                                        .clone();
                                     let limits = run_settings
                                         .procedure()
                                         .map(|procedure| procedure.repository_index.clone())
                                         .unwrap_or_default();
-                                    let runner = ProcedureRunner::new(
-                                        OpenSpecInput::new(&procedure_project_root),
-                                        working_dir,
-                                        limits,
-                                        dispatcher,
-                                        ProcedureReportRepository::for_project(
-                                            &procedure_project_root,
-                                        ),
-                                        Arc::clone(&procedure_task_interrupt),
+                                    let runner = ProcedureRunCoordinator::new(
+                                        ProcedureRunCoordinatorParams {
+                                            input: OpenSpecInput::new(&procedure_project_root),
+                                            working_dir,
+                                            index_limits: limits,
+                                            dispatcher,
+                                            reports: ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
+                                            interrupt: Arc::clone(&procedure_task_interrupt),
+                                        },
                                     )
                                     .with_progress(tx_procedure_progress.clone());
                                     if let Err(error) = runner.run_with_id(run_id, request).await {
@@ -437,10 +443,9 @@ async fn main() {
                                 procedure.local_patch_backend = Some(request.local_backend.clone());
                                 procedure.frontier_patch_backend = Some(request.frontier_backend.clone());
                             }
-                            // Localization currently has a schema-constrained Ollama adapter.
-                            // The separately selected frontier backend remains reserved for the
-                            // bounded repair tier, which can use the CLI adapters. A second
-                            // localizer instance still enforces the one-call disagreement cap.
+                            // Localization uses the schema-constrained Ollama adapter.
+                            // The selected frontier backend remains reserved for bounded repair.
+                            // A second localizer enforces the one-call disagreement cap.
                             let frontier_settings = local_settings.clone();
                             let prepared: Result<_, String> = (|| {
                                 let local = LocalizationDispatcher::from_settings(
@@ -471,7 +476,7 @@ async fn main() {
                             })();
                             match prepared {
                                 Ok((local, frontier, patch, sampling, repair_policy)) => {
-                                    let limits = local_settings.procedure().map(|value| value.repository_index.clone()).unwrap_or_default();
+                                    let limits = procedure_index_limits(&local_settings);
                                     let resolver = LocalizationAgreementResolver::new(
                                         LocalizationSampler::new(local, sampling.clone(), Arc::clone(&procedure_task_interrupt)),
                                         frontier,
@@ -502,7 +507,7 @@ async fn main() {
                                         switch_tx_events.clone(),
                                         registry,
                                     );
-                                    let commands = local_settings.procedure().map(|value| value.verifier_commands.clone()).unwrap_or_default();
+                                    let commands = procedure_verifier_commands(&local_settings);
                                     match runner.run(
                                         SampledProcedureRequest {
                                             baseline_localization_run_id: request.localization_run_id,
@@ -587,18 +592,20 @@ async fn main() {
                             })();
                             match prepared {
                                 Ok((local, frontier, patch, sampling, repair_policy)) => {
-                                    let limits = local_settings.procedure().map(|value| value.repository_index.clone()).unwrap_or_default();
+                                    let limits = procedure_index_limits(&local_settings);
                                     let runner = WholeChangeProcedureRunner::new(
-                                        OpenSpecInput::new(&procedure_project_root),
-                                        procedure_project_root.clone(),
-                                        limits,
-                                        local,
+                                        ProcedureRunCoordinatorParams {
+                                            input: OpenSpecInput::new(&procedure_project_root),
+                                            working_dir: procedure_project_root.clone(),
+                                            index_limits: limits,
+                                            dispatcher: local,
+                                            reports: ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
+                                            interrupt: Arc::clone(&procedure_task_interrupt),
+                                        },
                                         frontier,
                                         sampling,
-                                        ProcedureReportRepository::for_project(
-                                            &procedure_project_root,
-                                        ),
-                                        Arc::clone(&procedure_task_interrupt),
                                     );
                                     let registry = Arc::new(SubagentRegistry::new());
                                     let frontier_dispatcher = FrontierRepairDispatcher::new(
@@ -609,7 +616,7 @@ async fn main() {
                                         switch_tx_events.clone(),
                                         registry,
                                     );
-                                    let commands = local_settings.procedure().map(|value| value.verifier_commands.clone()).unwrap_or_default();
+                                    let commands = procedure_verifier_commands(&local_settings);
                                     match runner.run(
                                         WholeChangeProcedureRequest {
                                             change_id: request.change_id,
@@ -996,6 +1003,22 @@ fn log_voice_config(settings: &Settings, stt_ready: bool, tts_ready: bool) {
         settings.voice_tts_voices_path(),
         settings.voice_tts_voice(),
     );
+}
+
+fn procedure_index_limits(
+    settings: &Settings,
+) -> deepseek_custom::config::settings::RepositoryIndexLimits {
+    settings
+        .procedure()
+        .map(|procedure| procedure.repository_index.clone())
+        .unwrap_or_default()
+}
+
+fn procedure_verifier_commands(settings: &Settings) -> Vec<String> {
+    settings
+        .procedure()
+        .map(|procedure| procedure.verifier_commands.clone())
+        .unwrap_or_default()
 }
 
 /// Forward web application voice commands into the synchronous `VoiceService`, until

@@ -21,13 +21,13 @@ use super::{
     LocalizationAgreementError, LocalizationAgreementOutcome, LocalizationAgreementResolver,
     LocalizationDispatch, OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewStore,
     ProcedureCandidateMetric, ProcedureMetricsDisposition, ProcedureReviewError,
-    ProcedureRouteMetrics, ProcedureRunId, ProcedureRunRequest, ProcedureRunner,
-    ProcedureRunnerError, ProcedureScratchpad, ProcedureStageTiming, ProcedureTerminalDisposition,
-    PromotionBaseline, PromotionError, RepairInputGate, RepairRequest, RouteDecision,
-    RouteOverride, RouteTier, SamplingInputError, SamplingInputGate, SamplingInputRequest,
-    apply_patch_in_workspace, apply_route_override, assess_route, build_repository_index,
-    model_promotion_targets, promote_verified_workspace, select_passing_local_candidate,
-    validate_patch_boundary,
+    ProcedureRouteMetrics, ProcedureRunCoordinator, ProcedureRunCoordinatorParams, ProcedureRunId,
+    ProcedureRunRequest, ProcedureRunnerError, ProcedureScratchpad, ProcedureStageTiming,
+    ProcedureTerminalDisposition, PromotionBaseline, PromotionError, RepairInputGate,
+    RepairRequest, RouteDecision, RouteOverride, RouteTier, SamplingInputError, SamplingInputGate,
+    SamplingInputRequest, apply_patch_in_workspace, apply_route_override, assess_route,
+    build_repository_index, model_promotion_targets, promote_verified_workspace,
+    select_passing_local_candidate, validate_patch_boundary,
 };
 use crate::config::settings::{
     RepositoryIndexLimits, ValidatedProcedureRepairPolicy, ValidatedProcedureSamplingSettings,
@@ -145,14 +145,10 @@ pub struct SampledProcedureRunner<L, F> {
 /// task IDs in memory instead of changing `tasks.md`, because task completion
 /// remains an explicit OpenSpec workflow decision outside source promotion.
 pub struct WholeChangeProcedureRunner<L, F> {
-    input: OpenSpecInput,
-    project_root: PathBuf,
-    index_limits: RepositoryIndexLimits,
+    localization: ProcedureRunCoordinator<Arc<L>>,
     local_dispatcher: Arc<L>,
     frontier_dispatcher: Arc<F>,
     settings: ValidatedProcedureSamplingSettings,
-    reports: ReportRepository,
-    interrupt: Arc<AtomicBool>,
 }
 
 impl<L, F> WholeChangeProcedureRunner<L, F>
@@ -160,26 +156,17 @@ where
     L: LocalizationDispatch,
     F: LocalizationDispatch,
 {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        input: OpenSpecInput,
-        project_root: PathBuf,
-        index_limits: RepositoryIndexLimits,
-        local_dispatcher: Arc<L>,
+        localization: ProcedureRunCoordinatorParams<Arc<L>>,
         frontier_dispatcher: Arc<F>,
         settings: ValidatedProcedureSamplingSettings,
-        reports: ReportRepository,
-        interrupt: Arc<AtomicBool>,
     ) -> Self {
+        let local_dispatcher = Arc::clone(&localization.dispatcher);
         Self {
-            input,
-            project_root,
-            index_limits,
+            localization: ProcedureRunCoordinator::new(localization),
             local_dispatcher,
             frontier_dispatcher,
             settings,
-            reports,
-            interrupt,
         }
     }
 
@@ -210,20 +197,14 @@ where
                 });
             };
             let task_id = task.id.clone();
-            let localization = ProcedureRunner::new(
-                self.input.clone(),
-                self.project_root.clone(),
-                self.index_limits.clone(),
-                Arc::clone(&self.local_dispatcher),
-                self.reports.clone(),
-                Arc::clone(&self.interrupt),
-            )
-            .run(ProcedureRunRequest {
-                change_id: request.change_id.clone(),
-                task_id: task_id.clone(),
-                scratchpad: ProcedureScratchpad::default(),
-            })
-            .await?;
+            let localization = self
+                .localization
+                .run(ProcedureRunRequest {
+                    change_id: request.change_id.clone(),
+                    task_id: task_id.clone(),
+                    scratchpad: ProcedureScratchpad::default(),
+                })
+                .await?;
             match localization.terminal_disposition {
                 Some(ProcedureTerminalDisposition::AwaitingReview) => {}
                 Some(ProcedureTerminalDisposition::Interrupted) => {
@@ -241,27 +222,27 @@ where
                     });
                 }
             }
-            self.reports.approve(&localization.id)?;
+            self.localization.reports().approve(&localization.id)?;
 
             let sampled = SampledProcedureRunner::new(
                 SamplingInputGate::new(
-                    self.input.clone(),
-                    self.project_root.clone(),
-                    self.reports.clone(),
+                    self.localization.input().clone(),
+                    self.localization.project_root().clone(),
+                    self.localization.reports().clone(),
                 ),
-                self.project_root.clone(),
-                self.index_limits.clone(),
+                self.localization.project_root().clone(),
+                self.localization.index_limits().clone(),
                 LocalizationAgreementResolver::new(
                     super::LocalizationSampler::new(
                         Arc::clone(&self.local_dispatcher),
                         self.settings.clone(),
-                        Arc::clone(&self.interrupt),
+                        Arc::clone(self.localization.interrupt()),
                     ),
                     Arc::clone(&self.frontier_dispatcher),
                 ),
                 self.settings.clone(),
-                self.reports.clone(),
-                Arc::clone(&self.interrupt),
+                self.localization.reports().clone(),
+                Arc::clone(self.localization.interrupt()),
             );
             let outcome = match sampled
                 .run(
@@ -314,7 +295,7 @@ where
         change_id: &str,
         processed: &BTreeSet<String>,
     ) -> Result<Option<super::ProcedureTask>, WholeChangeProcedureError> {
-        let changes = self.input.active_changes()?;
+        let changes = self.localization.input().active_changes()?;
         let change = changes
             .into_iter()
             .find(|change| change.id == change_id)
@@ -328,7 +309,9 @@ where
     }
 
     fn interrupted(&self) -> bool {
-        self.interrupt.load(std::sync::atomic::Ordering::SeqCst)
+        self.localization
+            .interrupt()
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

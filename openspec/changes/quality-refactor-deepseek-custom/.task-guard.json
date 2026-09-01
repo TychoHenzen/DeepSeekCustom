@@ -38,8 +38,8 @@
       "status": "completed"
     },
     "5.1": {
-      "checked": false,
-      "status": "pending"
+      "checked": true,
+      "status": "completed"
     }
   },
   "hmac": "41b439b02888efa0c282c78a64109d7c95adc96c21599aa34f42f59728a9e536"

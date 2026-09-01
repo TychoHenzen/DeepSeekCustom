@@ -62,8 +62,8 @@
 
 ## 5. SIGNATURES
 
-- [ ] 5.1 Extract Class and Introduce Parameter Object for `ProcedureRunCoordinator` from `completed.rs` and `runner.rs`, migrate sampled and whole-change callers, and preserve request, outcome, progress, report, and sandbox end-to-end contracts.
-<!-- status: pending -->
+- [x] 5.1 Extract Class and Introduce Parameter Object for `ProcedureRunCoordinator` from `completed.rs` and `runner.rs`, migrate sampled and whole-change callers, and preserve request, outcome, progress, report, and sandbox end-to-end contracts.
+<!-- status: completed -->
 <!-- verify_cmd: cargo test --workspace && npm --prefix web test && node "C:\Users\siriu\.codex\plugins\cache\dod-guard-monorepo\quality-guard\0.5.8\skills\quality-refactor\scripts\quality-scan.mjs" crates web/src --root=. --exclude=crates/deepseek-custom/src/web/assets --test-path=crates/deepseek-custom-tests --baseline=.quality/baseline.json --fail-on=regression -->
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->

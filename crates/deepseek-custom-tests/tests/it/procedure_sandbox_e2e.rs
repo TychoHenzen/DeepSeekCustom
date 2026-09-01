@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepseek_custom::config::settings::{ProcedureSettings, RepositoryIndexLimits, Settings};
+use deepseek_custom::procedure::ProcedureRunCoordinatorParams;
 use deepseek_custom::procedure::{
     ContractSelection, FrontierPatchDraftError, FrontierRepairDispatch, FrontierRepairRequest,
     LocalPatchDraftDispatch, LocalPatchDraftError, LocalizationDispatch, LocalizationDispatchError,
@@ -23,6 +24,21 @@ const TASK_ID: &str = "1.1";
 const TARGET_PATH: &str = "src/lib.rs";
 const UNRELATED_PATH: &str = "notes.txt";
 const TARGET_SOURCE: &str = "pub fn target_symbol() -> &'static str { \"before\" }";
+
+fn whole_change_localization<L>(
+    fixture: &SandboxFixture,
+    dispatcher: Arc<L>,
+    interrupted: bool,
+) -> ProcedureRunCoordinatorParams<Arc<L>> {
+    ProcedureRunCoordinatorParams {
+        input: fixture.input(),
+        working_dir: fixture.root.clone(),
+        index_limits: RepositoryIndexLimits::default(),
+        dispatcher,
+        reports: ProcedureReportRepository::for_project(&fixture.root),
+        interrupt: Arc::new(AtomicBool::new(interrupted)),
+    }
+}
 const UNRELATED_BYTES: &[u8] = b"unrelated fixture bytes\n";
 const COVERS: &str =
     "deepseek-custom/procedure-sandbox-e2e-test :: Apply fixture edit :: Target is updated";
@@ -643,14 +659,9 @@ async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
     let before_files = stable_workspace_files(&fixture.root, &event_log);
     state.record(RecordedEvent::ValidationCompleted);
     let runner = WholeChangeProcedureRunner::new(
-        fixture.input(),
-        fixture.root.clone(),
-        RepositoryIndexLimits::default(),
-        local,
+        whole_change_localization(&fixture, local, false),
         frontier,
         sampling_settings(),
-        ProcedureReportRepository::for_project(&fixture.root),
-        Arc::new(AtomicBool::new(false)),
     );
     let outcome = runner
         .run(
@@ -1303,14 +1314,9 @@ async fn assert_whole_change_interruption_before_promotion_preserves_source_byte
     let target_before = std::fs::read(fixture.root.join(TARGET_PATH)).unwrap();
     let unrelated_before = std::fs::read(fixture.root.join(UNRELATED_PATH)).unwrap();
     let runner = WholeChangeProcedureRunner::new(
-        fixture.input(),
-        fixture.root.clone(),
-        RepositoryIndexLimits::default(),
-        local,
+        whole_change_localization(&fixture, local, true),
         frontier,
         sampling_settings(),
-        ProcedureReportRepository::for_project(&fixture.root),
-        Arc::new(AtomicBool::new(true)),
     );
 
     let outcome = runner

@@ -37,6 +37,7 @@ mod report_repository_io;
 mod route;
 mod routing_metrics;
 mod run;
+mod run_coordinator;
 mod runner;
 mod sampling;
 mod sampling_input;
@@ -156,6 +157,8 @@ pub use run::{
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
     ProcedureTask, ProcedureTerminalDisposition,
 };
+pub use run_coordinator::ProcedureRunCoordinator;
+pub use run_coordinator::ProcedureRunCoordinatorParams;
 pub use runner::{
     ProcedureApplyProgress, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision,
     ProcedureRunRequest, ProcedureRunner, ProcedureRunnerError, WholeChangeCommandRequest,

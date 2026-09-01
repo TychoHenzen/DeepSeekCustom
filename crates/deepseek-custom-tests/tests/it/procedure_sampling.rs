@@ -5,7 +5,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use deepseek_custom::config::settings::{BackendConfig, ProcedureSettings, Settings};
+use deepseek_custom::config::settings::BackendConfig;
+use deepseek_custom::config::settings::{ProcedureSettings, Settings};
+use deepseek_custom::procedure::ProcedureRunCoordinatorParams;
 use deepseek_custom::procedure::{
     CandidateEligibility, LocalCandidateGenerationEvidence, LocalCandidateVerification,
     LocalCandidateVerificationOutcome, LocalCandidateVerificationRun, LocalPatchCandidate,
@@ -38,6 +40,24 @@ fn temp_dir(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn whole_change_localization<L>(
+    command: &Path,
+    dispatcher: Arc<L>,
+    interrupt: Arc<AtomicBool>,
+) -> ProcedureRunCoordinatorParams<Arc<L>> {
+    let root = command
+        .parent()
+        .expect("fixture command has a project root");
+    ProcedureRunCoordinatorParams {
+        input: OpenSpecInput::with_command(root, command.display().to_string()),
+        working_dir: root.to_path_buf(),
+        index_limits: ProcedureSettings::default().repository_index,
+        dispatcher,
+        reports: ProcedureReportRepository::for_project(root),
+        interrupt,
+    }
 }
 
 fn write_fake_openspec(root: &Path) -> PathBuf {
@@ -1298,16 +1318,11 @@ fn whole_change_runner_approves_and_promotes_each_task_in_fresh_order() {
         )]),
     ]));
     let frontier = Arc::new(ScriptedDispatcher::new(std::iter::empty()));
-    let reports = ProcedureReportRepository::for_project(&root);
+    let local_dispatcher = Arc::clone(&local);
     let runner = WholeChangeProcedureRunner::new(
-        OpenSpecInput::with_command(&root, command.display().to_string()),
-        root.clone(),
-        ProcedureSettings::default().repository_index,
-        Arc::clone(&local),
+        whole_change_localization(&command, local_dispatcher, Arc::clone(&interrupt)),
         frontier,
         sampling_settings(3),
-        reports,
-        Arc::clone(&interrupt),
     );
     let patch = ScriptedPatchDispatcher::new(vec![
         Ok(patch_between("first", "second")),
@@ -1384,16 +1399,11 @@ fn whole_change_runner_does_not_attempt_later_tasks_after_a_failed_task() {
             "sample first three",
         )]),
     ]));
-    let reports = ProcedureReportRepository::for_project(&root);
+    let local_dispatcher = Arc::clone(&local);
     let runner = WholeChangeProcedureRunner::new(
-        OpenSpecInput::with_command(&root, command.display().to_string()),
-        root.clone(),
-        ProcedureSettings::default().repository_index,
-        Arc::clone(&local),
+        whole_change_localization(&command, local_dispatcher, interrupt),
         Arc::new(ScriptedDispatcher::new(std::iter::empty())),
         sampling_settings(3),
-        reports,
-        interrupt,
     );
     let patch = ScriptedPatchDispatcher::new(vec![
         Err(LocalPatchDraftError::MissingFinalContent),
