@@ -10,12 +10,13 @@ use tokio::sync::mpsc;
 use super::{
     ApplyRequest, CandidateEligibility, CandidateIneligibility, GitApplyPhase,
     PatchApplyCheckError, PatchApplyProgress, PatchEnvelope, PatchGateEvidence, PatchRouteMetadata,
-    ProcedureApplyProgress, ProcedureProgress, ProcedureReportStore, ProcedureTerminalDisposition,
-    PromotionBaseline, PromotionError, PromotionTargetError, VerificationInputError,
-    VerificationInputGate, VerifierCommandRunner, VerifierGateDisposition, VerifierGateEvidence,
-    VerifierReport, VerifierRunProgress, apply_patch_in_workspace_with_progress,
-    decode_patch_envelope, evaluate_applied_patch_eligibility, model_promotion_targets,
-    promote_verified_workspace, validate_patch_boundary,
+    ProcedureApplyProgress, ProcedureProgress, ProcedureReportRepository,
+    ProcedureTerminalDisposition, PromotionBaseline, PromotionError, PromotionTargetError,
+    VerificationInputError, VerificationInputGate, VerifierCommandRunner, VerifierGateDisposition,
+    VerifierGateEvidence, VerifierReport, VerifierRunProgress,
+    apply_patch_in_workspace_with_progress, decode_patch_envelope,
+    evaluate_applied_patch_eligibility, model_promotion_targets, promote_verified_workspace,
+    validate_patch_boundary,
 };
 use crate::error::HarnessError;
 
@@ -48,7 +49,7 @@ pub enum ProcedureApplyError {
 pub struct ProcedureApplyRunner {
     input_gate: VerificationInputGate,
     project_root: PathBuf,
-    reports: ProcedureReportStore,
+    reports: ProcedureReportRepository,
     interrupt: Arc<AtomicBool>,
     progress: Option<mpsc::UnboundedSender<ProcedureProgress>>,
 }
@@ -59,7 +60,7 @@ impl ProcedureApplyRunner {
         project_root: PathBuf,
         interrupt: Arc<AtomicBool>,
     ) -> Self {
-        let reports = ProcedureReportStore::for_project(&project_root);
+        let reports = ProcedureReportRepository::for_project(&project_root);
         Self {
             input_gate,
             project_root,

@@ -9,7 +9,7 @@ use deepseek_custom::procedure::{
     ContractSelection, FrontierPatchDraftError, FrontierRepairDispatch, FrontierRepairRequest,
     LocalPatchDraftDispatch, LocalPatchDraftError, LocalizationDispatch, LocalizationDispatchError,
     LocalizationEnvelope, OpenSpecInput, OpenSpecInputError, PatchCandidate,
-    ProcedureAttemptDisposition, ProcedureMetricsDisposition, ProcedureReportStore,
+    ProcedureAttemptDisposition, ProcedureMetricsDisposition, ProcedureReportRepository,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureRunRequest, ProcedureRunner,
     ProcedureScratchpad, ProcedureTerminalDisposition, RepositoryIndexEntry, RouteOverride,
     RouteTier, SamplingInputError, SamplingInputGate, SamplingInputRequest, ValidatedContractInput,
@@ -649,7 +649,7 @@ async fn run_passing_fixture(tag: &str) -> PassingFixtureRun {
         local,
         frontier,
         sampling_settings(),
-        ProcedureReportStore::for_project(&fixture.root),
+        ProcedureReportRepository::for_project(&fixture.root),
         Arc::new(AtomicBool::new(false)),
     );
     let outcome = runner
@@ -704,7 +704,7 @@ fn passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
 async fn assert_passing_fixture_promotes_one_captured_local_patch_with_terminal_evidence() {
     let run = run_passing_fixture("task-2-2-lifecycle").await;
     let report_id: ProcedureRunId = serde_json::from_value(run.report["id"].clone()).unwrap();
-    let persisted = ProcedureReportStore::for_project(&run.fixture.root)
+    let persisted = ProcedureReportRepository::for_project(&run.fixture.root)
         .load_with_fingerprints(&report_id)
         .unwrap();
     let metrics = persisted
@@ -927,7 +927,7 @@ struct LocalizationFixtureRun {
     fixture: SandboxFixture,
     state: RecordingState,
     run: ProcedureRun,
-    reports: ProcedureReportStore,
+    reports: ProcedureReportRepository,
 }
 
 async fn run_localization_fixture(
@@ -939,7 +939,7 @@ async fn run_localization_fixture(
     let event_log = fixture.root.join("unused-event.log");
     let files_before = stable_workspace_files(&fixture.root, &event_log);
     let state = RecordingState::default();
-    let reports = ProcedureReportStore::for_project(&fixture.root);
+    let reports = ProcedureReportRepository::for_project(&fixture.root);
     let runner = ProcedureRunner::new(
         fixture.input(),
         fixture.root.clone(),
@@ -1309,7 +1309,7 @@ async fn assert_whole_change_interruption_before_promotion_preserves_source_byte
         local,
         frontier,
         sampling_settings(),
-        ProcedureReportStore::for_project(&fixture.root),
+        ProcedureReportRepository::for_project(&fixture.root),
         Arc::new(AtomicBool::new(true)),
     );
 

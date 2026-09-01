@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreviewInputError,
     PatchPreviewInputGate, PatchPreviewInputRequest, ProcedureAttemptDisposition,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, RouteOverride,
     SamplingInputError, SamplingInputGate, SamplingInputRequest, sha256_json,
 };
@@ -106,7 +106,7 @@ fn save_report(
         review_disposition: disposition,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(root)
+    ProcedureReportRepository::for_project(root)
         .save(&report)
         .unwrap();
     report
@@ -125,7 +125,7 @@ fn gate(root: &Path, command: &Path) -> PatchPreviewInputGate {
     PatchPreviewInputGate::new(
         OpenSpecInput::with_command(root, command.display().to_string()),
         root.to_path_buf(),
-        ProcedureReportStore::for_project(root),
+        ProcedureReportRepository::for_project(root),
     )
 }
 
@@ -145,7 +145,7 @@ fn sampling_gate(root: &Path, command: &Path) -> SamplingInputGate {
     SamplingInputGate::new(
         OpenSpecInput::with_command(root, command.display().to_string()),
         root.to_path_buf(),
-        ProcedureReportStore::for_project(root),
+        ProcedureReportRepository::for_project(root),
     )
 }
 
@@ -533,7 +533,7 @@ fn approved_legacy_report_is_readable_but_requires_new_localization() {
         "fixture-change",
         "1.1",
     );
-    let store = ProcedureReportStore::for_project(&root);
+    let store = ProcedureReportRepository::for_project(&root);
     let report_path = store.report_path(&report.id);
     let mut json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();

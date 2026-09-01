@@ -4,9 +4,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::{
-    ApplyRequest, OpenSpecInput, PatchPreview, PatchPreviewId, ProcedureReportStore,
-    ProcedureRunId, PromotionBaseline, StoredProcedureReport, VerificationInputError,
-    VerificationInputGate,
+    ApplyRequest, OpenSpecInput, PatchPreview, PatchPreviewId,
+    ProcedureReportRepository as ReportRepository, ProcedureRunId, PromotionBaseline,
+    StoredProcedureReport, VerificationInputError, VerificationInputGate,
 };
 
 /// Explicit persisted inputs required before a repair ladder may be created.
@@ -61,7 +61,7 @@ pub struct RepairInputGate {
 }
 
 impl RepairInputGate {
-    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ProcedureReportStore) -> Self {
+    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ReportRepository) -> Self {
         Self {
             verification: VerificationInputGate::new(input, project_root, reports),
         }

@@ -10,7 +10,7 @@ use deepseek_custom::procedure::{
     AttemptDisposition, LocalPatchDraftDispatch, LocalPatchDraftError, LocalRepairOutcome,
     LocalRepairRunner, LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchCandidate,
     PatchPreview, PatchPreviewId, PatchPreviewStore, ProcedureAttemptDisposition,
-    ProcedureProgress, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureProgress, ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun,
     ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
     ProcedureTerminalDisposition, RepairInputGate, RepairRequest, RouteDecision, RouteOverride,
     RouteTier, decode_patch_envelope, sha256_json,
@@ -291,7 +291,7 @@ fn save_trusted_input(root: &Path, openspec_command: &Path) -> (ProcedureRun, Pa
         review_disposition: ProcedureReviewDisposition::Approved,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(root)
+    ProcedureReportRepository::for_project(root)
         .save(&report)
         .unwrap();
 
@@ -372,7 +372,7 @@ fn three_local_failures_exhaust_the_budget_without_a_fourth_dispatch() {
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
         );
         let runner = LocalRepairRunner::new(
             gate,
@@ -440,7 +440,7 @@ fn local_exhaustion_blocks_when_frontier_policy_is_disabled() {
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
         );
         let runner = LocalRepairRunner::new(
             gate,
@@ -504,7 +504,7 @@ fn failed_candidate_workspaces_are_discarded_before_the_next_attempt() {
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
         );
         let runner = LocalRepairRunner::new(
             gate,
@@ -583,7 +583,7 @@ fn local_attempt_three_promotes_after_real_gates_without_frontier_dispatch() {
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
         );
         let runner = LocalRepairRunner::new(
             gate,
@@ -670,7 +670,7 @@ fn local_attempt_three_promotes_after_real_gates_without_frontier_dispatch() {
             })
             .collect::<Vec<_>>();
         assert_eq!(progress_events, run.repair_events);
-        let report_store = ProcedureReportStore::for_project(&root);
+        let report_store = ProcedureReportRepository::for_project(&root);
         run.save_repair_events(&report_store).unwrap();
         assert_eq!(
             report_store
@@ -706,7 +706,7 @@ fn interruption_after_local_draft_stops_the_ladder_and_cleans_the_candidate() {
         let gate = RepairInputGate::new(
             OpenSpecInput::with_command(&root, openspec_command.display().to_string()),
             root.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
         );
         let runner = LocalRepairRunner::new(gate, root.clone(), Arc::clone(&interrupt));
         let request = RepairRequest {

@@ -49,7 +49,7 @@ impl LocalRepairRun {
     /// Persist the complete transition sequence beside the named localization report.
     pub fn save_repair_events(
         &self,
-        reports: &super::ProcedureReportStore,
+        reports: &super::ProcedureReportRepository,
     ) -> crate::error::Result<()> {
         reports.save_repair_events(&self.repair_input.report.run.id, &self.repair_events)
     }

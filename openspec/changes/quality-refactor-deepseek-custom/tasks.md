@@ -34,8 +34,8 @@
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->
 
-- [ ] 3.4 Extract Class `ProcedureReportRepository` from `crates/deepseek-custom/src/procedure/report.rs`, separating document encoding from review and metrics operations, and migrate Procedure runners, preview input, apply, and report tests without changing JSON shapes.
-<!-- status: pending -->
+- [x] 3.4 Extract Class `ProcedureReportRepository` from `crates/deepseek-custom/src/procedure/report.rs`, separating document encoding from review and metrics operations, and migrate Procedure runners, preview input, apply, and report tests without changing JSON shapes.
+<!-- status: completed -->
 <!-- verify_cmd: cargo test --workspace && npm --prefix web test && node "C:\Users\siriu\.codex\plugins\cache\dod-guard-monorepo\quality-guard\0.5.8\skills\quality-refactor\scripts\quality-scan.mjs" crates web/src --root=. --exclude=crates/deepseek-custom/src/web/assets --test-path=crates/deepseek-custom-tests --baseline=.quality/baseline.json --fail-on=regression -->
 <!-- verify_surface: structural -->
 <!-- manual_required: false -->

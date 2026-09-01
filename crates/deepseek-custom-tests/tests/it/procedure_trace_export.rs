@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use deepseek_custom::procedure::{
     BoundedVerifierOutput, CandidateEligibility, LocalizationAttempt, LocalizationTarget,
     ProcedureAttemptDisposition, ProcedureCandidateMetric, ProcedureGateOutcome,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureStageTiming, ProcedureTask,
     ProcedureTerminalDisposition, RouteSignal, RouteTier, VerifierCommandDisposition,
     VerifierCommandEvidence, VerifierGateDisposition, VerifierGateEvidence, VerifierReport,
@@ -91,7 +91,7 @@ fn raw_output() -> BoundedVerifierOutput {
 #[test]
 fn localization_trace_export_uses_only_allowlisted_structured_fields() {
     let reports_dir = temp_path("redaction");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let run = sensitive_run();
     store.save(&run).unwrap();
 

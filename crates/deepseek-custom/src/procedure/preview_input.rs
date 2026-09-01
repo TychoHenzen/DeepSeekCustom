@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ContractSelection, OpenSpecInput, ProcedureReportStore, ProcedureReviewDisposition,
+    ContractSelection, OpenSpecInput, ProcedureReportRepository, ProcedureReviewDisposition,
     ProcedureRun, ProcedureRunId, RouteOverride, StoredProcedureReport, ValidatedContractInput,
     capture_path_fingerprints, require_approved_report, sha256_json,
 };
@@ -123,11 +123,15 @@ impl std::error::Error for PatchPreviewInputError {}
 pub struct PatchPreviewInputGate {
     input: OpenSpecInput,
     project_root: PathBuf,
-    reports: ProcedureReportStore,
+    reports: ProcedureReportRepository,
 }
 
 impl PatchPreviewInputGate {
-    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ProcedureReportStore) -> Self {
+    pub fn new(
+        input: OpenSpecInput,
+        project_root: PathBuf,
+        reports: ProcedureReportRepository,
+    ) -> Self {
         Self {
             input,
             project_root,

@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use deepseek_custom::config::settings::Settings;
+use deepseek_custom::procedure::ProcedureReportRepository;
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationDispatcher, LocalizationTarget, OpenSpecInput,
-    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad, ProcedureStage,
-    ProcedureTask, ProcedureTerminalDisposition, build_repository_index,
-    validate_localization_targets,
+    ProcedureAttemptDisposition, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad, ProcedureStage, ProcedureTask,
+    ProcedureTerminalDisposition, build_repository_index, validate_localization_targets,
 };
 
 #[tokio::main]
@@ -45,7 +45,7 @@ async fn run_live_smoke(project_root: &std::path::Path) -> Result<(), Box<dyn Er
     let limits = settings.procedure_mut().repository_index.clone();
     let working_dir = configured_working_dir(&settings, project_root);
     let dispatcher = LocalizationDispatcher::from_settings(&settings, project_root)?;
-    let reports = ProcedureReportStore::for_project(project_root);
+    let reports = ProcedureReportRepository::for_project(project_root);
     let runner = ProcedureRunner::new(
         OpenSpecInput::new(project_root),
         working_dir,
@@ -62,7 +62,7 @@ async fn run_live_smoke(project_root: &std::path::Path) -> Result<(), Box<dyn Er
             scratchpad: ProcedureScratchpad::default(),
         })
         .await?;
-    let report_path = ProcedureReportStore::for_project(project_root).report_path(&run.id);
+    let report_path = ProcedureReportRepository::for_project(project_root).report_path(&run.id);
     println!("REPORT_PATH={}", report_path.display());
     println!("{}", serde_json::to_string_pretty(&run)?);
     Ok(())
@@ -90,8 +90,15 @@ fn run_controlled_review(
         change_id: "implement-hemisphere-model".to_string(),
         selected_task: ProcedureTask {
             id: "1.1".to_string(),
-            text: "Add a HemisphereSettings block to crates/deepseek-custom/src/config/settings.rs with enabled, advisor_backend, view_budget_chars, keep_verbatim_turns, and max_reply_tokens, every field optional with skip_serializing_if = \"Option::is_none\", and defaults from design.md's table."
-                .to_string(),
+            text: concat!(
+                "Add a HemisphereSettings block to ",
+                "crates/deepseek-custom/src/config/settings.rs with enabled, ",
+                "advisor_backend, view_budget_chars, keep_verbatim_turns, and ",
+                "max_reply_tokens, every field optional with ",
+                "skip_serializing_if = ",
+                "\"Option::is_none\", and defaults from design.md's table."
+            )
+            .to_string(),
             covers: None,
         },
         spec_fingerprint: None,
@@ -110,7 +117,7 @@ fn run_controlled_review(
         review_disposition: ProcedureReviewDisposition::Pending,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    let store = ProcedureReportStore::for_project(project_root);
+    let store = ProcedureReportRepository::for_project(project_root);
     store.save(&report)?;
     let reviewed = match decision {
         "approve" => store.approve(&report.id)?,

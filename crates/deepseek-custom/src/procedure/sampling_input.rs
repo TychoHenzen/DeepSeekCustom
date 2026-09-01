@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use super::{
     OpenSpecInput, PatchPreviewInputError, PatchPreviewInputGate, PatchPreviewInputRequest,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
-    ValidatedContractInput,
+    ProcedureReportRepository as ReportRepository, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureRunId, ValidatedContractInput,
 };
 
 /// The explicitly named baseline localization run and OpenSpec task for sampling.
@@ -118,7 +118,7 @@ pub struct SamplingInputGate {
 }
 
 impl SamplingInputGate {
-    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ProcedureReportStore) -> Self {
+    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ReportRepository) -> Self {
         Self {
             baseline: PatchPreviewInputGate::new(input, project_root, reports),
         }

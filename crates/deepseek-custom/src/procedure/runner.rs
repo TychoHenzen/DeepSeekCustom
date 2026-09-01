@@ -9,14 +9,21 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use super::ProcedureAttemptDisposition;
+use super::ProcedureReportRepository as ReportRepository;
+use super::ProcedureReviewDisposition;
+use super::ProcedureRun;
+use super::ProcedureRunId;
+use super::ProcedureScratchpad;
+use super::ProcedureStage;
+use super::ProcedureTask;
+use super::ProcedureTerminalDisposition;
 use super::{
     GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationDispatch,
     LocalizationDispatchError, LocalizationEnvelope, LocalizationPromptInput,
-    ProcedureAttemptDisposition, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
-    ProcedureRunId, ProcedureScratchpad, ProcedureStage, ProcedureTask,
-    ProcedureTerminalDisposition, PromotionRecoveryEvidence, PromotionResult, RepositoryIndexEntry,
-    SnapshotProgress, StalePromotionPath, VerifierGateEvidence, VerifierReport,
-    build_localization_prompt, build_repository_index, sha256_json, validate_localization_targets,
+    PromotionRecoveryEvidence, PromotionResult, RepositoryIndexEntry, SnapshotProgress,
+    StalePromotionPath, VerifierGateEvidence, VerifierReport, build_localization_prompt,
+    build_repository_index, sha256_json, validate_localization_targets,
 };
 use crate::config::settings::RepositoryIndexLimits;
 use crate::error::HarnessError;
@@ -217,7 +224,7 @@ pub enum ProcedureProgress {
 
 /// Apply one persisted review decision and publish its run-scoped result.
 pub fn apply_review_decision(
-    reports: &ProcedureReportStore,
+    reports: &ReportRepository,
     run_id: ProcedureRunId,
     decision: ProcedureReviewDecision,
     progress: &mpsc::UnboundedSender<ProcedureProgress>,
@@ -258,7 +265,7 @@ pub struct ProcedureRunner<D> {
     working_dir: PathBuf,
     index_limits: RepositoryIndexLimits,
     dispatcher: D,
-    reports: ProcedureReportStore,
+    reports: ReportRepository,
     interrupt: Arc<AtomicBool>,
     progress: Option<mpsc::UnboundedSender<ProcedureProgress>>,
 }
@@ -273,7 +280,7 @@ where
         working_dir: PathBuf,
         index_limits: RepositoryIndexLimits,
         dispatcher: D,
-        reports: ProcedureReportStore,
+        reports: ReportRepository,
         interrupt: Arc<AtomicBool>,
     ) -> Self {
         Self {

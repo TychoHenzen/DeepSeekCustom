@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use thiserror::Error;
 
+use super::ProcedureReportRepository as ReportRepository;
 use super::{
     BoundedRepairCoordinator, FrontierRepairDispatch, FrontierRepairOutcome, FrontierRepairRunner,
     LocalCandidateGenerationEvidence, LocalCandidateVerificationOutcome,
@@ -19,14 +20,14 @@ use super::{
     LocalPatchCandidateVerifier, LocalPatchDraftDispatch, LocalRepairRunner,
     LocalizationAgreementError, LocalizationAgreementOutcome, LocalizationAgreementResolver,
     LocalizationDispatch, OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewStore,
-    ProcedureCandidateMetric, ProcedureMetricsDisposition, ProcedureReportStore,
-    ProcedureReviewError, ProcedureRouteMetrics, ProcedureRunId, ProcedureRunRequest,
-    ProcedureRunner, ProcedureRunnerError, ProcedureScratchpad, ProcedureStageTiming,
-    ProcedureTerminalDisposition, PromotionBaseline, PromotionError, RepairInputGate,
-    RepairRequest, RouteDecision, RouteOverride, RouteTier, SamplingInputError, SamplingInputGate,
-    SamplingInputRequest, apply_patch_in_workspace, apply_route_override, assess_route,
-    build_repository_index, model_promotion_targets, promote_verified_workspace,
-    select_passing_local_candidate, validate_patch_boundary,
+    ProcedureCandidateMetric, ProcedureMetricsDisposition, ProcedureReviewError,
+    ProcedureRouteMetrics, ProcedureRunId, ProcedureRunRequest, ProcedureRunner,
+    ProcedureRunnerError, ProcedureScratchpad, ProcedureStageTiming, ProcedureTerminalDisposition,
+    PromotionBaseline, PromotionError, RepairInputGate, RepairRequest, RouteDecision,
+    RouteOverride, RouteTier, SamplingInputError, SamplingInputGate, SamplingInputRequest,
+    apply_patch_in_workspace, apply_route_override, assess_route, build_repository_index,
+    model_promotion_targets, promote_verified_workspace, select_passing_local_candidate,
+    validate_patch_boundary,
 };
 use crate::config::settings::{
     RepositoryIndexLimits, ValidatedProcedureRepairPolicy, ValidatedProcedureSamplingSettings,
@@ -134,7 +135,7 @@ pub struct SampledProcedureRunner<L, F> {
     index_limits: RepositoryIndexLimits,
     resolver: LocalizationAgreementResolver<L, F>,
     settings: ValidatedProcedureSamplingSettings,
-    reports: ProcedureReportStore,
+    reports: ReportRepository,
     interrupt: Arc<AtomicBool>,
 }
 
@@ -150,7 +151,7 @@ pub struct WholeChangeProcedureRunner<L, F> {
     local_dispatcher: Arc<L>,
     frontier_dispatcher: Arc<F>,
     settings: ValidatedProcedureSamplingSettings,
-    reports: ProcedureReportStore,
+    reports: ReportRepository,
     interrupt: Arc<AtomicBool>,
 }
 
@@ -167,7 +168,7 @@ where
         local_dispatcher: Arc<L>,
         frontier_dispatcher: Arc<F>,
         settings: ValidatedProcedureSamplingSettings,
-        reports: ProcedureReportStore,
+        reports: ReportRepository,
         interrupt: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -342,7 +343,7 @@ where
         index_limits: RepositoryIndexLimits,
         resolver: LocalizationAgreementResolver<L, F>,
         settings: ValidatedProcedureSamplingSettings,
-        reports: ProcedureReportStore,
+        reports: ReportRepository,
         interrupt: Arc<AtomicBool>,
     ) -> Self {
         Self {

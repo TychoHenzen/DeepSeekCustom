@@ -8,10 +8,10 @@ use deepseek_custom::agent::history::MessageHistory;
 use deepseek_custom::config::settings::{RepositoryIndexLimits, Settings};
 use deepseek_custom::procedure::{
     LocalizationDispatch, LocalizationDispatchError, LocalizationEnvelope, LocalizationTarget,
-    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportStore, ProcedureReviewDecision,
-    ProcedureReviewDisposition, ProcedureReviewError, ProcedureRunId, ProcedureRunRequest,
-    ProcedureRunner, ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition,
-    RepositoryIndexEntry, apply_review_decision,
+    ProcedureAttemptDisposition, ProcedureProgress, ProcedureReportRepository,
+    ProcedureReviewDecision, ProcedureReviewDisposition, ProcedureReviewError, ProcedureRunId,
+    ProcedureRunRequest, ProcedureRunner, ProcedureScratchpad, ProcedureStage,
+    ProcedureTerminalDisposition, RepositoryIndexEntry, apply_review_decision,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -149,7 +149,7 @@ fn configured_index_limits_reach_the_next_runner_without_replacement() {
         root.clone(),
         configured.clone(),
         StubLocalizationDispatcher::success(Vec::new()),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -293,7 +293,7 @@ async fn valid_change_starts_localization_case() {
         symbol: Some("target_symbol".to_string()),
         evidence: "The fixture source defines the selected entry point.".to_string(),
     }]);
-    let store = ProcedureReportStore::for_project(&root);
+    let store = ProcedureReportRepository::for_project(&root);
     let interrupt = Arc::new(AtomicBool::new(false));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let runner = ProcedureRunner::new(
@@ -304,7 +304,7 @@ async fn valid_change_starts_localization_case() {
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         interrupt,
     )
     .with_progress(tx);
@@ -460,7 +460,7 @@ async fn review_decision_matrix_is_run_scoped_and_never_redispatches_localizatio
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -469,7 +469,7 @@ async fn review_decision_matrix_is_run_scoped_and_never_redispatches_localizatio
     let approve_then_reject = runner.run(request("fixture-change")).await.unwrap();
     let reject_then_approve = runner.run(request("fixture-change")).await.unwrap();
     assert_eq!(stub.calls(), 4);
-    let store = ProcedureReportStore::for_project(&root);
+    let store = ProcedureReportRepository::for_project(&root);
 
     let approved = store.approve(&approve_twice.id).unwrap();
     assert_eq!(stub.calls(), 4);
@@ -543,12 +543,12 @@ async fn review_channel_events_name_the_run_and_never_redispatch_localization() 
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
     let pending = runner.run(request("fixture-change")).await.unwrap();
     assert_eq!(stub.calls(), 1);
-    let store = ProcedureReportStore::for_project(&root);
+    let store = ProcedureReportRepository::for_project(&root);
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
 
     apply_review_decision(
@@ -622,7 +622,7 @@ async fn invalid_change_stops_before_model_use_case() {
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -635,7 +635,7 @@ async fn invalid_change_stops_before_model_use_case() {
     assert!(reason.contains("exact validation failure for invalid-change"));
     assert!(run.attempts.is_empty());
     assert_eq!(
-        ProcedureReportStore::for_project(&root)
+        ProcedureReportRepository::for_project(&root)
             .load(&run.id)
             .unwrap(),
         run
@@ -665,7 +665,7 @@ async fn multiple_capabilities_require_a_binding_case() {
                 max_total_bytes: 0,
             },
             stub.clone(),
-            ProcedureReportStore::for_project(&root),
+            ProcedureReportRepository::for_project(&root),
             Arc::new(AtomicBool::new(false)),
         );
 
@@ -707,7 +707,7 @@ async fn repository_index_overflow_stops_before_model_dispatch_case() {
             max_total_bytes: u64::MAX,
         },
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -760,7 +760,7 @@ async fn retry_repairs_invalid_output_case() {
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -785,7 +785,7 @@ async fn retry_repairs_invalid_output_case() {
     );
     assert_eq!(run.review_disposition, ProcedureReviewDisposition::Pending);
     assert_eq!(
-        ProcedureReportStore::for_project(&root)
+        ProcedureReportRepository::for_project(&root)
             .load(&run.id)
             .unwrap(),
         run
@@ -849,7 +849,7 @@ async fn mixed_invalid_result_is_rejected_as_a_whole_with_complete_diagnostics()
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     )
     .with_progress(tx);
@@ -878,7 +878,7 @@ async fn mixed_invalid_result_is_rejected_as_a_whole_with_complete_diagnostics()
         })
     );
     assert_eq!(
-        ProcedureReportStore::for_project(&root)
+        ProcedureReportRepository::for_project(&root)
             .load(&run.id)
             .unwrap(),
         run
@@ -916,7 +916,7 @@ async fn malformed_final_json_is_the_only_dispatch_error_that_gets_a_repair_atte
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -957,7 +957,7 @@ async fn transport_failure_does_not_consume_the_procedure_repair_attempt() {
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -1000,7 +1000,7 @@ async fn retry_budget_is_exhausted_case() {
         root.clone(),
         limits(),
         stub.clone(),
-        ProcedureReportStore::for_project(&root),
+        ProcedureReportRepository::for_project(&root),
         Arc::new(AtomicBool::new(false)),
     );
 
@@ -1031,7 +1031,7 @@ async fn retry_budget_is_exhausted_case() {
         })
     );
     assert_eq!(
-        ProcedureReportStore::for_project(&root)
+        ProcedureReportRepository::for_project(&root)
             .load(&run.id)
             .unwrap(),
         run
@@ -1072,7 +1072,7 @@ async fn workspace_remains_unchanged_case() {
         success_root.clone(),
         limits(),
         success_stub,
-        ProcedureReportStore::for_project(&success_root),
+        ProcedureReportRepository::for_project(&success_root),
         Arc::new(AtomicBool::new(false)),
     )
     .with_progress(success_tx);
@@ -1095,12 +1095,12 @@ async fn workspace_remains_unchanged_case() {
         })
     ));
     assert_eq!(
-        ProcedureReportStore::for_project(&success_root)
+        ProcedureReportRepository::for_project(&success_root)
             .load(&success.id)
             .unwrap(),
         success
     );
-    let success_store = ProcedureReportStore::for_project(&success_root);
+    let success_store = ProcedureReportRepository::for_project(&success_root);
     let fingerprints_before_review = success_store
         .load_with_fingerprints(&success.id)
         .unwrap()
@@ -1132,7 +1132,7 @@ async fn workspace_remains_unchanged_case() {
         failure_root.clone(),
         limits(),
         failure_stub.clone(),
-        ProcedureReportStore::for_project(&failure_root),
+        ProcedureReportRepository::for_project(&failure_root),
         Arc::new(AtomicBool::new(false)),
     )
     .with_progress(failure_tx);
@@ -1152,7 +1152,7 @@ async fn workspace_remains_unchanged_case() {
         })
     ));
     assert_eq!(
-        ProcedureReportStore::for_project(&failure_root)
+        ProcedureReportRepository::for_project(&failure_root)
             .load(&failure.id)
             .unwrap(),
         failure
@@ -1174,7 +1174,7 @@ async fn workspace_remains_unchanged_case() {
         rejection_root.clone(),
         limits(),
         rejection_stub,
-        ProcedureReportStore::for_project(&rejection_root),
+        ProcedureReportRepository::for_project(&rejection_root),
         Arc::new(AtomicBool::new(false)),
     );
     let pending_rejection = rejection_runner
@@ -1182,7 +1182,7 @@ async fn workspace_remains_unchanged_case() {
         .await
         .unwrap();
     assert_eq!(workspace_hash(&rejection_root), rejection_before);
-    let rejected = ProcedureReportStore::for_project(&rejection_root)
+    let rejected = ProcedureReportRepository::for_project(&rejection_root)
         .reject(&pending_rejection.id)
         .unwrap();
     assert_eq!(
@@ -1205,7 +1205,7 @@ async fn workspace_remains_unchanged_case() {
         interrupted_root.clone(),
         limits(),
         interrupted_stub.clone(),
-        ProcedureReportStore::for_project(&interrupted_root),
+        ProcedureReportRepository::for_project(&interrupted_root),
         interrupt,
     )
     .with_progress(interrupted_tx);
@@ -1233,7 +1233,7 @@ async fn workspace_remains_unchanged_case() {
         })
     ));
     assert_eq!(
-        ProcedureReportStore::for_project(&interrupted_root)
+        ProcedureReportRepository::for_project(&interrupted_root)
             .load(&interrupted.id)
             .unwrap(),
         interrupted

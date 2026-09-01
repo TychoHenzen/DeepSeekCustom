@@ -31,6 +31,9 @@ mod repair_input;
 mod repair_prompt;
 mod repair_state;
 pub mod report;
+mod report_encoding;
+mod report_repository;
+mod report_repository_io;
 mod route;
 mod routing_metrics;
 mod run;
@@ -133,10 +136,11 @@ pub use repair_state::{
     AttemptDisposition, AttemptFailure, AttemptFailureEvidence, AttemptFailureKind, AttemptState,
     AttemptTransitionError, RepairCandidateId, RepairTier,
 };
-pub use report::{
-    ProcedureApprovedReportError, ProcedureReportStore, ProcedureReviewError,
-    StoredProcedureReport, require_approved_report,
-};
+pub use report::ProcedureApprovedReportError;
+pub use report::ProcedureReviewError;
+pub use report::require_approved_report;
+pub use report_repository::ProcedureReportRepository;
+pub use report_repository::StoredProcedureReport;
 pub use route::{
     DifficultyAssessment, MechanicalVerb, RouteDecision, RouteOverride, RouteSignal, RouteTier,
     apply_route_override, assess_route,

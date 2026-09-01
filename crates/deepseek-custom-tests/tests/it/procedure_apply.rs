@@ -7,7 +7,7 @@ use deepseek_custom::procedure::{
     ApplyRequest, GitApplyDisposition, GitApplyPhase, LocalizationAttempt, LocalizationTarget,
     OpenSpecInput, PatchGateDisposition, PatchPreview, PatchPreviewId, PatchPreviewStore,
     ProcedureApplyProgress, ProcedureApplyRunner, ProcedureAttemptDisposition, ProcedureProgress,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
     PromotionFailureInjection, RouteDecision, RouteOverride, RouteTier, VerificationInputGate,
     VerifierGateDisposition, sha256_json,
@@ -209,7 +209,7 @@ fn save_fixture(
         review_disposition: ProcedureReviewDisposition::Approved,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(&root)
+    ProcedureReportRepository::for_project(&root)
         .save(&report)
         .unwrap();
     let mut preview_targets = targets
@@ -300,7 +300,7 @@ async fn apply(
                 fixture.openspec_command.display().to_string(),
             ),
             fixture.root.clone(),
-            ProcedureReportStore::for_project(&fixture.root),
+            ProcedureReportRepository::for_project(&fixture.root),
         ),
         fixture.root.clone(),
         interrupt,
@@ -406,7 +406,7 @@ fn apply_passes_all_gates_and_promotes_only_the_target() {
             std::fs::read(fixture.root.join("unrelated.bin")).unwrap(),
             unrelated
         );
-        let stored = ProcedureReportStore::for_project(&fixture.root)
+        let stored = ProcedureReportRepository::for_project(&fixture.root)
             .load_with_fingerprints(&fixture.report.id)
             .unwrap();
         let verification = stored.verification.expect("Apply evidence is persisted");
@@ -470,7 +470,7 @@ fn apply_failing_gate_stops_later_commands_and_preserves_real_bytes() {
             ProcedureApplyProgress::VerificationFinished { report }
                 if report.stopped_after_failure && report.first_failed_gate == Some(0)
         )));
-        let stored = ProcedureReportStore::for_project(&fixture.root)
+        let stored = ProcedureReportRepository::for_project(&fixture.root)
             .load_with_fingerprints(&fixture.report.id)
             .unwrap();
         let verification = stored
@@ -521,7 +521,7 @@ fn invalid_patch_persists_deterministic_rejection_and_not_run_gates() {
                 .count(),
             1
         );
-        let stored = ProcedureReportStore::for_project(&fixture.root)
+        let stored = ProcedureReportRepository::for_project(&fixture.root)
             .load_with_fingerprints(&fixture.report.id)
             .unwrap();
         let verification = stored.verification.expect("patch rejection is persisted");
@@ -574,7 +574,7 @@ fn setup_failure_emits_one_apply_terminal_with_the_exact_diagnostic() {
                     fixture.openspec_command.display().to_string(),
                 ),
                 fixture.root.clone(),
-                ProcedureReportStore::for_project(&fixture.root),
+                ProcedureReportRepository::for_project(&fixture.root),
             ),
             fixture.root.clone(),
             interrupt,
@@ -644,7 +644,7 @@ fn legacy_preview_without_baseline_fails_before_snapshot_creation() {
                     fixture.openspec_command.display().to_string(),
                 ),
                 fixture.root.clone(),
-                ProcedureReportStore::for_project(&fixture.root),
+                ProcedureReportRepository::for_project(&fixture.root),
             ),
             fixture.root.clone(),
             Arc::new(AtomicBool::new(false)),
@@ -697,7 +697,7 @@ fn stale_preview_baseline_fails_before_snapshot_creation() {
             "src/target.rs",
             b"pub fn value() -> i32 { 99 }\n",
         );
-        ProcedureReportStore::for_project(&fixture.root)
+        ProcedureReportRepository::for_project(&fixture.root)
             .save(&fixture.report)
             .unwrap();
         let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -708,7 +708,7 @@ fn stale_preview_baseline_fails_before_snapshot_creation() {
                     fixture.openspec_command.display().to_string(),
                 ),
                 fixture.root.clone(),
-                ProcedureReportStore::for_project(&fixture.root),
+                ProcedureReportRepository::for_project(&fixture.root),
             ),
             fixture.root.clone(),
             Arc::new(AtomicBool::new(false)),
@@ -810,7 +810,7 @@ fn apply_interrupted_gate_cleans_snapshot_and_never_promotes() {
                     fixture.openspec_command.display().to_string(),
                 ),
                 fixture.root.clone(),
-                ProcedureReportStore::for_project(&fixture.root),
+                ProcedureReportRepository::for_project(&fixture.root),
             ),
             fixture.root.clone(),
             Arc::clone(&interrupt),
@@ -861,7 +861,7 @@ fn apply_stale_baseline_lists_the_concurrent_target_edit() {
                     fixture.openspec_command.display().to_string(),
                 ),
                 fixture.root.clone(),
-                ProcedureReportStore::for_project(&fixture.root),
+                ProcedureReportRepository::for_project(&fixture.root),
             ),
             fixture.root.clone(),
             interrupt,
@@ -1046,7 +1046,7 @@ fn apply_reports_success_when_post_commit_backup_cleanup_is_retained() {
             std::fs::read_to_string(&cleanup.retained_paths[0]).unwrap(),
             "pub fn value() -> i32 { 1 }\n"
         );
-        let stored = ProcedureReportStore::for_project(&fixture.root)
+        let stored = ProcedureReportRepository::for_project(&fixture.root)
             .load_with_fingerprints(&fixture.report.id)
             .unwrap();
         assert_eq!(

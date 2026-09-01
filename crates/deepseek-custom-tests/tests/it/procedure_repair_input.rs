@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreview, PatchPreviewId,
-    PatchPreviewStore, ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
+    PatchPreviewStore, ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportRepository,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
     ProcedureTask, ProcedureTerminalDisposition, RepairInputError, RepairInputGate, RepairRequest,
     RouteDecision, RouteOverride, RouteTier, ValidatedRepairInput, capture_path_fingerprint,
@@ -106,7 +106,7 @@ fn save_report(
         review_disposition: disposition,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(root)
+    ProcedureReportRepository::for_project(root)
         .save(&report)
         .unwrap();
     report
@@ -147,7 +147,7 @@ fn gate(root: &Path, command: &Path) -> RepairInputGate {
     RepairInputGate::new(
         OpenSpecInput::with_command(root, command.display().to_string()),
         root.to_path_buf(),
-        ProcedureReportStore::for_project(root),
+        ProcedureReportRepository::for_project(root),
     )
 }
 
@@ -284,7 +284,7 @@ fn edit_preview_document(
 }
 
 fn refresh_report_target_fingerprint(root: &Path, report: &ProcedureRun) {
-    let store = ProcedureReportStore::for_project(root);
+    let store = ProcedureReportRepository::for_project(root);
     let path = store.report_path(&report.id);
     let mut document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

@@ -14,7 +14,7 @@ use deepseek_custom::procedure::{
     LocalizationDispatchError, LocalizationEnvelope, LocalizationEscalationTrigger,
     LocalizationSampler, LocalizationTarget, OpenSpecInput, PatchCandidate, PatchEnvelopeError,
     PatchPreview, PatchPreviewId, PatchPreviewStore, ProcedureAttemptDisposition,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming, ProcedureTask,
     ProcedureTerminalDisposition, RepairInputGate, RepairLadderDisposition, RepairLadderGateResult,
     RepairLadderTransition, RepairRequest, RepairTier, RepositoryIndexEntry, RouteDecision,
@@ -282,7 +282,7 @@ impl WorkspaceObserver {
 struct Fixture {
     root: PathBuf,
     request: RepairRequest,
-    reports: ProcedureReportStore,
+    reports: ProcedureReportRepository,
     openspec: PathBuf,
     verifier: String,
     verifier_observations: PathBuf,
@@ -331,7 +331,7 @@ impl Fixture {
             review_disposition: ProcedureReviewDisposition::Approved,
             terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
         };
-        let reports = ProcedureReportStore::for_project(&root);
+        let reports = ProcedureReportRepository::for_project(&root);
         reports.save(&report).unwrap();
         let preview = PatchPreview {
             id: PatchPreviewId::new(),

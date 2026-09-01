@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::{
     FrontierRepairDispatch, FrontierRepairError, FrontierRepairOutcome, FrontierRepairRunner,
     LocalPatchDraftDispatch, LocalRepairError, LocalRepairOutcome, LocalRepairRun,
-    LocalRepairRunner, ProcedureReportStore, RepairRequest,
+    LocalRepairRunner, ProcedureReportRepository, RepairRequest,
 };
 use crate::config::settings::ValidatedProcedureRepairPolicy;
 use crate::error::HarnessError;
@@ -35,14 +35,14 @@ pub enum BoundedRepairError {
 pub struct BoundedRepairCoordinator<'a> {
     local: &'a LocalRepairRunner,
     frontier: &'a FrontierRepairRunner,
-    reports: &'a ProcedureReportStore,
+    reports: &'a ProcedureReportRepository,
 }
 
 impl<'a> BoundedRepairCoordinator<'a> {
     pub fn new(
         local: &'a LocalRepairRunner,
         frontier: &'a FrontierRepairRunner,
-        reports: &'a ProcedureReportStore,
+        reports: &'a ProcedureReportRepository,
     ) -> Self {
         Self {
             local,

@@ -6,7 +6,7 @@ use deepseek_custom::procedure::{
     BoundedVerifierOutput, CandidateEligibility, CandidateIneligibility, GitApplyDisposition,
     GitApplyPhase, GitApplyResult, LocalizationAttempt, LocalizationTarget, OpenSpecValidation,
     PatchGateDisposition, PatchGateEvidence, ProcedureApprovedReportError,
-    ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportStore,
+    ProcedureAttemptDisposition, ProcedurePathState, ProcedureReportRepository,
     ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureRunMetrics,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
     RepairLadderDisposition, RepairLadderErrorCategory, RepairLadderEvent, RepairLadderGateResult,
@@ -47,7 +47,7 @@ fn completed_run() -> ProcedureRun {
             disposition: ProcedureAttemptDisposition::Accepted,
             targets: vec![LocalizationTarget {
                 path: "crates/deepseek-custom/src/procedure/report.rs".to_string(),
-                symbol: Some("ProcedureReportStore".to_string()),
+                symbol: Some("ProcedureReportRepository".to_string()),
                 evidence: "The task requires per-run JSON storage.".to_string(),
             }],
             validation_error: None,
@@ -60,7 +60,7 @@ fn completed_run() -> ProcedureRun {
 #[test]
 fn save_creates_the_required_project_directory_and_uuid_file() {
     let project_root = temp_path("save-path");
-    let store = ProcedureReportStore::for_project(&project_root);
+    let store = ProcedureReportRepository::for_project(&project_root);
     let report = completed_run();
 
     store.save(&report).unwrap();
@@ -77,7 +77,7 @@ fn save_creates_the_required_project_directory_and_uuid_file() {
 #[test]
 fn load_returns_the_saved_targets_and_dispatch_details() {
     let reports_dir = temp_path("round-trip");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     store.save(&report).unwrap();
 
@@ -87,7 +87,7 @@ fn load_returns_the_saved_targets_and_dispatch_details() {
     assert_eq!(loaded.attempts[0].backend, "ollama");
     assert_eq!(
         loaded.attempts[0].targets[0].symbol.as_deref(),
-        Some("ProcedureReportStore")
+        Some("ProcedureReportRepository")
     );
     std::fs::remove_dir_all(reports_dir).ok();
 }
@@ -96,11 +96,11 @@ fn load_returns_the_saved_targets_and_dispatch_details() {
 #[test]
 fn completed_run_updates_metrics_after_report_store_restart() {
     let reports_dir = temp_path("routing-metrics-restart");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     store.save(&report).unwrap();
 
-    let restarted = ProcedureReportStore::new(reports_dir.clone());
+    let restarted = ProcedureReportRepository::new(reports_dir.clone());
     let stored = restarted.load_with_fingerprints(&report.id).unwrap();
     let metrics = stored
         .metrics
@@ -136,7 +136,7 @@ fn awaiting_review_run() -> ProcedureRun {
 #[test]
 fn report_store_round_trips_every_review_disposition() {
     let reports_dir = temp_path("review-round-trip");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
 
     for disposition in [
         ProcedureReviewDisposition::Pending,
@@ -159,7 +159,7 @@ fn report_store_round_trips_every_review_disposition() {
 #[test]
 fn report_without_review_disposition_loads_as_legacy_unreviewed() {
     let reports_dir = temp_path("legacy-review");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     let mut json = serde_json::to_value(&report).unwrap();
     json.as_object_mut().unwrap().remove("review_disposition");
@@ -186,7 +186,7 @@ fn report_without_review_disposition_loads_as_legacy_unreviewed() {
 #[test]
 fn legacy_report_without_input_fingerprints_remains_readable() {
     let reports_dir = temp_path("legacy-fingerprints");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     std::fs::create_dir_all(&reports_dir).unwrap();
     std::fs::write(
@@ -267,7 +267,7 @@ fn path_identity_is_stable_for_create_delete_and_rename_endpoints() {
 #[test]
 fn load_from_a_missing_report_directory_returns_not_found() {
     let reports_dir = temp_path("missing");
-    let store = ProcedureReportStore::new(reports_dir);
+    let store = ProcedureReportRepository::new(reports_dir);
 
     let error = store.load(&ProcedureRunId::new()).unwrap_err();
 
@@ -281,7 +281,7 @@ fn load_from_a_missing_report_directory_returns_not_found() {
 fn corrupt_report_returns_a_parse_error_that_names_the_file() {
     let reports_dir = temp_path("corrupt");
     std::fs::create_dir_all(&reports_dir).unwrap();
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let id = ProcedureRunId::new();
     let path = reports_dir.join(format!("{}.json", id.as_str()));
     std::fs::write(&path, "{ invalid json").unwrap();
@@ -299,7 +299,7 @@ fn corrupt_report_returns_a_parse_error_that_names_the_file() {
 #[test]
 fn rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approved_guard() {
     let reports_dir = temp_path("reject-review");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let pending = awaiting_review_run();
     let untouched = awaiting_review_run();
     store.save(&pending).unwrap();
@@ -339,7 +339,7 @@ fn rejection_updates_only_the_named_awaiting_review_report_and_fails_the_approve
 #[test]
 fn approval_preserves_structural_evidence_and_is_the_only_path_through_the_guard() {
     let reports_dir = temp_path("approve-review");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let pending = awaiting_review_run();
     store.save(&pending).unwrap();
 
@@ -408,10 +408,10 @@ fn downstream_consumer_guard_accepts_only_approved_reports_without_changing_them
 #[test]
 fn approved_report_round_trip_preserves_targets_dispatch_and_structural_validation() {
     let reports_dir = temp_path("approved-observability");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let target = LocalizationTarget {
         path: "crates/deepseek-custom/src/procedure/report.rs".to_string(),
-        symbol: Some("ProcedureReportStore".to_string()),
+        symbol: Some("ProcedureReportRepository".to_string()),
         evidence: "The store owns persisted review decisions.".to_string(),
     };
     let validation = OpenSpecValidation {
@@ -484,7 +484,7 @@ fn approved_report_round_trip_preserves_targets_dispatch_and_structural_validati
 #[test]
 fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
     let reports_dir = temp_path("verification-round-trip");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     store.save(&report).unwrap();
 
@@ -631,7 +631,7 @@ fn saved_verifier_evidence_round_trips_all_failure_details_through_json() {
 #[test]
 fn repair_transition_evidence_round_trips_and_renders_without_sensitive_context() {
     let reports_dir = temp_path("repair-transition-round-trip");
-    let store = ProcedureReportStore::new(reports_dir.clone());
+    let store = ProcedureReportRepository::new(reports_dir.clone());
     let report = completed_run();
     store.save(&report).unwrap();
     let transitions = [

@@ -8,10 +8,10 @@ use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};
 use deepseek_custom::effort::Effort;
 use deepseek_custom::procedure::{
     LocalizationAttempt, LocalizationTarget, MechanicalVerb, OpenSpecInput, PatchPreviewInputGate,
-    PatchPreviewRequest, PatchPreviewRunner, ProcedureAttemptDisposition, ProcedureReportStore,
-    ProcedureReviewDisposition, ProcedureRun, ProcedureRunId, ProcedureScratchpad, ProcedureStage,
-    ProcedureTerminalDisposition, RouteOverride, RouteSignal, RouteTier, capture_path_fingerprint,
-    sha256_json,
+    PatchPreviewRequest, PatchPreviewRunner, ProcedureAttemptDisposition,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureScratchpad, ProcedureStage, ProcedureTerminalDisposition, RouteOverride, RouteSignal,
+    RouteTier, capture_path_fingerprint, sha256_json,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -111,7 +111,7 @@ fn approved_report_with_targets(root: &Path, command: &Path, targets: &[&str]) -
         review_disposition: ProcedureReviewDisposition::Approved,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(root)
+    ProcedureReportRepository::for_project(root)
         .save(&report)
         .unwrap();
     report
@@ -200,7 +200,7 @@ fn chat_response(content: String, model: &str) -> serde_json::Value {
 }
 
 fn runner(root: &Path, command: &Path, settings: Settings) -> PatchPreviewRunner {
-    let reports = ProcedureReportStore::for_project(root);
+    let reports = ProcedureReportRepository::for_project(root);
     PatchPreviewRunner::new(
         PatchPreviewInputGate::new(
             OpenSpecInput::with_command(root, command.display().to_string()),

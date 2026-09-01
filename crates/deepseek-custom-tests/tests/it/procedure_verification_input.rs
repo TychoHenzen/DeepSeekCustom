@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use deepseek_custom::procedure::{
     ApplyRequest, LocalizationAttempt, LocalizationTarget, OpenSpecInput, PatchPreview,
     PatchPreviewId, PatchPreviewInputError, PatchPreviewStore, ProcedureAttemptDisposition,
-    ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
+    ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun, ProcedureRunId,
     ProcedureScratchpad, ProcedureStage, ProcedureTask, ProcedureTerminalDisposition,
     RouteDecision, RouteOverride, RouteTier, VerificationInputError, VerificationInputGate,
     sha256_json,
@@ -107,7 +107,7 @@ fn save_report(
         review_disposition: disposition,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    ProcedureReportStore::for_project(root)
+    ProcedureReportRepository::for_project(root)
         .save(&report)
         .unwrap();
     report
@@ -183,7 +183,7 @@ fn gate(root: &Path, command: &Path) -> VerificationInputGate {
     VerificationInputGate::new(
         OpenSpecInput::with_command(root, command.display().to_string()),
         root.to_path_buf(),
-        ProcedureReportStore::for_project(root),
+        ProcedureReportRepository::for_project(root),
     )
 }
 

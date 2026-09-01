@@ -16,7 +16,7 @@ use deepseek_custom::procedure::{
     LocalizationEscalationTrigger, LocalizationSample, LocalizationSampleOutcome,
     LocalizationSampler, LocalizationTarget, NormalizedLocalizationTarget,
     NormalizedLocalizationTargets, OpenSpecInput, PatchCandidate, ProcedureAttemptDisposition,
-    ProcedureCandidateMetric, ProcedureReportStore, ProcedureReviewDisposition, ProcedureRun,
+    ProcedureCandidateMetric, ProcedureReportRepository, ProcedureReviewDisposition, ProcedureRun,
     ProcedureRunId, ProcedureRunMetrics, ProcedureScratchpad, ProcedureStage, ProcedureStageTiming,
     ProcedureTask, ProcedureTerminalDisposition, PromotionBaseline, RepositoryIndexEntry,
     RouteOverride, RouteTier, SampledProcedureOutcome, SampledProcedureRequest,
@@ -121,7 +121,7 @@ fn approved_sampling_input(
         review_disposition: ProcedureReviewDisposition::Pending,
         terminal_disposition: Some(ProcedureTerminalDisposition::AwaitingReview),
     };
-    let reports = ProcedureReportStore::for_project(root);
+    let reports = ProcedureReportRepository::for_project(root);
     reports.save(&report).unwrap();
     reports.approve(&report.id).unwrap();
     SamplingInputGate::new(
@@ -963,7 +963,7 @@ fn failed_candidates_enter_the_existing_bounded_repair_policy_without_budget_cha
 fn approved_local_quorum_and_verified_candidate_promote_without_frontier_dispatch() {
     let root = temp_dir("completed-local-success");
     let command = write_fixture(&root);
-    let reports = ProcedureReportStore::for_project(&root);
+    let reports = ProcedureReportRepository::for_project(&root);
     let input = approved_sampling_input(&root, &command);
     let interrupt = Arc::new(AtomicBool::new(false));
     let local = ScriptedDispatcher::new([
@@ -1108,7 +1108,7 @@ fn sampled_procedure_runner_composes_the_approved_input_and_local_promotion_path
     let root = temp_dir("sampled-runner-local-success");
     let command = write_fixture(&root);
     let input = approved_sampling_input(&root, &command);
-    let reports = ProcedureReportStore::for_project(&root);
+    let reports = ProcedureReportRepository::for_project(&root);
     let interrupt = Arc::new(AtomicBool::new(false));
     let local = ScriptedDispatcher::new([
         envelope(vec![target("src/lib.rs", Some("target_symbol"), "first")]),
@@ -1298,7 +1298,7 @@ fn whole_change_runner_approves_and_promotes_each_task_in_fresh_order() {
         )]),
     ]));
     let frontier = Arc::new(ScriptedDispatcher::new(std::iter::empty()));
-    let reports = ProcedureReportStore::for_project(&root);
+    let reports = ProcedureReportRepository::for_project(&root);
     let runner = WholeChangeProcedureRunner::new(
         OpenSpecInput::with_command(&root, command.display().to_string()),
         root.clone(),
@@ -1384,7 +1384,7 @@ fn whole_change_runner_does_not_attempt_later_tasks_after_a_failed_task() {
             "sample first three",
         )]),
     ]));
-    let reports = ProcedureReportStore::for_project(&root);
+    let reports = ProcedureReportRepository::for_project(&root);
     let runner = WholeChangeProcedureRunner::new(
         OpenSpecInput::with_command(&root, command.display().to_string()),
         root.clone(),

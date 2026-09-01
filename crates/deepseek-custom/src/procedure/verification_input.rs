@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use super::{
     OpenSpecInput, PatchPreview, PatchPreviewId, PatchPreviewInputError, PatchPreviewInputGate,
-    PatchPreviewInputRequest, PatchPreviewStore, ProcedureReportStore, ProcedureRunId,
-    RouteOverride, StoredProcedureReport,
+    PatchPreviewInputRequest, PatchPreviewStore, ProcedureReportRepository as ReportRepository,
+    ProcedureRunId, RouteOverride, StoredProcedureReport,
 };
 use crate::error::HarnessError;
 
@@ -151,13 +151,13 @@ impl std::error::Error for VerificationInputError {}
 /// Loads and validates all named Apply inputs without owning downstream side effects.
 pub struct VerificationInputGate {
     localization: PatchPreviewInputGate,
-    reports: ProcedureReportStore,
+    reports: ReportRepository,
     previews: PatchPreviewStore,
     project_root: PathBuf,
 }
 
 impl VerificationInputGate {
-    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ProcedureReportStore) -> Self {
+    pub fn new(input: OpenSpecInput, project_root: PathBuf, reports: ReportRepository) -> Self {
         Self {
             localization: PatchPreviewInputGate::new(input, project_root.clone(), reports.clone()),
             reports,

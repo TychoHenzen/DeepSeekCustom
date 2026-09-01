@@ -27,7 +27,7 @@ use deepseek_custom::procedure::{
     FrontierRepairDispatcher, LocalPatchDraftDispatcher, LocalizationAgreementResolver,
     LocalizationDispatcher, LocalizationSampler, OpenSpecInput, PatchPreviewInputGate,
     PatchPreviewRunner, ProcedureApplyRunner, ProcedureCommand, ProcedureProgress,
-    ProcedureReportStore, ProcedureRunner, SampledProcedureOutcome, SampledProcedureRequest,
+    ProcedureReportRepository, ProcedureRunner, SampledProcedureOutcome, SampledProcedureRequest,
     SampledProcedureRunner, SampledRepairContext, SamplingInputGate, VerificationInputGate,
     WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
     apply_review_decision,
@@ -395,7 +395,7 @@ async fn main() {
                                         working_dir,
                                         limits,
                                         dispatcher,
-                                        ProcedureReportStore::for_project(
+                                        ProcedureReportRepository::for_project(
                                             &procedure_project_root,
                                         ),
                                         Arc::clone(&procedure_task_interrupt),
@@ -422,7 +422,7 @@ async fn main() {
                         }
                         Some(ProcedureCommand::Review { run_id, decision }) => {
                             apply_review_decision(
-                                &ProcedureReportStore::for_project(&procedure_project_root),
+                                &ProcedureReportRepository::for_project(&procedure_project_root),
                                 run_id,
                                 decision,
                                 &tx_procedure_progress,
@@ -480,13 +480,17 @@ async fn main() {
                                         SamplingInputGate::new(
                                             OpenSpecInput::new(&procedure_project_root),
                                             procedure_project_root.clone(),
-                                            ProcedureReportStore::for_project(&procedure_project_root),
+                                            ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
                                         ),
                                         procedure_project_root.clone(),
                                         limits,
                                         resolver,
                                         sampling,
-                                        ProcedureReportStore::for_project(&procedure_project_root),
+                                        ProcedureReportRepository::for_project(
+                                            &procedure_project_root,
+                                        ),
                                         Arc::clone(&procedure_task_interrupt),
                                     );
                                     let registry = Arc::new(SubagentRegistry::new());
@@ -591,7 +595,9 @@ async fn main() {
                                         local,
                                         frontier,
                                         sampling,
-                                        ProcedureReportStore::for_project(&procedure_project_root),
+                                        ProcedureReportRepository::for_project(
+                                            &procedure_project_root,
+                                        ),
                                         Arc::clone(&procedure_task_interrupt),
                                     );
                                     let registry = Arc::new(SubagentRegistry::new());
@@ -651,7 +657,7 @@ async fn main() {
                             let _ = tx_procedure_progress.send(
                                 ProcedureProgress::PreviewStarted { preview_id },
                             );
-                            let reports = ProcedureReportStore::for_project(
+                            let reports = ProcedureReportRepository::for_project(
                                 &procedure_project_root,
                             );
                             let runner = PatchPreviewRunner::new(
@@ -696,7 +702,9 @@ async fn main() {
                                 VerificationInputGate::new(
                                     OpenSpecInput::new(&procedure_project_root),
                                     procedure_project_root.clone(),
-                                    ProcedureReportStore::for_project(&procedure_project_root),
+                                    ProcedureReportRepository::for_project(
+                                        &procedure_project_root,
+                                    ),
                                 ),
                                 procedure_project_root.clone(),
                                 Arc::clone(&procedure_task_interrupt),
