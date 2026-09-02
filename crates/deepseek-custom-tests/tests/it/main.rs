@@ -86,6 +86,7 @@ mod controlled_development_coordinator;
 mod controlled_development_proof_promotion;
 mod controlled_development_retention;
 mod controlled_development_service;
+mod controlled_development_summary;
 mod effort;
 mod evolution;
 #[path = "web_browser_milestone.rs"]

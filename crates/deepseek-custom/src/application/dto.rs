@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::settings::Settings;
 use crate::controlled_development::{
-    ControlledDevelopmentCoordinator, ControlledDevelopmentPhase, WorkCard, WorkCardValidationError,
+    ControlledDevelopmentCoordinator, ControlledDevelopmentPhase, WorkCard,
+    WorkCardValidationError, build_completion_summary, build_progress_notice,
 };
 
 /// Monotonic version of the authoritative application state.
@@ -100,8 +101,11 @@ pub struct ControlledDevelopmentView {
     pub structural_errors: Vec<WorkCardValidationError>,
     pub changed_paths: Vec<String>,
     pub proof_results: Vec<ControlledDevelopmentProofResult>,
+    pub progress_notice: String,
+    pub completion_summary: Option<String>,
     pub compact_result: Option<String>,
     pub blocker: Option<String>,
+    pub raw_details: Vec<ControlledDevelopmentRawDetail>,
     pub retained_evidence: bool,
     pub limitation: String,
 }
@@ -116,8 +120,17 @@ impl Default for ControlledDevelopmentView {
             structural_errors: Vec::new(),
             changed_paths: Vec::new(),
             proof_results: Vec::new(),
+            progress_notice: build_progress_notice(
+                ControlledDevelopmentPhase::Off,
+                None,
+                &[],
+                &[],
+                false,
+            ),
+            completion_summary: None,
             compact_result: None,
             blocker: None,
+            raw_details: Vec::new(),
             retained_evidence: false,
             limitation: controlled_development_limitation().to_string(),
         }
@@ -127,6 +140,21 @@ impl Default for ControlledDevelopmentView {
 impl ControlledDevelopmentView {
     pub fn from_coordinator(coordinator: &ControlledDevelopmentCoordinator) -> Self {
         let state = coordinator.state();
+        let progress_notice = build_progress_notice(
+            state.phase(),
+            state.work_card(),
+            coordinator.changed_paths(),
+            coordinator.proof_evidence(),
+            coordinator.blocker().is_some(),
+        );
+        let completion_summary = build_completion_summary(
+            state.phase(),
+            state.work_card(),
+            coordinator.changed_paths(),
+            coordinator.proof_evidence(),
+            coordinator.blocker().is_some(),
+            controlled_development_limitation(),
+        );
         Self {
             enabled: state.is_enabled(),
             phase: state.phase(),
@@ -139,11 +167,108 @@ impl ControlledDevelopmentView {
                 .iter()
                 .map(ControlledDevelopmentProofResult::from)
                 .collect(),
-            compact_result: coordinator.compact_summary().map(str::to_string),
+            progress_notice,
+            compact_result: completion_summary.clone(),
+            completion_summary,
             blocker: coordinator.blocker().map(str::to_string),
+            raw_details: controlled_development_raw_details(coordinator),
             retained_evidence: coordinator.has_retained_workspace(),
             limitation: controlled_development_limitation().to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlledDevelopmentRawDetailKind {
+    BackendEvent,
+    VerifierStdout,
+    VerifierStderr,
+    VerifierCombinedOutput,
+    VerifierError,
+    Failure,
+}
+
+/// One complete retained diagnostic value. Compact summary limits never apply here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlledDevelopmentRawDetail {
+    pub kind: ControlledDevelopmentRawDetailKind,
+    pub name: String,
+    pub content: String,
+    pub truncated_at_source: bool,
+    pub bytes_seen: u64,
+}
+
+fn controlled_development_raw_details(
+    coordinator: &ControlledDevelopmentCoordinator,
+) -> Vec<ControlledDevelopmentRawDetail> {
+    let mut details = coordinator
+        .raw_details()
+        .iter()
+        .enumerate()
+        .map(|(index, content)| ControlledDevelopmentRawDetail {
+            kind: ControlledDevelopmentRawDetailKind::BackendEvent,
+            name: format!("Backend event {}", index + 1),
+            content: content.clone(),
+            truncated_at_source: false,
+            bytes_seen: content.len() as u64,
+        })
+        .collect::<Vec<_>>();
+
+    for (index, gate) in coordinator.proof_evidence().iter().enumerate() {
+        let Some(result) = gate.result.as_ref() else {
+            continue;
+        };
+        let gate_name = format!("Verifier {}: {}", index + 1, gate.command);
+        details.push(raw_verifier_output(
+            ControlledDevelopmentRawDetailKind::VerifierStdout,
+            format!("{gate_name} stdout"),
+            &result.stdout,
+        ));
+        details.push(raw_verifier_output(
+            ControlledDevelopmentRawDetailKind::VerifierStderr,
+            format!("{gate_name} stderr"),
+            &result.stderr,
+        ));
+        details.push(raw_verifier_output(
+            ControlledDevelopmentRawDetailKind::VerifierCombinedOutput,
+            format!("{gate_name} combined output"),
+            &result.combined_output,
+        ));
+        if let Some(error) = result.error.as_ref() {
+            details.push(ControlledDevelopmentRawDetail {
+                kind: ControlledDevelopmentRawDetailKind::VerifierError,
+                name: format!("{gate_name} error"),
+                content: error.clone(),
+                truncated_at_source: false,
+                bytes_seen: error.len() as u64,
+            });
+        }
+    }
+
+    if let Some(blocker) = coordinator.blocker() {
+        details.push(ControlledDevelopmentRawDetail {
+            kind: ControlledDevelopmentRawDetailKind::Failure,
+            name: "Failure evidence".into(),
+            content: blocker.to_string(),
+            truncated_at_source: false,
+            bytes_seen: blocker.len() as u64,
+        });
+    }
+    details
+}
+
+fn raw_verifier_output(
+    kind: ControlledDevelopmentRawDetailKind,
+    name: String,
+    output: &crate::procedure::BoundedVerifierOutput,
+) -> ControlledDevelopmentRawDetail {
+    ControlledDevelopmentRawDetail {
+        kind,
+        name,
+        content: output.text.clone(),
+        truncated_at_source: output.truncated,
+        bytes_seen: output.bytes_seen,
     }
 }
 

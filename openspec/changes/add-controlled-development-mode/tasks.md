@@ -87,11 +87,14 @@
 - [x] 5.2 Extend the existing client contracts and Chat workspace with the toggle, phase, complete Work Card, Approve, Reject, Stop, changed paths, proof results, limitation, and semantic disabled reasons.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: The existing web application exposes Controlled Development :: User reviews and approves a Work Card -->
-- [ ] 5.3 Add typed progress and completion summary builders with deterministic whitespace word counts and focused Rust and frontend boundary tests.
+- [x] 5.3 Add typed progress and completion summary builders with deterministic whitespace word counts and focused Rust and frontend boundary tests.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Compact output is bounded without hiding diagnostics :: Visible progress and completion summaries respect their limits -->
-- [ ] 5.4 Add the collapsed raw-details surface and prove full reasoning, tool, assistant, verifier, and failure evidence remains available beyond compact limits.
+- [x] 5.4 Add the collapsed raw-details surface and prove full reasoning, tool, assistant, verifier, and failure evidence remains available beyond compact limits.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Compact output is bounded without hiding diagnostics :: Raw diagnostic output remains available -->
-- [ ] 5.5 Update generated production web assets through the existing build path and extend responsive Playwright-RS coverage for the complete controlled panel.
+- [x] 5.5 Update generated production web assets through the existing build path and extend responsive Playwright-RS coverage for the complete controlled panel.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: The existing web application exposes Controlled Development :: User reviews and approves a Work Card -->
 
 ## 6. Required verification and production practice

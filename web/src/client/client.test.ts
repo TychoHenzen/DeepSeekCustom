@@ -214,8 +214,9 @@ describe('BrowserEventClient', () => {
         production_paths: ['src/lib.rs'], supporting_paths: ['tests/lib.test.ts'],
         excluded: ['settings.json'], complexity_exceptions: [],
       },
-      structural_errors: [], changed_paths: [], proof_results: [], compact_result: null,
-      blocker: null, retained_evidence: false, limitation: 'Visible limitation.',
+      structural_errors: [], changed_paths: [], proof_results: [],
+      progress_notice: 'Phase: Awaiting approval.', completion_summary: null, compact_result: null,
+      blocker: null, raw_details: [], retained_evidence: false, limitation: 'Visible limitation.',
     };
     const test = harness([
       response(initial, 200, { [requestTokenHeader]: 'process-token' }),

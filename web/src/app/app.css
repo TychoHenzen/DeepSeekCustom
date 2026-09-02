@@ -225,6 +225,7 @@ button:disabled {
 
 .controlled-development {
   display: grid;
+  min-width: 0;
   gap: 0.75rem;
   margin-block: 1rem;
   border: 1px solid #52606d;
@@ -263,6 +264,14 @@ button:disabled {
 .work-card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .work-card ul { margin: 0; padding-inline-start: 1.25rem; }
 .controlled-limitation { border-inline-start: 4px solid #ffd166; padding-inline-start: 0.75rem; }
+.controlled-raw-details { border-block-start: 1px solid #52606d; padding-block-start: 0.75rem; }
+.controlled-raw-details summary { cursor: pointer; font-weight: 800; }
+.controlled-raw-details pre { max-block-size: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.controlled-development code,
+.controlled-development li,
+.controlled-raw-details,
+.controlled-raw-details section,
+.controlled-raw-details pre { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
 .attachment-preview img {
   display: block;

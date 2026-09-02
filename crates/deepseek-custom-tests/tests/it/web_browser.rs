@@ -17,9 +17,11 @@ use std::time::{Duration, Instant};
 
 use deepseek_custom::application::actor::AppEvent;
 use deepseek_custom::application::dto::{
-    AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
-    OperationKind, OperationPhase, OperationProgress, OperationState, SessionSummary,
-    TranscriptBlock, TranscriptContent, TranscriptSpan, Workspace,
+    AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot,
+    ControlledDevelopmentProofResult, ControlledDevelopmentRawDetail,
+    ControlledDevelopmentRawDetailKind, ControlledDevelopmentView, NoticeLevel, OperationKind,
+    OperationPhase, OperationProgress, OperationState, SessionSummary, TranscriptBlock,
+    TranscriptContent, TranscriptSpan, Workspace,
 };
 use deepseek_custom::application::services::{
     DomainCommandPort, RuntimeSettingsPort, SettingsController,
@@ -29,6 +31,7 @@ use deepseek_custom::application::test_control::{
     TestOutputStream, TestProcessExit,
 };
 use deepseek_custom::config::settings::Settings;
+use deepseek_custom::controlled_development::{ControlledDevelopmentPhase, WorkCard};
 use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
     BindPolicy, NativeFolderPicker, WebAppState, WebServerHandle, start_with_policy_and_state,
@@ -527,6 +530,10 @@ struct BrowserHarness {
 
 impl BrowserHarness {
     async fn start() -> Self {
+        Self::start_with_controlled(Default::default()).await
+    }
+
+    async fn start_with_controlled(controlled: ControlledDevelopmentView) -> Self {
         let project_root = tempfile::Builder::new()
             .prefix("deepseek-browser-")
             .tempdir()
@@ -549,8 +556,10 @@ impl BrowserHarness {
             exit_code: Some(0),
             active_children: Arc::clone(&active_children),
         });
+        let mut snapshot = isolated_snapshot(project_root.path());
+        snapshot.controlled_development = controlled;
         let state = WebAppState::with_settings(
-            isolated_snapshot(project_root.path()),
+            snapshot,
             32,
             test_settings_controller(project_root.path()),
             picker,
@@ -596,6 +605,63 @@ impl BrowserHarness {
 
     async fn shutdown(self) {
         self.server.shutdown().await.unwrap();
+    }
+}
+
+fn controlled_panel_view(phase: ControlledDevelopmentPhase) -> ControlledDevelopmentView {
+    let limitation = "Approved proof commands run in the disposable workspace, but can still address absolute paths outside it.";
+    let completed = phase == ControlledDevelopmentPhase::Completed;
+    ControlledDevelopmentView {
+        enabled: true,
+        phase,
+        packet_id: Some("packet-browser-7".into()),
+        card: Some(WorkCard {
+            id: "card-browser-7".into(),
+            outcome: "Expose the complete controlled review panel".into(),
+            proof_commands: vec!["cargo test -p deepseek-custom-tests --test it controlled".into()],
+            production_paths: vec!["crates/deepseek-custom/src/controlled_development/summary.rs".into()],
+            supporting_paths: vec!["web/src/app/ChatWorkspace.test.tsx".into()],
+            excluded: vec!["settings.json".into()],
+            complexity_exceptions: vec!["No dependency changes".into()],
+        }),
+        structural_errors: Vec::new(),
+        changed_paths: vec![
+            "crates/deepseek-custom/src/controlled_development/summary.rs".into(),
+            "web/src/app/ChatWorkspace.test.tsx".into(),
+        ],
+        proof_results: vec![ControlledDevelopmentProofResult {
+            command: "cargo test -p deepseek-custom-tests --test it controlled".into(),
+            disposition: "passed".into(),
+            success: Some(true),
+            exit_code: Some(0),
+        }],
+        progress_notice: format!(
+            "Phase: {}. A Work Card is recorded. 2 changed path(s) and 1 proof result(s) are recorded. No failure is recorded.",
+            if completed { "Completed" } else { "Awaiting approval" }
+        ),
+        completion_summary: completed.then(|| format!(
+            "Phase: Completed. Work Card outcome: Expose the complete controlled review panel. Changed paths: crates/deepseek-custom/src/controlled_development/summary.rs, web/src/app/ChatWorkspace.test.tsx. Proof results: 1 passed, 0 failed, 0 interrupted, 0 not run. Remaining limitation: {limitation}"
+        )),
+        compact_result: None,
+        blocker: None,
+        raw_details: vec![
+            ControlledDevelopmentRawDetail {
+                kind: ControlledDevelopmentRawDetailKind::BackendEvent,
+                name: "Backend reasoning".into(),
+                content: "complete backend reasoning".into(),
+                truncated_at_source: false,
+                bytes_seen: 26,
+            },
+            ControlledDevelopmentRawDetail {
+                kind: ControlledDevelopmentRawDetailKind::VerifierCombinedOutput,
+                name: "Verifier output".into(),
+                content: "test result: ok. 1 passed; 0 failed".into(),
+                truncated_at_source: false,
+                bytes_seen: 35,
+            },
+        ],
+        retained_evidence: false,
+        limitation: limitation.into(),
     }
 }
 
@@ -1651,6 +1717,189 @@ fn browser_state_matches_success_and_conflict_service_results() {
                 "browser/service comparison failed: {error}\nInstall the matched runtime with:\n{INSTALL_COMMAND}"
             )
         });
+    });
+}
+
+// covers: deepseek-custom/controlled-development-mode :: The existing web application exposes Controlled Development :: User reviews and approves a Work Card
+#[test]
+fn complete_controlled_panel_is_available_at_desktop_and_narrow_widths() {
+    super::web_server::run_async_test(async {
+        let awaiting = BrowserHarness::start_with_controlled(controlled_panel_view(
+            ControlledDevelopmentPhase::AwaitingApproval,
+        ))
+        .await;
+        let playwright = playwright_rs::Playwright::launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let browser = playwright
+            .chromium()
+            .launch()
+            .await
+            .unwrap_or_else(|error| panic!("{}", browser_runtime_failure(&error)));
+        let context = browser.new_context().await.unwrap();
+        let artifacts = start_failure_capture(
+            &context,
+            "complete_controlled_panel_is_available_at_desktop_and_narrow_widths",
+        )
+        .await;
+        let page = context.new_page().await.unwrap();
+        let browser_result = AssertUnwindSafe(async {
+            page.goto(awaiting.server.url(), None).await?;
+            let app = BrowserPage::new(page.clone());
+            app.wait_for_snapshot().await;
+
+            for viewport in [
+                Viewport {
+                    width: 1440,
+                    height: 900,
+                },
+                Viewport {
+                    width: 360,
+                    height: 800,
+                },
+            ] {
+                let viewport_width = viewport.width;
+                let viewport_height = viewport.height;
+                app.page.set_viewport_size(viewport).await?;
+                let panel = app
+                    .require_unique(
+                        "Controlled Development panel",
+                        app.page.get_by_role(
+                            AriaRole::Region,
+                            Some(
+                                GetByRoleOptions::default()
+                                    .name("Controlled Development")
+                                    .exact(true),
+                            ),
+                        ),
+                    )
+                    .await;
+                let panel_text = panel.inner_text().await?;
+                for expected in [
+                    "Current phase: Awaiting Approval",
+                    "card-browser-7",
+                    "Expose the complete controlled review panel",
+                    "cargo test -p deepseek-custom-tests --test it controlled",
+                    "summary.rs",
+                    "ChatWorkspace.test.tsx",
+                    "settings.json",
+                    "No dependency changes",
+                    "Proof results",
+                    "passed, exit 0",
+                    "Remaining limitation",
+                ] {
+                    assert!(
+                        panel_text.contains(expected),
+                        "controlled panel is missing {expected:?} at {}x{}: {panel_text}",
+                        viewport_width,
+                        viewport_height
+                    );
+                }
+
+                let toggle = app.page.get_by_role(
+                    AriaRole::Switch,
+                    Some(
+                        GetByRoleOptions::default()
+                            .name("Controlled Development")
+                            .exact(true),
+                    ),
+                );
+                assert!(toggle.is_checked().await?);
+                for action in [
+                    "Approve Work Card",
+                    "Reject Work Card",
+                    "Stop controlled work",
+                ] {
+                    assert!(app.action(action).is_enabled().await?, "{action} disabled");
+                }
+
+                let details = app
+                    .require_unique(
+                        "collapsed Controlled Development raw details",
+                        app.page
+                            .get_by_label("Controlled Development raw details", true),
+                    )
+                    .await;
+                assert!(details.get_attribute("open").await?.is_none());
+                details
+                    .get_by_text("Raw details for Awaiting Approval", false)
+                    .click(None)
+                    .await?;
+                let raw_text = details.inner_text().await?;
+                assert!(raw_text.contains("complete backend reasoning"));
+                assert!(raw_text.contains("test result: ok. 1 passed; 0 failed"));
+                details
+                    .get_by_text("Raw details for Awaiting Approval", false)
+                    .click(None)
+                    .await?;
+
+                let metrics = document_metrics(&app.page).await?;
+                assert!(
+                    metrics.document_scroll_width <= metrics.viewport_width + 0.5,
+                    "controlled panel overflows horizontally at {}x{}: {metrics:?}",
+                    viewport_width,
+                    viewport_height
+                );
+            }
+
+            let completed = BrowserHarness::start_with_controlled(controlled_panel_view(
+                ControlledDevelopmentPhase::Completed,
+            ))
+            .await;
+            app.page
+                .set_viewport_size(Viewport {
+                    width: 360,
+                    height: 800,
+                })
+                .await?;
+            app.page.goto(completed.server.url(), None).await?;
+            app.wait_for_snapshot().await;
+            let completed_text = app
+                .require_unique(
+                    "completed Controlled Development panel",
+                    app.page.get_by_role(
+                        AriaRole::Region,
+                        Some(
+                            GetByRoleOptions::default()
+                                .name("Controlled Development")
+                                .exact(true),
+                        ),
+                    ),
+                )
+                .await
+                .inner_text()
+                .await?;
+            assert!(completed_text.contains("Current phase: Completed"));
+            assert!(completed_text.contains("Phase: Completed. Work Card outcome"));
+            assert!(completed_text.contains("Approve is unavailable until"));
+            assert!(completed_text.contains("Reject is unavailable until"));
+            assert!(completed_text.contains("Stop is unavailable because"));
+            for action in [
+                "Approve Work Card",
+                "Reject Work Card",
+                "Stop controlled work",
+            ] {
+                assert!(app.action(action).is_disabled().await?, "{action} enabled");
+            }
+            app.page.goto(awaiting.server.url(), None).await?;
+            completed.shutdown().await;
+
+            Ok::<_, playwright_rs::Error>(())
+        })
+        .catch_unwind()
+        .await;
+        let outcome = match browser_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!(
+                "controlled panel browser operation failed: {error}"
+            )),
+            Err(payload) => Err(panic_diagnostic(payload)),
+        };
+        let retained =
+            finish_failure_capture(outcome, &context, &page, &awaiting, &artifacts).await;
+        browser.close().await.unwrap();
+        awaiting.shutdown().await;
+        retained.unwrap_or_else(|error| panic!("controlled panel browser test failed: {error}"));
     });
 }
 

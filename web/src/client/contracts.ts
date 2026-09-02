@@ -60,6 +60,14 @@ export interface ControlledDevelopmentProofResult {
   exit_code: number | null;
 }
 
+export interface ControlledDevelopmentRawDetail {
+  kind: 'backend_event' | 'verifier_stdout' | 'verifier_stderr' | 'verifier_combined_output' | 'verifier_error' | 'failure';
+  name: string;
+  content: string;
+  truncated_at_source: boolean;
+  bytes_seen: number;
+}
+
 export interface ControlledDevelopmentState {
   enabled: boolean;
   phase: ControlledDevelopmentPhase;
@@ -68,8 +76,11 @@ export interface ControlledDevelopmentState {
   structural_errors: Array<{ field: string; message: string }>;
   changed_paths: string[];
   proof_results: ControlledDevelopmentProofResult[];
+  progress_notice: string;
+  completion_summary: string | null;
   compact_result: string | null;
   blocker: string | null;
+  raw_details: ControlledDevelopmentRawDetail[];
   retained_evidence: boolean;
   limitation: string;
 }
@@ -485,9 +496,11 @@ function parseWorkCard(value: unknown): WorkCard {
   };
 }
 
+const controlledDevelopmentRawDetailKinds = ['backend_event', 'verifier_stdout', 'verifier_stderr', 'verifier_combined_output', 'verifier_error', 'failure'] as const;
+
 function parseControlledDevelopment(value: unknown): ControlledDevelopmentState {
   const state = record(value);
-  if (!Array.isArray(state.structural_errors) || !Array.isArray(state.proof_results)) {
+  if (!Array.isArray(state.structural_errors) || !Array.isArray(state.proof_results) || !Array.isArray(state.raw_details)) {
     throw new Error('controlled development evidence must be arrays');
   }
   return {
@@ -509,8 +522,20 @@ function parseControlledDevelopment(value: unknown): ControlledDevelopmentState 
         exit_code: nullable(result.exit_code, (exitCode) => number(exitCode, 'proof exit code')),
       };
     }),
+    progress_notice: string(state.progress_notice, 'controlled development progress notice'),
+    completion_summary: nullable(state.completion_summary, (entry) => string(entry, 'controlled development completion summary')),
     compact_result: nullable(state.compact_result, (entry) => string(entry, 'controlled development result')),
     blocker: nullable(state.blocker, (entry) => string(entry, 'controlled development blocker')),
+    raw_details: state.raw_details.map((entry) => {
+      const detail = record(entry);
+      return {
+        kind: enumValue(detail.kind, controlledDevelopmentRawDetailKinds, 'controlled development raw detail kind'),
+        name: string(detail.name, 'controlled development raw detail name'),
+        content: string(detail.content, 'controlled development raw detail content'),
+        truncated_at_source: boolean(detail.truncated_at_source, 'controlled development raw detail truncation state'),
+        bytes_seen: number(detail.bytes_seen, 'controlled development raw detail byte count'),
+      };
+    }),
     retained_evidence: boolean(state.retained_evidence, 'controlled development retained evidence'),
     limitation: string(state.limitation, 'controlled development limitation'),
   };
@@ -525,8 +550,11 @@ export function emptyControlledDevelopmentState(): ControlledDevelopmentState {
     structural_errors: [],
     changed_paths: [],
     proof_results: [],
+    progress_notice: 'Phase: Off. No Work Card is recorded. 0 changed path(s) and 0 proof result(s) are recorded. No failure is recorded.',
+    completion_summary: null,
     compact_result: null,
     blocker: null,
+    raw_details: [],
     retained_evidence: false,
     limitation: 'Approved proof commands run in the disposable workspace, but can still address absolute paths outside it.',
   };

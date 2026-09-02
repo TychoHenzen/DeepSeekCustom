@@ -23,6 +23,7 @@ mod service_command;
 mod service_effect;
 mod session_record;
 mod state;
+mod summary;
 mod system_map_component;
 mod transition_error;
 mod work_card;
@@ -53,6 +54,10 @@ pub use service_command::ControlledDevelopmentCommand;
 pub use service_effect::ControlledDevelopmentEffect;
 pub use session_record::ControlledDevelopmentSessionRecord;
 pub use state::ControlledDevelopmentState;
+pub use summary::{
+    MAX_COMPLETION_SUMMARY_WORDS, MAX_PROGRESS_NOTICE_WORDS, build_completion_summary,
+    build_progress_notice, whitespace_word_count,
+};
 pub use system_map_component::ControlledDevelopmentSystemMapComponent;
 pub use transition_error::ControlledDevelopmentTransitionError;
 pub use work_card::{

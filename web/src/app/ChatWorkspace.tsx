@@ -205,6 +205,11 @@ function ControlledDevelopmentPanel({ state, sessionId, submitting, onCommand }:
     </section>}
     {state.blocker && <p role="alert">Blocked: {state.blocker}</p>}
 
+    <section aria-labelledby="controlled-progress-title">
+      <h5 id="controlled-progress-title">Progress</h5>
+      <p aria-live="polite">{state.progress_notice}</p>
+    </section>
+
     <section aria-labelledby="changed-paths-title">
       <h5 id="changed-paths-title">Changed paths</h5>
       {state.changed_paths.length === 0 ? <p>None recorded.</p> : <ul>{state.changed_paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>}
@@ -214,10 +219,18 @@ function ControlledDevelopmentPanel({ state, sessionId, submitting, onCommand }:
       {state.proof_results.length === 0 ? <p>No proof results yet.</p> : <ul>{state.proof_results.map((result) => <li key={result.command}><code>{result.command}</code>: {result.disposition}{result.exit_code === null ? '' : `, exit ${result.exit_code}`}</li>)}</ul>}
     </section>
     <section aria-labelledby="controlled-result-title">
-      <h5 id="controlled-result-title">Result</h5>
-      <p>{state.compact_result ?? 'No compact result is available yet.'}</p>
+      <h5 id="controlled-result-title">Completion summary</h5>
+      <p>{state.completion_summary ?? 'No completion summary is available yet.'}</p>
     </section>
     <p className="controlled-limitation"><strong>Remaining limitation:</strong> {state.limitation}</p>
+    <details aria-label="Controlled Development raw details" className="controlled-raw-details">
+      <summary>Raw details for {phaseLabel(state.phase)} ({state.raw_details.length} entries)</summary>
+      {state.raw_details.length === 0 ? <p>No raw details are retained.</p> : state.raw_details.map((detail, index) => <section aria-label={detail.name} key={`${detail.kind}:${detail.name}:${index}`}>
+        <h5>{detail.name}</h5>
+        <p>Source: {rawDetailLabel(detail.kind)}. {detail.bytes_seen} bytes retained{detail.truncated_at_source ? ' with source-level edge truncation' : ' without source-level truncation'}.</p>
+        <pre>{detail.content}</pre>
+      </section>)}
+    </details>
   </section>;
 }
 
@@ -231,4 +244,8 @@ function CardList({ label, values }: { label: string; values: string[] }) {
 
 function phaseLabel(phase: ControlledDevelopmentState['phase']): string {
   return phase.split('_').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' ');
+}
+
+function rawDetailLabel(kind: ControlledDevelopmentState['raw_details'][number]['kind']): string {
+  return kind.split('_').join(' ');
 }

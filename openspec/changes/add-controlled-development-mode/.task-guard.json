@@ -102,13 +102,16 @@
       "status": "completed"
     },
     "5.3": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "5.4": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "5.5": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "6.1": {
       "checked": false
