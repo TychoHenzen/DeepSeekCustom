@@ -1,12 +1,15 @@
 //! Session-owned authority for one Controlled Development packet lifecycle.
 
 use crate::agent::events::RoutedEvent;
-use crate::procedure::{DisposableWorkspacePair, VerifierGateEvidence};
+use crate::procedure::{
+    DisposableWorkspacePair, PromotionBaseline, PromotionResult, VerifierCommandDisposition,
+    VerifierGateEvidence, VerifierRun,
+};
 
 use super::{
     ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentEffect,
     ControlledDevelopmentPhase, ControlledDevelopmentState, ControlledDevelopmentTransitionError,
-    authorize_workspace_changes,
+    authorize_workspace_changes, promotion_plan,
 };
 
 /// Owns all runtime authority and evidence for one top-level session.
@@ -21,6 +24,11 @@ pub struct ControlledDevelopmentCoordinator {
     proof_evidence: Vec<VerifierGateEvidence>,
     changed_paths: Vec<String>,
     dependency_matches: Vec<super::DependencyExceptionMatch>,
+    promotion_baseline: Option<PromotionBaseline>,
+    promotion_evidence: Option<PromotionResult>,
+    interrupt: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    proofs_dispatched: bool,
+    promotion_dispatched: bool,
     blocker: Option<String>,
     compact_summary: Option<String>,
 }
@@ -44,6 +52,14 @@ impl ControlledDevelopmentCoordinator {
 
     pub fn dependency_matches(&self) -> &[super::DependencyExceptionMatch] {
         &self.dependency_matches
+    }
+
+    pub const fn promotion_evidence(&self) -> Option<&PromotionResult> {
+        self.promotion_evidence.as_ref()
+    }
+
+    pub fn interrupt_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.interrupt)
     }
 
     pub fn blocker(&self) -> Option<&str> {
@@ -114,6 +130,12 @@ impl ControlledDevelopmentCoordinator {
             ControlledDevelopmentCommand::ValidateIsolatedChanges { card_id } => {
                 self.validate_isolated_changes(&card_id)
             }
+            ControlledDevelopmentCommand::ProofsFinished { card_id, run } => {
+                self.proofs_finished(&card_id, *run)
+            }
+            ControlledDevelopmentCommand::PromotionFinished { card_id, result } => {
+                self.promotion_finished(&card_id, result.map(|result| *result))
+            }
             ControlledDevelopmentCommand::Complete { card_id, summary } => {
                 self.state.complete_current_card(&card_id)?;
                 self.workspace_pair = None;
@@ -172,6 +194,19 @@ impl ControlledDevelopmentCoordinator {
     ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
         let project_root = self.packet_context()?.2.clone();
         self.state.approve_current_card(card_id)?;
+        let card = self
+            .state
+            .work_card()
+            .ok_or(ControlledDevelopmentTransitionError::NoCurrentCard)?;
+        self.promotion_baseline = match promotion_plan::capture_card_baseline(&project_root, card) {
+            Ok(baseline) => Some(baseline),
+            Err(error) => {
+                return self.block_pre_proof_gate(
+                    card_id,
+                    format!("could not capture promotion baseline: {error}"),
+                );
+            }
+        };
         Ok(Some(
             ControlledDevelopmentEffect::CreateExecutionWorkspace {
                 card_id: card_id.to_string(),
@@ -199,6 +234,9 @@ impl ControlledDevelopmentCoordinator {
             .ok_or(ControlledDevelopmentTransitionError::NoCurrentCard)?;
         let execution_root = workspace.execution_path().to_path_buf();
         self.workspace_pair = Some(workspace);
+        if self.promotion_baseline.is_none() {
+            return Err(ControlledDevelopmentTransitionError::MissingPromotionBaseline);
+        }
         Ok(Some(ControlledDevelopmentEffect::DispatchExecution {
             card_id: card_id.to_string(),
             original_request: request,
@@ -213,6 +251,9 @@ impl ControlledDevelopmentCoordinator {
         card_id: &str,
     ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
         self.require_executing_card(card_id)?;
+        if self.proofs_dispatched {
+            return Err(ControlledDevelopmentTransitionError::ProofsAlreadyDispatched);
+        }
         let card = self
             .state
             .work_card()
@@ -246,10 +287,125 @@ impl ControlledDevelopmentCoordinator {
         ) {
             Ok(authorized) => {
                 self.dependency_matches = authorized.dependency_matches().to_vec();
-                Ok(None)
+                self.proofs_dispatched = true;
+                Ok(Some(ControlledDevelopmentEffect::RunProofCommands {
+                    card_id: card_id.to_string(),
+                    proof_commands: card.proof_commands,
+                    execution_root: workspace.execution_path().to_path_buf(),
+                    interrupt: std::sync::Arc::clone(&self.interrupt),
+                }))
             }
             Err(error) => self.block_pre_proof_gate(card_id, error.to_string()),
         }
+    }
+
+    fn proofs_finished(
+        &mut self,
+        card_id: &str,
+        run: VerifierRun,
+    ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
+        self.require_executing_card(card_id)?;
+        if !self.proofs_dispatched {
+            return Err(ControlledDevelopmentTransitionError::ProofsNotDispatched);
+        }
+        let expected_commands = &self
+            .state
+            .work_card()
+            .ok_or(ControlledDevelopmentTransitionError::NoCurrentCard)?
+            .proof_commands;
+        if run.gate_results.len() != expected_commands.len()
+            || run
+                .gate_results
+                .iter()
+                .zip(expected_commands)
+                .any(|(gate, expected)| gate.command != *expected)
+        {
+            return Err(ControlledDevelopmentTransitionError::ProofEvidenceMismatch);
+        }
+        self.proof_evidence = run.gate_evidence();
+        if !run.all_commands_succeeded() {
+            let failed = run
+                .commands
+                .last()
+                .expect("a failed proof run records its first failed command");
+            let summary = format!(
+                "Proof command did not pass: {} ({:?})",
+                failed.command, failed.disposition
+            );
+            if failed.disposition == VerifierCommandDisposition::Interrupted {
+                self.state.interrupt_current_packet(card_id)?;
+                self.blocker = None;
+            } else {
+                self.state.block_current_packet(card_id)?;
+                self.blocker = Some(summary.clone());
+            }
+            self.compact_summary = Some(summary);
+            return Ok(None);
+        }
+
+        let workspace = self
+            .workspace_pair
+            .as_ref()
+            .ok_or(ControlledDevelopmentTransitionError::MissingExecutionWorkspace)?;
+        let baseline = self
+            .promotion_baseline
+            .as_ref()
+            .ok_or(ControlledDevelopmentTransitionError::MissingPromotionBaseline)?;
+        let (baseline, targets) = match promotion_plan::build_promotion_plan(
+            workspace.execution_path(),
+            baseline,
+            &self.changed_paths,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return self.block_pre_proof_gate(
+                    card_id,
+                    format!("could not build promotion plan: {error}"),
+                );
+            }
+        };
+        let project_root = self
+            .workspace_root
+            .clone()
+            .ok_or(ControlledDevelopmentTransitionError::MissingPacketContext)?;
+        self.promotion_dispatched = true;
+        Ok(Some(ControlledDevelopmentEffect::PromoteValidatedChanges {
+            card_id: card_id.to_string(),
+            project_root,
+            execution_root: workspace.execution_path().to_path_buf(),
+            baseline,
+            targets,
+        }))
+    }
+
+    fn promotion_finished(
+        &mut self,
+        card_id: &str,
+        result: Result<PromotionResult, Box<crate::procedure::PromotionError>>,
+    ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
+        self.require_executing_card(card_id)?;
+        if !self.promotion_dispatched {
+            return Err(ControlledDevelopmentTransitionError::PromotionNotDispatched);
+        }
+        match result {
+            Ok(evidence) => {
+                self.promotion_evidence = Some(evidence);
+                self.state.complete_current_card(card_id)?;
+                self.workspace_pair = None;
+                self.blocker = None;
+                self.compact_summary = Some(format!(
+                    "Controlled Development completed after {} proof command(s)",
+                    self.proof_evidence.len()
+                ));
+            }
+            Err(error) => {
+                let blocker = format!("promotion failed: {error}");
+                self.state.block_current_packet(card_id)?;
+                self.blocker = Some(blocker.clone());
+                self.compact_summary = Some(format!("Controlled Development blocked: {blocker}"));
+            }
+        }
+        Ok(None)
     }
 
     fn block_pre_proof_gate(
@@ -311,6 +467,12 @@ impl ControlledDevelopmentCoordinator {
         self.proof_evidence.clear();
         self.changed_paths.clear();
         self.dependency_matches.clear();
+        self.promotion_baseline = None;
+        self.promotion_evidence = None;
+        self.proofs_dispatched = false;
+        self.promotion_dispatched = false;
+        self.interrupt
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.blocker = None;
         self.compact_summary = None;
     }

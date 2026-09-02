@@ -341,14 +341,15 @@ fn dependency_file_classifier_and_named_exception_gate_fail_closed() {
         })
         .unwrap();
 
-    assert!(
+    assert!(matches!(
         allowed
             .handle(ControlledDevelopmentCommand::ValidateIsolatedChanges {
                 card_id: "allowed-dependency-card".into(),
             })
-            .unwrap()
-            .is_none()
-    );
+            .unwrap(),
+        Some(ControlledDevelopmentEffect::RunProofCommands { card_id, .. })
+            if card_id == "allowed-dependency-card"
+    ));
     assert_eq!(
         allowed.state().phase(),
         ControlledDevelopmentPhase::Executing

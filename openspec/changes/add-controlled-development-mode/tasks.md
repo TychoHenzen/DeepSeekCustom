@@ -48,9 +48,11 @@
 - [x] 3.5 Add the fixed Cargo and web-package manifest classifier and require matching named complexity exceptions for their changed dependency entries.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Complexity exceptions gate dependency files :: Unapproved manifest or lockfile change blocks promotion -->
-- [ ] 3.6 Reuse `VerifierCommandRunner` to run one to three approved proof commands in order and stop on spawn failure, interruption, or nonzero exit.
+- [x] 3.6 Reuse `VerifierCommandRunner` to run one to three approved proof commands in order and stop on spawn failure, interruption, or nonzero exit.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Every proof command must pass in isolation :: Failing proof command blocks promotion -->
-- [ ] 3.7 Reuse `PromotionBaseline` and `promote_verified_workspace` to promote only validated changed paths plus reserved project state after every gate passes.
+- [x] 3.7 Reuse `PromotionBaseline` and `promote_verified_workspace` to promote only validated changed paths plus reserved project state after every gate passes.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Every proof command must pass in isolation :: Passing packet promotes only approved paths -->
 - [ ] 3.8 Add a concurrent-overlap integration case that preserves the real user's bytes and rolls back every packet target.
 <!-- covers: deepseek-custom/controlled-development-mode :: Promotion rejects overlapping concurrent edits :: Overlapping real-workspace changes block promotion without data loss -->

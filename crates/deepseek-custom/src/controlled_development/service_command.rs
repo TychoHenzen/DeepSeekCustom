@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use crate::agent::events::RoutedEvent;
-use crate::procedure::{DisposableWorkspacePair, VerifierGateEvidence};
+use crate::procedure::{
+    DisposableWorkspacePair, PromotionError, PromotionResult, VerifierGateEvidence, VerifierRun,
+};
 
 use super::ControlledBackendSelection;
 
@@ -41,6 +43,14 @@ pub enum ControlledDevelopmentCommand {
     },
     ValidateIsolatedChanges {
         card_id: String,
+    },
+    ProofsFinished {
+        card_id: String,
+        run: Box<VerifierRun>,
+    },
+    PromotionFinished {
+        card_id: String,
+        result: Result<Box<PromotionResult>, Box<PromotionError>>,
     },
     Complete {
         card_id: String,

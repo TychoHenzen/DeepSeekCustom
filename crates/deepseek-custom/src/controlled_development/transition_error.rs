@@ -18,6 +18,11 @@ pub enum ControlledDevelopmentTransitionError {
     NoCurrentCard,
     MissingPacketContext,
     MissingExecutionWorkspace,
+    MissingPromotionBaseline,
+    ProofsAlreadyDispatched,
+    ProofsNotDispatched,
+    ProofEvidenceMismatch,
+    PromotionNotDispatched,
     ExecutionWorkspaceAlreadyAttached,
     InvalidWorkCard(WorkCardValidationErrors),
 }
@@ -47,6 +52,21 @@ impl fmt::Display for ControlledDevelopmentTransitionError {
             }
             Self::MissingExecutionWorkspace => {
                 formatter.write_str("current card has no isolated execution workspace")
+            }
+            Self::MissingPromotionBaseline => {
+                formatter.write_str("current card has no execution-start promotion baseline")
+            }
+            Self::ProofsAlreadyDispatched => {
+                formatter.write_str("current card already dispatched its proof commands")
+            }
+            Self::ProofsNotDispatched => {
+                formatter.write_str("current card has not passed its pre-proof gates")
+            }
+            Self::ProofEvidenceMismatch => {
+                formatter.write_str("proof evidence does not match the approved command sequence")
+            }
+            Self::PromotionNotDispatched => {
+                formatter.write_str("current card has not passed every proof command")
             }
             Self::ExecutionWorkspaceAlreadyAttached => {
                 formatter.write_str("current card already owns an execution workspace")

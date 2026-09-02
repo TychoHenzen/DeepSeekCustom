@@ -80,7 +80,7 @@ impl VerifierCommandResult {
         self.success
     }
 
-    fn evidence(&self) -> VerifierCommandEvidence {
+    pub fn evidence(&self) -> VerifierCommandEvidence {
         VerifierCommandEvidence {
             command: self.command.clone(),
             disposition: self.disposition,
@@ -129,19 +129,23 @@ impl VerifierRun {
         !self.commands.is_empty() && self.commands.iter().all(VerifierCommandResult::is_success)
     }
 
+    /// Return complete ordered evidence, including gates skipped after failure.
+    pub fn gate_evidence(&self) -> Vec<VerifierGateEvidence> {
+        self.gate_results
+            .iter()
+            .map(|gate| VerifierGateEvidence {
+                command: gate.command.clone(),
+                disposition: gate.disposition.clone(),
+                result: gate.result.as_ref().map(VerifierCommandResult::evidence),
+            })
+            .collect()
+    }
+
     /// Build the serializable evidence retained by a procedure report.
     pub fn report(&self, eligibility: CandidateEligibility) -> VerifierReport {
         VerifierReport {
             patch_gates: Vec::new(),
-            gates: self
-                .gate_results
-                .iter()
-                .map(|gate| VerifierGateEvidence {
-                    command: gate.command.clone(),
-                    disposition: gate.disposition.clone(),
-                    result: gate.result.as_ref().map(VerifierCommandResult::evidence),
-                })
-                .collect(),
+            gates: self.gate_evidence(),
             stopped_after_failure: self.stopped_after_failure,
             first_failed_gate: self.first_failed_gate,
             eligibility,
