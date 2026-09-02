@@ -33,9 +33,11 @@
 
 ## 3. Coordinator, approval, and promotion gates
 
-- [ ] 3.1 Add the Controlled Development coordinator and typed service commands for planning, approval, rejection, execution, evidence projection, and terminal transitions.
+- [x] 3.1 Add the Controlled Development coordinator and typed service commands for planning, approval, rejection, execution, evidence projection, and terminal transitions.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Approval belongs to one card :: Approval applies to one card only -->
-- [ ] 3.2 Reject a current card without backend execution and clear its approval identity.
+- [x] 3.2 Reject a current card without backend execution and clear its approval identity.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Approval belongs to one card :: User rejects a card -->
 - [ ] 3.3 Compute all isolated changes before proof commands and block any path outside the approved production and supporting lists.
 <!-- covers: deepseek-custom/controlled-development-mode :: Changed paths must match the approved card :: Changed path outside approved lists blocks promotion -->

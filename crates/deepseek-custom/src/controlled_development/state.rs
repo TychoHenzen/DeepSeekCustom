@@ -132,6 +132,106 @@ impl ControlledDevelopmentState {
         Ok(())
     }
 
+    pub(crate) fn approve_current_card(
+        &mut self,
+        card_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        if self.phase != ControlledDevelopmentPhase::AwaitingApproval {
+            return Err(ControlledDevelopmentTransitionError::NotAwaitingApproval);
+        }
+        if self.card.as_ref().map(|card| card.id.as_str()) != Some(card_id) {
+            return Err(ControlledDevelopmentTransitionError::CardIdMismatch);
+        }
+        self.approved_card_id = Some(card_id.to_string());
+        self.phase = ControlledDevelopmentPhase::Executing;
+        Ok(())
+    }
+
+    pub(crate) fn reject_current_card(
+        &mut self,
+        card_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        if self.phase != ControlledDevelopmentPhase::AwaitingApproval {
+            return Err(ControlledDevelopmentTransitionError::NotAwaitingApproval);
+        }
+        if self.card.as_ref().map(|card| card.id.as_str()) != Some(card_id) {
+            return Err(ControlledDevelopmentTransitionError::CardIdMismatch);
+        }
+        self.approved_card_id = None;
+        self.phase = ControlledDevelopmentPhase::Blocked;
+        Ok(())
+    }
+
+    pub(crate) fn complete_current_card(
+        &mut self,
+        card_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.require_approved_card(card_id)?;
+        self.approved_card_id = None;
+        self.phase = ControlledDevelopmentPhase::Completed;
+        Ok(())
+    }
+
+    pub(crate) fn block_current_packet(
+        &mut self,
+        packet_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.require_active_packet(packet_id)?;
+        self.approved_card_id = None;
+        self.phase = ControlledDevelopmentPhase::Blocked;
+        Ok(())
+    }
+
+    pub(crate) fn interrupt_current_packet(
+        &mut self,
+        packet_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.require_active_packet(packet_id)?;
+        self.approved_card_id = None;
+        self.phase = ControlledDevelopmentPhase::Interrupted;
+        Ok(())
+    }
+
+    fn require_approved_card(
+        &self,
+        card_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        if self.phase != ControlledDevelopmentPhase::Executing {
+            return Err(ControlledDevelopmentTransitionError::NotExecuting);
+        }
+        if self.approved_card_id.as_deref() != Some(card_id)
+            || self.card.as_ref().map(|card| card.id.as_str()) != Some(card_id)
+        {
+            return Err(ControlledDevelopmentTransitionError::CardIdMismatch);
+        }
+        Ok(())
+    }
+
+    fn require_packet(&self, packet_id: &str) -> Result<(), ControlledDevelopmentTransitionError> {
+        if self.packet_id.as_deref() == Some(packet_id) {
+            Ok(())
+        } else {
+            Err(ControlledDevelopmentTransitionError::PacketIdMismatch)
+        }
+    }
+
+    fn require_active_packet(
+        &self,
+        packet_id: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.require_packet(packet_id)?;
+        if matches!(
+            self.phase,
+            ControlledDevelopmentPhase::Planning
+                | ControlledDevelopmentPhase::AwaitingApproval
+                | ControlledDevelopmentPhase::Executing
+        ) {
+            Ok(())
+        } else {
+            Err(ControlledDevelopmentTransitionError::NotActivePacket)
+        }
+    }
+
     fn block_with_structural_errors(&mut self, errors: &WorkCardValidationErrors) {
         self.approved_card_id = None;
         self.card = None;

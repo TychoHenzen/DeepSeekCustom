@@ -82,6 +82,8 @@ mod codex_cli_lifecycle;
 mod config_settings;
 mod context_relevance;
 mod controlled_development;
+mod controlled_development_coordinator;
+mod controlled_development_service;
 mod effort;
 mod evolution;
 #[path = "web_browser_milestone.rs"]

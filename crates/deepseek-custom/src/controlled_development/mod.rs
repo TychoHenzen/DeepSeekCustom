@@ -1,6 +1,10 @@
 //! Session-scoped contracts for Controlled Development.
 
+mod backend_selection;
+mod coordinator;
 mod phase;
+mod service_command;
+mod service_effect;
 mod state;
 mod transition_error;
 mod work_card;
@@ -8,7 +12,11 @@ mod work_card_schema;
 mod work_card_validation_error;
 mod work_card_validation_errors;
 
+pub use backend_selection::ControlledBackendSelection;
+pub use coordinator::ControlledDevelopmentCoordinator;
 pub use phase::ControlledDevelopmentPhase;
+pub use service_command::ControlledDevelopmentCommand;
+pub use service_effect::ControlledDevelopmentEffect;
 pub use state::ControlledDevelopmentState;
 pub use transition_error::ControlledDevelopmentTransitionError;
 pub use work_card::{
