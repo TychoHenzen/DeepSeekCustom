@@ -6,7 +6,7 @@ import type {
   EventMessage,
   EventStream,
 } from './browser/client-types.ts';
-import type { AppSnapshot } from './contracts.ts';
+import { emptyControlledDevelopmentState, type AppSnapshot } from './contracts.ts';
 
 const requestTokenHeader = 'x-deepseek-request-token';
 
@@ -63,6 +63,7 @@ function snapshot(revision = 0, workspace: AppSnapshot['workspace'] = 'chat'): A
       procedure: { localization_backend: null, local_patch_backend: null, frontier_patch_backend: null, index_max_files: 10000, index_max_total_bytes: 67108864, verifier_commands: [] },
     },
     operations: [],
+    controlled_development: emptyControlledDevelopmentState(),
   };
 }
 
@@ -200,6 +201,43 @@ describe('BrowserEventClient', () => {
       outcome: 'completed',
       message: 'Response complete',
     }]);
+  });
+
+  it('parses controlled state changes and sends card and session identities unchanged', async () => {
+    const initial = snapshot();
+    const controlled = {
+      enabled: true,
+      phase: 'awaiting_approval',
+      packet_id: 'card-9',
+      card: {
+        id: 'card-9', outcome: 'One file changes.', proof_commands: ['cargo check'],
+        production_paths: ['src/lib.rs'], supporting_paths: ['tests/lib.test.ts'],
+        excluded: ['settings.json'], complexity_exceptions: [],
+      },
+      structural_errors: [], changed_paths: [], proof_results: [], compact_result: null,
+      blocker: null, retained_evidence: false, limitation: 'Visible limitation.',
+    };
+    const test = harness([
+      response(initial, 200, { [requestTokenHeader]: 'process-token' }),
+      response({ status: 'applied', revision: 2 }),
+      response({ ...initial, revision: 2, controlled_development: controlled }),
+    ]);
+    await test.client.start();
+
+    const result = await test.client.send({
+      command: 'approve_controlled_development',
+      payload: { session_id: 'session-1', card_id: 'card-9' },
+    });
+
+    expect(result).toEqual({ status: 'applied', revision: 2 });
+    expect(JSON.parse(test.calls[1]?.init?.body as string)).toEqual({
+      revision: 0,
+      command: 'approve_controlled_development',
+      payload: { session_id: 'session-1', card_id: 'card-9' },
+    });
+    expect(test.client.view.snapshot?.controlled_development).toMatchObject({
+      phase: 'awaiting_approval', packet_id: 'card-9', card: { id: 'card-9' },
+    });
   });
 
   it('replaces all state on reset and reconnects from the last applied revision', async () => {

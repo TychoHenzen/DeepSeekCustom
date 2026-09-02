@@ -8,6 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::Settings;
+use crate::controlled_development::{
+    ControlledDevelopmentCoordinator, ControlledDevelopmentPhase, WorkCard, WorkCardValidationError,
+};
 
 /// Monotonic version of the authoritative application state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -37,6 +40,8 @@ pub struct AppSnapshot {
     pub settings: VisibleSettings,
     pub operations: Vec<OperationState>,
     #[serde(default)]
+    pub controlled_development: ControlledDevelopmentView,
+    #[serde(default)]
     pub tests: super::test_control::TestControlSnapshot,
 }
 
@@ -59,6 +64,7 @@ pub enum AppChangeKind {
     PendingSessionSwitchChanged(Option<PendingSessionSwitch>),
     SettingsChanged(VisibleSettings),
     OperationChanged(OperationState),
+    ControlledDevelopmentChanged(ControlledDevelopmentView),
     TestsChanged(Box<super::test_control::TestControlSnapshot>),
     Error(AppError),
 }
@@ -82,6 +88,101 @@ pub struct SessionSummary {
     pub title: String,
     pub backend: String,
     pub model: String,
+}
+
+/// Browser-safe projection of the selected session's controlled workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlledDevelopmentView {
+    pub enabled: bool,
+    pub phase: ControlledDevelopmentPhase,
+    pub packet_id: Option<String>,
+    pub card: Option<WorkCard>,
+    pub structural_errors: Vec<WorkCardValidationError>,
+    pub changed_paths: Vec<String>,
+    pub proof_results: Vec<ControlledDevelopmentProofResult>,
+    pub compact_result: Option<String>,
+    pub blocker: Option<String>,
+    pub retained_evidence: bool,
+    pub limitation: String,
+}
+
+impl Default for ControlledDevelopmentView {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            phase: ControlledDevelopmentPhase::Off,
+            packet_id: None,
+            card: None,
+            structural_errors: Vec::new(),
+            changed_paths: Vec::new(),
+            proof_results: Vec::new(),
+            compact_result: None,
+            blocker: None,
+            retained_evidence: false,
+            limitation: controlled_development_limitation().to_string(),
+        }
+    }
+}
+
+impl ControlledDevelopmentView {
+    pub fn from_coordinator(coordinator: &ControlledDevelopmentCoordinator) -> Self {
+        let state = coordinator.state();
+        Self {
+            enabled: state.is_enabled(),
+            phase: state.phase(),
+            packet_id: state.packet_id().map(str::to_string),
+            card: state.work_card().cloned(),
+            structural_errors: state.structural_errors().to_vec(),
+            changed_paths: coordinator.changed_paths().to_vec(),
+            proof_results: coordinator
+                .proof_evidence()
+                .iter()
+                .map(ControlledDevelopmentProofResult::from)
+                .collect(),
+            compact_result: coordinator.compact_summary().map(str::to_string),
+            blocker: coordinator.blocker().map(str::to_string),
+            retained_evidence: coordinator.has_retained_workspace(),
+            limitation: controlled_development_limitation().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlledDevelopmentProofResult {
+    pub command: String,
+    pub disposition: String,
+    pub success: Option<bool>,
+    pub exit_code: Option<i32>,
+}
+
+impl From<&crate::procedure::VerifierGateEvidence> for ControlledDevelopmentProofResult {
+    fn from(evidence: &crate::procedure::VerifierGateEvidence) -> Self {
+        Self {
+            command: evidence.command.clone(),
+            disposition: verifier_disposition_label(&evidence.disposition),
+            success: evidence.result.as_ref().map(|result| result.success),
+            exit_code: evidence.result.as_ref().and_then(|result| result.exit_code),
+        }
+    }
+}
+
+fn verifier_disposition_label(disposition: &crate::procedure::VerifierGateDisposition) -> String {
+    match disposition {
+        crate::procedure::VerifierGateDisposition::Passed => "passed".into(),
+        crate::procedure::VerifierGateDisposition::Failed => "failed".into(),
+        crate::procedure::VerifierGateDisposition::SpawnFailed => "spawn_failed".into(),
+        crate::procedure::VerifierGateDisposition::Interrupted => "interrupted".into(),
+        crate::procedure::VerifierGateDisposition::NotRun { blocked_by } => {
+            format!("not_run_after_gate_{blocked_by}")
+        }
+        crate::procedure::VerifierGateDisposition::NotRunAfterPatch { blocked_by } => {
+            format!("not_run_after_patch_{blocked_by:?}")
+        }
+    }
+}
+
+fn controlled_development_limitation() -> &'static str {
+    "Approved proof commands run in the disposable workspace, but can still address absolute paths outside it."
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,6 +439,25 @@ pub enum AppCommand {
     SendMessage {
         text: String,
         attachment_id: Option<String>,
+    },
+    SetControlledDevelopmentEnabled {
+        session_id: String,
+        enabled: bool,
+    },
+    ApproveControlledDevelopment {
+        session_id: String,
+        card_id: String,
+    },
+    RejectControlledDevelopment {
+        session_id: String,
+        card_id: String,
+    },
+    StopControlledDevelopment {
+        session_id: String,
+        packet_id: String,
+    },
+    DiscardControlledDevelopmentEvidence {
+        session_id: String,
     },
     StopOperation {
         kind: OperationKind,

@@ -81,9 +81,11 @@
 
 ## 5. Application and frontend surface
 
-- [ ] 5.1 Wire controlled commands, service events, session state, and projections through the application actor without blocking normal command arbitration.
+- [x] 5.1 Wire controlled commands, service events, session state, and projections through the application actor without blocking normal command arbitration.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Controlled Development has an explicit lifecycle :: Mode starts planning -->
-- [ ] 5.2 Extend the existing client contracts and Chat workspace with the toggle, phase, complete Work Card, Approve, Reject, Stop, changed paths, proof results, limitation, and semantic disabled reasons.
+- [x] 5.2 Extend the existing client contracts and Chat workspace with the toggle, phase, complete Work Card, Approve, Reject, Stop, changed paths, proof results, limitation, and semantic disabled reasons.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: The existing web application exposes Controlled Development :: User reviews and approves a Work Card -->
 - [ ] 5.3 Add typed progress and completion summary builders with deterministic whitespace word counts and focused Rust and frontend boundary tests.
 <!-- covers: deepseek-custom/controlled-development-mode :: Compact output is bounded without hiding diagnostics :: Visible progress and completion summaries respect their limits -->

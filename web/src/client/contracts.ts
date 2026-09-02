@@ -34,6 +34,46 @@ export interface SessionSummary {
   model: string;
 }
 
+export type ControlledDevelopmentPhase =
+  | 'off'
+  | 'planning'
+  | 'awaiting_approval'
+  | 'executing'
+  | 'completed'
+  | 'blocked'
+  | 'interrupted';
+
+export interface WorkCard {
+  id: string;
+  outcome: string;
+  proof_commands: string[];
+  production_paths: string[];
+  supporting_paths: string[];
+  excluded: string[];
+  complexity_exceptions: string[];
+}
+
+export interface ControlledDevelopmentProofResult {
+  command: string;
+  disposition: string;
+  success: boolean | null;
+  exit_code: number | null;
+}
+
+export interface ControlledDevelopmentState {
+  enabled: boolean;
+  phase: ControlledDevelopmentPhase;
+  packet_id: string | null;
+  card: WorkCard | null;
+  structural_errors: Array<{ field: string; message: string }>;
+  changed_paths: string[];
+  proof_results: ControlledDevelopmentProofResult[];
+  compact_result: string | null;
+  blocker: string | null;
+  retained_evidence: boolean;
+  limitation: string;
+}
+
 export type PendingSessionSwitch =
   | { type: 'new' }
   | { type: 'load'; session_id: string };
@@ -183,6 +223,7 @@ export interface AppSnapshot {
   pending_session_switch: PendingSessionSwitch | null;
   settings: VisibleSettings;
   operations: OperationState[];
+  controlled_development: ControlledDevelopmentState;
   tests?: TestControlSnapshot;
 }
 
@@ -195,12 +236,18 @@ export type AppChange =
   | { revision: number; type: 'pending_session_switch_changed'; value: PendingSessionSwitch | null }
   | { revision: number; type: 'settings_changed'; value: VisibleSettings }
   | { revision: number; type: 'operation_changed'; value: OperationState }
+  | { revision: number; type: 'controlled_development_changed'; value: ControlledDevelopmentState }
   | { revision: number; type: 'tests_changed'; value: TestControlSnapshot }
   | { revision: number; type: 'error'; value: AppError };
 
 export type AppCommand =
   | { command: 'select_workspace'; payload: { workspace: Workspace } }
   | { command: 'send_message'; payload: { text: string; attachment_id: string | null } }
+  | { command: 'set_controlled_development_enabled'; payload: { session_id: string; enabled: boolean } }
+  | { command: 'approve_controlled_development'; payload: { session_id: string; card_id: string } }
+  | { command: 'reject_controlled_development'; payload: { session_id: string; card_id: string } }
+  | { command: 'stop_controlled_development'; payload: { session_id: string; packet_id: string } }
+  | { command: 'discard_controlled_development_evidence'; payload: { session_id: string } }
   | { command: 'stop_operation'; payload: { kind: OperationKind } }
   | { command: 'new_session' }
   | { command: 'load_session'; payload: { session_id: string } }
@@ -255,6 +302,15 @@ const operationPhases: readonly OperationPhase[] = [
   'failed',
   'interrupted',
   'cancelled',
+];
+const controlledDevelopmentPhases: readonly ControlledDevelopmentPhase[] = [
+  'off',
+  'planning',
+  'awaiting_approval',
+  'executing',
+  'completed',
+  'blocked',
+  'interrupted',
 ];
 
 function record(value: unknown): Record<string, unknown> {
@@ -411,6 +467,71 @@ function parseOperation(value: unknown): OperationState {
   };
 }
 
+function parseStringArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  return value.map((entry) => string(entry, name));
+}
+
+function parseWorkCard(value: unknown): WorkCard {
+  const card = record(value);
+  return {
+    id: string(card.id, 'Work Card id'),
+    outcome: string(card.outcome, 'Work Card outcome'),
+    proof_commands: parseStringArray(card.proof_commands, 'Work Card proof command'),
+    production_paths: parseStringArray(card.production_paths, 'Work Card production path'),
+    supporting_paths: parseStringArray(card.supporting_paths, 'Work Card supporting path'),
+    excluded: parseStringArray(card.excluded, 'Work Card exclusion'),
+    complexity_exceptions: parseStringArray(card.complexity_exceptions, 'Work Card complexity exception'),
+  };
+}
+
+function parseControlledDevelopment(value: unknown): ControlledDevelopmentState {
+  const state = record(value);
+  if (!Array.isArray(state.structural_errors) || !Array.isArray(state.proof_results)) {
+    throw new Error('controlled development evidence must be arrays');
+  }
+  return {
+    enabled: boolean(state.enabled, 'controlled development enabled'),
+    phase: enumValue(state.phase, controlledDevelopmentPhases, 'controlled development phase'),
+    packet_id: nullable(state.packet_id, (entry) => string(entry, 'controlled development packet id')),
+    card: nullable(state.card, parseWorkCard),
+    structural_errors: state.structural_errors.map((entry) => {
+      const error = record(entry);
+      return { field: string(error.field, 'structural error field'), message: string(error.message, 'structural error message') };
+    }),
+    changed_paths: parseStringArray(state.changed_paths, 'controlled development changed path'),
+    proof_results: state.proof_results.map((entry) => {
+      const result = record(entry);
+      return {
+        command: string(result.command, 'proof command'),
+        disposition: string(result.disposition, 'proof disposition'),
+        success: nullable(result.success, (success) => boolean(success, 'proof success')),
+        exit_code: nullable(result.exit_code, (exitCode) => number(exitCode, 'proof exit code')),
+      };
+    }),
+    compact_result: nullable(state.compact_result, (entry) => string(entry, 'controlled development result')),
+    blocker: nullable(state.blocker, (entry) => string(entry, 'controlled development blocker')),
+    retained_evidence: boolean(state.retained_evidence, 'controlled development retained evidence'),
+    limitation: string(state.limitation, 'controlled development limitation'),
+  };
+}
+
+export function emptyControlledDevelopmentState(): ControlledDevelopmentState {
+  return {
+    enabled: false,
+    phase: 'off',
+    packet_id: null,
+    card: null,
+    structural_errors: [],
+    changed_paths: [],
+    proof_results: [],
+    compact_result: null,
+    blocker: null,
+    retained_evidence: false,
+    limitation: 'Approved proof commands run in the disposable workspace, but can still address absolute paths outside it.',
+  };
+}
+
 function parseRetainedTestResult(value: unknown): RetainedTestResult {
   const item = record(value);
   const identity = record(item.identity);
@@ -526,6 +647,9 @@ export function parseSnapshot(value: unknown): AppSnapshot {
     pending_session_switch: nullable(item.pending_session_switch, parsePending),
     settings: parseSettings(item.settings),
     operations: item.operations.map(parseOperation),
+    controlled_development: item.controlled_development === undefined
+      ? emptyControlledDevelopmentState()
+      : parseControlledDevelopment(item.controlled_development),
     tests: item.tests === undefined ? emptyTestControl() : parseTestControl(item.tests),
   };
 }
@@ -556,6 +680,7 @@ export function parseChange(value: unknown): AppChange {
     case 'pending_session_switch_changed': return { revision, type, value: nullable(item.value, parsePending) };
     case 'settings_changed': return { revision, type, value: parseSettings(item.value) };
     case 'operation_changed': return { revision, type, value: parseOperation(item.value) };
+    case 'controlled_development_changed': return { revision, type, value: parseControlledDevelopment(item.value) };
     case 'tests_changed': return { revision, type, value: parseTestControl(item.value) };
     case 'error': return { revision, type, value: parseError(item.value) };
     default: throw new Error('change type is not supported');

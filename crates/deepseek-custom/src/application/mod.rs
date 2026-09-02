@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod command_dispatcher;
+pub mod controlled_development_service;
 pub mod dto;
 pub mod event_projector;
 mod operation_projection;

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App, type UiClient } from './App.tsx';
 import type { ClientView } from '../client/browser/client-types.ts';
-import type { AppCommand, AppSnapshot } from '../client/contracts.ts';
+import { emptyControlledDevelopmentState, type AppCommand, type AppSnapshot } from '../client/contracts.ts';
 
 afterEach(cleanup);
 
@@ -32,6 +32,7 @@ function snapshot(workspace: AppSnapshot['workspace'] = 'chat'): AppSnapshot {
       procedure: { localization_backend: null, local_patch_backend: null, frontier_patch_backend: null, index_max_files: 10000, index_max_total_bytes: 67108864, verifier_commands: [] },
     },
     operations: [],
+    controlled_development: emptyControlledDevelopmentState(),
   };
 }
 
@@ -100,7 +101,7 @@ describe('application shell', () => {
   it('keeps navigation and actions in flow and declares a contained 360-pixel layout', () => {
     render(createElement(App, { client: client({ status: 'online', snapshot: snapshot(), lastError: null, message: null }) }));
 
-    expect(screen.getAllByRole('button')).toHaveLength(11);
+    expect(screen.getAllByRole('button')).toHaveLength(14);
     expect(screen.getByRole('button', { name: 'Send message' })).toBeVisible();
     expect(appCss).toMatch(/@media \(max-width: 48rem\)[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
     expect(appCss).toMatch(/body\s*{[^}]*overflow-x:\s*hidden/);
@@ -126,7 +127,7 @@ describe('application shell', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: /^Autopilot/ })).toHaveFocus();
 
-    expect(screen.getByRole('status')).toHaveTextContent('Connected. Application revision 7.');
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('Connected. Application revision 7.'))).toBe(true);
     expect(screen.getByRole('alert')).toHaveTextContent('Error: Prompt is required. Field: prompt.');
     const disabledAction = screen.getByRole('button', { name: 'Send message' });
     expect(disabledAction).toBeDisabled();

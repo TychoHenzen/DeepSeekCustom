@@ -1,19 +1,25 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
+use deepseek_custom::application::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+};
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
     OperationKind, OperationPhase, OperationState, SessionSummary, TranscriptBlock,
     TranscriptContent, TranscriptSpan, VisibleSettings, Workspace,
 };
-use deepseek_custom::application::services::DomainCommandPort;
+use deepseek_custom::application::services::{
+    DomainCommandPort, RuntimeSettingsPort, SettingsController,
+};
 use deepseek_custom::application::session::ApplicationSession;
 use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::config::settings::Settings;
 use deepseek_custom::controlled_development::{
-    ControlledBackendSelection, ControlledDevelopmentCommand,
+    ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentEffect,
+    ControlledDevelopmentPhase,
 };
 use deepseek_custom::procedure::{
     PatchPreviewId, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunId,
@@ -784,11 +790,8 @@ fn exact_control_inputs_return_only_harness_state_before_normal_chat_dispatch() 
                 attachment_id: None,
             },
         });
-        assert!(matches!(sent, AppCommandResult::Applied { .. }));
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(AgentCommand::UserTurn { .. })
-        ));
+        assert!(matches!(sent, AppCommandResult::Rejected { .. }));
+        assert!(commands.try_recv().is_err());
         let status = actor.submit(AppCommandRequest {
             revision: actor.snapshot().revision,
             command: AppCommand::SendMessage {
@@ -801,6 +804,213 @@ fn exact_control_inputs_return_only_harness_state_before_normal_chat_dispatch() 
         drop(actor);
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Controlled Development has an explicit lifecycle :: Mode starts planning
+#[test]
+fn controlled_commands_enter_planning_before_effect_dispatch_and_reject_stale_identity() {
+    let dir = super::scratch_dir("application-actor-controlled", "typed-wiring");
+    std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+    let origin = SessionOrigin {
+        backend: "stub".into(),
+        model: "test".into(),
+    };
+    let session = ApplicationSession::new(SessionState::new(
+        SessionStore::for_project(&dir),
+        origin.clone(),
+    ));
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (effect_tx, mut effect_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ControlledDevelopmentEffectRequest>();
+    let mut actor = actor(64)
+        .with_settings_controller(Arc::new(test_settings_controller(&dir)))
+        .with_chat_lifecycle(ChatLifecycle::new(
+            session,
+            DomainCommandPort::new(agent_tx),
+            Arc::new(AtomicBool::new(false)),
+            origin,
+        ));
+    actor.connect_controlled_development(DomainCommandPort::new(effect_tx));
+    let session_id = actor.snapshot().session.id.clone();
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::SetControlledDevelopmentEnabled {
+                session_id: session_id.clone(),
+                enabled: true,
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::SendMessage {
+                text: "Change the approved source".into(),
+                attachment_id: None,
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(actor.snapshot().controlled_development.enabled);
+    assert_eq!(
+        actor.snapshot().controlled_development.phase,
+        ControlledDevelopmentPhase::Planning
+    );
+    assert!(actor.snapshot().controlled_development.card.is_none());
+    assert!(agent_rx.try_recv().is_err());
+    let effect = effect_rx.try_recv().unwrap();
+    assert_eq!(effect.session_id, session_id);
+    let packet_id = match effect.effect {
+        ControlledDevelopmentEffect::DispatchPlanning { packet_id, .. } => packet_id,
+        other => panic!("expected planning effect, got {other:?}"),
+    };
+    assert_eq!(
+        actor.snapshot().controlled_development.packet_id.as_deref(),
+        Some(packet_id.as_str())
+    );
+
+    let stale = actor.apply_controlled_development_event(ControlledDevelopmentServiceEvent {
+        session_id: session_id.clone(),
+        command: ControlledDevelopmentCommand::PlanningFinished {
+            packet_id: "stale-packet".into(),
+            final_response: valid_application_card("stale-packet"),
+        },
+    });
+    assert!(stale.is_err());
+    assert_eq!(
+        actor.snapshot().controlled_development.phase,
+        ControlledDevelopmentPhase::Planning
+    );
+
+    actor
+        .apply_controlled_development_event(ControlledDevelopmentServiceEvent {
+            session_id: session_id.clone(),
+            command: ControlledDevelopmentCommand::PlanningFinished {
+                packet_id: packet_id.clone(),
+                final_response: valid_application_card(&packet_id),
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        actor.snapshot().controlled_development.phase,
+        ControlledDevelopmentPhase::AwaitingApproval
+    );
+    let saved_meta = SessionStore::for_project(&dir)
+        .list()
+        .into_iter()
+        .find(|meta| meta.id.as_str() == session_id)
+        .expect("controlled actor transitions autosave the owning session");
+    let saved = SessionStore::for_project(&dir)
+        .load(&saved_meta.id)
+        .unwrap();
+    assert_eq!(
+        saved.controlled_development.state.phase(),
+        ControlledDevelopmentPhase::AwaitingApproval
+    );
+    assert_eq!(
+        saved
+            .controlled_development
+            .state
+            .work_card()
+            .map(|card| card.id.as_str()),
+        Some(packet_id.as_str())
+    );
+
+    let wrong_card = actor.submit(AppCommandRequest {
+        revision: actor.snapshot().revision,
+        command: AppCommand::ApproveControlledDevelopment {
+            session_id: session_id.clone(),
+            card_id: "stale-card".into(),
+        },
+    });
+    assert!(matches!(wrong_card, AppCommandResult::Rejected { .. }));
+    assert!(effect_rx.try_recv().is_err());
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::ApproveControlledDevelopment {
+                session_id: session_id.clone(),
+                card_id: packet_id.clone(),
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(matches!(
+        effect_rx.try_recv().unwrap().effect,
+        ControlledDevelopmentEffect::CreateExecutionWorkspace { .. }
+    ));
+    assert_eq!(
+        actor.snapshot().controlled_development.phase,
+        ControlledDevelopmentPhase::Executing
+    );
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::StopControlledDevelopment {
+                session_id,
+                packet_id,
+            },
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert_eq!(
+        actor.snapshot().controlled_development.phase,
+        ControlledDevelopmentPhase::Interrupted
+    );
+
+    assert!(matches!(
+        actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::NewSession,
+        }),
+        AppCommandResult::Applied { .. }
+    ));
+    assert!(matches!(agent_rx.try_recv(), Ok(AgentCommand::NewSession)));
+    assert_eq!(
+        actor.snapshot().controlled_development,
+        deepseek_custom::application::dto::ControlledDevelopmentView::default()
+    );
+
+    drop(actor);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn test_settings_controller(root: &std::path::Path) -> SettingsController {
+    let runtime = RuntimeSettingsPort::new(
+        root.to_path_buf(),
+        Arc::new(AtomicU8::new(0)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(32_000)),
+        Arc::new(Mutex::new("test".to_string())),
+        Arc::new(Mutex::new(root.to_path_buf())),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicU8::new(8)),
+    );
+    SettingsController::new(
+        root.to_path_buf(),
+        Settings::default(),
+        runtime,
+        Some("stub".into()),
+        Some("test".into()),
+    )
+}
+
+fn valid_application_card(card_id: &str) -> String {
+    serde_json::json!({
+        "id": card_id,
+        "outcome": "The approved source changes.",
+        "proof_commands": ["cargo check --workspace"],
+        "production_paths": ["source.txt"],
+        "supporting_paths": ["crates/deepseek-custom-tests/tests/it/application_actor.rs"],
+        "excluded": ["settings.json"],
+        "complexity_exceptions": []
+    })
+    .to_string()
 }
 
 #[test]

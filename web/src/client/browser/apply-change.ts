@@ -36,6 +36,8 @@ export function applyChange(
         ));
       return { ...snapshot, revision: change.revision, operations };
     }
+    case 'controlled_development_changed':
+      return { ...snapshot, revision: change.revision, controlled_development: change.value };
     case 'tests_changed':
       return { ...snapshot, revision: change.revision, tests: change.value };
     case 'error':

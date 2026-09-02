@@ -102,7 +102,9 @@ export function App({ client }: AppProps) {
         </header>
         {selectedWorkspace === 'chat' && view.snapshot !== null ? (
           <ChatWorkspace
+            controlledDevelopment={view.snapshot.controlled_development}
             operation={view.snapshot.operations.find((operation) => operation.kind === 'chat') ?? null}
+            sessionId={view.snapshot.session.id}
             voiceOperation={view.snapshot.operations.find((operation) => operation.kind === 'voice') ?? null}
             voiceSettings={view.snapshot.settings.voice}
             uploadAttachment={(file) => client.uploadAttachment(file)}

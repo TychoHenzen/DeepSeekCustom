@@ -12,16 +12,23 @@ use crate::agent::repeat::RepeatCommand;
 use crate::api::types::ImageAttachment;
 use crate::application::services::{DomainCommandPort, SettingsController};
 use crate::application::session::ApplicationSession;
+use crate::controlled_development::{
+    ControlledDevelopmentCommand, ControlledDevelopmentEffect, ControlledDevelopmentTransitionError,
+};
 use crate::procedure::{
     ProcedureCommand, ProcedureProgress, ProcedureTerminalDisposition, RouteOverride,
 };
 use crate::search::SearchCommand;
 use crate::voice::service::VoiceCommand;
 
+use super::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+};
 use super::dto::{
     AppChange, AppChangeKind, AppCommandRequest, AppCommandResult, AppError, AppErrorCode,
-    AppRevision, AppSnapshot, OperationKind, OperationPhase, OperationState, PendingSessionSwitch,
-    ProcedureRouteOverride, SessionSummary, TranscriptBlock, VisibleSettings, Workspace,
+    AppRevision, AppSnapshot, ControlledDevelopmentView, OperationKind, OperationPhase,
+    OperationState, PendingSessionSwitch, ProcedureRouteOverride, SessionSummary, TranscriptBlock,
+    VisibleSettings, Workspace,
 };
 
 impl From<ProcedureRouteOverride> for RouteOverride {
@@ -71,6 +78,8 @@ pub struct ApplicationActor {
     pub(super) autopilot: Option<DomainCommandPort<RepeatCommand>>,
     pub(super) search: Option<DomainCommandPort<SearchCommand>>,
     pub(super) procedure: Option<DomainCommandPort<ProcedureCommand>>,
+    pub(super) controlled_development:
+        Option<DomainCommandPort<ControlledDevelopmentEffectRequest>>,
     pub(super) repeat_interrupt: Option<Arc<AtomicBool>>,
     pub(super) search_interrupt: Option<Arc<AtomicBool>>,
     pub(super) procedure_interrupt: Option<Arc<AtomicBool>>,
@@ -114,6 +123,7 @@ impl ApplicationActor {
             autopilot: None,
             search: None,
             procedure: None,
+            controlled_development: None,
             repeat_interrupt: None,
             search_interrupt: None,
             procedure_interrupt: None,
@@ -129,6 +139,9 @@ impl ApplicationActor {
     pub fn with_chat_lifecycle(mut self, chat: ChatLifecycle) -> Self {
         self.snapshot.session = chat.session.session_summary();
         self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.snapshot.controlled_development = ControlledDevelopmentView::from_coordinator(
+            chat.session.sessions.controlled_development(),
+        );
         self.chat = Some(chat);
         self
     }
@@ -136,6 +149,9 @@ impl ApplicationActor {
     pub fn connect_chat_lifecycle(&mut self, chat: ChatLifecycle) {
         self.snapshot.session = chat.session.session_summary();
         self.snapshot.saved_sessions = chat.session.saved_session_summaries();
+        self.snapshot.controlled_development = ControlledDevelopmentView::from_coordinator(
+            chat.session.sessions.controlled_development(),
+        );
         self.chat = Some(chat);
     }
 
@@ -173,6 +189,13 @@ impl ApplicationActor {
     ) {
         self.procedure = Some(procedure);
         self.procedure_interrupt = Some(interrupt);
+    }
+
+    pub fn connect_controlled_development(
+        &mut self,
+        controlled_development: DomainCommandPort<ControlledDevelopmentEffectRequest>,
+    ) {
+        self.controlled_development = Some(controlled_development);
     }
 
     pub fn register_attachment(&mut self, id: String, attachment: ImageAttachment) {
@@ -371,6 +394,111 @@ impl ApplicationActor {
 
     pub fn apply_event(&mut self, event: AppEvent) -> Result<AppRevision, AppError> {
         ApplicationEventProjector::new(self).apply_event(event)
+    }
+
+    /// Apply one selected-session completion from the slow controlled service.
+    pub fn apply_controlled_development_event(
+        &mut self,
+        event: ControlledDevelopmentServiceEvent,
+    ) -> Result<AppRevision, AppError> {
+        if self.snapshot.session.id != event.session_id {
+            return Err(invalid(
+                "session_id",
+                "controlled development event belongs to a session that is no longer selected",
+            ));
+        }
+        self.apply_controlled_development_command(event.command)
+    }
+
+    pub(super) fn apply_controlled_development_command(
+        &mut self,
+        command: ControlledDevelopmentCommand,
+    ) -> Result<AppRevision, AppError> {
+        let persist_after_transition = !matches!(
+            &command,
+            ControlledDevelopmentCommand::RecordRawEvent { .. }
+        );
+        let effect = {
+            let Some(chat) = &mut self.chat else {
+                return Err(unavailable("chat lifecycle is not connected"));
+            };
+            chat.session
+                .sessions
+                .controlled_development_mut()
+                .handle(command)
+                .map_err(controlled_error)?
+        };
+
+        if let Some(effect) = effect
+            && let Err(error) = self.dispatch_controlled_development_effect(effect)
+        {
+            let packet_id = self
+                .chat
+                .as_ref()
+                .and_then(|chat| {
+                    chat.session
+                        .sessions
+                        .controlled_development()
+                        .state()
+                        .packet_id()
+                })
+                .map(str::to_string);
+            let Some(packet_id) = packet_id else {
+                return Err(error);
+            };
+            let blocker = error.message;
+            let chat = self.chat.as_mut().expect("controlled state was just read");
+            chat.session
+                .sessions
+                .controlled_development_mut()
+                .handle(ControlledDevelopmentCommand::Fail {
+                    packet_id,
+                    blocker: blocker.clone(),
+                    summary: format!("Controlled Development blocked: {blocker}"),
+                })
+                .map_err(controlled_error)?;
+        }
+        if persist_after_transition {
+            self.persist_controlled_development_state()?;
+        }
+        self.publish_controlled_development_state()
+    }
+
+    pub(super) fn publish_controlled_development_state(&mut self) -> Result<AppRevision, AppError> {
+        let Some(chat) = &self.chat else {
+            return Err(unavailable("chat lifecycle is not connected"));
+        };
+        let projected = ControlledDevelopmentView::from_coordinator(
+            chat.session.sessions.controlled_development(),
+        );
+        self.snapshot.controlled_development = projected.clone();
+        self.publish(AppChangeKind::ControlledDevelopmentChanged(projected))
+    }
+
+    pub(super) fn persist_controlled_development_state(&mut self) -> Result<(), AppError> {
+        let Some(chat) = &mut self.chat else {
+            return Err(unavailable("chat lifecycle is not connected"));
+        };
+        chat.session
+            .sessions
+            .autosave(&mut chat.session.transcript, chat.origin.clone());
+        Ok(())
+    }
+
+    fn dispatch_controlled_development_effect(
+        &mut self,
+        effect: ControlledDevelopmentEffect,
+    ) -> Result<(), AppError> {
+        let Some(port) = &self.controlled_development else {
+            return Err(unavailable(
+                "controlled development service is not connected",
+            ));
+        };
+        port.send(ControlledDevelopmentEffectRequest {
+            session_id: self.snapshot.session.id.clone(),
+            effect,
+        })
+        .map_err(|_| unavailable("controlled development service channel is closed"))
     }
 
     /// Project existing backend-neutral repeat and search events into browser state.
@@ -780,6 +908,9 @@ impl ApplicationActor {
         self.snapshot.session = chat.session.session_summary();
         self.snapshot.saved_sessions = chat.session.saved_session_summaries();
         self.snapshot.pending_session_switch = None;
+        self.snapshot.controlled_development = ControlledDevelopmentView::from_coordinator(
+            chat.session.sessions.controlled_development(),
+        );
         let mut reset = self.snapshot.clone();
         reset.revision = match self.snapshot.revision.checked_next() {
             Some(revision) => revision,
@@ -905,7 +1036,12 @@ impl AppSnapshot {
             pending_session_switch: None,
             settings,
             operations: Vec::new(),
+            controlled_development: Default::default(),
             tests: Default::default(),
         }
     }
+}
+
+fn controlled_error(error: ControlledDevelopmentTransitionError) -> AppError {
+    invalid("controlled_development", &error.to_string())
 }

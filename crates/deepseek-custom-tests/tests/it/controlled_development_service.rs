@@ -1,7 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
+use deepseek_custom::application::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+    run_controlled_development_service,
+};
 use deepseek_custom::backend::Backend;
 use deepseek_custom::backend::factory::BackendFactory;
 use deepseek_custom::backend::stub::StubTurn;
@@ -16,6 +20,69 @@ use deepseek_custom::procedure::{
 };
 use serde_json::json;
 use tokio::sync::mpsc;
+
+#[test]
+fn controlled_service_runs_planning_outside_the_actor_and_returns_typed_events() {
+    run_async(async {
+        let root = super::scratch_dir("controlled-development", "application-service-planning");
+        std::fs::write(root.join("source.txt"), b"current workspace bytes\n").unwrap();
+        let factory = Arc::new(
+            BackendFactory::new(Settings::default(), root.clone()).with_stub(
+                "controlled-stub",
+                vec![StubTurn::Text(valid_card_json("service-card"))],
+            ),
+        );
+        let (effect_tx, effect_rx) = mpsc::unbounded_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let service = tokio::spawn(run_controlled_development_service(
+            factory, effect_rx, event_tx,
+        ));
+
+        effect_tx
+            .send(ControlledDevelopmentEffectRequest {
+                session_id: "session-7".into(),
+                effect: ControlledDevelopmentEffect::DispatchPlanning {
+                    packet_id: "service-card".into(),
+                    original_request: "Implement the bounded packet".into(),
+                    selection: ControlledBackendSelection::new("controlled-stub", None),
+                    planning_root: root.clone(),
+                    interrupt: Arc::new(AtomicBool::new(false)),
+                },
+            })
+            .unwrap();
+        drop(effect_tx);
+
+        let mut saw_raw_event = false;
+        loop {
+            let ControlledDevelopmentServiceEvent {
+                session_id,
+                command,
+            } = event_rx
+                .recv()
+                .await
+                .expect("service returns a terminal event");
+            assert_eq!(session_id, "session-7");
+            match command {
+                ControlledDevelopmentCommand::RecordRawEvent { packet_id, .. } => {
+                    assert_eq!(packet_id, "service-card");
+                    saw_raw_event = true;
+                }
+                ControlledDevelopmentCommand::PlanningFinished {
+                    packet_id,
+                    final_response,
+                } => {
+                    assert_eq!(packet_id, "service-card");
+                    assert_eq!(final_response, valid_card_json("service-card"));
+                    break;
+                }
+                other => panic!("unexpected controlled service event: {other:?}"),
+            }
+        }
+        assert!(saw_raw_event);
+        service.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
 
 #[test]
 fn coordinator_projects_typed_evidence_and_builds_fresh_controlled_backends() {

@@ -47,6 +47,22 @@ fn application_command_and_result_have_stable_json_shapes() {
         serde_json::from_str::<AppCommandResult>(&encoded).unwrap(),
         rejected
     );
+
+    let controlled = AppCommandRequest {
+        revision: AppRevision(14),
+        command: AppCommand::ApproveControlledDevelopment {
+            session_id: "session-current".into(),
+            card_id: "card-9".into(),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(controlled).unwrap(),
+        json!({
+            "revision": 14,
+            "command": "approve_controlled_development",
+            "payload": { "session_id": "session-current", "card_id": "card-9" }
+        })
+    );
 }
 
 #[test]
@@ -83,6 +99,7 @@ fn snapshot_change_operation_and_error_contracts_round_trip() {
         pending_session_switch: Some(PendingSessionSwitch::New),
         settings,
         operations: vec![operation.clone()],
+        controlled_development: Default::default(),
         tests: Default::default(),
     };
     let change = AppChange {

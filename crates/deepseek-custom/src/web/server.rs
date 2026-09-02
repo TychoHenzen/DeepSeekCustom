@@ -24,6 +24,9 @@ use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::application::actor::{AppEvent, ApplicationActor, ChatLifecycle, Replay};
 use crate::application::command_dispatcher::ApplicationCommandDispatcher;
+use crate::application::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+};
 use crate::application::dto::{
     AppChange, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, SessionSummary,
     VisibleSettings,
@@ -208,6 +211,19 @@ impl WebAppState {
         self
     }
 
+    pub fn with_controlled_development_port(
+        mut self,
+        port: DomainCommandPort<ControlledDevelopmentEffectRequest>,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("controlled development port must be connected before state is shared")
+            .actor
+            .get_mut()
+            .unwrap()
+            .connect_controlled_development(port);
+        self
+    }
+
     pub fn snapshot(&self) -> AppSnapshot {
         self.inner.actor.lock().unwrap().snapshot().clone()
     }
@@ -295,6 +311,21 @@ impl WebAppState {
             }
         }
         Some(result)
+    }
+
+    pub fn apply_controlled_development_event(
+        &self,
+        event: ControlledDevelopmentServiceEvent,
+    ) -> Result<AppRevision, crate::application::dto::AppError> {
+        let mut actor = self.inner.actor.lock().unwrap();
+        let previous = actor.snapshot().revision;
+        let revision = actor.apply_controlled_development_event(event)?;
+        if let Replay::Changes(changes) = actor.replay_after(previous) {
+            for change in changes {
+                let _ = self.inner.changes.send(change);
+            }
+        }
+        Ok(revision)
     }
 
     pub fn apply_voice_event(

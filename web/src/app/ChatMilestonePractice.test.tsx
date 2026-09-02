@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { App, type UiClient } from './App.tsx';
 import type { ClientView } from '../client/browser/client-types.ts';
-import type { AppCommand, AppSnapshot } from '../client/contracts.ts';
+import { emptyControlledDevelopmentState, type AppCommand, type AppSnapshot } from '../client/contracts.ts';
 
 afterEach(cleanup);
 
@@ -19,7 +19,7 @@ function baseSnapshot(): AppSnapshot {
       style: { plain_language: true, target_grade: 8 },
       voice: { enabled: true, stt_enabled: true, tts_enabled: true, trigger_mode: 'push_to_talk', wake_phrase: 'computer', tts_voice: 'af_sarah', tts_speed: 1 },
       procedure: { localization_backend: null, local_patch_backend: null, frontier_patch_backend: null, index_max_files: 10000, index_max_total_bytes: 67108864, verifier_commands: [] },
-    }, operations: [],
+    }, operations: [], controlled_development: emptyControlledDevelopmentState(),
   };
 }
 

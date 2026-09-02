@@ -18,6 +18,7 @@ use deepseek_custom::application::test_control::{
     TestOutputStream, TestProcessExit, TestRunRequest,
 };
 use deepseek_custom::config::settings::Settings;
+use deepseek_custom::controlled_development::{ControlledDevelopmentPhase, WorkCard};
 use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
     BindPolicy, BrowserOpener, NativeFolderPicker, REQUEST_TOKEN_HEADER, ServerStartError,
@@ -383,6 +384,7 @@ pub(super) fn visible_snapshot() -> AppSnapshot {
             OperationPhase::AwaitingReview,
             1,
         )],
+        controlled_development: Default::default(),
         tests: Default::default(),
     }
 }
@@ -446,6 +448,77 @@ async fn post_command(
         .send()
         .await
         .unwrap()
+}
+
+// covers: deepseek-custom/controlled-development-mode :: The existing web application exposes Controlled Development :: User reviews and approves a Work Card
+#[test]
+fn controlled_work_card_and_review_actions_have_complete_browser_contracts() {
+    let mut snapshot = visible_snapshot();
+    snapshot.controlled_development.enabled = true;
+    snapshot.controlled_development.phase = ControlledDevelopmentPhase::AwaitingApproval;
+    snapshot.controlled_development.packet_id = Some("packet-7".into());
+    snapshot.controlled_development.card = Some(WorkCard {
+        id: "card-7".into(),
+        outcome: "Expose the controlled review panel".into(),
+        proof_commands: vec!["npm test".into()],
+        production_paths: vec!["web/src/app/ChatWorkspace.tsx".into()],
+        supporting_paths: vec!["web/src/app/ChatWorkspace.test.tsx".into()],
+        excluded: vec!["new routes".into()],
+        complexity_exceptions: vec!["existing workspace component".into()],
+    });
+
+    let browser_snapshot = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(
+        browser_snapshot["controlled_development"]["phase"],
+        "awaiting_approval"
+    );
+    assert_eq!(
+        browser_snapshot["controlled_development"]["card"],
+        serde_json::json!({
+            "id": "card-7",
+            "outcome": "Expose the controlled review panel",
+            "proof_commands": ["npm test"],
+            "production_paths": ["web/src/app/ChatWorkspace.tsx"],
+            "supporting_paths": ["web/src/app/ChatWorkspace.test.tsx"],
+            "excluded": ["new routes"],
+            "complexity_exceptions": ["existing workspace component"]
+        })
+    );
+
+    for (command, expected_name, identity_name, identity_value) in [
+        (
+            AppCommand::ApproveControlledDevelopment {
+                session_id: "session-2".into(),
+                card_id: "card-7".into(),
+            },
+            "approve_controlled_development",
+            "card_id",
+            "card-7",
+        ),
+        (
+            AppCommand::RejectControlledDevelopment {
+                session_id: "session-2".into(),
+                card_id: "card-7".into(),
+            },
+            "reject_controlled_development",
+            "card_id",
+            "card-7",
+        ),
+        (
+            AppCommand::StopControlledDevelopment {
+                session_id: "session-2".into(),
+                packet_id: "packet-7".into(),
+            },
+            "stop_controlled_development",
+            "packet_id",
+            "packet-7",
+        ),
+    ] {
+        let browser_command = serde_json::to_value(command).unwrap();
+        assert_eq!(browser_command["command"], expected_name);
+        assert_eq!(browser_command["payload"]["session_id"], "session-2");
+        assert_eq!(browser_command["payload"][identity_name], identity_value);
+    }
 }
 
 // covers: deepseek-custom/web-application :: Settings preserve runtime and persistence boundaries :: User requests a working-directory folder

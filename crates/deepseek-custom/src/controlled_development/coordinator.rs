@@ -169,6 +169,11 @@ impl ControlledDevelopmentCoordinator {
         match command {
             ControlledDevelopmentCommand::SetEnabled { enabled } => {
                 if !enabled {
+                    let active_interrupt = std::mem::replace(
+                        &mut self.interrupt,
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    );
+                    active_interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
                     self.cleanup_packet_workspaces()?;
                     self.clear_packet_data();
                 }

@@ -12,6 +12,10 @@ use deepseek_custom::agent::agent_types::grade_to_u8;
 use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::application::actor::ChatLifecycle;
+use deepseek_custom::application::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+    run_controlled_development_service,
+};
 use deepseek_custom::application::dto::AppSnapshot;
 use deepseek_custom::application::services::{
     DomainCommandPort, RuntimeSettingsPort, SettingsController,
@@ -199,7 +203,17 @@ async fn main() {
     let (tx_procedure, mut rx_procedure) = mpsc::unbounded_channel::<ProcedureCommand>();
     let (tx_procedure_progress, mut rx_procedure_progress) =
         mpsc::unbounded_channel::<ProcedureProgress>();
+    let (tx_controlled_effects, rx_controlled_effects) =
+        mpsc::unbounded_channel::<ControlledDevelopmentEffectRequest>();
+    let (tx_controlled_events, mut rx_controlled_events) =
+        mpsc::unbounded_channel::<ControlledDevelopmentServiceEvent>();
     let procedure_interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let controlled_service = tokio::spawn(run_controlled_development_service(
+        Arc::clone(&factory),
+        rx_controlled_effects,
+        tx_controlled_events,
+    ));
 
     // ── Backend construction ─────────────────────────────────
 
@@ -782,6 +796,7 @@ async fn main() {
         DomainCommandPort::new(tx_procedure),
         Arc::clone(&procedure_interrupt),
     )
+    .with_controlled_development_port(DomainCommandPort::new(tx_controlled_effects))
     .with_test_control(project_root.clone());
 
     let (voice_forwarder, voice_event_forwarder) = if let Some(runtime) = voice {
@@ -822,6 +837,12 @@ async fn main() {
             let _ = procedure_state.apply_procedure_progress(&progress);
         }
     });
+    let controlled_state = web_state.clone();
+    let controlled_forwarder = tokio::spawn(async move {
+        while let Some(event) = rx_controlled_events.recv().await {
+            let _ = controlled_state.apply_controlled_development_event(event);
+        }
+    });
 
     let browser: Option<Arc<dyn BrowserOpener>> = std::env::var_os("DEEPSEEK_DISABLE_BROWSER")
         .is_none()
@@ -844,8 +865,12 @@ async fn main() {
         .expect("web application shutdown failed");
     event_forwarder.abort();
     procedure_forwarder.abort();
+    controlled_service.abort();
+    controlled_forwarder.abort();
     let _ = event_forwarder.await;
     let _ = procedure_forwarder.await;
+    let _ = controlled_service.await;
+    let _ = controlled_forwarder.await;
     if let Some(forwarder) = voice_event_forwarder {
         forwarder.abort();
         let _ = forwarder.await;

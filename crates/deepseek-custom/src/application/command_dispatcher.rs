@@ -15,7 +15,10 @@ use super::session::PendingSwitch;
 use super::transcript::{BlockKind, Span};
 use crate::agent::events::AgentCommand;
 use crate::agent::repeat::RepeatCommand;
-use crate::controlled_development::ControlledDevelopmentControlInput;
+use crate::controlled_development::{
+    ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentControlInput,
+    ControlledDevelopmentPhase,
+};
 use crate::procedure::{
     ApplyRequest, PatchPreviewId, PatchPreviewRequest, ProcedureCommand, ProcedureReviewDecision,
     ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, WholeChangeCommandRequest,
@@ -68,6 +71,23 @@ impl<'a> ApplicationCommandDispatcher<'a> {
                     && let Some(input) = ControlledDevelopmentControlInput::parse(&text)
                 {
                     return self.dispatch_control_input(text, input);
+                }
+                if self.actor.chat.as_ref().is_some_and(|chat| {
+                    chat.session
+                        .sessions
+                        .controlled_development()
+                        .state()
+                        .is_enabled()
+                }) {
+                    if attachment_id.is_some() {
+                        return AppCommandResult::Rejected {
+                            error: invalid(
+                                "attachment_id",
+                                "Controlled Development accepts text requests without attachments",
+                            ),
+                        };
+                    }
+                    return self.dispatch_controlled_request(text);
                 }
                 let text = text.trim().to_string();
                 if text.is_empty() && attachment_id.is_none() {
@@ -162,6 +182,44 @@ impl<'a> ApplicationCommandDispatcher<'a> {
                     Err(error) => AppCommandResult::Rejected { error },
                 }
             }
+            AppCommand::SetControlledDevelopmentEnabled {
+                session_id,
+                enabled,
+            } => self.dispatch_controlled_command(
+                &session_id,
+                ControlledDevelopmentCommand::SetEnabled { enabled },
+                false,
+            ),
+            AppCommand::ApproveControlledDevelopment {
+                session_id,
+                card_id,
+            } => self.dispatch_controlled_command(
+                &session_id,
+                ControlledDevelopmentCommand::Approve { card_id },
+                true,
+            ),
+            AppCommand::RejectControlledDevelopment {
+                session_id,
+                card_id,
+            } => self.dispatch_controlled_command(
+                &session_id,
+                ControlledDevelopmentCommand::Reject { card_id },
+                false,
+            ),
+            AppCommand::StopControlledDevelopment {
+                session_id,
+                packet_id,
+            } => self.dispatch_controlled_command(
+                &session_id,
+                ControlledDevelopmentCommand::Stop { packet_id },
+                false,
+            ),
+            AppCommand::DiscardControlledDevelopmentEvidence { session_id } => self
+                .dispatch_controlled_command(
+                    &session_id,
+                    ControlledDevelopmentCommand::DiscardRetainedEvidence,
+                    false,
+                ),
             AppCommand::StopOperation {
                 kind: OperationKind::Chat,
             } => {
@@ -732,6 +790,11 @@ impl<'a> ApplicationCommandDispatcher<'a> {
             }
         };
 
+        let mut revision = match self.actor.publish_controlled_development_state() {
+            Ok(revision) => revision,
+            Err(error) => return AppCommandResult::Rejected { error },
+        };
+
         let blocks = {
             let chat = self
                 .actor
@@ -748,7 +811,6 @@ impl<'a> ApplicationCommandDispatcher<'a> {
             projection[projection.len() - 2..].to_vec()
         };
 
-        let mut revision = self.actor.snapshot.revision;
         for block in blocks {
             self.actor.snapshot.transcript.push(block.clone());
             revision = match self.actor.publish(AppChangeKind::TranscriptAppended(block)) {
@@ -756,6 +818,118 @@ impl<'a> ApplicationCommandDispatcher<'a> {
                 Err(error) => return AppCommandResult::Rejected { error },
             };
         }
+        if let Err(error) = self.actor.persist_controlled_development_state() {
+            return AppCommandResult::Rejected { error };
+        }
         AppCommandResult::Applied { revision }
+    }
+
+    fn dispatch_controlled_request(&mut self, text: String) -> AppCommandResult {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return AppCommandResult::Rejected {
+                error: invalid("message", "Enter a development request"),
+            };
+        }
+        if self.actor.controlled_development.is_none() {
+            return AppCommandResult::Rejected {
+                error: unavailable("controlled development service is not connected"),
+            };
+        }
+        let phase = self
+            .actor
+            .chat
+            .as_ref()
+            .expect("controlled mode requires a connected chat lifecycle")
+            .session
+            .sessions
+            .controlled_development()
+            .state()
+            .phase();
+        if matches!(
+            phase,
+            ControlledDevelopmentPhase::Planning
+                | ControlledDevelopmentPhase::AwaitingApproval
+                | ControlledDevelopmentPhase::Executing
+        ) {
+            return AppCommandResult::Rejected {
+                error: operation_active(
+                    "Controlled Development already has an active packet or card",
+                ),
+            };
+        }
+        let Some(settings) = &self.actor.settings else {
+            return AppCommandResult::Rejected {
+                error: unavailable("settings lifecycle is not connected"),
+            };
+        };
+        let packet_id = uuid::Uuid::new_v4().simple().to_string();
+        let selection = ControlledBackendSelection::new(
+            self.actor.snapshot.session.backend.clone(),
+            Some(self.actor.snapshot.session.model.clone()),
+        );
+        let command = ControlledDevelopmentCommand::Plan {
+            packet_id,
+            original_request: text.clone(),
+            selection,
+            workspace_root: settings.working_dir(),
+        };
+        match self.actor.apply_controlled_development_command(command) {
+            Ok(_) => {}
+            Err(error) => return AppCommandResult::Rejected { error },
+        }
+
+        let id = self
+            .actor
+            .snapshot
+            .transcript
+            .iter()
+            .map(|block| block.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let user = TranscriptBlock {
+            id,
+            content: TranscriptContent::User {
+                text: text.clone(),
+                has_image: false,
+            },
+        };
+        if let Some(chat) = &mut self.actor.chat {
+            chat.session.transcript.push(BlockKind::User { text });
+        }
+        if let Err(error) = self.actor.persist_controlled_development_state() {
+            return AppCommandResult::Rejected { error };
+        }
+        self.actor.snapshot.transcript.push(user.clone());
+        match self.actor.publish(AppChangeKind::TranscriptAppended(user)) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        }
+    }
+
+    fn dispatch_controlled_command(
+        &mut self,
+        session_id: &str,
+        command: ControlledDevelopmentCommand,
+        requires_service: bool,
+    ) -> AppCommandResult {
+        if self.actor.snapshot.session.id != session_id {
+            return AppCommandResult::Rejected {
+                error: invalid(
+                    "session_id",
+                    "Controlled Development action does not target the selected session",
+                ),
+            };
+        }
+        if requires_service && self.actor.controlled_development.is_none() {
+            return AppCommandResult::Rejected {
+                error: unavailable("controlled development service is not connected"),
+            };
+        }
+        match self.actor.apply_controlled_development_command(command) {
+            Ok(revision) => AppCommandResult::Applied { revision },
+            Err(error) => AppCommandResult::Rejected { error },
+        }
     }
 }
