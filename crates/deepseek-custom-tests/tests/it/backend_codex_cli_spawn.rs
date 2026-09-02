@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use deepseek_custom::backend::codex_cli::spawn::{
-    build_args_for_test, build_planning_args_for_test, command_working_dir_for_test,
+    build_args_for_test, build_execution_args_for_test, build_planning_args_for_test,
+    command_working_dir_for_test,
 };
 use deepseek_custom::effort::Effort;
 
@@ -135,4 +136,37 @@ fn controlled_planning_args_force_fresh_read_only_isolated_structured_output() {
     );
     assert!(!args.iter().any(|argument| argument == "resume"));
     assert!(!args.iter().any(|argument| argument.contains("bypass")));
+}
+
+#[test]
+fn controlled_execution_args_force_fresh_workspace_write_configuration_isolation() {
+    let args =
+        build_execution_args_for_test("apply approved card", Some("gpt-5-codex"), Effort::High);
+
+    assert_eq!(
+        args,
+        vec![
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "multi_agent_v2",
+            "-m",
+            "gpt-5-codex",
+            "-c",
+            "reasoning.effort=high",
+            "apply approved card",
+        ]
+    );
+    assert!(!args.iter().any(|argument| argument == "resume"));
+    assert!(!args.iter().any(|argument| argument.contains("bypass")));
+    assert!(!args.iter().any(|argument| argument == "--add-dir"));
+    assert!(!args.iter().any(|argument| argument == "--profile"));
 }

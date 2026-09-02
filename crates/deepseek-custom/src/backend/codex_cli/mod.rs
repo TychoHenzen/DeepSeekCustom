@@ -1,6 +1,8 @@
 //! One-shot `codex exec --json` backend driver.
 
+mod controlled_profile;
 pub mod events;
+mod execution;
 pub mod map;
 mod planning;
 mod repeat;
@@ -28,9 +30,9 @@ use crate::backend::SharedFlags;
 use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
+use self::controlled_profile::ControlledProfile;
 use self::events::{CodexEvent, parse_event};
 use self::map::EventMapper;
-use self::planning::PlanningProfile;
 use self::spawn::spawn_codex;
 
 const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -51,7 +53,7 @@ pub struct CodexCliDriver {
     context_budget_flag: Arc<AtomicUsize>,
     model_flag: Arc<Mutex<String>>,
     repeat_interrupt_flag: Arc<AtomicBool>,
-    planning_profile: Option<PlanningProfile>,
+    controlled_profile: Option<ControlledProfile>,
 }
 
 impl CodexCliDriver {
@@ -75,7 +77,7 @@ impl CodexCliDriver {
             context_budget_flag: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model_flag: Arc::new(Mutex::new(model)),
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
-            planning_profile: None,
+            controlled_profile: None,
         }
     }
 
@@ -117,7 +119,7 @@ impl CodexCliDriver {
     }
 
     pub fn set_thread_id(&mut self, thread_id: Option<String>) {
-        if self.planning_profile.is_none() {
+        if self.controlled_profile.is_none() {
             self.thread_id = thread_id;
         }
     }

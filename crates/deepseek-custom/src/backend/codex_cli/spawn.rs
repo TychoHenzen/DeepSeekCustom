@@ -96,6 +96,42 @@ pub(super) fn build_planning_args(
     args
 }
 
+/// Build one fresh Controlled Development execution invocation.
+///
+/// The writable sandbox is limited to the child process working directory.
+/// User configuration and rules stay unavailable, and both Codex subagent
+/// implementations are disabled for this invocation.
+pub(super) fn build_execution_args(
+    prompt: &str,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "--json".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "--sandbox".to_owned(),
+        "workspace-write".to_owned(),
+        "--ephemeral".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--ignore-rules".to_owned(),
+        "--disable".to_owned(),
+        "multi_agent".to_owned(),
+        "--disable".to_owned(),
+        "multi_agent_v2".to_owned(),
+    ];
+    if let Some(model) = model {
+        args.push("-m".to_owned());
+        args.push(model.to_owned());
+    }
+    if let Some(level) = effort.codex_cli_effort_level() {
+        args.push("-c".to_owned());
+        args.push(format!("reasoning.effort={level}"));
+    }
+    args.push(prompt.to_owned());
+    args
+}
+
 /// Test-only access to the argument contract without widening production API.
 #[cfg(feature = "test-support")]
 pub fn build_args_for_test(
@@ -116,6 +152,15 @@ pub fn build_planning_args_for_test(
     effort: Effort,
 ) -> Vec<String> {
     build_planning_args(prompt, output_schema, model, effort)
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_execution_args_for_test(
+    prompt: &str,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    build_execution_args(prompt, model, effort)
 }
 
 fn build_command(args: &[String], working_dir: &Path) -> Command {

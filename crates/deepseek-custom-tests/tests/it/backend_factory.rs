@@ -674,6 +674,115 @@ fn controlled_planning_factory_selects_fresh_cli_profiles_with_the_fixed_root() 
     std::fs::remove_dir_all(root).unwrap();
 }
 
+// covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Codex CLI cannot bypass the outer workspace boundary
+#[test]
+fn controlled_execution_factory_forces_fresh_cli_profiles_at_the_disposable_root() {
+    let real_root = super::scratch_dir("controlled-execution", "real-root");
+    let disposable_root = super::scratch_dir("controlled-execution", "disposable-root");
+    let canonical_disposable = std::fs::canonicalize(&disposable_root).unwrap();
+    let mut backends = HashMap::new();
+    backends.insert(
+        "codex".to_string(),
+        BackendConfig::CodexCli {
+            model: "gpt-5-codex".to_string(),
+            sandbox: None,
+            env: None,
+            models: None,
+        },
+    );
+    backends.insert(
+        "claude".to_string(),
+        BackendConfig::ClaudeCli {
+            model: "claude-opus-x".to_string(),
+            permission_mode: Some("bypassPermissions".to_string()),
+            env: None,
+            models: None,
+        },
+    );
+    let factory = Arc::new(BackendFactory::new(
+        settings_with_backends(Some("codex"), backends),
+        real_root.clone(),
+    ));
+
+    let (codex_tx, _codex_rx) = mpsc::unbounded_channel();
+    let Backend::CodexCli(mut codex) = factory
+        .build_controlled_execution("codex", None, codex_tx, disposable_root.clone())
+        .unwrap()
+    else {
+        panic!("expected controlled Codex execution profile");
+    };
+    codex.set_thread_id(Some("must-not-resume".to_string()));
+    assert!(codex.thread_id().is_none());
+    assert_eq!(
+        codex.execution_working_dir_for_test(),
+        Some(canonical_disposable.clone())
+    );
+    assert_eq!(
+        codex
+            .execution_args_for_test("apply approved card", Effort::None)
+            .unwrap(),
+        vec![
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "multi_agent_v2",
+            "-m",
+            "gpt-5-codex",
+            "apply approved card",
+        ]
+    );
+
+    let (claude_tx, _claude_rx) = mpsc::unbounded_channel();
+    let Backend::ClaudeCli(mut claude) = factory
+        .build_controlled_execution("claude", None, claude_tx, disposable_root.clone())
+        .unwrap()
+    else {
+        panic!("expected controlled Claude execution profile");
+    };
+    claude.set_claude_session_id(Some("must-not-resume".to_string()));
+    assert!(claude.claude_session_id().is_none());
+    assert!(claude.is_controlled_execution_for_test());
+    assert_eq!(
+        claude.execution_working_dir_for_test(),
+        Some(canonical_disposable)
+    );
+    assert_eq!(
+        claude.execution_args_for_test(Effort::None).unwrap(),
+        vec![
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--model",
+            "claude-opus-x",
+            "--permission-mode",
+            "acceptEdits",
+            "--thinking-display",
+            "summarized",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--tools",
+            "Read,Glob,Grep,Write,Edit",
+            "--allowedTools",
+            "Read,Glob,Grep,Write,Edit",
+        ]
+    );
+
+    std::fs::remove_dir_all(real_root).unwrap();
+    std::fs::remove_dir_all(disposable_root).unwrap();
+}
+
 #[test]
 fn normal_cli_factory_profiles_do_not_enable_controlled_planning() {
     let root = super::scratch_dir("controlled-planning", "normal-cli");
@@ -686,6 +795,11 @@ fn normal_cli_factory_profiles_do_not_enable_controlled_planning() {
         panic!("expected normal Codex profile");
     };
     assert!(codex.planning_schema_path_for_test().is_none());
+    assert!(
+        codex
+            .execution_args_for_test("normal", Effort::None)
+            .is_none()
+    );
 
     let mut backends = HashMap::new();
     backends.insert(
@@ -707,6 +821,7 @@ fn normal_cli_factory_profiles_do_not_enable_controlled_planning() {
         panic!("expected normal Claude profile");
     };
     assert!(!claude.is_controlled_planning_for_test());
+    assert!(!claude.is_controlled_execution_for_test());
 
     std::fs::remove_dir_all(root).unwrap();
 }

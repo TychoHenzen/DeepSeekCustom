@@ -64,6 +64,39 @@ impl BackendFactory {
             }
         }
     }
+
+    /// Build a fresh execution backend rooted at one disposable workspace.
+    pub fn build_controlled_execution(
+        self: &Arc<Self>,
+        name: &str,
+        model_override: Option<&str>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
+        root: PathBuf,
+    ) -> Result<Backend, String> {
+        let root = canonical_controlled_root(root)?;
+        let working_dir = Arc::new(Mutex::new(root.clone()));
+        let scoped = self.with_working_dir(Arc::clone(&working_dir));
+        let resolved = scoped.resolve(name, model_override)?;
+        match resolved {
+            resolved @ ResolvedBackend::Api { .. } => build_controlled_api_backend(
+                resolved,
+                &scoped,
+                tx_events,
+                ControlledApiProfile::Execution,
+                root,
+            ),
+            ResolvedBackend::ClaudeCli { model, env, .. } => Ok(Backend::ClaudeCli(Box::new(
+                ClaudeCliDriver::new_execution(model, env, working_dir, tx_events),
+            ))),
+            ResolvedBackend::CodexCli { model, env, .. } => Ok(Backend::CodexCli(Box::new(
+                CodexCliDriver::new_execution(model, env, working_dir, tx_events),
+            ))),
+            #[cfg(feature = "test-support")]
+            ResolvedBackend::Stub { .. } => {
+                build_backend(&scoped, name, model_override, tx_events, 0)
+            }
+        }
+    }
 }
 
 fn canonical_controlled_root(root: PathBuf) -> Result<PathBuf, String> {

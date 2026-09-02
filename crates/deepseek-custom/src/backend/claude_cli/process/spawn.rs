@@ -42,7 +42,7 @@ impl ClaudeCliDriver {
             .voice_mode_flag
             .load(std::sync::atomic::Ordering::SeqCst);
         let want_effort = Effort::load(&self.effort_flag);
-        let resume_changed = self.planning_profile.is_none()
+        let resume_changed = self.controlled_profile.is_none()
             && resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
         let current_dir = self.working_dir.lock().unwrap().clone();
         let dir_changed = working_dir_changed(&current_dir, &self.spawned_working_dir);
@@ -173,7 +173,7 @@ impl ClaudeCliDriver {
         self.session_id_rx = Some(session_id_rx);
         self.spawned_voice_mode = voice_mode;
         self.spawned_resume_id = self
-            .planning_profile
+            .controlled_profile
             .is_none()
             .then(|| self.claude_session_id.clone())
             .flatten();
@@ -191,7 +191,7 @@ impl ClaudeCliDriver {
     ) -> Result<()> {
         let binary = self.resolve_binary_for_spawn()?;
         let append_prompt = voice_mode.then(voice_mode_instructions);
-        let args = match &self.planning_profile {
+        let args = match &self.controlled_profile {
             Some(profile) => profile.args(&self.model, effort),
             None => build_args(
                 &self.model,

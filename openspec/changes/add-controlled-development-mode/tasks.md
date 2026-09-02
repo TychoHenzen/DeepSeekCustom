@@ -24,9 +24,11 @@
 - [x] 2.3 Add forced fresh Codex and Claude planning profiles with read-only access, strict structured output, isolated configuration, and no session persistence.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: A Work Card is strict and bounded :: Valid Work Card awaits approval -->
-- [ ] 2.4 Add forced fresh Codex and Claude execution profiles with only their isolated workspace writable and no subagent or external tool configuration.
+- [x] 2.4 Add forced fresh Codex and Claude execution profiles with only their isolated workspace writable and no subagent or external tool configuration.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Codex CLI cannot bypass the outer workspace boundary -->
-- [ ] 2.5 Add focused fake CLI tests for exact Codex sandbox, schema, ephemeral, configuration-isolation, fresh-thread, and disposable working-directory arguments.
+- [x] 2.5 Add focused fake CLI tests for exact Codex sandbox, schema, ephemeral, configuration-isolation, fresh-thread, and disposable working-directory arguments.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Codex CLI cannot bypass the outer workspace boundary -->
 
 ## 3. Coordinator, approval, and promotion gates

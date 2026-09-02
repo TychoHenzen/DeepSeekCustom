@@ -12,8 +12,8 @@ use crate::agent::events::RoutedEvent;
 use crate::effort::Effort;
 
 use super::CodexCliDriver;
-use super::events::CodexEvent;
-use super::spawn::{build_args, build_planning_args};
+use super::controlled_profile::ControlledProfile;
+use super::spawn::build_planning_args;
 
 static NEXT_SCHEMA_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -81,50 +81,38 @@ impl CodexCliDriver {
             working_dir,
             tx_events,
         );
-        driver.planning_profile = Some(PlanningProfile::new(schema)?);
+        driver.controlled_profile =
+            Some(ControlledProfile::Planning(PlanningProfile::new(schema)?));
         Ok(driver)
-    }
-
-    pub(super) fn turn_args(&self, prompt: &str, model: &str, effort: Effort) -> Vec<String> {
-        match &self.planning_profile {
-            Some(profile) => profile.args(prompt, model, effort),
-            None => build_args(
-                prompt,
-                self.thread_id.as_deref(),
-                self.sandbox.as_deref(),
-                Some(model),
-                effort,
-            ),
-        }
-    }
-
-    pub(super) fn capture_thread(&mut self, event: &CodexEvent) {
-        if self.planning_profile.is_none()
-            && let CodexEvent::ThreadStarted(started) = event
-        {
-            self.thread_id = Some(started.thread_id.clone());
-        }
     }
 
     #[cfg(feature = "test-support")]
     pub fn planning_schema_path_for_test(&self) -> Option<&Path> {
-        self.planning_profile
-            .as_ref()
-            .map(PlanningProfile::schema_path)
+        match &self.controlled_profile {
+            Some(ControlledProfile::Planning(profile)) => Some(profile.schema_path()),
+            _ => None,
+        }
     }
 
     #[cfg(feature = "test-support")]
     pub fn planning_args_for_test(&self, prompt: &str, effort: Effort) -> Option<Vec<String>> {
         let model = self.model_flag.lock().ok()?.clone();
-        self.planning_profile
-            .as_ref()
-            .map(|profile| profile.args(prompt, &model, effort))
+        match &self.controlled_profile {
+            Some(ControlledProfile::Planning(profile)) => {
+                Some(profile.args(prompt, &model, effort))
+            }
+            _ => None,
+        }
     }
 
     #[cfg(feature = "test-support")]
     pub fn planning_working_dir_for_test(&self) -> Option<PathBuf> {
-        self.planning_profile.as_ref()?;
-        self.working_dir.lock().ok().map(|root| root.clone())
+        matches!(
+            self.controlled_profile,
+            Some(ControlledProfile::Planning(_))
+        )
+        .then(|| self.working_dir.lock().ok().map(|root| root.clone()))
+        .flatten()
     }
 }
 

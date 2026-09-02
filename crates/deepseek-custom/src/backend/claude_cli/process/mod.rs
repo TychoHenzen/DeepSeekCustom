@@ -57,7 +57,7 @@ pub struct ClaudeCliDriver {
     pub(super) repeat_interrupt_flag: Arc<AtomicBool>,
     pub(super) claude_session_id: Option<String>,
     pub(super) last_reply: Arc<Mutex<String>>,
-    pub(super) planning_profile: Option<super::planning::PlanningProfile>,
+    pub(super) controlled_profile: Option<super::controlled_profile::ControlledProfile>,
 }
 
 impl ClaudeCliDriver {
@@ -91,12 +91,12 @@ impl ClaudeCliDriver {
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             claude_session_id: None,
             last_reply: Arc::new(Mutex::new(String::new())),
-            planning_profile: None,
+            controlled_profile: None,
         }
     }
 
     pub fn set_claude_session_id(&mut self, id: Option<String>) {
-        if self.planning_profile.is_none() {
+        if self.controlled_profile.is_none() {
             self.claude_session_id = id;
         }
     }
@@ -170,7 +170,7 @@ impl ClaudeCliDriver {
     }
 
     fn drain_session_id(&mut self) {
-        if self.planning_profile.is_some() {
+        if self.controlled_profile.is_some() {
             return;
         }
         let Some(rx) = self.session_id_rx.as_mut() else {

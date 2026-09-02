@@ -11,70 +11,63 @@ use super::args::build_args;
 use super::controlled_profile::ControlledProfile;
 use super::process::ClaudeCliDriver;
 
-/// Fixed invocation policy for one fresh controlled planning driver.
-pub(super) struct PlanningProfile {
-    json_schema: String,
-}
+const EXECUTION_TOOLS: &str = "Read,Glob,Grep,Write,Edit";
 
-impl PlanningProfile {
-    fn new(schema: &serde_json::Value) -> Self {
-        Self {
-            json_schema: schema.to_string(),
-        }
-    }
+/// Fixed invocation policy for one fresh controlled execution driver.
+pub(super) struct ExecutionProfile;
 
+impl ExecutionProfile {
     pub(super) fn args(&self, model: &str, effort: Effort) -> Vec<String> {
-        let mut args = build_args(model, Some("plan"), None, None, effort);
+        let mut args = build_args(model, Some("acceptEdits"), None, None, effort);
         args.extend([
             "--safe-mode".to_string(),
             "--no-session-persistence".to_string(),
+            "--tools".to_string(),
+            EXECUTION_TOOLS.to_string(),
             "--allowedTools".to_string(),
-            "Read,Glob,Grep".to_string(),
-            "--json-schema".to_string(),
-            self.json_schema.clone(),
+            EXECUTION_TOOLS.to_string(),
         ]);
         args
     }
 }
 
 impl ClaudeCliDriver {
-    pub(crate) fn new_planning(
+    pub(crate) fn new_execution(
         model: String,
         extra_env: Option<HashMap<String, String>>,
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: UnboundedSender<RoutedEvent>,
-        schema: &serde_json::Value,
     ) -> Self {
         let mut driver = Self::new(
             model,
-            Some("plan".to_string()),
+            Some("acceptEdits".to_string()),
             extra_env,
             working_dir,
             tx_events,
         );
-        driver.controlled_profile = Some(ControlledProfile::Planning(PlanningProfile::new(schema)));
+        driver.controlled_profile = Some(ControlledProfile::Execution(ExecutionProfile));
         driver
     }
 
     #[cfg(feature = "test-support")]
-    pub fn is_controlled_planning_for_test(&self) -> bool {
+    pub fn is_controlled_execution_for_test(&self) -> bool {
         matches!(
             self.controlled_profile,
-            Some(ControlledProfile::Planning(_))
+            Some(ControlledProfile::Execution(_))
         )
     }
 
     #[cfg(feature = "test-support")]
-    pub fn planning_args_for_test(&self, effort: Effort) -> Option<Vec<String>> {
+    pub fn execution_args_for_test(&self, effort: Effort) -> Option<Vec<String>> {
         match &self.controlled_profile {
-            Some(ControlledProfile::Planning(profile)) => Some(profile.args(&self.model, effort)),
+            Some(ControlledProfile::Execution(profile)) => Some(profile.args(&self.model, effort)),
             _ => None,
         }
     }
 
     #[cfg(feature = "test-support")]
-    pub fn planning_working_dir_for_test(&self) -> Option<PathBuf> {
-        self.is_controlled_planning_for_test()
+    pub fn execution_working_dir_for_test(&self) -> Option<PathBuf> {
+        self.is_controlled_execution_for_test()
             .then(|| self.working_dir.lock().ok().map(|root| root.clone()))
             .flatten()
     }

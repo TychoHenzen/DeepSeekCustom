@@ -68,6 +68,7 @@ mod backend_claude_cli_events;
 mod backend_claude_cli_map;
 mod backend_claude_cli_one_shot;
 mod backend_claude_cli_process;
+mod backend_codex_cli_controlled;
 mod backend_codex_cli_events;
 mod backend_codex_cli_map;
 mod backend_codex_cli_spawn;

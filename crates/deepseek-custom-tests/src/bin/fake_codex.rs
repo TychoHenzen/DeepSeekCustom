@@ -10,11 +10,13 @@ const VERBATIM_MARKER: &str = "__FAKE_FRONTIER_RESPONSE__";
 const CWD_FILE_KEY: &str = "FAKE_CLI_CWD_FILE";
 const SIDE_EFFECT_PATH_KEY: &str = "FAKE_CLI_SIDE_EFFECT_PATH";
 const RESPONSE_KEY: &str = "FAKE_CLI_RESPONSE";
+const REJECT_ARG_KEY: &str = "FAKE_CODEX_REJECT_ARG";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     record_args(&args);
     record_working_dir();
+    reject_required_arg(&args);
     write_beside_target();
 
     let prompt = args.last().map(String::as_str).unwrap_or_default();
@@ -37,6 +39,16 @@ fn main() {
         "type":"turn.completed",
         "usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":2}
     }));
+}
+
+fn reject_required_arg(args: &[String]) {
+    let Ok(rejected) = std::env::var(REJECT_ARG_KEY) else {
+        return;
+    };
+    if args.iter().any(|argument| argument == &rejected) {
+        eprintln!("fake Codex rejected required argument {rejected}");
+        std::process::exit(64);
+    }
 }
 
 fn record_working_dir() {

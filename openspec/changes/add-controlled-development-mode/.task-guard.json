@@ -30,10 +30,12 @@
       "status": "completed"
     },
     "2.4": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "2.5": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.1": {
       "checked": false
