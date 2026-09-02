@@ -8,8 +8,8 @@ use crate::procedure::{
 
 use super::{
     ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentEffect,
-    ControlledDevelopmentPhase, ControlledDevelopmentState, ControlledDevelopmentTransitionError,
-    authorize_workspace_changes, promotion_plan,
+    ControlledDevelopmentPhase, ControlledDevelopmentRetainedWorkspace, ControlledDevelopmentState,
+    ControlledDevelopmentTransitionError, authorize_workspace_changes, promotion_plan,
 };
 
 /// Owns all runtime authority and evidence for one top-level session.
@@ -20,6 +20,7 @@ pub struct ControlledDevelopmentCoordinator {
     selection: Option<ControlledBackendSelection>,
     workspace_root: Option<std::path::PathBuf>,
     workspace_pair: Option<DisposableWorkspacePair>,
+    retained_workspace: Option<ControlledDevelopmentRetainedWorkspace>,
     raw_events: Vec<RoutedEvent>,
     proof_evidence: Vec<VerifierGateEvidence>,
     changed_paths: Vec<String>,
@@ -80,6 +81,28 @@ impl ControlledDevelopmentCoordinator {
             .map(DisposableWorkspacePair::execution_path)
     }
 
+    pub const fn has_retained_workspace(&self) -> bool {
+        self.retained_workspace.is_some()
+    }
+
+    pub fn retained_workspace_paths(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        self.retained_workspace
+            .as_ref()
+            .map(|workspace| (workspace.baseline_path(), workspace.execution_path()))
+    }
+
+    pub fn retained_packet_id(&self) -> Option<&str> {
+        self.retained_workspace
+            .as_ref()
+            .map(ControlledDevelopmentRetainedWorkspace::packet_id)
+    }
+
+    pub fn diagnostic_diff(&self) -> Option<&str> {
+        self.retained_workspace
+            .as_ref()
+            .map(ControlledDevelopmentRetainedWorkspace::diagnostic_diff)
+    }
+
     /// Apply one typed command and return at most one slow service effect.
     pub fn handle(
         &mut self,
@@ -87,10 +110,11 @@ impl ControlledDevelopmentCoordinator {
     ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
         match command {
             ControlledDevelopmentCommand::SetEnabled { enabled } => {
-                self.state.set_enabled(enabled);
                 if !enabled {
+                    self.cleanup_packet_workspaces()?;
                     self.clear_packet_data();
                 }
+                self.state.set_enabled(enabled);
                 Ok(None)
             }
             ControlledDevelopmentCommand::Plan {
@@ -112,6 +136,10 @@ impl ControlledDevelopmentCoordinator {
                 self.state.reject_current_card(&card_id)?;
                 self.blocker = Some("Work Card rejected by user".to_string());
                 self.compact_summary = Some("Work Card rejected without execution".to_string());
+                Ok(None)
+            }
+            ControlledDevelopmentCommand::DiscardRetainedEvidence => {
+                self.discard_retained_evidence()?;
                 Ok(None)
             }
             ControlledDevelopmentCommand::ExecutionWorkspaceReady { card_id, workspace } => {
@@ -151,12 +179,14 @@ impl ControlledDevelopmentCoordinator {
                 self.state.block_current_packet(&packet_id)?;
                 self.blocker = Some(blocker);
                 self.compact_summary = Some(summary);
+                self.retain_execution_workspace();
                 Ok(None)
             }
             ControlledDevelopmentCommand::Interrupt { packet_id, summary } => {
                 self.state.interrupt_current_packet(&packet_id)?;
                 self.blocker = None;
                 self.compact_summary = Some(summary);
+                self.retain_execution_workspace();
                 Ok(None)
             }
         }
@@ -175,6 +205,13 @@ impl ControlledDevelopmentCoordinator {
         if selection.backend.trim().is_empty() {
             return Err(ControlledDevelopmentTransitionError::InvalidBackendName);
         }
+        if !self.state.is_enabled() {
+            return Err(ControlledDevelopmentTransitionError::Disabled);
+        }
+        if packet_id.trim().is_empty() {
+            return Err(ControlledDevelopmentTransitionError::InvalidPacketId);
+        }
+        self.cleanup_packet_workspaces()?;
         self.state.begin_packet(packet_id.clone())?;
         self.clear_packet_data();
         self.original_request = Some(original_request.clone());
@@ -340,6 +377,7 @@ impl ControlledDevelopmentCoordinator {
                 self.blocker = Some(summary.clone());
             }
             self.compact_summary = Some(summary);
+            self.retain_execution_workspace();
             return Ok(None);
         }
 
@@ -403,6 +441,7 @@ impl ControlledDevelopmentCoordinator {
                 self.state.block_current_packet(card_id)?;
                 self.blocker = Some(blocker.clone());
                 self.compact_summary = Some(format!("Controlled Development blocked: {blocker}"));
+                self.retain_execution_workspace();
             }
         }
         Ok(None)
@@ -416,7 +455,35 @@ impl ControlledDevelopmentCoordinator {
         self.state.block_current_packet(card_id)?;
         self.blocker = Some(blocker.clone());
         self.compact_summary = Some(format!("Controlled Development blocked: {blocker}"));
+        self.retain_execution_workspace();
         Ok(None)
+    }
+
+    fn retain_execution_workspace(&mut self) {
+        let Some(workspace) = self.workspace_pair.take() else {
+            return;
+        };
+        let packet_id = self.state.packet_id().unwrap_or_default().to_string();
+        self.retained_workspace = Some(ControlledDevelopmentRetainedWorkspace::retain(
+            packet_id, workspace,
+        ));
+    }
+
+    fn cleanup_packet_workspaces(&mut self) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.workspace_pair = None;
+        self.discard_retained_evidence()
+    }
+
+    fn discard_retained_evidence(&mut self) -> Result<(), ControlledDevelopmentTransitionError> {
+        let Some(workspace) = self.retained_workspace.take() else {
+            return Ok(());
+        };
+        workspace.cleanup().map_err(|error| {
+            ControlledDevelopmentTransitionError::RetainedWorkspaceCleanupFailed(error.to_string())
+        })?;
+        self.raw_events.clear();
+        self.proof_evidence.clear();
+        Ok(())
     }
 
     fn packet_context(

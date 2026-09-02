@@ -24,6 +24,7 @@ pub enum ControlledDevelopmentTransitionError {
     ProofEvidenceMismatch,
     PromotionNotDispatched,
     ExecutionWorkspaceAlreadyAttached,
+    RetainedWorkspaceCleanupFailed(String),
     InvalidWorkCard(WorkCardValidationErrors),
 }
 
@@ -70,6 +71,12 @@ impl fmt::Display for ControlledDevelopmentTransitionError {
             }
             Self::ExecutionWorkspaceAlreadyAttached => {
                 formatter.write_str("current card already owns an execution workspace")
+            }
+            Self::RetainedWorkspaceCleanupFailed(error) => {
+                write!(
+                    formatter,
+                    "could not clean retained workspace evidence: {error}"
+                )
             }
             Self::InvalidWorkCard(errors) => errors.fmt(formatter),
         }

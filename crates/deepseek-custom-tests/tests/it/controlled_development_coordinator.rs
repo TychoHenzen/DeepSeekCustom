@@ -195,6 +195,10 @@ fn changed_path_outside_approved_lists_blocks_before_any_promotion_effect() {
         }),
         Err(ControlledDevelopmentTransitionError::NotExecuting)
     ));
+    assert!(coordinator.has_retained_workspace());
+    coordinator
+        .handle(ControlledDevelopmentCommand::DiscardRetainedEvidence)
+        .unwrap();
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -307,6 +311,10 @@ fn dependency_file_classifier_and_named_exception_gate_fail_closed() {
         std::fs::read_to_string(root.join("web/package.json")).unwrap(),
         r#"{"dependencies":{"react":"1"}}"#
     );
+    assert!(coordinator.has_retained_workspace());
+    coordinator
+        .handle(ControlledDevelopmentCommand::DiscardRetainedEvidence)
+        .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 
     let allowed_root = super::scratch_dir("controlled-development", "dependency-allowed");

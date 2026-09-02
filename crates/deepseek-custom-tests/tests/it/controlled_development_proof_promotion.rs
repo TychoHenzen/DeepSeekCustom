@@ -77,6 +77,16 @@ fn failing_proof_records_evidence_stops_later_commands_and_never_promotes() {
             "real before\n"
         );
         assert!(coordinator.promotion_evidence().is_none());
+        assert!(coordinator.has_retained_workspace());
+        assert!(
+            coordinator
+                .diagnostic_diff()
+                .unwrap()
+                .contains("approved.txt")
+        );
+        coordinator
+            .handle(ControlledDevelopmentCommand::DiscardRetainedEvidence)
+            .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     });
 }
@@ -160,9 +170,88 @@ fn passing_proofs_promote_only_validated_paths_as_one_transaction() {
     });
 }
 
+// covers: deepseek-custom/controlled-development-mode :: Promotion rejects overlapping concurrent edits :: Overlapping real-workspace changes block promotion without data loss
+#[test]
+fn overlapping_real_workspace_change_blocks_every_packet_target_without_data_loss() {
+    run_async(async {
+        let root = fixture_root("promotion-overlap");
+        std::fs::write(root.join("first.txt"), "first real before\n").unwrap();
+        std::fs::write(root.join("second.txt"), "second real before\n").unwrap();
+        std::fs::write(root.join("unrelated.txt"), "unrelated before\n").unwrap();
+        write_proof_scripts(&root, false);
+        let commands = proof_commands();
+        let (mut coordinator, execution_root) =
+            executing_coordinator_with_paths(&root, &commands, &["first.txt", "second.txt"]);
+        std::fs::write(execution_root.join("first.txt"), "first isolated after\n").unwrap();
+        std::fs::write(execution_root.join("second.txt"), "second isolated after\n").unwrap();
+
+        let proof_effect = coordinator
+            .handle(ControlledDevelopmentCommand::ValidateIsolatedChanges {
+                card_id: "packet-1".into(),
+            })
+            .unwrap()
+            .unwrap();
+        let run = proof_effect.run_proof_commands().await.unwrap();
+        assert!(run.all_commands_succeeded());
+        let promotion_effect = coordinator
+            .handle(ControlledDevelopmentCommand::ProofsFinished {
+                card_id: "packet-1".into(),
+                run: Box::new(run),
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            promotion_effect,
+            ControlledDevelopmentEffect::PromoteValidatedChanges { ref targets, .. }
+                if targets.len() == 2
+        ));
+
+        std::fs::write(root.join("first.txt"), "concurrent user bytes\n").unwrap();
+        std::fs::write(root.join("unrelated.txt"), "unrelated concurrent bytes\n").unwrap();
+        let result = promotion_effect.promote_validated_changes().unwrap();
+        assert!(result.is_err());
+        coordinator
+            .handle(ControlledDevelopmentCommand::PromotionFinished {
+                card_id: "packet-1".into(),
+                result: result.map(Box::new).map_err(Box::new),
+            })
+            .unwrap();
+
+        assert_eq!(
+            coordinator.state().phase(),
+            ControlledDevelopmentPhase::Blocked
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("first.txt")).unwrap(),
+            "concurrent user bytes\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("second.txt")).unwrap(),
+            "second real before\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("unrelated.txt")).unwrap(),
+            "unrelated concurrent bytes\n"
+        );
+        assert!(coordinator.has_retained_workspace());
+        coordinator
+            .handle(ControlledDevelopmentCommand::DiscardRetainedEvidence)
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
 fn executing_coordinator(
     root: &Path,
     proof_commands: &[String],
+) -> (ControlledDevelopmentCoordinator, PathBuf) {
+    executing_coordinator_with_paths(root, proof_commands, &["approved.txt"])
+}
+
+fn executing_coordinator_with_paths(
+    root: &Path,
+    proof_commands: &[String],
+    production_paths: &[&str],
 ) -> (ControlledDevelopmentCoordinator, PathBuf) {
     let mut coordinator = ControlledDevelopmentCoordinator::default();
     coordinator
@@ -183,7 +272,7 @@ fn executing_coordinator(
                 "id": "packet-1",
                 "outcome": "The approved file contains the requested bytes.",
                 "proof_commands": proof_commands,
-                "production_paths": ["approved.txt"],
+                "production_paths": production_paths,
                 "supporting_paths": proof_script_paths(),
                 "excluded": ["unapproved.txt"],
                 "complexity_exceptions": []

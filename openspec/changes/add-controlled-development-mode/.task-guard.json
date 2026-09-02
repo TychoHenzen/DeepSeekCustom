@@ -66,10 +66,12 @@
       "status": "completed"
     },
     "3.8": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.9": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "3.10": {
       "checked": false

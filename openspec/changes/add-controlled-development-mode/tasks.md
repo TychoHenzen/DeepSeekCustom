@@ -54,9 +54,11 @@
 - [x] 3.7 Reuse `PromotionBaseline` and `promote_verified_workspace` to promote only validated changed paths plus reserved project state after every gate passes.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Every proof command must pass in isolation :: Passing packet promotes only approved paths -->
-- [ ] 3.8 Add a concurrent-overlap integration case that preserves the real user's bytes and rolls back every packet target.
+- [x] 3.8 Add a concurrent-overlap integration case that preserves the real user's bytes and rolls back every packet target.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Promotion rejects overlapping concurrent edits :: Overlapping real-workspace changes block promotion without data loss -->
-- [ ] 3.9 Retain failed baseline and execution roots, expose their diagnostic diff, and clean them only on explicit discard, packet replacement, reset, or deletion.
+- [x] 3.9 Retain failed baseline and execution roots, expose their diagnostic diff, and clean them only on explicit discard, packet replacement, reset, or deletion.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Failed packets retain diagnostic evidence :: Blocked packet remains inspectable -->
 - [ ] 3.10 Route text and UI Stop through the existing backend, verifier, and process interruption paths, then block every later gate and promotion transition.
 <!-- covers: deepseek-custom/controlled-development-mode :: Stop prevents promotion :: STOP interrupts the backend and prevents promotion -->
