@@ -5,8 +5,11 @@
 //! the difference: both variants expose the same six shared flags.
 
 pub mod build_api;
+mod build_controlled_api;
 pub mod claude_cli;
 pub mod codex_cli;
+mod controlled;
+mod controlled_api_profile;
 pub mod factory;
 pub mod registry;
 pub mod resolved;

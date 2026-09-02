@@ -54,24 +54,26 @@ impl OutputMode {
 /// Regular expression search under the working directory. Reads the shared
 /// working directory fresh on every call, like the other file tools.
 pub struct GrepTool {
-    working_dir: Arc<Mutex<PathBuf>>,
+    root: super::FileToolRoot,
 }
 
 impl GrepTool {
     pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
-        Self { working_dir }
+        Self {
+            root: super::FileToolRoot::working_directory(working_dir),
+        }
     }
 
-    fn search_root(&self, path: Option<&str>) -> PathBuf {
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
+    pub(crate) fn rooted(root: PathBuf) -> std::result::Result<Self, String> {
+        Ok(Self {
+            root: super::FileToolRoot::fixed(root)?,
+        })
+    }
+
+    fn search_root(&self, path: Option<&str>) -> std::result::Result<PathBuf, String> {
         match path {
-            Some(path) if Path::new(path).is_absolute() => PathBuf::from(path),
-            Some(path) => working_dir.join(path),
-            None => working_dir,
+            Some(path) => self.root.resolve(path),
+            None => self.root.root(),
         }
     }
 }
@@ -134,6 +136,7 @@ fn search_one_file(path: &Path, regex: &regex::Regex, mode: OutputMode) -> Vec<S
 /// failing the search.
 fn search_tree(
     root: &Path,
+    policy: &super::FileToolRoot,
     regex: &regex::Regex,
     filter: Option<&glob::Pattern>,
     mode: OutputMode,
@@ -145,7 +148,7 @@ fn search_tree(
         .filter_entry(|entry| !is_skipped_dir(entry));
 
     for entry in walker.flatten() {
-        if !is_searchable(&entry, filter) {
+        if !is_searchable(&entry, filter) || !policy.permits_existing(entry.path()) {
             continue;
         }
         lines.extend(search_one_file(entry.path(), regex, mode));
@@ -225,7 +228,10 @@ impl Tool for GrepTool {
         let parsed: GrepInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid grep input: {e}")))?;
 
-        let root = self.search_root(parsed.path.as_deref());
+        let root = match self.search_root(parsed.path.as_deref()) {
+            Ok(root) => root,
+            Err(reason) => return Ok(ToolOutput::error(reason)),
+        };
         let mode = match OutputMode::parse(parsed.output_mode.as_deref()) {
             Ok(mode) => mode,
             Err(reason) => return Ok(ToolOutput::error(reason)),
@@ -241,7 +247,7 @@ impl Tool for GrepTool {
 
         let limit = parsed.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
         debug!("grep: pattern={} root={}", parsed.pattern, root.display());
-        let lines = search_tree(&root, &regex, filter.as_ref(), mode, limit);
+        let lines = search_tree(&root, &self.root, &regex, filter.as_ref(), mode, limit);
 
         info!(
             "grep: {} result line(s) for {}",

@@ -3,6 +3,7 @@ pub mod bash;
 pub mod cd;
 pub mod close_session;
 pub mod edit;
+mod file_root;
 pub mod glob;
 pub mod grep;
 pub mod line_endings;
@@ -16,14 +17,15 @@ pub mod task;
 pub mod write;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
 use crate::api::types::{FunctionDef, ImageAttachment, ToolDef};
 use crate::config::settings::PermissionsConfig;
 use crate::error::Result;
+
+pub(crate) use file_root::{FileToolRoot, resolve_against};
 
 /// Trait implemented by all tools the agent can invoke.
 #[async_trait]
@@ -208,25 +210,6 @@ impl WeakToolRegistry {
     pub fn upgrade(&self) -> Option<ToolRegistry> {
         self.tools.upgrade().map(|tools| ToolRegistry { tools })
     }
-}
-
-/// Resolve `path` against the working directory, read fresh from the
-/// shared handle on every call. An absolute path is used as given.
-///
-/// Every tool that takes a path from the model resolves it this way, so
-/// the answer follows a `cd` the model made earlier in the same turn.
-/// Each such tool keeps its own `resolve_path` wrapper over this, so one
-/// that ever needs different resolution stops delegating on its own.
-fn resolve_against(working_dir: &Mutex<PathBuf>, path: &str) -> PathBuf {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    let working_dir = working_dir
-        .lock()
-        .expect("working_dir mutex poisoned")
-        .clone();
-    working_dir.join(path)
 }
 
 /// Check if a tool name matches a pattern (exact or wildcard suffix).

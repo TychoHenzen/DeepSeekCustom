@@ -55,16 +55,13 @@ fn build_answerer(
     ))
 }
 
-/// Construction-time handles shared by the depth-gated tools and the
-/// `AgentLoop` itself: the event sender, the subagent registry, and the
-/// effort flag.
-struct GatedToolCtx {
-    tx_events: mpsc::UnboundedSender<RoutedEvent>,
-    subagent_registry: Arc<SubagentRegistry>,
-    effort_flag: Arc<AtomicU8>,
+/// Construction-time handles shared by depth-gated tools and the agent loop.
+pub(super) struct GatedToolCtx {
+    pub(super) tx_events: mpsc::UnboundedSender<RoutedEvent>,
+    pub(super) subagent_registry: Arc<SubagentRegistry>,
+    pub(super) effort_flag: Arc<AtomicU8>,
 }
 
-/// Register every built-in tool onto `tools`, plus MCP tools known so far.
 fn register_tools(
     tools: &ToolRegistry,
     factory: &Arc<BackendFactory>,
@@ -107,7 +104,7 @@ fn register_tools(
 }
 
 /// Wire up the `AgentLoop` with all its handles and wrap it in `Backend::Api`.
-fn finish_agent(
+pub(super) fn finish_agent(
     client: ApiClient,
     tools: ToolRegistry,
     system_prompt: String,

@@ -2,6 +2,7 @@
 
 pub mod events;
 pub mod map;
+mod planning;
 mod repeat;
 #[cfg_attr(feature = "test-support", doc(hidden))]
 #[cfg_attr(feature = "test-support", allow(missing_docs))]
@@ -29,7 +30,8 @@ use crate::error::{HarnessError, Result};
 
 use self::events::{CodexEvent, parse_event};
 use self::map::EventMapper;
-use self::spawn::{build_args, spawn_codex};
+use self::planning::PlanningProfile;
+use self::spawn::spawn_codex;
 
 const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DROP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -49,6 +51,7 @@ pub struct CodexCliDriver {
     context_budget_flag: Arc<AtomicUsize>,
     model_flag: Arc<Mutex<String>>,
     repeat_interrupt_flag: Arc<AtomicBool>,
+    planning_profile: Option<PlanningProfile>,
 }
 
 impl CodexCliDriver {
@@ -72,6 +75,7 @@ impl CodexCliDriver {
             context_budget_flag: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model_flag: Arc::new(Mutex::new(model)),
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
+            planning_profile: None,
         }
     }
 
@@ -113,7 +117,9 @@ impl CodexCliDriver {
     }
 
     pub fn set_thread_id(&mut self, thread_id: Option<String>) {
-        self.thread_id = thread_id;
+        if self.planning_profile.is_none() {
+            self.thread_id = thread_id;
+        }
     }
 
     pub fn clear_session(&mut self) {
@@ -152,13 +158,7 @@ impl CodexCliDriver {
             .map_err(|_| HarnessError::Tool("model lock is poisoned".to_owned()))?
             .clone();
         let effort = Effort::load(&self.effort_flag);
-        let args = build_args(
-            text,
-            self.thread_id.as_deref(),
-            self.sandbox.as_deref(),
-            Some(&model),
-            effort,
-        );
+        let args = self.turn_args(text, &model, effort);
         let spawned = spawn_codex(&args, &working_dir, self.extra_env.as_ref())?;
         let mut lines = BufReader::new(spawned.stdout).lines();
         let mut stderr = spawned.stderr;
@@ -189,9 +189,7 @@ impl CodexCliDriver {
                     let Some(event) = parse_event(&line) else {
                         continue;
                     };
-                    if let CodexEvent::ThreadStarted(started) = &event {
-                        self.thread_id = Some(started.thread_id.clone());
-                    }
+                    self.capture_thread(&event);
                     terminal = matches!(
                         &event,
                         CodexEvent::TurnCompleted(_) | CodexEvent::TurnFailed(_)

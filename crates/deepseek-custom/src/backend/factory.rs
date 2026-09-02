@@ -23,6 +23,7 @@ use crate::mcp::McpManager;
 use crate::tools::ToolRegistry;
 
 use super::build_api::build_backend;
+pub use super::controlled_api_profile::ControlledApiProfile;
 use super::resolved::{self, ResolvedBackend};
 
 /// True when a backend built at `depth` may dispatch a subagent of its

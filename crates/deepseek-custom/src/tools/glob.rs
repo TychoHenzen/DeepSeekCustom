@@ -25,33 +25,29 @@ const MAX_RESULTS: usize = 200;
 /// names its own `path`. Reads the shared working directory fresh on every
 /// call, the same way `read`, `write`, and `edit` do.
 pub struct GlobTool {
-    working_dir: Arc<Mutex<PathBuf>>,
+    root: super::FileToolRoot,
 }
 
 impl GlobTool {
     pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
-        Self { working_dir }
+        Self {
+            root: super::FileToolRoot::working_directory(working_dir),
+        }
+    }
+
+    pub(crate) fn rooted(root: PathBuf) -> std::result::Result<Self, String> {
+        Ok(Self {
+            root: super::FileToolRoot::fixed(root)?,
+        })
     }
 
     /// The directory this call searches under. An absolute `path` is used
     /// as given. A relative one joins onto the working directory. No path
     /// at all means the working directory itself.
-    fn search_root(&self, path: Option<&str>) -> PathBuf {
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
+    fn search_root(&self, path: Option<&str>) -> std::result::Result<PathBuf, String> {
         match path {
-            Some(path) => {
-                let path = Path::new(path);
-                if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    working_dir.join(path)
-                }
-            }
-            None => working_dir,
+            Some(path) => self.root.resolve(path),
+            None => self.root.root(),
         }
     }
 }
@@ -74,12 +70,19 @@ fn modified_at(path: &Path) -> SystemTime {
 /// Expand `pattern` under `root` and return matching files, newest first,
 /// capped at `MAX_RESULTS`. A directory that matches is skipped: the model
 /// asked for files.
-fn matching_files(root: &Path, pattern: &str) -> std::result::Result<Vec<PathBuf>, String> {
+fn matching_files(
+    root: &Path,
+    pattern: &str,
+    policy: &super::FileToolRoot,
+) -> std::result::Result<Vec<PathBuf>, String> {
     let joined = root.join(pattern);
     let joined = joined.to_string_lossy().replace('\\', "/");
     let paths = glob::glob(&joined).map_err(|e| format!("Invalid glob pattern: {e}"))?;
 
-    let mut hits: Vec<PathBuf> = paths.flatten().filter(|path| path.is_file()).collect();
+    let mut hits: Vec<PathBuf> = paths
+        .flatten()
+        .filter(|path| path.is_file() && policy.permits_existing(path))
+        .collect();
     hits.sort_by_key(|path| std::cmp::Reverse(modified_at(path)));
     hits.truncate(MAX_RESULTS);
     Ok(hits)
@@ -118,10 +121,17 @@ impl Tool for GlobTool {
         let parsed: GlobInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid glob input: {e}")))?;
 
-        let root = self.search_root(parsed.path.as_deref());
+        if let Err(reason) = self.root.validate_glob_pattern(&parsed.pattern) {
+            return Ok(ToolOutput::error(reason));
+        }
+
+        let root = match self.search_root(parsed.path.as_deref()) {
+            Ok(root) => root,
+            Err(reason) => return Ok(ToolOutput::error(reason)),
+        };
         debug!("glob: pattern={} root={}", parsed.pattern, root.display());
 
-        let hits = match matching_files(&root, &parsed.pattern) {
+        let hits = match matching_files(&root, &parsed.pattern, &self.root) {
             Ok(hits) => hits,
             Err(reason) => return Ok(ToolOutput::error(reason)),
         };

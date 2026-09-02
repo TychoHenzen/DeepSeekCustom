@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use deepseek_custom::backend::codex_cli::spawn::{
-    build_args_for_test, command_working_dir_for_test,
+    build_args_for_test, build_planning_args_for_test, command_working_dir_for_test,
 };
 use deepseek_custom::effort::Effort;
 
@@ -101,4 +101,38 @@ fn spawn_command_uses_current_dir_without_a_dash_c_argument() {
         command_working_dir_for_test(&args, Path::new("C:/another-directory")),
         Some(PathBuf::from("C:/another-directory"))
     );
+}
+
+#[test]
+fn controlled_planning_args_force_fresh_read_only_isolated_structured_output() {
+    let schema = PathBuf::from(r"C:\Temp\controlled-work-card-schema.json");
+    let args = build_planning_args_for_test(
+        "produce one card",
+        &schema,
+        Some("gpt-5-codex"),
+        Effort::High,
+    );
+
+    assert_eq!(
+        args,
+        vec![
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--output-schema",
+            r"C:\Temp\controlled-work-card-schema.json",
+            "-m",
+            "gpt-5-codex",
+            "-c",
+            "reasoning.effort=high",
+            "produce one card",
+        ]
+    );
+    assert!(!args.iter().any(|argument| argument == "resume"));
+    assert!(!args.iter().any(|argument| argument.contains("bypass")));
 }

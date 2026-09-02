@@ -61,6 +61,41 @@ pub(super) fn build_args(
     args
 }
 
+/// Build one fresh Controlled Development planning invocation.
+///
+/// This profile is always read-only, ignores user configuration and rules,
+/// never resumes a thread, and requires the complete final response to match
+/// the supplied JSON Schema file.
+pub(super) fn build_planning_args(
+    prompt: &str,
+    output_schema: &Path,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "--json".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "--sandbox".to_owned(),
+        "read-only".to_owned(),
+        "--ephemeral".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--ignore-rules".to_owned(),
+        "--output-schema".to_owned(),
+        output_schema.display().to_string(),
+    ];
+    if let Some(model) = model {
+        args.push("-m".to_owned());
+        args.push(model.to_owned());
+    }
+    if let Some(level) = effort.codex_cli_effort_level() {
+        args.push("-c".to_owned());
+        args.push(format!("reasoning.effort={level}"));
+    }
+    args.push(prompt.to_owned());
+    args
+}
+
 /// Test-only access to the argument contract without widening production API.
 #[cfg(feature = "test-support")]
 pub fn build_args_for_test(
@@ -71,6 +106,16 @@ pub fn build_args_for_test(
     effort: Effort,
 ) -> Vec<String> {
     build_args(prompt, thread_id, sandbox, model, effort)
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_planning_args_for_test(
+    prompt: &str,
+    output_schema: &Path,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    build_planning_args(prompt, output_schema, model, effort)
 }
 
 fn build_command(args: &[String], working_dir: &Path) -> Command {

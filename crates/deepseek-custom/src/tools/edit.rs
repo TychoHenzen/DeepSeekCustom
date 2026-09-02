@@ -28,18 +28,26 @@ use crate::tools::{Tool, ToolOutput};
 /// `write` do. There is no path sandbox, on purpose. See the working
 /// directory section of `CLAUDE.md`.
 pub struct EditTool {
-    working_dir: Arc<Mutex<PathBuf>>,
+    root: super::FileToolRoot,
 }
 
 impl EditTool {
     pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
-        Self { working_dir }
+        Self {
+            root: super::FileToolRoot::working_directory(working_dir),
+        }
+    }
+
+    pub(crate) fn rooted(root: PathBuf) -> std::result::Result<Self, String> {
+        Ok(Self {
+            root: super::FileToolRoot::fixed(root)?,
+        })
     }
 
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared handle. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> PathBuf {
-        super::resolve_against(&self.working_dir, file_path)
+    fn resolve_path(&self, file_path: &str) -> std::result::Result<PathBuf, String> {
+        self.root.resolve(file_path)
     }
 }
 
@@ -159,7 +167,10 @@ impl Tool for EditTool {
         let parsed: EditInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid edit input: {e}")))?;
 
-        let path = self.resolve_path(&parsed.file_path);
+        let path = match self.resolve_path(&parsed.file_path) {
+            Ok(path) => path,
+            Err(reason) => return Ok(ToolOutput::error(reason)),
+        };
         debug!("edit: path={}", path.display());
 
         let source = match std::fs::read_to_string(&path) {

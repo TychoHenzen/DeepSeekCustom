@@ -42,7 +42,8 @@ impl ClaudeCliDriver {
             .voice_mode_flag
             .load(std::sync::atomic::Ordering::SeqCst);
         let want_effort = Effort::load(&self.effort_flag);
-        let resume_changed = resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
+        let resume_changed = self.planning_profile.is_none()
+            && resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
         let current_dir = self.working_dir.lock().unwrap().clone();
         let dir_changed = working_dir_changed(&current_dir, &self.spawned_working_dir);
         if self.child.is_some()
@@ -171,7 +172,11 @@ impl ClaudeCliDriver {
         self.turn_done = Some(turn_done_rx);
         self.session_id_rx = Some(session_id_rx);
         self.spawned_voice_mode = voice_mode;
-        self.spawned_resume_id = self.claude_session_id.clone();
+        self.spawned_resume_id = self
+            .planning_profile
+            .is_none()
+            .then(|| self.claude_session_id.clone())
+            .flatten();
         self.spawned_working_dir = Some(working_dir);
         self.spawned_effort = effort;
     }
@@ -186,13 +191,16 @@ impl ClaudeCliDriver {
     ) -> Result<()> {
         let binary = self.resolve_binary_for_spawn()?;
         let append_prompt = voice_mode.then(voice_mode_instructions);
-        let args = build_args(
-            &self.model,
-            self.permission_mode.as_deref(),
-            append_prompt,
-            self.claude_session_id.as_deref(),
-            effort,
-        );
+        let args = match &self.planning_profile {
+            Some(profile) => profile.args(&self.model, effort),
+            None => build_args(
+                &self.model,
+                self.permission_mode.as_deref(),
+                append_prompt,
+                self.claude_session_id.as_deref(),
+                effort,
+            ),
+        };
         let command = self.build_spawn_command(&binary, &args, &working_dir);
         let spawned = self.spawn_and_take_handles(command, &binary)?;
         self.attach_child_io(spawned, voice_mode, working_dir, effort);

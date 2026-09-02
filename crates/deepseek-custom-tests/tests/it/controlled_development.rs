@@ -14,6 +14,7 @@ use deepseek_custom::controlled_development::{
     ControlledDevelopmentPhase, ControlledDevelopmentState, MAX_COMPLEXITY_EXCEPTIONS,
     MAX_EXCLUSIONS, MAX_PROOF_COMMAND_CHARS, MAX_SUPPORTING_PATHS, MAX_WORK_CARD_ID_CHARS,
     MAX_WORK_CARD_ITEM_CHARS, MAX_WORK_CARD_OUTCOME_CHARS, MAX_WORK_CARD_PATH_CHARS, WorkCard,
+    work_card_json_schema,
 };
 use deepseek_custom::session::SessionStore;
 use serde_json::json;
@@ -145,6 +146,37 @@ fn valid_work_card_is_stored_and_awaits_approval() {
     assert_eq!(state.phase(), ControlledDevelopmentPhase::AwaitingApproval);
     assert_eq!(state.work_card(), Some(&card));
     assert_eq!(state.approved_card_id(), None);
+}
+
+// covers: deepseek-custom/controlled-development-mode :: A Work Card is strict and bounded :: Valid Work Card awaits approval
+#[test]
+fn complete_structured_planning_response_matches_schema_and_awaits_approval() {
+    let schema = work_card_json_schema();
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["proof_commands"]["maxItems"], 3);
+    assert_eq!(schema["properties"]["production_paths"]["maxItems"], 3);
+    assert_eq!(schema["required"].as_array().unwrap().len(), 7);
+
+    let complete_response = json!({
+        "id": "packet-schema-1",
+        "outcome": "The planning profile produces one complete bounded Work Card.",
+        "proof_commands": ["cargo check --workspace"],
+        "production_paths": ["crates/deepseek-custom/src/backend/factory.rs"],
+        "supporting_paths": ["crates/deepseek-custom-tests/tests/it/backend_factory.rs"],
+        "excluded": ["settings.json"],
+        "complexity_exceptions": []
+    })
+    .to_string();
+    let mut state = ControlledDevelopmentState::default();
+    state.set_enabled(true);
+    state.begin_packet("packet-schema-1").unwrap();
+
+    state.accept_planning_result(&complete_response).unwrap();
+
+    assert_eq!(state.phase(), ControlledDevelopmentPhase::AwaitingApproval);
+    assert_eq!(state.work_card().unwrap().id, "packet-schema-1");
+    assert!(state.structural_errors().is_empty());
 }
 
 // covers: deepseek-custom/controlled-development-mode :: A Work Card is strict and bounded :: Malformed Work Card is rejected

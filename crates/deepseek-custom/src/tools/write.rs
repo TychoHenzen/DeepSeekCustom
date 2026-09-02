@@ -15,12 +15,20 @@ use crate::tools::{Tool, ToolOutput};
 /// purpose. See the phase 4 section of
 /// `docs/plans/2026-08-04-long-term-roadmap.md`.
 pub struct WriteTool {
-    working_dir: Arc<Mutex<PathBuf>>,
+    root: super::FileToolRoot,
 }
 
 impl WriteTool {
     pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
-        Self { working_dir }
+        Self {
+            root: super::FileToolRoot::working_directory(working_dir),
+        }
+    }
+
+    pub(crate) fn rooted(root: PathBuf) -> std::result::Result<Self, String> {
+        Ok(Self {
+            root: super::FileToolRoot::fixed(root)?,
+        })
     }
 }
 
@@ -73,7 +81,10 @@ impl Tool for WriteTool {
         let parsed: WriteInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid write input: {e}")))?;
 
-        let path = self.resolve_path(&parsed.file_path);
+        let path = match self.resolve_path(&parsed.file_path) {
+            Ok(path) => path,
+            Err(reason) => return Ok(ToolOutput::error(reason)),
+        };
         let content = match_existing_line_endings(&path, parsed.content);
         debug!("write: path={}, bytes={}", path.display(), content.len());
 
@@ -98,7 +109,7 @@ impl Tool for WriteTool {
 impl WriteTool {
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared flag. An absolute path is used as given.
-    fn resolve_path(&self, file_path: &str) -> PathBuf {
-        super::resolve_against(&self.working_dir, file_path)
+    fn resolve_path(&self, file_path: &str) -> std::result::Result<PathBuf, String> {
+        self.root.resolve(file_path)
     }
 }

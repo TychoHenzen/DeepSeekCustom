@@ -80,6 +80,44 @@ pub fn build_one_shot_args(
     args
 }
 
+/// Build one fresh Controlled Development planning invocation.
+///
+/// The child receives no resumable identity. Claude owns its file tools, so
+/// the harness combines plan permission mode with an explicit read-only
+/// allowlist and a strict schema for the complete final response.
+pub fn build_planning_one_shot_args(
+    model: &str,
+    prompt: &str,
+    json_schema: &str,
+    effort: Effort,
+) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        prompt.to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--include-partial-messages".to_string(),
+        "--verbose".to_string(),
+        "--model".to_string(),
+        model.to_string(),
+        "--safe-mode".to_string(),
+        "--no-session-persistence".to_string(),
+        "--permission-mode".to_string(),
+        "plan".to_string(),
+        "--allowedTools".to_string(),
+        "Read,Glob,Grep".to_string(),
+        "--json-schema".to_string(),
+        json_schema.to_string(),
+        "--thinking-display".to_string(),
+        "summarized".to_string(),
+    ];
+    if let Some(level) = effort.claude_cli_effort() {
+        args.push("--effort".to_string());
+        args.push(level.to_string());
+    }
+    args
+}
+
 /// Fold one `ClaudeEvent` into the running one-shot accumulation state.
 /// Returns `Some` only when `event` was the terminal `result` event.
 /// Every other event is passed through `mapper`, and any `StreamEvent::Text`

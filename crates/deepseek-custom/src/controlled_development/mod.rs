@@ -4,6 +4,7 @@ mod phase;
 mod state;
 mod transition_error;
 mod work_card;
+mod work_card_schema;
 mod work_card_validation_error;
 mod work_card_validation_errors;
 
@@ -15,5 +16,6 @@ pub use work_card::{
     MAX_PROOF_COMMANDS, MAX_SUPPORTING_PATHS, MAX_WORK_CARD_ID_CHARS, MAX_WORK_CARD_ITEM_CHARS,
     MAX_WORK_CARD_OUTCOME_CHARS, MAX_WORK_CARD_PATH_CHARS, WorkCard,
 };
+pub use work_card_schema::work_card_json_schema;
 pub use work_card_validation_error::WorkCardValidationError;
 pub use work_card_validation_errors::WorkCardValidationErrors;
