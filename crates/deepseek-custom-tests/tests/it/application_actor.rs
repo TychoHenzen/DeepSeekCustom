@@ -6,12 +6,15 @@ use deepseek_custom::application::actor::{AppEvent, ApplicationActor, ChatLifecy
 use deepseek_custom::application::dto::{
     AppCommand, AppCommandRequest, AppCommandResult, AppRevision, AppSnapshot, NoticeLevel,
     OperationKind, OperationPhase, OperationState, SessionSummary, TranscriptBlock,
-    TranscriptContent, VisibleSettings, Workspace,
+    TranscriptContent, TranscriptSpan, VisibleSettings, Workspace,
 };
 use deepseek_custom::application::services::DomainCommandPort;
 use deepseek_custom::application::session::ApplicationSession;
 use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::config::settings::Settings;
+use deepseek_custom::controlled_development::{
+    ControlledBackendSelection, ControlledDevelopmentCommand,
+};
 use deepseek_custom::procedure::{
     PatchPreviewId, ProcedureCommand, ProcedureProgress, ProcedureReviewDecision, ProcedureRunId,
     ProcedureStage, ProcedureTerminalDisposition,
@@ -659,6 +662,145 @@ fn chat_actor(
         origin,
     ));
     (dir, actor, rx, interrupt)
+}
+
+fn controlled_chat_actor(
+    tag: &str,
+) -> (
+    std::path::PathBuf,
+    ApplicationActor,
+    tokio::sync::mpsc::UnboundedReceiver<AgentCommand>,
+) {
+    let dir = super::scratch_dir("application-actor-controlled", tag);
+    std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+    let origin = SessionOrigin {
+        backend: "stub".into(),
+        model: "test".into(),
+    };
+    let mut session = ApplicationSession::new(SessionState::new(
+        SessionStore::for_project(&dir),
+        origin.clone(),
+    ));
+    let controlled = session.sessions.controlled_development_mut();
+    controlled
+        .handle(ControlledDevelopmentCommand::SetEnabled { enabled: true })
+        .unwrap();
+    controlled
+        .handle(ControlledDevelopmentCommand::Plan {
+            packet_id: "controlled-card".into(),
+            original_request: "Change the approved source".into(),
+            selection: ControlledBackendSelection::new("stub", None),
+            workspace_root: dir.clone(),
+        })
+        .unwrap();
+    controlled
+        .handle(ControlledDevelopmentCommand::PlanningFinished {
+            packet_id: "controlled-card".into(),
+            final_response: serde_json::json!({
+                "id": "controlled-card",
+                "outcome": "The approved source changes.",
+                "proof_commands": ["cargo check --workspace"],
+                "production_paths": ["source.txt"],
+                "supporting_paths": ["crates/deepseek-custom-tests/tests/it/application_actor.rs"],
+                "excluded": ["settings.json"],
+                "complexity_exceptions": ["Keep the existing dependency set"]
+            })
+            .to_string(),
+        })
+        .unwrap();
+    controlled
+        .handle(ControlledDevelopmentCommand::Approve {
+            card_id: "controlled-card".into(),
+        })
+        .unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let actor = actor(64).with_chat_lifecycle(ChatLifecycle::new(
+        session,
+        DomainCommandPort::new(tx),
+        Arc::new(AtomicBool::new(false)),
+        origin,
+    ));
+    (dir, actor, rx)
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Control inputs are handled by the harness :: User requests bounded control information
+#[test]
+fn exact_control_inputs_return_only_harness_state_before_normal_chat_dispatch() {
+    let (dir, mut actor, mut commands) = controlled_chat_actor("exact-inputs");
+    let controls = [
+        ("STATUS", "Phase: Executing"),
+        ("MAP", "- production: source.txt"),
+        ("DIFF", "No isolated or promoted diff is recorded."),
+        (
+            "WHY source.txt",
+            "source.txt: recorded as a production path in the current Work Card",
+        ),
+        ("WHY unknown", "No recorded harness decision named: unknown"),
+    ];
+    for (input, expected) in controls {
+        let result = actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::SendMessage {
+                text: input.into(),
+                attachment_id: None,
+            },
+        });
+        assert!(matches!(result, AppCommandResult::Applied { .. }));
+        assert!(commands.try_recv().is_err(), "{input} reached the backend");
+        assert!(actor.snapshot().operations.is_empty());
+        let response = actor.snapshot().transcript.last().unwrap();
+        assert!(matches!(
+            &response.content,
+            TranscriptContent::Assistant { spans }
+                if spans == &vec![TranscriptSpan::Text(expected.to_string())]
+                    || matches!(spans.as_slice(), [TranscriptSpan::Text(text)] if text.contains(expected))
+        ));
+    }
+
+    let stopped = actor.submit(AppCommandRequest {
+        revision: actor.snapshot().revision,
+        command: AppCommand::SendMessage {
+            text: "STOP".into(),
+            attachment_id: None,
+        },
+    });
+    assert!(matches!(stopped, AppCommandResult::Applied { .. }));
+    assert!(commands.try_recv().is_err());
+    assert!(matches!(
+        &actor.snapshot().transcript.last().unwrap().content,
+        TranscriptContent::Assistant { spans }
+            if spans == &vec![TranscriptSpan::Text("Phase: Interrupted".into())]
+    ));
+    drop(actor);
+    std::fs::remove_dir_all(dir).unwrap();
+
+    for ordinary in ["status", " STATUS", "STATUS ", "WHY", "WHY  source.txt"] {
+        let (dir, mut actor, mut commands) = controlled_chat_actor("ordinary-input");
+        let sent = actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::SendMessage {
+                text: ordinary.into(),
+                attachment_id: None,
+            },
+        });
+        assert!(matches!(sent, AppCommandResult::Applied { .. }));
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(AgentCommand::UserTurn { .. })
+        ));
+        let status = actor.submit(AppCommandRequest {
+            revision: actor.snapshot().revision,
+            command: AppCommand::SendMessage {
+                text: "STATUS".into(),
+                attachment_id: None,
+            },
+        });
+        assert!(matches!(status, AppCommandResult::Applied { .. }));
+        assert!(commands.try_recv().is_err());
+        drop(actor);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[test]

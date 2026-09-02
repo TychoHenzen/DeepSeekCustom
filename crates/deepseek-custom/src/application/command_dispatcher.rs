@@ -12,9 +12,10 @@ use super::dto::{
     TranscriptContent,
 };
 use super::session::PendingSwitch;
-use super::transcript::BlockKind;
+use super::transcript::{BlockKind, Span};
 use crate::agent::events::AgentCommand;
 use crate::agent::repeat::RepeatCommand;
+use crate::controlled_development::ControlledDevelopmentControlInput;
 use crate::procedure::{
     ApplyRequest, PatchPreviewId, PatchPreviewRequest, ProcedureCommand, ProcedureReviewDecision,
     ProcedureRunId, ProcedureRunRequest, ProcedureScratchpad, WholeChangeCommandRequest,
@@ -56,6 +57,18 @@ impl<'a> ApplicationCommandDispatcher<'a> {
                 text,
                 attachment_id,
             } => {
+                if attachment_id.is_none()
+                    && self.actor.chat.as_ref().is_some_and(|chat| {
+                        chat.session
+                            .sessions
+                            .controlled_development()
+                            .state()
+                            .is_enabled()
+                    })
+                    && let Some(input) = ControlledDevelopmentControlInput::parse(&text)
+                {
+                    return self.dispatch_control_input(text, input);
+                }
                 let text = text.trim().to_string();
                 if text.is_empty() && attachment_id.is_none() {
                     return AppCommandResult::Rejected {
@@ -691,5 +704,58 @@ impl<'a> ApplicationCommandDispatcher<'a> {
                 error: unavailable("command is not connected to a domain port yet"),
             },
         }
+    }
+
+    fn dispatch_control_input(
+        &mut self,
+        text: String,
+        input: ControlledDevelopmentControlInput,
+    ) -> AppCommandResult {
+        let response = {
+            let Some(chat) = &mut self.actor.chat else {
+                return AppCommandResult::Rejected {
+                    error: unavailable("chat lifecycle is not connected"),
+                };
+            };
+            match chat
+                .session
+                .sessions
+                .controlled_development_mut()
+                .handle_control_input(input)
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return AppCommandResult::Rejected {
+                        error: invalid("message", &error.to_string()),
+                    };
+                }
+            }
+        };
+
+        let blocks = {
+            let chat = self
+                .actor
+                .chat
+                .as_mut()
+                .expect("controlled input requires a connected chat lifecycle");
+            chat.session
+                .transcript
+                .push(BlockKind::User { text: text.clone() });
+            chat.session.transcript.push(BlockKind::Assistant {
+                spans: vec![Span::Text(response)],
+            });
+            let projection = chat.session.transcript_projection();
+            projection[projection.len() - 2..].to_vec()
+        };
+
+        let mut revision = self.actor.snapshot.revision;
+        for block in blocks {
+            self.actor.snapshot.transcript.push(block.clone());
+            revision = match self.actor.publish(AppChangeKind::TranscriptAppended(block)) {
+                Ok(revision) => revision,
+                Err(error) => return AppCommandResult::Rejected { error },
+            };
+        }
+        AppCommandResult::Applied { revision }
     }
 }

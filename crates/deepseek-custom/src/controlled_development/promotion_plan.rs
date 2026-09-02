@@ -31,14 +31,15 @@ pub fn build_promotion_plan(
     changed_paths: &[String],
 ) -> Result<(PromotionBaseline, Vec<PromotionTarget>), String> {
     let mut paths = changed_paths.iter().cloned().collect::<BTreeSet<_>>();
-    let project_state = baseline_fingerprint(baseline, PROJECT_STATE_PATH)?;
+    let _project_state = baseline_fingerprint(baseline, PROJECT_STATE_PATH)?;
     let execution_project_state = capture_path_fingerprint(execution_root, PROJECT_STATE_PATH)
         .map_err(|error| error.to_string())?;
-    if execution_project_state.state == ProcedurePathState::Present
-        && execution_project_state != *project_state
-    {
-        paths.insert(PROJECT_STATE_PATH.to_string());
+    if execution_project_state.state != ProcedurePathState::Present {
+        return Err(format!(
+            "harness-generated {PROJECT_STATE_PATH} is missing from the execution root"
+        ));
     }
+    paths.insert(PROJECT_STATE_PATH.to_string());
 
     let mut selected = Vec::with_capacity(paths.len());
     let mut targets = Vec::with_capacity(paths.len());

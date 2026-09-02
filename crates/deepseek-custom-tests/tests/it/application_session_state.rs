@@ -246,6 +246,95 @@ fn switching_sessions_installs_only_the_destination_controlled_state() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Reloaded in-flight sessions become Interrupted
+#[test]
+fn process_restart_interrupts_every_saved_in_flight_phase_without_starting_work() {
+    for phase in [
+        ControlledDevelopmentPhase::Planning,
+        ControlledDevelopmentPhase::AwaitingApproval,
+        ControlledDevelopmentPhase::Executing,
+    ] {
+        let dir = temp_dir(&format!("controlled_restart_{phase:?}"));
+        std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+        let mut state = state_in(&dir);
+        let mut transcript = transcript_with_user_text("saved in-flight packet");
+        configure_packet_at_phase(
+            state.controlled_development_mut(),
+            &dir,
+            "restart-packet",
+            phase,
+        );
+        state.autosave(&mut transcript, origin());
+        let saved_id = state.current_id();
+        let saved = state.store().load(&saved_id).unwrap();
+        assert_eq!(saved.controlled_development.state.phase(), phase);
+        if phase == ControlledDevelopmentPhase::Executing {
+            assert_eq!(
+                saved.controlled_development.state.approved_card_id(),
+                Some("restart-packet")
+            );
+        }
+        drop(state);
+
+        let mut restarted = state_in(&dir);
+        let mut restarted_transcript = Transcript::default();
+        restarted
+            .load(saved_id, &mut restarted_transcript, origin())
+            .expect("saved session must load after restart");
+
+        let controlled = restarted.controlled_development();
+        assert_eq!(
+            controlled.state().phase(),
+            ControlledDevelopmentPhase::Interrupted
+        );
+        assert_eq!(controlled.state().approved_card_id(), None);
+        assert!(!controlled.has_execution_workspace());
+        assert!(controlled.proof_evidence().is_empty());
+        assert!(controlled.promotion_evidence().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    let dir = temp_dir("controlled_restart_retained");
+    std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+    let mut state = state_in(&dir);
+    let mut transcript = transcript_with_user_text("saved retained packet");
+    let (_, execution_root) =
+        attach_execution_workspace(state.controlled_development_mut(), &dir, "retained-packet");
+    std::fs::write(execution_root.join("source.txt"), "isolated\n").unwrap();
+    state
+        .controlled_development_mut()
+        .handle(ControlledDevelopmentCommand::Stop {
+            packet_id: "retained-packet".into(),
+        })
+        .unwrap();
+    state.autosave(&mut transcript, origin());
+    let saved_id = state.current_id();
+    let mut encoded = serde_json::to_value(state.store().load(&saved_id).unwrap()).unwrap();
+    encoded["controlled_development"]["state"]["phase"] = json!("executing");
+    encoded["controlled_development"]["state"]["approved_card_id"] = json!("retained-packet");
+    let in_flight_record = serde_json::from_value(encoded).unwrap();
+    state.store().save(&in_flight_record).unwrap();
+    drop(state);
+
+    let mut restarted = state_in(&dir);
+    restarted
+        .load(saved_id, &mut Transcript::default(), origin())
+        .unwrap();
+    let controlled = restarted.controlled_development();
+    assert_eq!(
+        controlled.state().phase(),
+        ControlledDevelopmentPhase::Interrupted
+    );
+    assert_eq!(controlled.state().approved_card_id(), None);
+    assert!(controlled.has_retained_workspace());
+    assert!(controlled.diagnostic_diff().unwrap().contains("source.txt"));
+    restarted
+        .controlled_development_mut()
+        .handle(ControlledDevelopmentCommand::DiscardRetainedEvidence)
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn session_reset_and_deletion_clean_owned_controlled_workspaces() {
     let dir = temp_dir("controlled_session_cleanup");
@@ -320,6 +409,51 @@ fn configure_approved_packet(
             .to_string(),
         })
         .unwrap();
+    coordinator
+        .handle(ControlledDevelopmentCommand::Approve {
+            card_id: packet_id.into(),
+        })
+        .unwrap();
+}
+
+fn configure_packet_at_phase(
+    coordinator: &mut ControlledDevelopmentCoordinator,
+    root: &std::path::Path,
+    packet_id: &str,
+    phase: ControlledDevelopmentPhase,
+) {
+    coordinator
+        .handle(ControlledDevelopmentCommand::SetEnabled { enabled: true })
+        .unwrap();
+    coordinator
+        .handle(ControlledDevelopmentCommand::Plan {
+            packet_id: packet_id.into(),
+            original_request: "Change the source file".into(),
+            selection: ControlledBackendSelection::new("controlled-stub", None),
+            workspace_root: root.to_path_buf(),
+        })
+        .unwrap();
+    if phase == ControlledDevelopmentPhase::Planning {
+        return;
+    }
+    coordinator
+        .handle(ControlledDevelopmentCommand::PlanningFinished {
+            packet_id: packet_id.into(),
+            final_response: json!({
+                "id": packet_id,
+                "outcome": "The source file contains the requested bytes.",
+                "proof_commands": ["cargo check --workspace"],
+                "production_paths": ["source.txt"],
+                "supporting_paths": [],
+                "excluded": ["settings.json"],
+                "complexity_exceptions": []
+            })
+            .to_string(),
+        })
+        .unwrap();
+    if phase == ControlledDevelopmentPhase::AwaitingApproval {
+        return;
+    }
     coordinator
         .handle(ControlledDevelopmentCommand::Approve {
             card_id: packet_id.into(),

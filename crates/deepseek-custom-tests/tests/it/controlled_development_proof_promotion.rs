@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use deepseek_custom::controlled_development::{
     ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentCoordinator,
     ControlledDevelopmentEffect, ControlledDevelopmentPhase,
+    ControlledDevelopmentProjectStateInput, ControlledDevelopmentSystemMapComponent,
+    MAX_PROJECT_STATE_NONBLANK_LINES, PROJECT_STATE_PATH, WorkCard, build_project_state,
 };
 use deepseek_custom::procedure::{VerifierCommandDisposition, VerifierGateDisposition};
 use serde_json::json;
@@ -131,7 +133,7 @@ fn passing_proofs_promote_only_validated_paths_as_one_transaction() {
                 ref card_id,
                 ref targets,
                 ..
-            } if card_id == "packet-1" && targets.len() == 1
+            } if card_id == "packet-1" && targets.len() == 2
         ));
         let result = promotion_effect.promote_validated_changes().unwrap();
         coordinator
@@ -155,8 +157,13 @@ fn passing_proofs_promote_only_validated_paths_as_one_transaction() {
                     .is_some_and(|result| result.success)
         }));
         let promotion = coordinator.promotion_evidence().unwrap();
-        assert_eq!(promotion.final_fingerprints.len(), 1);
-        assert_eq!(promotion.final_fingerprints[0].path, "approved.txt");
+        assert_eq!(promotion.final_fingerprints.len(), 2);
+        assert!(
+            promotion
+                .final_fingerprints
+                .iter()
+                .any(|fingerprint| fingerprint.path == "approved.txt")
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("approved.txt")).unwrap(),
             "isolated after\n"
@@ -166,6 +173,128 @@ fn passing_proofs_promote_only_validated_paths_as_one_transaction() {
             "user bytes\n"
         );
         assert!(!root.join("proof-order.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Successful promotion updates the project snapshot :: PROJECT_STATE remains within 40 nonblank lines
+#[test]
+fn project_state_builder_is_bounded_and_promotion_installs_it_in_the_packet_transaction() {
+    let preview = build_project_state(&ControlledDevelopmentProjectStateInput {
+        outcome: "One bounded outcome".into(),
+        system_map: (0..12)
+            .map(|index| ControlledDevelopmentSystemMapComponent {
+                name: format!("component-{index}"),
+                responsibility: "production".into(),
+            })
+            .collect(),
+        work_card: WorkCard {
+            id: "preview-card".into(),
+            outcome: "One bounded outcome".into(),
+            proof_commands: vec!["cargo check --workspace".into()],
+            production_paths: vec!["approved.txt".into()],
+            supporting_paths: Vec::new(),
+            excluded: vec!["settings.json".into()],
+            complexity_exceptions: Vec::new(),
+        },
+        changed_paths: vec!["approved.txt".into()],
+        proof_evidence: Vec::new(),
+        blocker: Some("a blocker with\nembedded whitespace".into()),
+    });
+    assert_eq!(
+        preview
+            .lines()
+            .filter(|line| line.starts_with("- production: component-"))
+            .count(),
+        10
+    );
+    assert!(
+        preview
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            <= MAX_PROJECT_STATE_NONBLANK_LINES
+    );
+
+    run_async(async {
+        let root = fixture_root("project-state-promotion");
+        std::fs::write(root.join("approved.txt"), "real before\n").unwrap();
+        std::fs::write(root.join(PROJECT_STATE_PATH), "stale snapshot\n").unwrap();
+        write_proof_scripts(&root, false);
+        let commands = proof_commands();
+        let (mut coordinator, execution_root) = executing_coordinator(&root, &commands);
+        std::fs::write(execution_root.join("approved.txt"), "isolated after\n").unwrap();
+
+        let proof_effect = coordinator
+            .handle(ControlledDevelopmentCommand::ValidateIsolatedChanges {
+                card_id: "packet-1".into(),
+            })
+            .unwrap()
+            .unwrap();
+        let run = proof_effect.run_proof_commands().await.unwrap();
+        let promotion_effect = coordinator
+            .handle(ControlledDevelopmentCommand::ProofsFinished {
+                card_id: "packet-1".into(),
+                run: Box::new(run),
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &promotion_effect,
+            ControlledDevelopmentEffect::PromoteValidatedChanges { targets, .. }
+                if targets.len() == 2
+                    && targets.iter().flat_map(|target| target.paths()).any(|path| path == PROJECT_STATE_PATH)
+        ));
+
+        let result = promotion_effect.promote_validated_changes().unwrap();
+        coordinator
+            .handle(ControlledDevelopmentCommand::PromotionFinished {
+                card_id: "packet-1".into(),
+                result: result.map(Box::new).map_err(Box::new),
+            })
+            .unwrap();
+
+        let installed = std::fs::read_to_string(root.join(PROJECT_STATE_PATH)).unwrap();
+        let allowed_headings = [
+            "## Current outcome",
+            "## System map",
+            "## Last completed Work Card",
+            "## Exact changed paths",
+            "## Last proof commands and results",
+            "## Known blocker",
+        ];
+        assert!(
+            installed
+                .lines()
+                .filter(|line| line.starts_with("## "))
+                .all(|line| allowed_headings.contains(&line))
+        );
+        assert!(
+            installed
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+                <= MAX_PROJECT_STATE_NONBLANK_LINES
+        );
+        assert!(installed.contains("\"PROJECT_STATE.md\""));
+        assert!(installed.contains("\"approved.txt\""));
+        assert!(!installed.contains("## Known blocker"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("approved.txt")).unwrap(),
+            "isolated after\n"
+        );
+        assert_eq!(
+            coordinator.state().phase(),
+            ControlledDevelopmentPhase::Completed
+        );
+        assert!(
+            coordinator
+                .handle_control_input(
+                    deepseek_custom::controlled_development::ControlledDevelopmentControlInput::Diff
+                )
+                .unwrap()
+                .contains("approved.txt")
+        );
         std::fs::remove_dir_all(root).unwrap();
     });
 }
@@ -203,7 +332,7 @@ fn overlapping_real_workspace_change_blocks_every_packet_target_without_data_los
         assert!(matches!(
             promotion_effect,
             ControlledDevelopmentEffect::PromoteValidatedChanges { ref targets, .. }
-                if targets.len() == 2
+                if targets.len() == 3
         ));
 
         std::fs::write(root.join("first.txt"), "concurrent user bytes\n").unwrap();

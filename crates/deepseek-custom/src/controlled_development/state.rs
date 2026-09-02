@@ -46,6 +46,19 @@ impl ControlledDevelopmentState {
         &self.structural_errors
     }
 
+    /// Remove process-local authority before a persisted state becomes observable.
+    pub(crate) fn normalize_after_restart(&mut self) {
+        if matches!(
+            self.phase,
+            ControlledDevelopmentPhase::Planning
+                | ControlledDevelopmentPhase::AwaitingApproval
+                | ControlledDevelopmentPhase::Executing
+        ) {
+            self.phase = ControlledDevelopmentPhase::Interrupted;
+        }
+        self.approved_card_id = None;
+    }
+
     /// Enables or disables the mode for this session.
     ///
     /// Enabling does not start work. Disabling removes every packet-local

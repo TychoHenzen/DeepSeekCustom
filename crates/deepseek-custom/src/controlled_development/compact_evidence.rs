@@ -14,4 +14,6 @@ pub struct ControlledDevelopmentCompactEvidence {
     pub changed_paths: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub proof_evidence: Vec<VerifierGateEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_promoted_diff: Option<String>,
 }

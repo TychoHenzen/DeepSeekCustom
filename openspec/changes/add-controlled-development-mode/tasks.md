@@ -69,11 +69,14 @@
 - [x] 4.1 Add backward-compatible Controlled Development state to saved session records and install only the selected session's state during load or creation.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Session change does not transfer approval -->
-- [ ] 4.2 Normalize restored `Planning`, `AwaitingApproval`, and `Executing` state to `Interrupted`, clear approval, and prove no automatic backend, verifier, or promotion work starts.
+- [x] 4.2 Normalize restored `Planning`, `AwaitingApproval`, and `Executing` state to `Interrupted`, clear approval, and prove no automatic backend, verifier, or promotion work starts.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Reloaded in-flight sessions become Interrupted -->
-- [ ] 4.3 Intercept exact `STATUS`, `MAP`, `DIFF`, `WHY <item>`, and `STOP` inputs before normal chat dispatch and return only the requested harness-owned state.
+- [x] 4.3 Intercept exact `STATUS`, `MAP`, `DIFF`, `WHY <item>`, and `STOP` inputs before normal chat dispatch and return only the requested harness-owned state.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Control inputs are handled by the harness :: User requests bounded control information -->
-- [ ] 4.4 Build `PROJECT_STATE.md` from typed completed-packet state, enforce its allowed sections, ten-component map, and 40-nonblank-line cap, then include it in transactional promotion.
+- [x] 4.4 Build `PROJECT_STATE.md` from typed completed-packet state, enforce its allowed sections, ten-component map, and 40-nonblank-line cap, then include it in transactional promotion.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Successful promotion updates the project snapshot :: PROJECT_STATE remains within 40 nonblank lines -->
 
 ## 5. Application and frontend surface

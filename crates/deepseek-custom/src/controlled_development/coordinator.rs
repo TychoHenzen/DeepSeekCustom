@@ -33,6 +33,7 @@ pub struct ControlledDevelopmentCoordinator {
     promotion_dispatched: bool,
     blocker: Option<String>,
     compact_summary: Option<String>,
+    last_promoted_diff: Option<String>,
 }
 
 impl ControlledDevelopmentCoordinator {
@@ -106,6 +107,58 @@ impl ControlledDevelopmentCoordinator {
         self.retained_workspace
             .as_ref()
             .map(ControlledDevelopmentRetainedWorkspace::diagnostic_diff)
+    }
+
+    pub fn last_promoted_diff(&self) -> Option<&str> {
+        self.last_promoted_diff.as_deref()
+    }
+
+    pub fn system_map(&self) -> Vec<super::ControlledDevelopmentSystemMapComponent> {
+        self.state
+            .work_card()
+            .into_iter()
+            .flat_map(|card| {
+                card.production_paths
+                    .iter()
+                    .map(|path| super::ControlledDevelopmentSystemMapComponent {
+                        name: path.clone(),
+                        responsibility: "production".to_string(),
+                    })
+                    .chain(card.supporting_paths.iter().map(|path| {
+                        super::ControlledDevelopmentSystemMapComponent {
+                            name: path.clone(),
+                            responsibility: "supporting".to_string(),
+                        }
+                    }))
+            })
+            .take(super::MAX_SYSTEM_MAP_COMPONENTS)
+            .collect()
+    }
+
+    /// Return one harness-owned projection without dispatching a backend effect.
+    pub fn handle_control_input(
+        &mut self,
+        input: super::ControlledDevelopmentControlInput,
+    ) -> Result<String, ControlledDevelopmentTransitionError> {
+        match input {
+            super::ControlledDevelopmentControlInput::Status => Ok(self.render_status()),
+            super::ControlledDevelopmentControlInput::Map => Ok(self.render_system_map()),
+            super::ControlledDevelopmentControlInput::Diff => Ok(self
+                .diagnostic_diff()
+                .or_else(|| self.last_promoted_diff())
+                .unwrap_or("No isolated or promoted diff is recorded.\n")
+                .to_string()),
+            super::ControlledDevelopmentControlInput::Why(item) => Ok(self.render_decision(&item)),
+            super::ControlledDevelopmentControlInput::Stop => {
+                let packet_id = self
+                    .state
+                    .packet_id()
+                    .ok_or(ControlledDevelopmentTransitionError::NotActivePacket)?
+                    .to_string();
+                self.stop(&packet_id)?;
+                Ok("Phase: Interrupted".to_string())
+            }
+        }
     }
 
     /// Apply one typed command and return at most one slow service effect.
@@ -424,6 +477,31 @@ impl ControlledDevelopmentCoordinator {
             .workspace_pair
             .as_ref()
             .ok_or(ControlledDevelopmentTransitionError::MissingExecutionWorkspace)?;
+        let card = self
+            .state
+            .work_card()
+            .cloned()
+            .ok_or(ControlledDevelopmentTransitionError::NoCurrentCard)?;
+        let project_state =
+            super::build_project_state(&super::ControlledDevelopmentProjectStateInput {
+                outcome: card.outcome.clone(),
+                system_map: self.system_map(),
+                work_card: card,
+                changed_paths: self.changed_paths.clone(),
+                proof_evidence: self.proof_evidence.clone(),
+                blocker: self.blocker.clone(),
+            });
+        if let Err(error) = std::fs::write(
+            workspace
+                .execution_path()
+                .join(promotion_plan::PROJECT_STATE_PATH),
+            project_state,
+        ) {
+            return self.block_pre_proof_gate(
+                card_id,
+                format!("could not write PROJECT_STATE.md: {error}"),
+            );
+        }
         let baseline = self
             .promotion_baseline
             .as_ref()
@@ -467,6 +545,12 @@ impl ControlledDevelopmentCoordinator {
         }
         match result {
             Ok(evidence) => {
+                self.last_promoted_diff = self.workspace_pair.as_ref().map(|workspace| {
+                    super::diagnostic_diff::render_diagnostic_diff(
+                        workspace.baseline_path(),
+                        workspace.execution_path(),
+                    )
+                });
                 self.promotion_evidence = Some(evidence);
                 self.state.complete_current_card(card_id)?;
                 self.workspace_pair = None;
@@ -550,6 +634,7 @@ impl ControlledDevelopmentCoordinator {
                 blocker: self.blocker.clone(),
                 changed_paths: self.changed_paths.clone(),
                 proof_evidence: self.proof_evidence.clone(),
+                last_promoted_diff: self.last_promoted_diff.clone(),
             },
             raw_details: self.raw_details.clone(),
             retained_workspace,
@@ -559,8 +644,9 @@ impl ControlledDevelopmentCoordinator {
     /// Replace runtime state with one selected session's persisted projection.
     pub fn install_session_record(
         &mut self,
-        record: super::ControlledDevelopmentSessionRecord,
+        mut record: super::ControlledDevelopmentSessionRecord,
     ) -> Result<(), ControlledDevelopmentTransitionError> {
+        record.state.normalize_after_restart();
         self.cleanup_packet_workspaces()?;
         self.clear_packet_data();
         self.state = record.state;
@@ -568,6 +654,7 @@ impl ControlledDevelopmentCoordinator {
         self.blocker = record.compact_evidence.blocker;
         self.changed_paths = record.compact_evidence.changed_paths;
         self.proof_evidence = record.compact_evidence.proof_evidence;
+        self.last_promoted_diff = record.compact_evidence.last_promoted_diff;
         self.raw_details = record.raw_details;
         self.retained_workspace = record
             .retained_workspace
@@ -672,5 +759,65 @@ impl ControlledDevelopmentCoordinator {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.blocker = None;
         self.compact_summary = None;
+        self.last_promoted_diff = None;
+    }
+
+    fn render_status(&self) -> String {
+        let card = self
+            .state
+            .work_card()
+            .map(|card| serde_json::to_string_pretty(card).expect("Work Card serialization"))
+            .unwrap_or_else(|| "none".to_string());
+        format!(
+            "Phase: {:?}\nCard:\n{}\nBlocker: {}",
+            self.state.phase(),
+            card,
+            self.blocker.as_deref().unwrap_or("none")
+        )
+    }
+
+    fn render_system_map(&self) -> String {
+        let components = self.system_map();
+        if components.is_empty() {
+            return "System map: none".to_string();
+        }
+        let lines = components
+            .into_iter()
+            .map(|component| format!("- {}: {}", component.responsibility, component.name))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("System map:\n{lines}")
+    }
+
+    fn render_decision(&self, item: &str) -> String {
+        if let Some(matched) = self.dependency_matches.iter().find(|matched| {
+            matched.path == item
+                || matched.dependency_name == item
+                || matched.complexity_exception == item
+        }) {
+            return format!(
+                "{item}: dependency change {} in {} matched approved exception: {}",
+                matched.dependency_name, matched.path, matched.complexity_exception
+            );
+        }
+        if let Some(card) = self.state.work_card() {
+            if card.production_paths.iter().any(|path| path == item) {
+                return format!("{item}: recorded as a production path in the current Work Card");
+            }
+            if card.supporting_paths.iter().any(|path| path == item) {
+                return format!("{item}: recorded as a supporting path in the current Work Card");
+            }
+            if card.excluded.iter().any(|excluded| excluded == item) {
+                return format!("{item}: excluded by the current Work Card");
+            }
+            if card
+                .complexity_exceptions
+                .iter()
+                .any(|exception| exception == item)
+            {
+                return format!("{item}: recorded as a named complexity exception");
+            }
+        }
+        format!("No recorded harness decision named: {item}")
     }
 }
