@@ -1,12 +1,16 @@
 //! Disposable source snapshots for isolated patch drafting.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const EXCLUDED_NAMES: &[&str] = &[".git", "target", ".deepseek"];
+const OWNED_WORKSPACE_PREFIX: &str = "deepseek-draft-workspace-";
 const BINARY_SCAN_BUFFER_BYTES: usize = 8 * 1024;
 /// Default maximum number of bytes copied into one disposable workspace.
 pub const DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -58,6 +62,8 @@ pub enum DisposableWorkspaceError {
     LinkedSource(PathBuf),
     #[error("draft workspace exclusion must be a relative path without `.` or `..`: {0}")]
     InvalidExclusion(PathBuf),
+    #[error("refusing to clean a path that is not an owned disposable workspace: {0}")]
+    UnownedCleanupRoot(PathBuf),
     #[error(
         "draft workspace source is {required_bytes} bytes, which exceeds the {max_bytes}-byte limit"
     )]
@@ -75,6 +81,144 @@ pub enum DisposableWorkspaceError {
 #[derive(Debug)]
 pub struct DisposableDraftWorkspace {
     root: Option<PathBuf>,
+}
+
+/// Deterministic identity of one regular file in an isolated workspace.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct WorkspaceFileFingerprint {
+    pub byte_len: u64,
+    pub sha256: String,
+}
+
+/// A path-sorted inventory of every regular repository file in a workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceFileInventory {
+    files: BTreeMap<String, WorkspaceFileFingerprint>,
+}
+
+impl WorkspaceFileInventory {
+    pub fn capture(root: &Path) -> Result<Self, DisposableWorkspaceError> {
+        Self::capture_with_options(root, &DisposableWorkspaceOptions::default())
+    }
+
+    fn capture_with_options(
+        root: &Path,
+        options: &DisposableWorkspaceOptions,
+    ) -> Result<Self, DisposableWorkspaceError> {
+        validate_source_root(root)?;
+        let exclusions = SnapshotExclusions::new(options)?;
+        let mut files = BTreeMap::new();
+        inventory_directory(root, &exclusions, &mut Vec::new(), &mut files)?;
+        Ok(Self { files })
+    }
+
+    pub fn files(&self) -> &BTreeMap<String, WorkspaceFileFingerprint> {
+        &self.files
+    }
+
+    /// Compare path and byte identities without parsing a display diff.
+    pub fn compare(&self, current: &Self) -> WorkspaceFileChanges {
+        compare_inventories(self, current)
+    }
+}
+
+/// One deterministic rename display pair. Authorization still uses both endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceFileRename {
+    pub from: String,
+    pub to: String,
+}
+
+/// Every endpoint difference between an execution baseline and its current root.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceFileChanges {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub deleted: Vec<String>,
+    pub renamed: Vec<WorkspaceFileRename>,
+}
+
+impl WorkspaceFileChanges {
+    /// Every changed endpoint in deterministic path order.
+    pub fn changed_paths(&self) -> Vec<String> {
+        self.created
+            .iter()
+            .chain(&self.modified)
+            .chain(&self.deleted)
+            .chain(
+                self.renamed
+                    .iter()
+                    .flat_map(|rename| [&rename.from, &rename.to]),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+/// One immutable execution baseline and its writable fork.
+#[derive(Debug)]
+pub struct DisposableWorkspacePair {
+    baseline: DisposableDraftWorkspace,
+    execution: DisposableDraftWorkspace,
+    baseline_inventory: WorkspaceFileInventory,
+    inventory_options: DisposableWorkspaceOptions,
+}
+
+impl DisposableWorkspacePair {
+    pub fn baseline_path(&self) -> &Path {
+        self.baseline.path()
+    }
+
+    pub fn execution_path(&self) -> &Path {
+        self.execution.path()
+    }
+
+    pub const fn baseline_inventory(&self) -> &WorkspaceFileInventory {
+        &self.baseline_inventory
+    }
+
+    pub fn execution_inventory(&self) -> Result<WorkspaceFileInventory, DisposableWorkspaceError> {
+        WorkspaceFileInventory::capture_with_options(self.execution_path(), &self.inventory_options)
+    }
+
+    pub fn changes(&self) -> Result<WorkspaceFileChanges, DisposableWorkspaceError> {
+        Ok(self
+            .baseline_inventory
+            .compare(&self.execution_inventory()?))
+    }
+
+    /// Transfer both owned roots to diagnostic retention.
+    pub fn retain_for_diagnostics(self) -> RetainedDisposableWorkspacePair {
+        RetainedDisposableWorkspacePair {
+            baseline: self.baseline.retain_for_recovery(),
+            execution: self.execution.retain_for_recovery(),
+        }
+    }
+}
+
+/// Explicit ownership of baseline and execution roots retained for diagnostics.
+#[derive(Debug)]
+pub struct RetainedDisposableWorkspacePair {
+    baseline: RetainedRecoveryWorkspace,
+    execution: RetainedRecoveryWorkspace,
+}
+
+impl RetainedDisposableWorkspacePair {
+    pub fn baseline_path(&self) -> &Path {
+        self.baseline.path()
+    }
+
+    pub fn execution_path(&self) -> &Path {
+        self.execution.path()
+    }
+
+    pub fn cleanup(self) -> Result<(), DisposableWorkspaceError> {
+        let baseline_result = self.baseline.cleanup();
+        let execution_result = self.execution.cleanup();
+        baseline_result.and(execution_result)
+    }
 }
 
 /// Snapshot data intentionally retained after rollback could not complete.
@@ -111,6 +255,34 @@ impl DisposableDraftWorkspace {
     /// Copy every regular file from the current source state into a disposable directory.
     pub fn create_current_state(source_root: &Path) -> Result<Self, DisposableWorkspaceError> {
         Self::create_current_state_with_options(source_root, &DisposableWorkspaceOptions::default())
+    }
+
+    /// Read the live source once, then fork that exact snapshot for execution.
+    pub fn create_current_state_pair(
+        source_root: &Path,
+    ) -> Result<DisposableWorkspacePair, DisposableWorkspaceError> {
+        Self::create_current_state_pair_with_options(
+            source_root,
+            &DisposableWorkspaceOptions::default(),
+        )
+    }
+
+    /// Create an immutable baseline and writable execution root from one live snapshot.
+    pub fn create_current_state_pair_with_options(
+        source_root: &Path,
+        options: &DisposableWorkspaceOptions,
+    ) -> Result<DisposableWorkspacePair, DisposableWorkspaceError> {
+        let baseline = Self::create_current_state_with_options(source_root, options)?;
+        let baseline_inventory =
+            WorkspaceFileInventory::capture_with_options(baseline.path(), options)?;
+        let execution = Self::create_current_state_with_options(baseline.path(), options)?;
+        make_tree_read_only(baseline.path())?;
+        Ok(DisposableWorkspacePair {
+            baseline,
+            execution,
+            baseline_inventory,
+            inventory_options: options.clone(),
+        })
     }
 
     /// Copy the current source state with project-specific output exclusions.
@@ -157,7 +329,7 @@ impl DisposableDraftWorkspace {
             });
         }
         let root =
-            std::env::temp_dir().join(format!("deepseek-draft-workspace-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("{OWNED_WORKSPACE_PREFIX}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).map_err(|source| file_error("create", &root, source))?;
 
         let workspace = Self { root: Some(root) };
@@ -485,12 +657,175 @@ fn is_binary_file(path: &Path) -> Result<bool, DisposableWorkspaceError> {
     }
 }
 
+fn inventory_directory(
+    root: &Path,
+    exclusions: &SnapshotExclusions,
+    relative: &mut Vec<String>,
+    files: &mut BTreeMap<String, WorkspaceFileFingerprint>,
+) -> Result<(), DisposableWorkspaceError> {
+    let directory = relative
+        .iter()
+        .fold(root.to_path_buf(), |path, component| path.join(component));
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| file_error("read", &directory, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| file_error("read", &directory, error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name();
+        if is_excluded_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| file_error("inspect", &path, error))?;
+        if metadata.file_type().is_symlink() || is_reparse_point_from_metadata(&metadata) {
+            continue;
+        }
+        relative.push(name.to_string_lossy().into_owned());
+        if exclusions.matches(relative) {
+            relative.pop();
+            continue;
+        }
+        if metadata.is_dir() {
+            inventory_directory(root, exclusions, relative, files)?;
+        } else if metadata.is_file() {
+            files.insert(relative.join("/"), fingerprint_file(&path, metadata.len())?);
+        }
+        relative.pop();
+    }
+    Ok(())
+}
+
+fn fingerprint_file(
+    path: &Path,
+    byte_len: u64,
+) -> Result<WorkspaceFileFingerprint, DisposableWorkspaceError> {
+    let mut file = fs::File::open(path).map_err(|error| file_error("read", path, error))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| file_error("read", path, error))?;
+        if count == 0 {
+            break;
+        }
+        hasher
+            .write_all(&buffer[..count])
+            .expect("SHA-256 writes cannot fail");
+    }
+    Ok(WorkspaceFileFingerprint {
+        byte_len,
+        sha256: format!("sha256:{:x}", hasher.finalize()),
+    })
+}
+
+fn compare_inventories(
+    baseline: &WorkspaceFileInventory,
+    current: &WorkspaceFileInventory,
+) -> WorkspaceFileChanges {
+    let modified = baseline
+        .files
+        .iter()
+        .filter(|(path, identity)| {
+            current
+                .files
+                .get(*path)
+                .is_some_and(|current| current != *identity)
+        })
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let mut deleted = baseline
+        .files
+        .keys()
+        .filter(|path| !current.files.contains_key(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut created = current
+        .files
+        .keys()
+        .filter(|path| !baseline.files.contains_key(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut renamed = Vec::new();
+    let mut remaining_created = BTreeSet::from_iter(created.iter().cloned());
+    let mut remaining_deleted = Vec::new();
+    for from in &deleted {
+        let identity = baseline
+            .files
+            .get(from)
+            .expect("deleted path comes from the baseline");
+        let to = remaining_created
+            .iter()
+            .find(|candidate| current.files.get(*candidate) == Some(identity))
+            .cloned();
+        if let Some(to) = to {
+            remaining_created.remove(&to);
+            renamed.push(WorkspaceFileRename {
+                from: from.clone(),
+                to,
+            });
+        } else {
+            remaining_deleted.push(from.clone());
+        }
+    }
+    created = remaining_created.into_iter().collect();
+    deleted = remaining_deleted;
+    WorkspaceFileChanges {
+        created,
+        modified,
+        deleted,
+        renamed,
+    }
+}
+
 fn remove_workspace(root: &Path) -> Result<(), DisposableWorkspaceError> {
+    validate_owned_workspace_root(root)?;
     if !root.exists() {
         return Ok(());
     }
     make_tree_writable(root)?;
     fs::remove_dir_all(root).map_err(|source| file_error("remove", root, source))
+}
+
+fn validate_owned_workspace_root(root: &Path) -> Result<(), DisposableWorkspaceError> {
+    let file_name = root.file_name().and_then(|name| name.to_str());
+    let owned_uuid = file_name
+        .and_then(|name| name.strip_prefix(OWNED_WORKSPACE_PREFIX))
+        .and_then(|value| uuid::Uuid::parse_str(value).ok());
+    let expected_parent = fs::canonicalize(std::env::temp_dir())
+        .map_err(|error| file_error("inspect", &std::env::temp_dir(), error))?;
+    let actual_parent = root
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok());
+    if owned_uuid.is_none() || actual_parent.as_deref() != Some(expected_parent.as_path()) {
+        return Err(DisposableWorkspaceError::UnownedCleanupRoot(
+            root.to_path_buf(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "the baseline is made read-only and cleanup restores writability"
+)]
+fn make_tree_read_only(root: &Path) -> Result<(), DisposableWorkspaceError> {
+    for entry in walkdir::WalkDir::new(root) {
+        let entry = entry.map_err(|error| {
+            file_error("inspect", root, std::io::Error::other(error.to_string()))
+        })?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| file_error("inspect", entry.path(), error))?;
+        if metadata.is_file() && !metadata.permissions().readonly() {
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(entry.path(), permissions)
+                .map_err(|error| file_error("make read-only", entry.path(), error))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{ControlledDevelopmentPhase, ControlledDevelopmentTransitionError, WorkCard};
+use super::{
+    ControlledDevelopmentPhase, ControlledDevelopmentTransitionError, WorkCard,
+    WorkCardValidationError, WorkCardValidationErrors,
+};
 
 /// Browser-safe state owned by one top-level session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +17,8 @@ pub struct ControlledDevelopmentState {
     approved_card_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     card: Option<WorkCard>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    structural_errors: Vec<WorkCardValidationError>,
 }
 
 impl ControlledDevelopmentState {
@@ -37,6 +42,10 @@ impl ControlledDevelopmentState {
         self.card.as_ref()
     }
 
+    pub fn structural_errors(&self) -> &[WorkCardValidationError] {
+        &self.structural_errors
+    }
+
     /// Enables or disables the mode for this session.
     ///
     /// Enabling does not start work. Disabling removes every packet-local
@@ -48,6 +57,7 @@ impl ControlledDevelopmentState {
             self.packet_id = None;
             self.approved_card_id = None;
             self.card = None;
+            self.structural_errors.clear();
         }
     }
 
@@ -66,8 +76,36 @@ impl ControlledDevelopmentState {
         self.packet_id = Some(packet_id);
         self.approved_card_id = None;
         self.card = None;
+        self.structural_errors.clear();
         self.phase = ControlledDevelopmentPhase::Planning;
         Ok(())
+    }
+
+    /// Accepts only a complete JSON Work Card from the planning final response.
+    ///
+    /// This deliberately deserializes the complete input. It never scans prose,
+    /// markdown fences, or substrings for an embedded card.
+    pub fn accept_planning_result(
+        &mut self,
+        final_response: &str,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        if self.phase != ControlledDevelopmentPhase::Planning {
+            return Err(ControlledDevelopmentTransitionError::NotPlanning);
+        }
+        let card = match serde_json::from_str::<WorkCard>(final_response) {
+            Ok(card) => card,
+            Err(error) => {
+                let errors = WorkCardValidationErrors::new(vec![WorkCardValidationError::new(
+                    "work_card",
+                    format!("Work Card JSON is structurally invalid: {error}"),
+                )]);
+                self.block_with_structural_errors(&errors);
+                return Err(ControlledDevelopmentTransitionError::InvalidWorkCard(
+                    errors,
+                ));
+            }
+        };
+        self.accept_work_card(card)
     }
 
     /// Stores the complete card only after structural and packet checks pass.
@@ -78,14 +116,26 @@ impl ControlledDevelopmentState {
         if self.phase != ControlledDevelopmentPhase::Planning {
             return Err(ControlledDevelopmentTransitionError::NotPlanning);
         }
-        card.validate()
-            .map_err(ControlledDevelopmentTransitionError::InvalidWorkCard)?;
+        if let Err(errors) = card.validate() {
+            self.block_with_structural_errors(&errors);
+            return Err(ControlledDevelopmentTransitionError::InvalidWorkCard(
+                errors,
+            ));
+        }
         if self.packet_id.as_deref() != Some(card.id.as_str()) {
             return Err(ControlledDevelopmentTransitionError::CardIdMismatch);
         }
         self.approved_card_id = None;
+        self.structural_errors.clear();
         self.card = Some(card);
         self.phase = ControlledDevelopmentPhase::AwaitingApproval;
         Ok(())
+    }
+
+    fn block_with_structural_errors(&mut self, errors: &WorkCardValidationErrors) {
+        self.approved_card_id = None;
+        self.card = None;
+        self.structural_errors = errors.errors().to_vec();
+        self.phase = ControlledDevelopmentPhase::Blocked;
     }
 }

@@ -46,6 +46,12 @@ impl WorkCard {
             "outcome must name one nonempty observable result on one line",
             &mut errors,
         );
+        if !self.outcome.trim().chars().any(char::is_alphanumeric) {
+            errors.push(WorkCardValidationError::new(
+                "outcome",
+                "outcome must contain an observable alphanumeric result",
+            ));
+        }
         validate_commands(&self.proof_commands, &mut errors);
         validate_paths(
             "production_paths",

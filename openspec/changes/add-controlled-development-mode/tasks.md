@@ -9,12 +9,14 @@
 - [x] 1.3 Add the strict `WorkCard` serde contract and bounded validator for fields, commands, paths, exclusions, and complexity exceptions.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: A Work Card is strict and bounded :: Valid Work Card awaits approval -->
-- [ ] 1.4 Add deterministic malformed-card integration cases that reject unknown fields and every bound violation without prose extraction.
+- [x] 1.4 Add deterministic malformed-card integration cases that reject unknown fields and every bound violation without prose extraction.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: A Work Card is strict and bounded :: Malformed Work Card is rejected -->
 
 ## 2. Existing snapshot and backend boundaries
 
-- [ ] 2.1 Extend `DisposableDraftWorkspace` with one-read baseline forking, deterministic file inventories, changed-path comparison, retained ownership, and safe cleanup without changing Procedure behavior.
+- [x] 2.1 Extend `DisposableDraftWorkspace` with one-read baseline forking, deterministic file inventories, changed-path comparison, retained ownership, and safe cleanup without changing Procedure behavior.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Passing packet starts from current dirty bytes -->
 - [ ] 2.2 Add a controlled `BackendFactory` profile for API planning and execution with fixed rooted file tools and no shell, directory change, MCP, skill, reset, question, or subagent tools.
 <!-- covers: deepseek-custom/controlled-development-mode :: Planning cannot change the real workspace :: Planning cannot change the real workspace -->

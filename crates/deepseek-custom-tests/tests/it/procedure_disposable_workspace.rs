@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use deepseek_custom::procedure::{
     DisposableDraftWorkspace, DisposableWorkspaceError, DisposableWorkspaceOptions,
-    SnapshotProgress,
+    PromotionBaseline, PromotionTarget, SnapshotProgress, WorkspaceFileRename,
+    promote_verified_workspace,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -204,6 +205,113 @@ fn explicit_close_and_drop_both_remove_the_snapshot() {
     };
     assert!(!dropped_path.exists());
 
+    std::fs::remove_dir_all(source).ok();
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Passing packet starts from current dirty bytes
+#[test]
+fn execution_pair_forks_current_dirty_bytes_and_reports_deterministic_endpoints() {
+    let source = temp_dir("controlled execution pair");
+    write(&source, "src/approved.rs", "before\n");
+    write(
+        &source,
+        "src/unrelated-dirty.rs",
+        "dirty before execution\n",
+    );
+    write(&source, "src/deleted.rs", "delete me\n");
+    write(&source, "src/renamed.rs", "rename me\n");
+    write(&source, ".git/config", "excluded metadata\n");
+    write(&source, "target/output.txt", "excluded build output\n");
+    write(&source, ".deepseek/run.json", "excluded harness data\n");
+    write(&source, "dist/output.js", "configured output\n");
+
+    let pair = DisposableDraftWorkspace::create_current_state_pair_with_options(
+        &source,
+        &DisposableWorkspaceOptions {
+            excluded_paths: vec!["dist".into()],
+            ..DisposableWorkspaceOptions::default()
+        },
+    )
+    .unwrap();
+
+    for root in [pair.baseline_path(), pair.execution_path()] {
+        assert_eq!(
+            std::fs::read(root.join("src/unrelated-dirty.rs")).unwrap(),
+            b"dirty before execution\n"
+        );
+        assert!(!root.join(".git").exists());
+        assert!(!root.join("target").exists());
+        assert!(!root.join(".deepseek").exists());
+        assert!(!root.join("dist").exists());
+    }
+    assert!(
+        std::fs::write(pair.baseline_path().join("src/approved.rs"), "forbidden\n").is_err(),
+        "the execution baseline must be immutable"
+    );
+
+    write(pair.execution_path(), "src/approved.rs", "after\n");
+    write(pair.execution_path(), "src/created.rs", "created\n");
+    write(
+        pair.execution_path(),
+        "dist/generated.js",
+        "ignored output\n",
+    );
+    std::fs::remove_file(pair.execution_path().join("src/deleted.rs")).unwrap();
+    std::fs::rename(
+        pair.execution_path().join("src/renamed.rs"),
+        pair.execution_path().join("src/moved.rs"),
+    )
+    .unwrap();
+
+    let changes = pair.changes().unwrap();
+    assert_eq!(changes.created, ["src/created.rs"]);
+    assert_eq!(changes.modified, ["src/approved.rs"]);
+    assert_eq!(changes.deleted, ["src/deleted.rs"]);
+    assert_eq!(
+        changes.renamed,
+        [WorkspaceFileRename {
+            from: "src/renamed.rs".into(),
+            to: "src/moved.rs".into(),
+        }]
+    );
+    assert_eq!(
+        changes.changed_paths(),
+        [
+            "src/approved.rs",
+            "src/created.rs",
+            "src/deleted.rs",
+            "src/moved.rs",
+            "src/renamed.rs",
+        ]
+    );
+    assert_eq!(changes, pair.changes().unwrap());
+
+    let targets = [PromotionTarget::Update {
+        path: "src/approved.rs".into(),
+    }];
+    let baseline = PromotionBaseline::capture(&source, &targets).unwrap();
+    write(
+        &source,
+        "src/unrelated-dirty.rs",
+        "user changed unrelated bytes later\n",
+    );
+    promote_verified_workspace(&source, pair.execution_path(), &baseline, &targets).unwrap();
+    assert_eq!(
+        std::fs::read(source.join("src/approved.rs")).unwrap(),
+        b"after\n"
+    );
+    assert_eq!(
+        std::fs::read(source.join("src/unrelated-dirty.rs")).unwrap(),
+        b"user changed unrelated bytes later\n"
+    );
+    assert!(!source.join("src/created.rs").exists());
+
+    let retained = pair.retain_for_diagnostics();
+    let baseline_path = retained.baseline_path().to_path_buf();
+    let execution_path = retained.execution_path().to_path_buf();
+    retained.cleanup().unwrap();
+    assert!(!baseline_path.exists());
+    assert!(!execution_path.exists());
     std::fs::remove_dir_all(source).ok();
 }
 

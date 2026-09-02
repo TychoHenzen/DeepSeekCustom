@@ -58,7 +58,9 @@ pub use completed::{
 pub use dispatch::{LocalizationDispatch, LocalizationDispatchError, LocalizationDispatcher};
 pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,
-    DisposableWorkspaceOptions, RetainedRecoveryWorkspace, SnapshotProgress,
+    DisposableWorkspaceOptions, DisposableWorkspacePair, RetainedDisposableWorkspacePair,
+    RetainedRecoveryWorkspace, SnapshotProgress, WorkspaceFileChanges, WorkspaceFileFingerprint,
+    WorkspaceFileInventory, WorkspaceFileRename,
 };
 pub use failure_digest::{
     DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FAILURE_COMMAND_CHARACTER_CAP,

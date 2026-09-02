@@ -10,11 +10,16 @@ use super::WorkCardValidationError;
 pub struct WorkCardValidationErrors(Vec<WorkCardValidationError>);
 
 impl WorkCardValidationErrors {
+    pub(crate) fn new(errors: Vec<WorkCardValidationError>) -> Self {
+        debug_assert!(!errors.is_empty());
+        Self(errors)
+    }
+
     pub(crate) fn from_errors(errors: Vec<WorkCardValidationError>) -> Result<(), Self> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(Self(errors))
+            Err(Self::new(errors))
         }
     }
 
