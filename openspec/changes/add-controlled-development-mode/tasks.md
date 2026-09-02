@@ -99,9 +99,14 @@
 
 ## 6. Required verification and production practice
 
-- [ ] 6.1 Run the focused Controlled Development Rust integration target and frontend tests, and record the exact observed counts and results.
-- [ ] 6.2 Run `cargo fmt --all -- --check`.
-- [ ] 6.3 Run `cargo check --workspace`.
-- [ ] 6.4 Run `cargo clippy --workspace -- -D warnings`.
-- [ ] 6.5 Run `cargo test --workspace` and record the exact observed result.
+- [x] 6.1 Run the focused Controlled Development Rust integration target and frontend tests, and record the exact observed counts and results.
+<!-- status: completed -->
+- [x] 6.2 Run `cargo fmt --all -- --check`.
+<!-- status: completed -->
+- [x] 6.3 Run `cargo check --workspace`.
+<!-- status: completed -->
+- [x] 6.4 Run `cargo clippy --workspace -- -D warnings`.
+<!-- status: completed -->
+- [x] 6.5 Run `cargo test --workspace` and record the exact observed result.
+<!-- status: completed -->
 - [ ] 6.6 Run the real production binary with a disposable Ollama configuration through Playwright-RS. Exercise planning, approval, isolated diff, proof evidence, approved promotion, and Stop. Retain ordered screenshots and the browser trace, and compare real workspace bytes at each boundary.
