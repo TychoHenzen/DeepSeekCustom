@@ -80,6 +80,7 @@ mod claude_cli_lifecycle;
 mod codex_cli_lifecycle;
 mod config_settings;
 mod context_relevance;
+mod controlled_development;
 mod effort;
 mod evolution;
 #[path = "web_browser_milestone.rs"]

@@ -5,6 +5,7 @@ pub mod autopilot;
 pub mod backend;
 pub mod config;
 pub mod context;
+pub mod controlled_development;
 pub mod effort;
 pub mod error;
 pub mod evolution;
