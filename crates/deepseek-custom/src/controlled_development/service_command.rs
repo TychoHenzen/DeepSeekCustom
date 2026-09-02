@@ -39,9 +39,8 @@ pub enum ControlledDevelopmentCommand {
         card_id: String,
         evidence: Box<VerifierGateEvidence>,
     },
-    RecordChangedPaths {
+    ValidateIsolatedChanges {
         card_id: String,
-        paths: Vec<String>,
     },
     Complete {
         card_id: String,

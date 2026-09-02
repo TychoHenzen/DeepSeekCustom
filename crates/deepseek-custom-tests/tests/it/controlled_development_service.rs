@@ -89,6 +89,11 @@ fn coordinator_projects_typed_evidence_and_builds_fresh_controlled_backends() {
     ));
 
     let pair = DisposableDraftWorkspace::create_current_state_pair(&root).unwrap();
+    std::fs::write(
+        pair.execution_path().join("source.txt"),
+        b"isolated change\n",
+    )
+    .unwrap();
     let execution = coordinator
         .handle(ControlledDevelopmentCommand::ExecutionWorkspaceReady {
             card_id: "evidence-card".into(),
@@ -116,9 +121,8 @@ fn coordinator_projects_typed_evidence_and_builds_fresh_controlled_backends() {
     assert_eq!(factory.working_dir_snapshot_for_test(), normal_root);
 
     coordinator
-        .handle(ControlledDevelopmentCommand::RecordChangedPaths {
+        .handle(ControlledDevelopmentCommand::ValidateIsolatedChanges {
             card_id: "evidence-card".into(),
-            paths: vec!["source.txt".into()],
         })
         .unwrap();
     coordinator
@@ -154,7 +158,7 @@ fn valid_card_json(card_id: &str) -> String {
         "id": card_id,
         "outcome": "The packet produces one observable result.",
         "proof_commands": ["cargo check --workspace"],
-        "production_paths": ["crates/deepseek-custom/src/controlled_development/coordinator.rs"],
+        "production_paths": ["source.txt"],
         "supporting_paths": ["crates/deepseek-custom-tests/tests/it/controlled_development_service.rs"],
         "excluded": ["settings.json"],
         "complexity_exceptions": []

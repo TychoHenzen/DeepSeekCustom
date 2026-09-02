@@ -1,7 +1,14 @@
 //! Session-scoped contracts for Controlled Development.
 
+mod authorized_workspace_changes;
 mod backend_selection;
+mod change_gate;
+mod change_gate_error;
 mod coordinator;
+mod dependency_change_inspector;
+mod dependency_exception_match;
+mod dependency_file_classifier;
+mod dependency_file_kind;
 mod phase;
 mod service_command;
 mod service_effect;
@@ -12,8 +19,14 @@ mod work_card_schema;
 mod work_card_validation_error;
 mod work_card_validation_errors;
 
+pub use authorized_workspace_changes::AuthorizedWorkspaceChanges;
 pub use backend_selection::ControlledBackendSelection;
+pub use change_gate::{authorize_changed_paths, authorize_workspace_changes};
+pub use change_gate_error::ControlledChangeGateError;
 pub use coordinator::ControlledDevelopmentCoordinator;
+pub use dependency_exception_match::DependencyExceptionMatch;
+pub use dependency_file_classifier::classify_dependency_file;
+pub use dependency_file_kind::DependencyFileKind;
 pub use phase::ControlledDevelopmentPhase;
 pub use service_command::ControlledDevelopmentCommand;
 pub use service_effect::ControlledDevelopmentEffect;

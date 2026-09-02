@@ -6,6 +6,7 @@ use crate::procedure::{DisposableWorkspacePair, VerifierGateEvidence};
 use super::{
     ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentEffect,
     ControlledDevelopmentPhase, ControlledDevelopmentState, ControlledDevelopmentTransitionError,
+    authorize_workspace_changes,
 };
 
 /// Owns all runtime authority and evidence for one top-level session.
@@ -19,6 +20,7 @@ pub struct ControlledDevelopmentCoordinator {
     raw_events: Vec<RoutedEvent>,
     proof_evidence: Vec<VerifierGateEvidence>,
     changed_paths: Vec<String>,
+    dependency_matches: Vec<super::DependencyExceptionMatch>,
     blocker: Option<String>,
     compact_summary: Option<String>,
 }
@@ -38,6 +40,10 @@ impl ControlledDevelopmentCoordinator {
 
     pub fn changed_paths(&self) -> &[String] {
         &self.changed_paths
+    }
+
+    pub fn dependency_matches(&self) -> &[super::DependencyExceptionMatch] {
+        &self.dependency_matches
     }
 
     pub fn blocker(&self) -> Option<&str> {
@@ -105,10 +111,8 @@ impl ControlledDevelopmentCoordinator {
                 self.proof_evidence.push(*evidence);
                 Ok(None)
             }
-            ControlledDevelopmentCommand::RecordChangedPaths { card_id, paths } => {
-                self.require_executing_card(&card_id)?;
-                self.changed_paths = paths;
-                Ok(None)
+            ControlledDevelopmentCommand::ValidateIsolatedChanges { card_id } => {
+                self.validate_isolated_changes(&card_id)
             }
             ControlledDevelopmentCommand::Complete { card_id, summary } => {
                 self.state.complete_current_card(&card_id)?;
@@ -204,6 +208,61 @@ impl ControlledDevelopmentCoordinator {
         }))
     }
 
+    fn validate_isolated_changes(
+        &mut self,
+        card_id: &str,
+    ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
+        self.require_executing_card(card_id)?;
+        let card = self
+            .state
+            .work_card()
+            .cloned()
+            .ok_or(ControlledDevelopmentTransitionError::NoCurrentCard)?;
+        let changes = match self.workspace_pair.as_ref() {
+            Some(workspace) => match workspace.changes() {
+                Ok(changes) => changes,
+                Err(error) => {
+                    return self.block_pre_proof_gate(
+                        card_id,
+                        format!("could not inventory isolated changes: {error}"),
+                    );
+                }
+            },
+            None => return Err(ControlledDevelopmentTransitionError::MissingExecutionWorkspace),
+        };
+
+        let workspace = self
+            .workspace_pair
+            .as_ref()
+            .ok_or(ControlledDevelopmentTransitionError::MissingExecutionWorkspace)?;
+        self.changed_paths = changes.changed_paths();
+        match authorize_workspace_changes(
+            &changes,
+            workspace.baseline_path(),
+            workspace.execution_path(),
+            &card.production_paths,
+            &card.supporting_paths,
+            &card.complexity_exceptions,
+        ) {
+            Ok(authorized) => {
+                self.dependency_matches = authorized.dependency_matches().to_vec();
+                Ok(None)
+            }
+            Err(error) => self.block_pre_proof_gate(card_id, error.to_string()),
+        }
+    }
+
+    fn block_pre_proof_gate(
+        &mut self,
+        card_id: &str,
+        blocker: String,
+    ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
+        self.state.block_current_packet(card_id)?;
+        self.blocker = Some(blocker.clone());
+        self.compact_summary = Some(format!("Controlled Development blocked: {blocker}"));
+        Ok(None)
+    }
+
     fn packet_context(
         &self,
     ) -> Result<
@@ -251,6 +310,7 @@ impl ControlledDevelopmentCoordinator {
         self.raw_events.clear();
         self.proof_evidence.clear();
         self.changed_paths.clear();
+        self.dependency_matches.clear();
         self.blocker = None;
         self.compact_summary = None;
     }

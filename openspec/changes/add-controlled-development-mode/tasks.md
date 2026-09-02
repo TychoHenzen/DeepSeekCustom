@@ -39,11 +39,14 @@
 - [x] 3.2 Reject a current card without backend execution and clear its approval identity.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Approval belongs to one card :: User rejects a card -->
-- [ ] 3.3 Compute all isolated changes before proof commands and block any path outside the approved production and supporting lists.
+- [x] 3.3 Compute all isolated changes before proof commands and block any path outside the approved production and supporting lists.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Changed paths must match the approved card :: Changed path outside approved lists blocks promotion -->
-- [ ] 3.4 Enforce the three-changed-production-path limit independently of the number of listed supporting paths.
+- [x] 3.4 Enforce the three-changed-production-path limit independently of the number of listed supporting paths.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Changed paths must match the approved card :: More than three production paths blocks promotion -->
-- [ ] 3.5 Add the fixed Cargo and web-package manifest classifier and require matching named complexity exceptions for their changed dependency entries.
+- [x] 3.5 Add the fixed Cargo and web-package manifest classifier and require matching named complexity exceptions for their changed dependency entries.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Complexity exceptions gate dependency files :: Unapproved manifest or lockfile change blocks promotion -->
 - [ ] 3.6 Reuse `VerifierCommandRunner` to run one to three approved proof commands in order and stop on spawn failure, interruption, or nonzero exit.
 <!-- covers: deepseek-custom/controlled-development-mode :: Every proof command must pass in isolation :: Failing proof command blocks promotion -->

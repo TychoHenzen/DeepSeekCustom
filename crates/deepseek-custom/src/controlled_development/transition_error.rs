@@ -17,6 +17,7 @@ pub enum ControlledDevelopmentTransitionError {
     CardIdMismatch,
     NoCurrentCard,
     MissingPacketContext,
+    MissingExecutionWorkspace,
     ExecutionWorkspaceAlreadyAttached,
     InvalidWorkCard(WorkCardValidationErrors),
 }
@@ -43,6 +44,9 @@ impl fmt::Display for ControlledDevelopmentTransitionError {
             Self::NoCurrentCard => formatter.write_str("session has no current Work Card"),
             Self::MissingPacketContext => {
                 formatter.write_str("current packet is missing its backend or request context")
+            }
+            Self::MissingExecutionWorkspace => {
+                formatter.write_str("current card has no isolated execution workspace")
             }
             Self::ExecutionWorkspaceAlreadyAttached => {
                 formatter.write_str("current card already owns an execution workspace")
