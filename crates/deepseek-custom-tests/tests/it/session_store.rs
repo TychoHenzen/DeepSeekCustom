@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use deepseek_custom::api::types::{Content, Message, Role};
 use deepseek_custom::application::transcript::Transcript;
+use deepseek_custom::controlled_development::ControlledDevelopmentPhase;
 use deepseek_custom::error::HarnessError;
 use deepseek_custom::session::store::SessionStore;
 use deepseek_custom::session::{SessionId, SessionMeta, SessionRecord};
@@ -35,6 +36,7 @@ fn sample_record(title: &str, seq: u64, updated_at: u64) -> SessionRecord {
         }],
         transcript: Transcript::new(),
         claude_session_id: None,
+        controlled_development: Default::default(),
     }
 }
 
@@ -231,6 +233,11 @@ fn a_session_file_saved_before_content_was_an_enum_still_loads() {
             .and_then(Content::as_text),
         Some("hello from before Content existed")
     );
+    assert_eq!(
+        loaded.controlled_development.state.phase(),
+        ControlledDevelopmentPhase::Off
+    );
+    assert!(!loaded.controlled_development.state.is_enabled());
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -29,6 +29,9 @@ pub enum ControlledDevelopmentCommand {
     Reject {
         card_id: String,
     },
+    Stop {
+        packet_id: String,
+    },
     DiscardRetainedEvidence,
     ExecutionWorkspaceReady {
         card_id: String,

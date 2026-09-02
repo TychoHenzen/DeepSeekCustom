@@ -20,6 +20,9 @@ use tracing::{info, warn};
 use super::transcript::Transcript;
 use crate::agent::events::AgentCommand;
 use crate::api::types::Message;
+use crate::controlled_development::{
+    ControlledDevelopmentCoordinator, ControlledDevelopmentSessionRecord,
+};
 use crate::session::{
     SessionId, SessionMeta, SessionRecord, SessionSeq, SessionStore, now_timestamp,
 };
@@ -59,6 +62,7 @@ pub struct SessionState {
     /// The `claude` CLI's own session id, for `--resume`, as of the latest
     /// `ConversationSnapshot` event. Always `None` on an `Api` session.
     claude_session_id: Option<String>,
+    controlled_development: ControlledDevelopmentCoordinator,
 }
 
 impl SessionState {
@@ -79,6 +83,7 @@ impl SessionState {
             saved,
             messages: Vec::new(),
             claude_session_id: None,
+            controlled_development: ControlledDevelopmentCoordinator::default(),
         }
     }
 
@@ -90,6 +95,14 @@ impl SessionState {
     /// Current metadata for presentation-neutral session projection.
     pub fn current_meta(&self) -> &SessionMeta {
         &self.current_meta
+    }
+
+    pub const fn controlled_development(&self) -> &ControlledDevelopmentCoordinator {
+        &self.controlled_development
+    }
+
+    pub fn controlled_development_mut(&mut self) -> &mut ControlledDevelopmentCoordinator {
+        &mut self.controlled_development
     }
 
     /// Every saved conversation's metadata, newest first as the store
@@ -167,11 +180,19 @@ impl SessionState {
     /// metadata. Moves the transcript out and back rather than cloning it,
     /// since `Transcript` carries no `Clone` impl.
     fn write_to_disk(&mut self, transcript: &mut Transcript) {
+        let controlled_development = match self.controlled_development.session_record() {
+            Ok(record) => record,
+            Err(error) => {
+                warn!(error = %error, "failed to project controlled development session state");
+                return;
+            }
+        };
         let record = SessionRecord {
             meta: self.current_meta.clone(),
             messages: self.messages.clone(),
             transcript: std::mem::take(transcript),
             claude_session_id: self.claude_session_id.clone(),
+            controlled_development,
         };
         let result = self.store.save(&record);
         *transcript = record.transcript;
@@ -189,7 +210,11 @@ impl SessionState {
     /// Skips the save when the transcript is empty. That way opening a new
     /// session twice in a row leaves no empty records behind.
     fn save_outgoing(&mut self, transcript: &mut Transcript, origin: SessionOrigin) {
-        if transcript.blocks().is_empty() {
+        let controlled_is_default = self
+            .controlled_development
+            .session_record()
+            .is_ok_and(|record| record == ControlledDevelopmentSessionRecord::default());
+        if transcript.blocks().is_empty() && controlled_is_default {
             info!(
                 session_id = self.current_id.as_str(),
                 "session save skipped: transcript empty"
@@ -218,6 +243,7 @@ impl SessionState {
         transcript: &mut Transcript,
         origin: SessionOrigin,
     ) {
+        self.prepare_controlled_session_exit();
         self.save_outgoing(transcript, origin.clone());
         transcript.clear();
         self.messages.clear();
@@ -229,6 +255,7 @@ impl SessionState {
         // number has to be in hand or this one would reuse it.
         let seq = next_seq(&self.saved);
         self.current_meta = fresh_meta(id, seq, &origin);
+        self.controlled_development = ControlledDevelopmentCoordinator::default();
         self.refresh_saved();
         info!(
             session_id = id.as_str(),
@@ -248,7 +275,6 @@ impl SessionState {
         transcript: &mut Transcript,
         origin: SessionOrigin,
     ) -> Option<AgentCommand> {
-        self.save_outgoing(transcript, origin);
         let record = match self.store.load(&id) {
             Ok(record) => record,
             Err(e) => {
@@ -256,6 +282,16 @@ impl SessionState {
                 return None;
             }
         };
+
+        self.prepare_controlled_session_exit();
+        self.save_outgoing(transcript, origin);
+        if let Err(error) = self
+            .controlled_development
+            .install_session_record(record.controlled_development.clone())
+        {
+            warn!(error = %error, "failed to install controlled development session state");
+            return None;
+        }
 
         *transcript = record.transcript;
         self.messages = record.messages.clone();
@@ -279,10 +315,43 @@ impl SessionState {
     /// logged and otherwise ignored, matching every other disk error here.
     pub fn delete(&mut self, id: SessionId) {
         info!(session_id = id.as_str(), "session delete requested");
+        if id == self.current_id {
+            if let Err(error) = self.controlled_development.prepare_session_exit() {
+                warn!(error = %error, "failed to clean deleted session workspace");
+                return;
+            }
+        } else {
+            let record = match self.store.load(&id) {
+                Ok(record) => record,
+                Err(error) if self.saved.iter().any(|meta| meta.id == id) => {
+                    warn!(error = %error, "failed to inspect deleted session workspace");
+                    return;
+                }
+                Err(_) => {
+                    self.refresh_saved();
+                    return;
+                }
+            };
+            let mut controlled = ControlledDevelopmentCoordinator::default();
+            if let Err(error) = controlled.install_session_record(record.controlled_development) {
+                warn!(error = %error, "failed to inspect deleted session workspace");
+                return;
+            }
+            if let Err(error) = controlled.prepare_session_exit() {
+                warn!(error = %error, "failed to clean deleted session workspace");
+                return;
+            }
+        }
         if let Err(e) = self.store.delete(&id) {
             warn!(error = %e, "failed to delete session");
         }
         self.refresh_saved();
+    }
+
+    fn prepare_controlled_session_exit(&mut self) {
+        if let Err(error) = self.controlled_development.prepare_session_exit() {
+            warn!(error = %error, "failed to clean controlled development session workspace");
+        }
     }
 }
 

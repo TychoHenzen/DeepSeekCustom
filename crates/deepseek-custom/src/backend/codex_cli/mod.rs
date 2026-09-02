@@ -94,6 +94,10 @@ impl CodexCliDriver {
         Arc::clone(&self.interrupt_flag)
     }
 
+    pub fn set_interrupt_flag(&mut self, interrupt_flag: Arc<AtomicBool>) {
+        self.interrupt_flag = interrupt_flag;
+    }
+
     pub fn effort_flag(&self) -> Arc<AtomicU8> {
         Arc::clone(&self.effort_flag)
     }

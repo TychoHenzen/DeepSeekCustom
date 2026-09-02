@@ -74,10 +74,12 @@
       "status": "completed"
     },
     "3.10": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.1": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     },
     "4.2": {
       "checked": false

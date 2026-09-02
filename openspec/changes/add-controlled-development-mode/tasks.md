@@ -60,12 +60,14 @@
 - [x] 3.9 Retain failed baseline and execution roots, expose their diagnostic diff, and clean them only on explicit discard, packet replacement, reset, or deletion.
 <!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Failed packets retain diagnostic evidence :: Blocked packet remains inspectable -->
-- [ ] 3.10 Route text and UI Stop through the existing backend, verifier, and process interruption paths, then block every later gate and promotion transition.
+- [x] 3.10 Route text and UI Stop through the existing backend, verifier, and process interruption paths, then block every later gate and promotion transition.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Stop prevents promotion :: STOP interrupts the backend and prevents promotion -->
 
 ## 4. Session recovery, control commands, and project state
 
-- [ ] 4.1 Add backward-compatible Controlled Development state to saved session records and install only the selected session's state during load or creation.
+- [x] 4.1 Add backward-compatible Controlled Development state to saved session records and install only the selected session's state during load or creation.
+<!-- status: completed -->
 <!-- covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Session change does not transfer approval -->
 - [ ] 4.2 Normalize restored `Planning`, `AwaitingApproval`, and `Executing` state to `Interrupted`, clear approval, and prove no automatic backend, verifier, or promotion work starts.
 <!-- covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Reloaded in-flight sessions become Interrupted -->

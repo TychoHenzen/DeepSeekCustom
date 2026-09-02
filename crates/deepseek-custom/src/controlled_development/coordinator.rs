@@ -22,6 +22,7 @@ pub struct ControlledDevelopmentCoordinator {
     workspace_pair: Option<DisposableWorkspacePair>,
     retained_workspace: Option<ControlledDevelopmentRetainedWorkspace>,
     raw_events: Vec<RoutedEvent>,
+    raw_details: Vec<String>,
     proof_evidence: Vec<VerifierGateEvidence>,
     changed_paths: Vec<String>,
     dependency_matches: Vec<super::DependencyExceptionMatch>,
@@ -41,6 +42,10 @@ impl ControlledDevelopmentCoordinator {
 
     pub fn raw_events(&self) -> &[RoutedEvent] {
         &self.raw_events
+    }
+
+    pub fn raw_details(&self) -> &[String] {
+        &self.raw_details
     }
 
     pub fn proof_evidence(&self) -> &[VerifierGateEvidence] {
@@ -138,6 +143,7 @@ impl ControlledDevelopmentCoordinator {
                 self.compact_summary = Some("Work Card rejected without execution".to_string());
                 Ok(None)
             }
+            ControlledDevelopmentCommand::Stop { packet_id } => self.stop(&packet_id),
             ControlledDevelopmentCommand::DiscardRetainedEvidence => {
                 self.discard_retained_evidence()?;
                 Ok(None)
@@ -147,6 +153,7 @@ impl ControlledDevelopmentCoordinator {
             }
             ControlledDevelopmentCommand::RecordRawEvent { packet_id, event } => {
                 self.require_packet(&packet_id)?;
+                self.raw_details.push(format!("{event:?}"));
                 self.raw_events.push(event);
                 Ok(None)
             }
@@ -222,6 +229,7 @@ impl ControlledDevelopmentCoordinator {
             original_request,
             selection,
             planning_root: workspace_root,
+            interrupt: std::sync::Arc::clone(&self.interrupt),
         }))
     }
 
@@ -280,7 +288,38 @@ impl ControlledDevelopmentCoordinator {
             card,
             selection,
             execution_root,
+            interrupt: std::sync::Arc::clone(&self.interrupt),
         }))
+    }
+
+    fn stop(
+        &mut self,
+        packet_id: &str,
+    ) -> Result<Option<ControlledDevelopmentEffect>, ControlledDevelopmentTransitionError> {
+        self.require_packet(packet_id)?;
+        if self.state.phase() == ControlledDevelopmentPhase::Interrupted {
+            self.interrupt
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(None);
+        }
+        if !matches!(
+            self.state.phase(),
+            ControlledDevelopmentPhase::Planning
+                | ControlledDevelopmentPhase::AwaitingApproval
+                | ControlledDevelopmentPhase::Executing
+        ) {
+            return Err(ControlledDevelopmentTransitionError::NotActivePacket);
+        }
+
+        // Publish interruption to the backend and verifier before consuming
+        // authority. Late service completions then fail their phase checks.
+        self.interrupt
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.state.interrupt_current_packet(packet_id)?;
+        self.blocker = None;
+        self.compact_summary = Some("Controlled Development interrupted by user".to_string());
+        self.retain_execution_workspace();
+        Ok(None)
     }
 
     fn validate_isolated_changes(
@@ -413,6 +452,7 @@ impl ControlledDevelopmentCoordinator {
             execution_root: workspace.execution_path().to_path_buf(),
             baseline,
             targets,
+            interrupt: std::sync::Arc::clone(&self.interrupt),
         }))
     }
 
@@ -475,14 +515,103 @@ impl ControlledDevelopmentCoordinator {
     }
 
     fn discard_retained_evidence(&mut self) -> Result<(), ControlledDevelopmentTransitionError> {
-        let Some(workspace) = self.retained_workspace.take() else {
+        let Some(workspace) = self.retained_workspace.as_ref() else {
             return Ok(());
         };
         workspace.cleanup().map_err(|error| {
             ControlledDevelopmentTransitionError::RetainedWorkspaceCleanupFailed(error.to_string())
         })?;
+        self.retained_workspace = None;
         self.raw_events.clear();
+        self.raw_details.clear();
         self.proof_evidence.clear();
+        Ok(())
+    }
+
+    /// Build the serializable projection owned by the selected top-level session.
+    pub fn session_record(
+        &self,
+    ) -> Result<super::ControlledDevelopmentSessionRecord, ControlledDevelopmentTransitionError>
+    {
+        let retained_workspace = self
+            .retained_workspace
+            .as_ref()
+            .map(ControlledDevelopmentRetainedWorkspace::reference)
+            .transpose()
+            .map_err(|error| {
+                ControlledDevelopmentTransitionError::RetainedWorkspaceCleanupFailed(
+                    error.to_string(),
+                )
+            })?;
+        Ok(super::ControlledDevelopmentSessionRecord {
+            state: self.state.clone(),
+            compact_evidence: super::ControlledDevelopmentCompactEvidence {
+                summary: self.compact_summary.clone(),
+                blocker: self.blocker.clone(),
+                changed_paths: self.changed_paths.clone(),
+                proof_evidence: self.proof_evidence.clone(),
+            },
+            raw_details: self.raw_details.clone(),
+            retained_workspace,
+        })
+    }
+
+    /// Replace runtime state with one selected session's persisted projection.
+    pub fn install_session_record(
+        &mut self,
+        record: super::ControlledDevelopmentSessionRecord,
+    ) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.cleanup_packet_workspaces()?;
+        self.clear_packet_data();
+        self.state = record.state;
+        self.compact_summary = record.compact_evidence.summary;
+        self.blocker = record.compact_evidence.blocker;
+        self.changed_paths = record.compact_evidence.changed_paths;
+        self.proof_evidence = record.compact_evidence.proof_evidence;
+        self.raw_details = record.raw_details;
+        self.retained_workspace = record
+            .retained_workspace
+            .map(super::ControlledDevelopmentRetainedWorkspaceReference::restore)
+            .transpose()
+            .map_err(|error| {
+                ControlledDevelopmentTransitionError::RetainedWorkspaceCleanupFailed(
+                    error.to_string(),
+                )
+            })?;
+        Ok(())
+    }
+
+    /// Interrupt active work and remove owned roots before a session switch or deletion.
+    pub fn prepare_session_exit(&mut self) -> Result<(), ControlledDevelopmentTransitionError> {
+        if matches!(
+            self.state.phase(),
+            ControlledDevelopmentPhase::Planning
+                | ControlledDevelopmentPhase::AwaitingApproval
+                | ControlledDevelopmentPhase::Executing
+        ) {
+            self.interrupt
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let packet_id = self.state.packet_id().unwrap_or_default().to_string();
+            self.state.interrupt_current_packet(&packet_id)?;
+            self.compact_summary =
+                Some("Controlled Development interrupted by session change".into());
+            self.retain_execution_workspace();
+        }
+        if let Some(workspace) = self.retained_workspace.as_ref() {
+            workspace.cleanup().map_err(|error| {
+                ControlledDevelopmentTransitionError::RetainedWorkspaceCleanupFailed(
+                    error.to_string(),
+                )
+            })?;
+            self.retained_workspace = None;
+        }
+        Ok(())
+    }
+
+    pub fn reset_for_new_session(&mut self) -> Result<(), ControlledDevelopmentTransitionError> {
+        self.prepare_session_exit()?;
+        self.state = ControlledDevelopmentState::default();
+        self.clear_packet_data();
         Ok(())
     }
 
@@ -531,6 +660,7 @@ impl ControlledDevelopmentCoordinator {
         self.workspace_root = None;
         self.workspace_pair = None;
         self.raw_events.clear();
+        self.raw_details.clear();
         self.proof_evidence.clear();
         self.changed_paths.clear();
         self.dependency_matches.clear();

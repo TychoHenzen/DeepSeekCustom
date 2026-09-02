@@ -5,7 +5,13 @@ use deepseek_custom::agent::events::AgentCommand;
 use deepseek_custom::api::types::Message;
 use deepseek_custom::application::session_state::{PLACEHOLDER_TITLE, SessionOrigin, SessionState};
 use deepseek_custom::application::transcript::{BlockKind, Transcript};
+use deepseek_custom::controlled_development::{
+    ControlledBackendSelection, ControlledDevelopmentCommand, ControlledDevelopmentCoordinator,
+    ControlledDevelopmentPhase,
+};
+use deepseek_custom::procedure::DisposableDraftWorkspace;
 use deepseek_custom::session::{SessionId, SessionStore};
+use serde_json::json;
 
 fn origin() -> SessionOrigin {
     SessionOrigin {
@@ -185,4 +191,158 @@ fn deleting_an_unknown_session_is_harmless() {
     let mut state = state_in(&dir);
     state.delete(SessionId::new());
     assert!(state.saved().is_empty());
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Controlled state is session-scoped and restart-safe :: Session change does not transfer approval
+#[test]
+fn switching_sessions_installs_only_the_destination_controlled_state() {
+    let dir = temp_dir("controlled_session_isolation");
+    std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+    let mut state = state_in(&dir);
+    let mut transcript = transcript_with_user_text("session a");
+    configure_approved_packet(state.controlled_development_mut(), &dir, "packet-a");
+    state.autosave(&mut transcript, origin());
+    let session_a = state.current_id();
+
+    let _ = state.start_new(&mut transcript, origin());
+    assert_eq!(
+        state.controlled_development().state().phase(),
+        ControlledDevelopmentPhase::Off
+    );
+    transcript.push(BlockKind::User {
+        text: "session b".into(),
+    });
+    configure_approved_packet(state.controlled_development_mut(), &dir, "packet-b");
+    state.autosave(&mut transcript, origin());
+    let session_b = state.current_id();
+
+    let _ = state
+        .load(session_a, &mut transcript, origin())
+        .expect("session a must load");
+    assert_eq!(
+        state.controlled_development().state().packet_id(),
+        Some("packet-a")
+    );
+    assert_eq!(
+        state.controlled_development().state().phase(),
+        ControlledDevelopmentPhase::Interrupted
+    );
+    assert_eq!(
+        state.controlled_development().state().approved_card_id(),
+        None
+    );
+
+    let _ = state
+        .load(session_b, &mut transcript, origin())
+        .expect("session b must load");
+    assert_eq!(
+        state.controlled_development().state().packet_id(),
+        Some("packet-b")
+    );
+    assert_eq!(
+        state.controlled_development().state().approved_card_id(),
+        None
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn session_reset_and_deletion_clean_owned_controlled_workspaces() {
+    let dir = temp_dir("controlled_session_cleanup");
+    std::fs::write(dir.join("source.txt"), "original\n").unwrap();
+    let mut state = state_in(&dir);
+    let mut transcript = transcript_with_user_text("session with workspace");
+    let first_paths =
+        attach_execution_workspace(state.controlled_development_mut(), &dir, "reset-packet");
+
+    let _ = state.start_new(&mut transcript, origin());
+    assert!(!first_paths.0.exists());
+    assert!(!first_paths.1.exists());
+    assert_eq!(
+        state.controlled_development().state().phase(),
+        ControlledDevelopmentPhase::Off
+    );
+
+    transcript.push(BlockKind::User {
+        text: "delete this session".into(),
+    });
+    let second_paths =
+        attach_execution_workspace(state.controlled_development_mut(), &dir, "delete-packet");
+    state
+        .controlled_development_mut()
+        .handle(ControlledDevelopmentCommand::Stop {
+            packet_id: "delete-packet".into(),
+        })
+        .unwrap();
+    state.autosave(&mut transcript, origin());
+    let deleted_id = state.current_id();
+    drop(state);
+    assert!(second_paths.0.exists());
+    assert!(second_paths.1.exists());
+
+    let mut restarted_state = state_in(&dir);
+    restarted_state.delete(deleted_id);
+
+    assert!(!second_paths.0.exists());
+    assert!(!second_paths.1.exists());
+    assert!(restarted_state.store().load(&deleted_id).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn configure_approved_packet(
+    coordinator: &mut ControlledDevelopmentCoordinator,
+    root: &std::path::Path,
+    packet_id: &str,
+) {
+    coordinator
+        .handle(ControlledDevelopmentCommand::SetEnabled { enabled: true })
+        .unwrap();
+    coordinator
+        .handle(ControlledDevelopmentCommand::Plan {
+            packet_id: packet_id.into(),
+            original_request: "Change the source file".into(),
+            selection: ControlledBackendSelection::new("controlled-stub", None),
+            workspace_root: root.to_path_buf(),
+        })
+        .unwrap();
+    coordinator
+        .handle(ControlledDevelopmentCommand::PlanningFinished {
+            packet_id: packet_id.into(),
+            final_response: json!({
+                "id": packet_id,
+                "outcome": "The source file contains the requested bytes.",
+                "proof_commands": ["cargo check --workspace"],
+                "production_paths": ["source.txt"],
+                "supporting_paths": [],
+                "excluded": ["settings.json"],
+                "complexity_exceptions": []
+            })
+            .to_string(),
+        })
+        .unwrap();
+    coordinator
+        .handle(ControlledDevelopmentCommand::Approve {
+            card_id: packet_id.into(),
+        })
+        .unwrap();
+}
+
+fn attach_execution_workspace(
+    coordinator: &mut ControlledDevelopmentCoordinator,
+    root: &std::path::Path,
+    packet_id: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    configure_approved_packet(coordinator, root, packet_id);
+    let pair = DisposableDraftWorkspace::create_current_state_pair(root).unwrap();
+    let paths = (
+        pair.baseline_path().to_path_buf(),
+        pair.execution_path().to_path_buf(),
+    );
+    coordinator
+        .handle(ControlledDevelopmentCommand::ExecutionWorkspaceReady {
+            card_id: packet_id.into(),
+            workspace: Box::new(pair),
+        })
+        .unwrap();
+    paths
 }

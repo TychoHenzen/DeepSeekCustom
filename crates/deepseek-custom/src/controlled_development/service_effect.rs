@@ -25,6 +25,7 @@ pub enum ControlledDevelopmentEffect {
         original_request: String,
         selection: ControlledBackendSelection,
         planning_root: PathBuf,
+        interrupt: Arc<std::sync::atomic::AtomicBool>,
     },
     CreateExecutionWorkspace {
         card_id: String,
@@ -36,6 +37,7 @@ pub enum ControlledDevelopmentEffect {
         card: WorkCard,
         selection: ControlledBackendSelection,
         execution_root: PathBuf,
+        interrupt: Arc<std::sync::atomic::AtomicBool>,
     },
     RunProofCommands {
         card_id: String,
@@ -49,6 +51,7 @@ pub enum ControlledDevelopmentEffect {
         execution_root: PathBuf,
         baseline: PromotionBaseline,
         targets: Vec<PromotionTarget>,
+        interrupt: Arc<std::sync::atomic::AtomicBool>,
     },
 }
 
@@ -66,27 +69,39 @@ impl ControlledDevelopmentEffect {
             Self::DispatchPlanning {
                 selection,
                 planning_root,
+                interrupt,
                 ..
-            } => factory
-                .build_controlled_planning(
+            } => {
+                if interrupt.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err("controlled development packet was interrupted".to_string());
+                }
+                let mut backend = factory.build_controlled_planning(
                     &selection.backend,
                     selection.model.as_deref(),
                     events,
                     planning_root,
-                )
-                .map(Some),
+                )?;
+                backend.adopt_interrupt_flag(interrupt);
+                Ok(Some(backend))
+            }
             Self::DispatchExecution {
                 selection,
                 execution_root,
+                interrupt,
                 ..
-            } => factory
-                .build_controlled_execution(
+            } => {
+                if interrupt.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err("controlled development packet was interrupted".to_string());
+                }
+                let mut backend = factory.build_controlled_execution(
                     &selection.backend,
                     selection.model.as_deref(),
                     events,
                     execution_root,
-                )
-                .map(Some),
+                )?;
+                backend.adopt_interrupt_flag(interrupt);
+                Ok(Some(backend))
+            }
             Self::CreateExecutionWorkspace { .. } => Ok(None),
             Self::RunProofCommands { .. } | Self::PromoteValidatedChanges { .. } => Ok(None),
         }
@@ -117,11 +132,15 @@ impl ControlledDevelopmentEffect {
             execution_root,
             baseline,
             targets,
+            interrupt,
             ..
         } = self
         else {
             return None;
         };
+        if interrupt.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
         Some(promote_verified_workspace(
             project_root,
             execution_root,

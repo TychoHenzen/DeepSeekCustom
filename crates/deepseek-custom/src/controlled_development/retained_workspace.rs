@@ -5,6 +5,9 @@ use crate::procedure::{
 };
 
 use super::diagnostic_diff::render_diagnostic_diff;
+use super::{
+    ControlledDevelopmentOwnedWorkspaceRoot, ControlledDevelopmentRetainedWorkspaceReference,
+};
 
 /// Feature-owned baseline and execution roots retained after a blocked packet.
 #[derive(Debug)]
@@ -40,8 +43,38 @@ impl ControlledDevelopmentRetainedWorkspace {
         &self.diagnostic_diff
     }
 
+    pub fn reference(
+        &self,
+    ) -> Result<ControlledDevelopmentRetainedWorkspaceReference, DisposableWorkspaceError> {
+        Ok(ControlledDevelopmentRetainedWorkspaceReference {
+            packet_id: self.packet_id.clone(),
+            baseline_root: ControlledDevelopmentOwnedWorkspaceRoot::new(
+                self.baseline_path().to_path_buf(),
+            )?,
+            execution_root: ControlledDevelopmentOwnedWorkspaceRoot::new(
+                self.execution_path().to_path_buf(),
+            )?,
+        })
+    }
+
+    pub(crate) fn restore(
+        reference: ControlledDevelopmentRetainedWorkspaceReference,
+    ) -> Result<Self, DisposableWorkspaceError> {
+        let packet_id = reference.packet_id;
+        let pair = RetainedDisposableWorkspacePair::from_owned_paths(
+            reference.baseline_root.into_path(),
+            reference.execution_root.into_path(),
+        )?;
+        let diagnostic_diff = render_diagnostic_diff(pair.baseline_path(), pair.execution_path());
+        Ok(Self {
+            packet_id,
+            pair,
+            diagnostic_diff,
+        })
+    }
+
     /// Validate and remove both feature-owned temporary roots.
-    pub fn cleanup(self) -> Result<(), DisposableWorkspaceError> {
+    pub fn cleanup(&self) -> Result<(), DisposableWorkspaceError> {
         self.pair.cleanup()
     }
 }

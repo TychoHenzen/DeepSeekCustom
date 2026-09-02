@@ -60,7 +60,7 @@ pub use disposable_workspace::{
     DEFAULT_DISPOSABLE_WORKSPACE_MAX_BYTES, DisposableDraftWorkspace, DisposableWorkspaceError,
     DisposableWorkspaceOptions, DisposableWorkspacePair, RetainedDisposableWorkspacePair,
     RetainedRecoveryWorkspace, SnapshotProgress, WorkspaceFileChanges, WorkspaceFileFingerprint,
-    WorkspaceFileInventory, WorkspaceFileRename,
+    WorkspaceFileInventory, WorkspaceFileRename, validate_retained_workspace_root,
 };
 pub use failure_digest::{
     DEFAULT_FAILURE_SECTION_CHARACTER_CAP, FAILURE_COMMAND_CHARACTER_CAP,

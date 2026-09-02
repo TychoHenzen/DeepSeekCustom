@@ -152,6 +152,7 @@ fn session_record_round_trips_through_json() {
         messages: vec![user_message("hello"), assistant_message("hi there")],
         transcript,
         claude_session_id: None,
+        controlled_development: Default::default(),
     };
 
     let json = serde_json::to_string(&record).unwrap();
@@ -165,6 +166,10 @@ fn session_record_round_trips_through_json() {
         record.transcript.blocks().len()
     );
     assert_eq!(restored.claude_session_id, record.claude_session_id);
+    assert_eq!(
+        restored.controlled_development,
+        record.controlled_development
+    );
 }
 
 #[test]

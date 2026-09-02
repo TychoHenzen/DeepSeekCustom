@@ -206,6 +206,22 @@ pub struct RetainedDisposableWorkspacePair {
 }
 
 impl RetainedDisposableWorkspacePair {
+    /// Rebuild explicit diagnostic ownership from persisted, validated roots.
+    pub fn from_owned_paths(
+        baseline: PathBuf,
+        execution: PathBuf,
+    ) -> Result<Self, DisposableWorkspaceError> {
+        validate_owned_workspace_root(&baseline)?;
+        validate_owned_workspace_root(&execution)?;
+        if baseline == execution {
+            return Err(DisposableWorkspaceError::UnownedCleanupRoot(baseline));
+        }
+        Ok(Self {
+            baseline: RetainedRecoveryWorkspace { root: baseline },
+            execution: RetainedRecoveryWorkspace { root: execution },
+        })
+    }
+
     pub fn baseline_path(&self) -> &Path {
         self.baseline.path()
     }
@@ -214,7 +230,7 @@ impl RetainedDisposableWorkspacePair {
         self.execution.path()
     }
 
-    pub fn cleanup(self) -> Result<(), DisposableWorkspaceError> {
+    pub fn cleanup(&self) -> Result<(), DisposableWorkspaceError> {
         let baseline_result = self.baseline.cleanup();
         let execution_result = self.execution.cleanup();
         baseline_result.and(execution_result)
@@ -235,7 +251,7 @@ impl RetainedRecoveryWorkspace {
         &self.root
     }
 
-    pub fn cleanup(self) -> Result<(), DisposableWorkspaceError> {
+    pub fn cleanup(&self) -> Result<(), DisposableWorkspaceError> {
         remove_workspace(&self.root)
     }
 }
@@ -805,6 +821,11 @@ fn validate_owned_workspace_root(root: &Path) -> Result<(), DisposableWorkspaceE
         ));
     }
     Ok(())
+}
+
+/// Validate a persisted feature-owned temporary workspace path without removing it.
+pub fn validate_retained_workspace_root(root: &Path) -> Result<(), DisposableWorkspaceError> {
+    validate_owned_workspace_root(root)
 }
 
 #[allow(

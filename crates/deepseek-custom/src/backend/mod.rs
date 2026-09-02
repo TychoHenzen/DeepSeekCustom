@@ -123,6 +123,17 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Replace only the ordinary turn interrupt used by this backend.
+    pub fn adopt_interrupt_flag(&mut self, interrupt: Arc<std::sync::atomic::AtomicBool>) {
+        match self {
+            Backend::Api(agent) => agent.set_interrupt_flag(interrupt),
+            Backend::ClaudeCli(driver) => driver.set_interrupt_flag(interrupt),
+            Backend::CodexCli(driver) => driver.set_interrupt_flag(interrupt),
+            #[cfg(feature = "test-support")]
+            Backend::Stub(stub) => stub.set_interrupt_flag(interrupt),
+        }
+    }
+
     /// Build the `ClaudeCli` variant from a resolved config entry. Thin
     /// wrapper so `main.rs` does not need to reach into
     /// `backend::claude_cli::process` directly.

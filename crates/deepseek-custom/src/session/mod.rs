@@ -123,6 +123,9 @@ pub struct SessionRecord {
     /// `None` for an API-backend conversation. `None` on a `claude_cli`
     /// conversation until its first turn completes.
     pub claude_session_id: Option<String>,
+    /// Session-owned Controlled Development state. Older records omit it.
+    #[serde(default)]
+    pub controlled_development: crate::controlled_development::ControlledDevelopmentSessionRecord,
 }
 
 /// Derive a conversation's title from its message history. It takes the
