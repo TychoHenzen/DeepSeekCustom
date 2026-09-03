@@ -4,7 +4,7 @@
 //! deterministic server environment they use and deliberately has no coverage
 //! marker until those scenarios drive observable browser behaviour.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -206,6 +206,7 @@ struct ProductionOllamaArtifacts {
     trace: PathBuf,
     console: PathBuf,
     server: PathBuf,
+    workspace_evidence: PathBuf,
 }
 
 impl ProductionOllamaArtifacts {
@@ -213,11 +214,13 @@ impl ProductionOllamaArtifacts {
         let base = BrowserFailureArtifacts::for_test(LIVE_OLLAMA_TEST);
         base.clear();
         std::fs::create_dir_all(&base.directory).unwrap();
+        let workspace_evidence = base.directory.join("workspace-bytes.log");
         Self {
             directory: base.directory,
             trace: base.trace,
             console: base.console,
             server: base.server,
+            workspace_evidence,
         }
     }
 
@@ -229,7 +232,7 @@ impl ProductionOllamaArtifacts {
 #[derive(Debug)]
 struct ProductionBinary {
     child: Child,
-    _project_root: TempDir,
+    project_root: TempDir,
     server_log: PathBuf,
 }
 
@@ -260,9 +263,13 @@ impl ProductionBinary {
             .map_err(|error| format!("failed to start production binary: {error}"))?;
         Ok(Self {
             child,
-            _project_root: project_root,
+            project_root,
             server_log: server_log.to_path_buf(),
         })
+    }
+
+    fn project_root(&self) -> &Path {
+        self.project_root.path()
     }
 
     async fn wait_for_url(&mut self) -> Result<String, String> {
@@ -317,7 +324,7 @@ fn seed_ollama_project(root: &Path) -> io::Result<()> {
             concat!(
                 "{{\n",
                 "  \"effort\": \"none\",\n",
-                "  \"max_tokens\": 64,\n",
+                "  \"max_tokens\": 1024,\n",
                 "  \"context_budget\": 32000,\n",
                 "  \"voice\": {{ \"enabled\": false }},\n",
                 "  \"mcp\": {{ \"enabled\": false }},\n",
@@ -351,6 +358,10 @@ fn seed_ollama_project(root: &Path) -> io::Result<()> {
     )?;
     std::fs::write(root.join("src/lib.rs"), "pub fn practice_fixture() {}\n")?;
     std::fs::write(
+        root.join("src/unrelated.txt"),
+        "preserve these exact bytes\n",
+    )?;
+    std::fs::write(
         root.join("tests/it/main.rs"),
         concat!(
             "mod practice {\n",
@@ -364,6 +375,123 @@ fn seed_ollama_project(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+type ProductionWorkspaceBytes = BTreeMap<String, Vec<u8>>;
+
+fn capture_production_workspace_bytes(root: &Path) -> io::Result<ProductionWorkspaceBytes> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        bytes: &mut ProductionWorkspaceBytes,
+    ) -> io::Result<()> {
+        let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if directory == root
+                && [".deepseek", "target", "deepseek_custom.log"]
+                    .iter()
+                    .any(|excluded| name.eq_ignore_ascii_case(excluded))
+            {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                visit(root, &path, bytes)?;
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("workspace entry must remain below its root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                bytes.insert(relative, std::fs::read(path)?);
+            }
+        }
+        Ok(())
+    }
+
+    let mut bytes = BTreeMap::new();
+    visit(root, root, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn changed_production_workspace_paths(
+    before: &ProductionWorkspaceBytes,
+    after: &ProductionWorkspaceBytes,
+) -> Vec<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(path) != after.get(path))
+        .collect()
+}
+
+fn byte_fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn record_workspace_boundary(
+    evidence_path: &Path,
+    boundary: &str,
+    baseline: &ProductionWorkspaceBytes,
+    observed: &ProductionWorkspaceBytes,
+) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut evidence = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(evidence_path)?;
+    writeln!(evidence, "boundary: {boundary}")?;
+    writeln!(
+        evidence,
+        "changed paths: {:?}",
+        changed_production_workspace_paths(baseline, observed)
+    )?;
+    for (path, bytes) in observed {
+        writeln!(
+            evidence,
+            "{path}: {} bytes, fnv1a64:{:016x}",
+            bytes.len(),
+            byte_fingerprint(bytes)
+        )?;
+    }
+    writeln!(evidence)?;
+    Ok(())
+}
+
+fn require_workspace_boundary(
+    project_root: &Path,
+    evidence_path: &Path,
+    boundary: &str,
+    baseline: &ProductionWorkspaceBytes,
+    expected_changed_paths: &[&str],
+) -> Result<ProductionWorkspaceBytes, String> {
+    let observed = capture_production_workspace_bytes(project_root)
+        .map_err(|error| format!("failed to capture {boundary} workspace bytes: {error}"))?;
+    record_workspace_boundary(evidence_path, boundary, baseline, &observed)
+        .map_err(|error| format!("failed to record {boundary} workspace bytes: {error}"))?;
+    let changed = changed_production_workspace_paths(baseline, &observed);
+    let expected = expected_changed_paths
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect::<Vec<_>>();
+    if changed != expected {
+        return Err(format!(
+            "real workspace bytes changed at {boundary}: expected {expected:?}, observed {changed:?}"
+        ));
+    }
+    Ok(observed)
+}
+
 async fn capture_live_step(
     page: &Page,
     artifacts: &ProductionOllamaArtifacts,
@@ -373,6 +501,19 @@ async fn capture_live_step(
         .await
         .map(|_| ())
         .map_err(|error| format!("failed to capture {name}: {error}"))
+}
+
+async fn capture_controlled_step(
+    panel: &Locator,
+    artifacts: &ProductionOllamaArtifacts,
+    name: &str,
+) -> Result<(), String> {
+    let bytes = panel.screenshot(None).await.map_err(|error| {
+        format!("failed to capture Controlled Development panel {name}: {error}")
+    })?;
+    tokio::fs::write(artifacts.screenshot(name), bytes)
+        .await
+        .map_err(|error| format!("failed to retain Controlled Development panel {name}: {error}"))
 }
 
 async fn wait_for_locator_text(
@@ -2178,7 +2319,7 @@ fn missing_browser_runtime_fails_with_version_matched_installer_guidance() {
 #[ignore = "requires local Ollama model qwen2.5-coder:7b-instruct-q4_K_M"]
 fn production_binary_uses_only_ollama_across_browser_workflows() {
     let checkout_settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../settings.json");
-    let checkout_settings_before = std::fs::read(&checkout_settings).unwrap();
+    let checkout_settings_before = std::fs::read(&checkout_settings).ok();
     let artifacts = ProductionOllamaArtifacts::prepare();
 
     super::web_server::run_async_test(async {
@@ -2207,6 +2348,15 @@ fn production_binary_uses_only_ollama_across_browser_workflows() {
             let mut production =
                 ProductionBinary::launch(&production_binary_path(), &artifacts.server)?;
             let url = production.wait_for_url().await?;
+            let startup_workspace = capture_production_workspace_bytes(production.project_root())
+                .map_err(|error| error.to_string())?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "startup",
+                &startup_workspace,
+                &[],
+            )?;
             page.goto(&url, None)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2404,6 +2554,302 @@ fn production_binary_uses_only_ollama_across_browser_workflows() {
             }
             capture_live_step(&page, &artifacts, "09-tests-exact-pass.png").await?;
 
+            let workspace_baseline = capture_production_workspace_bytes(production.project_root())
+                .map_err(|error| error.to_string())?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "controlled-baseline",
+                &workspace_baseline,
+                &[],
+            )?;
+
+            reloaded
+                .action("Chat")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            let controlled_panel = reloaded.page.get_by_role(
+                AriaRole::Region,
+                Some(
+                    GetByRoleOptions::default()
+                        .name("Controlled Development")
+                        .exact(true),
+                ),
+            );
+            controlled_panel
+                .wait_for(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            let controlled_toggle = reloaded.page.get_by_role(
+                AriaRole::Switch,
+                Some(
+                    GetByRoleOptions::default()
+                        .name("Controlled Development")
+                        .exact(true),
+                ),
+            );
+            if controlled_toggle
+                .is_checked()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err("Controlled Development unexpectedly started enabled".into());
+            }
+            controlled_toggle
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Off",
+                Duration::from_secs(30),
+            )
+            .await?;
+            if !controlled_toggle
+                .is_checked()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err("Controlled Development toggle did not become checked".into());
+            }
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "controlled-enabled",
+                &workspace_baseline,
+                &[],
+            )?;
+            capture_controlled_step(&controlled_panel, &artifacts, "10-controlled-enabled.png")
+                .await?;
+
+            let controlled_request = concat!(
+                "Change only src/lib.rs so practice_fixture returns the string literal controlled. ",
+                "The observable result is that the existing production_dashboard_smoke test passes. ",
+                "Use cargo test --test it as the only proof command. ",
+                "List src/lib.rs as the only production path and use no supporting paths. ",
+                "Exclude Cargo.toml, tests/it/main.rs, settings.json, CLAUDE.md, and src/unrelated.txt. ",
+                "Use no complexity exceptions."
+            );
+            let controlled_message = reloaded.page.get_by_label("Message", true);
+            controlled_message
+                .fill(controlled_request, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            reloaded
+                .action("Send message")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Planning",
+                Duration::from_secs(30),
+            )
+            .await?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "planning",
+                &workspace_baseline,
+                &[],
+            )?;
+            capture_controlled_step(&controlled_panel, &artifacts, "11-controlled-planning.png")
+                .await?;
+
+            let awaiting = wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Awaiting Approval",
+                Duration::from_secs(240),
+            )
+            .await?;
+            for expected in [
+                "src/lib.rs",
+                "cargo test --test it",
+                "tests/it/main.rs",
+                "src/unrelated.txt",
+                "Complexity exceptions",
+                "None.",
+            ] {
+                if !awaiting.contains(expected) {
+                    return Err(format!(
+                        "live Ollama Work Card omitted {expected:?}: {awaiting:?}"
+                    ));
+                }
+            }
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "awaiting-approval",
+                &workspace_baseline,
+                &[],
+            )?;
+            capture_controlled_step(
+                &controlled_panel,
+                &artifacts,
+                "12-controlled-awaiting-approval.png",
+            )
+            .await?;
+
+            reloaded
+                .action("Approve Work Card")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Executing",
+                Duration::from_secs(30),
+            )
+            .await?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "approved-executing",
+                &workspace_baseline,
+                &[],
+            )?;
+            capture_controlled_step(&controlled_panel, &artifacts, "13-controlled-executing.png")
+                .await?;
+
+            let completed = wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Completed",
+                Duration::from_secs(300),
+            )
+            .await?;
+            for expected in [
+                "Changed paths",
+                "src/lib.rs",
+                "Proof results",
+                "cargo test --test it: passed, exit 0",
+                "Phase: Completed",
+            ] {
+                if !completed.contains(expected) {
+                    return Err(format!(
+                        "completed Controlled Development panel omitted {expected:?}: {completed:?}"
+                    ));
+                }
+            }
+            let promoted_workspace = require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "completed-promotion",
+                &workspace_baseline,
+                &["PROJECT_STATE.md", "src/lib.rs"],
+            )?;
+            let promoted_source = promoted_workspace
+                .get("src/lib.rs")
+                .ok_or_else(|| "promoted src/lib.rs is missing".to_string())?;
+            if !String::from_utf8_lossy(promoted_source).contains("controlled") {
+                return Err(format!(
+                    "promoted src/lib.rs omitted the approved result: {promoted_source:?}"
+                ));
+            }
+            let project_state = promoted_workspace
+                .get("PROJECT_STATE.md")
+                .ok_or_else(|| "promoted PROJECT_STATE.md is missing".to_string())?;
+            if String::from_utf8_lossy(project_state)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+                > 40
+            {
+                return Err("promoted PROJECT_STATE.md exceeded 40 nonblank lines".into());
+            }
+            capture_controlled_step(&controlled_panel, &artifacts, "14-controlled-completed.png")
+                .await?;
+
+            controlled_message
+                .fill("DIFF", None)
+                .await
+                .map_err(|error| error.to_string())?;
+            reloaded
+                .action("Send message")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            let diff_transcript = reloaded.page.get_by_role(
+                AriaRole::Log,
+                Some(
+                    GetByRoleOptions::default()
+                        .name("Conversation transcript")
+                        .exact(true),
+                ),
+            );
+            let visible_diff =
+                wait_for_locator_text(&diff_transcript, "diff --git", Duration::from_secs(30))
+                    .await?;
+            if !visible_diff.contains("src/lib.rs") {
+                return Err(format!(
+                    "DIFF control response omitted src/lib.rs: {visible_diff:?}"
+                ));
+            }
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "diff-inspection",
+                &promoted_workspace,
+                &[],
+            )?;
+            capture_live_step(&page, &artifacts, "15-controlled-diff.png").await?;
+
+            controlled_message
+                .fill(
+                    "Plan a second packet that changes only src/unrelated.txt and proves the result with cargo test --test it.",
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            reloaded
+                .action("Send message")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Planning",
+                Duration::from_secs(30),
+            )
+            .await?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "stop-planning",
+                &promoted_workspace,
+                &[],
+            )?;
+            capture_controlled_step(
+                &controlled_panel,
+                &artifacts,
+                "16-controlled-stop-planning.png",
+            )
+            .await?;
+            reloaded
+                .action("Stop controlled work")
+                .click(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            wait_for_locator_text(
+                &controlled_panel,
+                "Current phase: Interrupted",
+                Duration::from_secs(30),
+            )
+            .await?;
+            require_workspace_boundary(
+                production.project_root(),
+                &artifacts.workspace_evidence,
+                "stop-interrupted",
+                &promoted_workspace,
+                &[],
+            )?;
+            capture_controlled_step(
+                &controlled_panel,
+                &artifacts,
+                "17-controlled-interrupted.png",
+            )
+            .await?;
+
             let connected_text = connected
                 .inner_text()
                 .await
@@ -2466,7 +2912,7 @@ fn production_binary_uses_only_ollama_across_browser_workflows() {
         }
         browser.close().await.unwrap();
 
-        if std::fs::read(&checkout_settings).unwrap() != checkout_settings_before {
+        if std::fs::read(&checkout_settings).ok() != checkout_settings_before {
             let diagnostic = outcome
                 .err()
                 .unwrap_or_else(|| "browser workflow passed".into());
@@ -2474,7 +2920,10 @@ fn production_binary_uses_only_ollama_across_browser_workflows() {
                 "{diagnostic}\ncheckout settings.json changed during isolated practice"
             ));
         }
-        if !artifacts.trace.is_file() || !artifacts.server.is_file() {
+        if !artifacts.trace.is_file()
+            || !artifacts.server.is_file()
+            || !artifacts.workspace_evidence.is_file()
+        {
             let diagnostic = outcome
                 .err()
                 .unwrap_or_else(|| "browser workflow passed".into());

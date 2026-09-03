@@ -1,8 +1,11 @@
 use std::ops::ControlFlow;
 
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use crate::api::types::{ChatRequest, Content, ImageAttachment, Message, Role, ToolCall, Usage};
+use crate::api::types::{
+    ChatRequest, Content, FunctionCall, ImageAttachment, Message, Role, ToolCall, Usage,
+};
 use crate::error::Result;
 
 use super::agent_helpers::{
@@ -64,6 +67,35 @@ impl AgentLoop {
             if !valid_tool_calls.is_empty() {
                 if self
                     .dispatch_tool_calls(turn, &collected, &valid_tool_calls)
+                    .await
+                    .is_break()
+                {
+                    return Ok(assistant_texts);
+                }
+                continue;
+            }
+
+            if self.config.accept_exact_text_tool_calls
+                && let Some(tool_call) = exact_text_tool_call(&collected.text, turn)
+                && self
+                    .tools
+                    .get(
+                        tool_call
+                            .function
+                            .as_ref()
+                            .and_then(|function| function.name.as_deref())
+                            .expect("adapted tool call has a nonempty name"),
+                    )
+                    .is_some()
+            {
+                self.send_event(StreamEvent::Info {
+                    message: "Adapted one exact provider text response into a rooted controlled tool call."
+                        .into(),
+                });
+                let mut adapted = collected;
+                adapted.text.clear();
+                if self
+                    .dispatch_tool_calls(turn, &adapted, &[tool_call])
                     .await
                     .is_break()
                 {
@@ -275,4 +307,27 @@ impl AgentLoop {
         let prompt = build_system_prompt(memory_fragment, skills_fragment, &tools);
         self.history = MessageHistory::new(prompt);
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactTextToolCall {
+    name: String,
+    arguments: serde_json::Value,
+}
+
+fn exact_text_tool_call(text: &str, turn: u32) -> Option<ToolCall> {
+    let parsed = serde_json::from_str::<ExactTextToolCall>(text.trim()).ok()?;
+    if parsed.name.trim().is_empty() || !parsed.arguments.is_object() {
+        return None;
+    }
+    Some(ToolCall {
+        id: format!("controlled-text-tool-call-{}", turn + 1),
+        call_type: "function".into(),
+        function: Some(FunctionCall {
+            name: Some(parsed.name),
+            arguments: Some(serde_json::to_string(&parsed.arguments).ok()?),
+        }),
+        index: Some(0),
+    })
 }

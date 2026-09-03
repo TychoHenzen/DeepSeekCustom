@@ -246,7 +246,7 @@ fn execution_prompt(
     card: &crate::controlled_development::WorkCard,
 ) -> String {
     format!(
-        "Implement only the approved Work Card in this isolated workspace. Do not change paths outside the card. Original request:\n{original_request}\nApproved Work Card:\n{}",
+        "Implement only the approved Work Card in this isolated workspace. Call the available read tool, then call edit or write through the provider's native tool-call channel to make the approved change now. Never print, quote, or fence a tool call as assistant text. Assistant text alone does not change the workspace, so do not claim completion without applying the required file edit. Do not change paths outside the card. Original request:\n{original_request}\nApproved Work Card:\n{}",
         serde_json::to_string_pretty(card).expect("Work Card is serializable")
     )
 }

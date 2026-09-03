@@ -60,6 +60,7 @@ pub(crate) fn build_controlled_api_backend(
     let config = AgentConfig {
         model,
         max_tokens: factory.settings.max_tokens(),
+        accept_exact_text_tool_calls: profile == ControlledApiProfile::Execution,
         ..Default::default()
     };
     Ok(finish_agent(

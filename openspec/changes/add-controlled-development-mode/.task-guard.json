@@ -134,7 +134,8 @@
       "status": "completed"
     },
     "6.6": {
-      "checked": false
+      "checked": true,
+      "status": "completed"
     }
   },
   "hmac": "6923a33cfad4858633b5d5c4a44591058880316949e777ca0df57ec183966da2"
