@@ -102,6 +102,7 @@ mod mcp_protocol;
 mod mcp_spawn;
 mod mcp_tool;
 mod memory;
+mod ollama_discovery;
 mod path_repair;
 mod plugins;
 mod procedure_apply;

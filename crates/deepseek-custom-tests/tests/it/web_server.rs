@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
@@ -17,7 +17,7 @@ use deepseek_custom::application::test_control::{
     TestClock, TestExecution, TestExecutionError, TestExecutor, TestInvocation, TestOutputChunk,
     TestOutputStream, TestProcessExit, TestRunRequest,
 };
-use deepseek_custom::config::settings::Settings;
+use deepseek_custom::config::settings::{BackendConfig, Settings};
 use deepseek_custom::controlled_development::{ControlledDevelopmentPhase, WorkCard};
 use deepseek_custom::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
 use deepseek_custom::web::server::{
@@ -594,6 +594,76 @@ fn native_folder_request_changes_only_working_dir_and_cancel_is_a_no_op() {
             persisted_after_confirm
         );
         server.shutdown().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn model_discovery_refreshes_the_revisioned_web_snapshot() {
+    run_async_test(async {
+        let root = super::scratch_dir("web-model-discovery", "codex-cache");
+        let codex_home = root.join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("models_cache.json"),
+            r#"{
+                "models": [
+                    {"slug":"gpt-5.6-sol","visibility":"list","priority":1},
+                    {"slug":"gpt-5.6-luna","visibility":"list","priority":3},
+                    {"slug":"gpt-5.4","visibility":"list","priority":16}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let settings = Settings {
+            backends: Some(HashMap::from([(
+                "codex".to_string(),
+                BackendConfig::CodexCli {
+                    model: "gpt-5.6-sol".to_string(),
+                    sandbox: Some("workspace-write".to_string()),
+                    env: Some(HashMap::from([(
+                        "CODEX_HOME".to_string(),
+                        codex_home.to_string_lossy().into_owned(),
+                    )])),
+                    models: None,
+                },
+            )])),
+            default_backend: Some("codex".to_string()),
+            ..Settings::default()
+        };
+        let runtime = RuntimeSettingsPort::new(
+            root.clone(),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(100_000)),
+            Arc::new(Mutex::new("gpt-5.6-sol".to_string())),
+            Arc::new(Mutex::new(root.clone())),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(8)),
+        );
+        let controller = Arc::new(SettingsController::new(
+            root.clone(),
+            settings,
+            runtime,
+            Some("codex".to_string()),
+            Some("gpt-5.6-sol".to_string()),
+        ));
+        let state = WebAppState::with_settings(
+            visible_snapshot(),
+            8,
+            controller,
+            Arc::new(FixedFolderPicker(Mutex::new(VecDeque::new()))),
+        );
+        let initial_revision = state.snapshot().revision;
+        assert_eq!(state.snapshot().settings.backends[0].models.len(), 1);
+
+        let refreshed_revision = state.refresh_models().await.unwrap();
+
+        assert!(refreshed_revision > initial_revision);
+        assert_eq!(
+            state.snapshot().settings.backends[0].models,
+            ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+        );
         std::fs::remove_dir_all(root).unwrap();
     });
 }

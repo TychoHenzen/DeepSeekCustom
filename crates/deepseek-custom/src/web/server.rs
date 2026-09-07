@@ -262,6 +262,23 @@ impl WebAppState {
         Ok(revision)
     }
 
+    /// Refresh backend model options away from the request path, then publish
+    /// the result through the same revisioned settings event as user edits.
+    pub async fn refresh_models(&self) -> Result<AppRevision, crate::application::dto::AppError> {
+        let settings =
+            self.inner
+                .settings
+                .clone()
+                .ok_or_else(|| crate::application::dto::AppError {
+                    code: crate::application::dto::AppErrorCode::Unavailable,
+                    message: "settings controller is not connected".into(),
+                    recoverable: true,
+                    field: Some("backends".into()),
+                })?;
+        let visible = settings.refresh_models().await;
+        self.apply_event(AppEvent::SettingsChanged(visible))
+    }
+
     pub fn apply_operation_stream_event(
         &self,
         event: &StreamEvent,

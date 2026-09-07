@@ -149,3 +149,72 @@ fn runtime_effects_keep_project_root_fixed_while_working_dir_changes() {
     assert!(plain.load(Ordering::SeqCst));
     assert_eq!(grade.load(Ordering::SeqCst), 12);
 }
+
+#[tokio::test]
+async fn settings_controller_publishes_discovered_models_and_retains_them_after_save() {
+    let root = super::scratch_dir("application-settings", "model-discovery");
+    let codex_home = root.join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::write(
+        codex_home.join("models_cache.json"),
+        r#"{
+            "models": [
+                {"slug":"gpt-5.6-sol","visibility":"list","priority":1},
+                {"slug":"gpt-hidden","visibility":"hide","priority":2},
+                {"slug":"gpt-5.6-luna","visibility":"list","priority":3},
+                {"slug":"gpt-5.4","visibility":"list","priority":16}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let runtime = RuntimeSettingsPort::new(
+        root.clone(),
+        Arc::new(AtomicU8::new(0)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(100_000)),
+        Arc::new(Mutex::new("gpt-5.6-sol".to_string())),
+        Arc::new(Mutex::new(root.clone())),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicU8::new(8)),
+    );
+    let settings = Settings {
+        backends: Some(HashMap::from([(
+            "codex".to_string(),
+            BackendConfig::CodexCli {
+                model: "gpt-5.6-sol".to_string(),
+                sandbox: Some("workspace-write".to_string()),
+                env: Some(HashMap::from([(
+                    "CODEX_HOME".to_string(),
+                    codex_home.to_string_lossy().into_owned(),
+                )])),
+                models: None,
+            },
+        )])),
+        default_backend: Some("codex".to_string()),
+        ..Settings::default()
+    };
+    let controller = SettingsController::new(
+        root.clone(),
+        settings,
+        runtime,
+        Some("codex".to_string()),
+        Some("gpt-5.6-sol".to_string()),
+    );
+
+    assert_eq!(controller.visible().backends[0].models, ["gpt-5.6-sol"]);
+    let mut discovered = controller.refresh_models().await;
+    assert_eq!(
+        discovered.backends[0].models,
+        ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+    );
+
+    discovered.show_raw_output = true;
+    let saved = controller.update(discovered).unwrap();
+    assert_eq!(
+        saved.backends[0].models,
+        ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}

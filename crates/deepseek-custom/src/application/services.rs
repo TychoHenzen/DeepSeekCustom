@@ -1,13 +1,16 @@
 //! Typed, presentation-neutral ports to long-lived domain services.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures::future::join_all;
 use tokio::sync::mpsc;
 
 use crate::agent::events::AgentCommand;
 use crate::agent::repeat::RepeatCommand;
+use crate::api::models::list_models;
 use crate::application::dto::{AppError, AppErrorCode, VisibleSettings};
 use crate::config::settings::{BackendConfig, Settings, TriggerMode};
 use crate::effort::Effort;
@@ -182,6 +185,7 @@ impl RuntimeSettingsPort {
 pub struct SettingsController {
     project_root: PathBuf,
     settings: Mutex<Settings>,
+    model_options: Mutex<HashMap<String, Vec<String>>>,
     runtime: RuntimeSettingsPort,
     selected_backend: Mutex<Option<String>>,
     selected_model: Mutex<Option<String>>,
@@ -198,6 +202,7 @@ impl SettingsController {
         Self {
             project_root,
             settings: Mutex::new(settings),
+            model_options: Mutex::new(HashMap::new()),
             runtime,
             selected_backend: Mutex::new(selected_backend),
             selected_model: Mutex::new(selected_model),
@@ -205,11 +210,41 @@ impl SettingsController {
     }
 
     pub fn visible(&self) -> VisibleSettings {
-        VisibleSettings::from_settings(
+        let mut visible = VisibleSettings::from_settings(
             &self.settings.lock().unwrap(),
             self.selected_backend.lock().unwrap().clone(),
             self.selected_model.lock().unwrap().clone(),
-        )
+        );
+        let model_options = self.model_options.lock().unwrap();
+        for backend in &mut visible.backends {
+            if let Some(models) = model_options.get(&backend.name) {
+                backend.models.clone_from(models);
+            }
+        }
+        visible
+    }
+
+    /// Discover every configured backend's selectable models without holding
+    /// the settings lock across network or filesystem work.
+    pub async fn refresh_models(&self) -> VisibleSettings {
+        let backends = self
+            .settings
+            .lock()
+            .unwrap()
+            .backends()
+            .into_iter()
+            .flatten()
+            .map(|(name, config)| (name.clone(), config.clone()))
+            .collect::<Vec<_>>();
+        let discovered = join_all(backends.into_iter().map(|(name, config)| async move {
+            let models = list_models(&config).await;
+            (name, models)
+        }))
+        .await
+        .into_iter()
+        .collect();
+        *self.model_options.lock().unwrap() = discovered;
+        self.visible()
     }
 
     pub fn update(&self, visible: VisibleSettings) -> Result<VisibleSettings, AppError> {
@@ -286,11 +321,8 @@ impl SettingsController {
         *self.selected_backend.lock().unwrap() = visible.selected_backend;
         *self.selected_model.lock().unwrap() = visible.selected_model;
         *stored = settings;
-        Ok(VisibleSettings::from_settings(
-            &stored,
-            self.selected_backend.lock().unwrap().clone(),
-            self.selected_model.lock().unwrap().clone(),
-        ))
+        drop(stored);
+        Ok(self.visible())
     }
 
     pub fn set_working_dir(&self, path: PathBuf) -> Result<VisibleSettings, AppError> {
@@ -311,11 +343,8 @@ impl SettingsController {
             })?;
         self.runtime.set_working_dir(path);
         *stored = settings;
-        Ok(VisibleSettings::from_settings(
-            &stored,
-            self.selected_backend.lock().unwrap().clone(),
-            self.selected_model.lock().unwrap().clone(),
-        ))
+        drop(stored);
+        Ok(self.visible())
     }
 
     pub fn working_dir(&self) -> PathBuf {

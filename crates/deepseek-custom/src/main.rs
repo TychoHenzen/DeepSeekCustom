@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use deepseek_custom::agent::agent_types::grade_to_u8;
@@ -843,6 +843,13 @@ async fn main() {
             let _ = controlled_state.apply_controlled_development_event(event);
         }
     });
+    let model_discovery_state = web_state.clone();
+    let model_discovery = tokio::spawn(async move {
+        match model_discovery_state.refresh_models().await {
+            Ok(revision) => info!(revision = revision.0, "backend model discovery completed"),
+            Err(error) => warn!("backend model discovery failed: {}", error.message),
+        }
+    });
 
     let browser: Option<Arc<dyn BrowserOpener>> = std::env::var_os("DEEPSEEK_DISABLE_BROWSER")
         .is_none()
@@ -867,10 +874,12 @@ async fn main() {
     procedure_forwarder.abort();
     controlled_service.abort();
     controlled_forwarder.abort();
+    model_discovery.abort();
     let _ = event_forwarder.await;
     let _ = procedure_forwarder.await;
     let _ = controlled_service.await;
     let _ = controlled_forwarder.await;
+    let _ = model_discovery.await;
     if let Some(forwarder) = voice_event_forwarder {
         forwarder.abort();
         let _ = forwarder.await;
