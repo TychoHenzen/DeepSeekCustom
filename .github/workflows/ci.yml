@@ -33,10 +33,11 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake libasound2-dev
           clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
+          echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -54,10 +55,11 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake libasound2-dev
           clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
+          echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -76,10 +78,11 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake libasound2-dev
           clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
+          echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
