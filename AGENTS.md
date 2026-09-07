@@ -51,6 +51,10 @@ cargo test -p deepseek-custom-tests --test it procedure_sandbox_e2e -- --test-th
 
 Do not use `cargo test --lib` as the project test command. The production crate intentionally carries no library tests.
 
+The Windows CI browser-test step removes `CI` and `GITHUB_ACTIONS` before running Cargo. `playwright-rs` otherwise adds `--disable-web-security`.
+
+That flag makes Chromium omit `Origin`, so the application's request guard rejects browser commands.
+
 ## Structural invariants
 
 ### Production and test separation

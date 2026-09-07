@@ -90,7 +90,14 @@ jobs:
       - name: Install the locked Playwright browser
         run: cargo run -p deepseek-custom-tests --example install_playwright_chromium
       - name: Run workspace tests
-        run: cargo test --workspace -- --test-threads=1
+        shell: pwsh
+        run: |
+          # playwright-rs adds --disable-web-security when either variable exists on Windows.
+          # Chromium then omits Origin from same-origin JSON requests, so the app's request-token
+          # and origin guard rejects browser navigation commands with HTTP 403.
+          Remove-Item Env:CI -ErrorAction SilentlyContinue
+          Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+          cargo test --workspace -- --test-threads=1
 
   web-type-check:
     name: web-type-check
