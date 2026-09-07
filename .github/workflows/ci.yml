@@ -38,6 +38,8 @@ jobs:
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
           echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
+          echo "CMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -60,6 +62,8 @@ jobs:
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
           echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
+          echo "CMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -83,6 +87,8 @@ jobs:
           test -n "$clang_library"
           echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
           echo "CMAKE=$(command -v cmake)" >> "$GITHUB_ENV"
+          echo "CMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
