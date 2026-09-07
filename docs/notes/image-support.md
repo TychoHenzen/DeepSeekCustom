@@ -47,7 +47,7 @@ Request, the exact `ContentPart::ImageUrl` wire shape from `src/api/types.rs`:
 
 ```
 $ curl -s -X POST "https://api.deepseek.com/chat/completions" \
-  -H "Authorization: Bearer sk-e5e763c86f4c466192bcd06b67dc790b" \
+  -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
   "model": "deepseek-v4-flash",
