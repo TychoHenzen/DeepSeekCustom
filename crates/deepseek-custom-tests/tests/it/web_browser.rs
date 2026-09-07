@@ -1188,9 +1188,9 @@ fn browser_harness_uses_unique_ephemeral_state_and_deterministic_services() {
 #[test]
 fn browser_environment_reaps_resources_for_every_terminal_path() {
     let checkout_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
-    let user_settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../settings.json");
     let manifest_before = std::fs::read(&checkout_manifest).unwrap();
-    let settings_before = std::fs::read(&user_settings).unwrap();
+    let settings_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../settings.json");
+    let settings_before = std::fs::read(&settings_path).ok();
 
     for terminal_path in ["pass", "failure", "timeout", "cancel"] {
         super::web_server::run_async_test(async {
@@ -1279,7 +1279,7 @@ fn browser_environment_reaps_resources_for_every_terminal_path() {
     }
 
     assert_eq!(std::fs::read(checkout_manifest).unwrap(), manifest_before);
-    assert_eq!(std::fs::read(user_settings).unwrap(), settings_before);
+    assert_eq!(std::fs::read(&settings_path).ok(), settings_before);
 }
 
 #[test]

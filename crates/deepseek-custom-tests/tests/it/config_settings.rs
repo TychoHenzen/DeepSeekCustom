@@ -1216,22 +1216,22 @@ fn procedure_repair_policy_saves_and_loads_all_fields() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// The repo `settings.json` is also the live settings file: the GUI
-/// rewrites it whenever a control changes. So this test checks the
-/// shape it must keep, not the choices a user is free to make. Asserting
-/// an exact `default_backend` here would fail the suite for anyone who
-/// touched the backend picker.
+/// The supported backend configuration remains valid without requiring a
+/// machine-local `settings.json` to exist in a clean checkout.
 #[test]
-fn repo_settings_json_includes_codex_among_four_backends() {
-    // The crate now sits two levels under the repo root
-    // (crates/deepseek-custom), so a future move of the crate needs to
-    // update this join count.
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap();
-    let contents = std::fs::read_to_string(repo_root.join("settings.json")).unwrap();
-    let s: Settings = serde_json::from_str(&contents).unwrap();
+fn four_supported_backends_deserialize_without_local_settings() {
+    let s: Settings = serde_json::from_str(
+        r#"{
+            "backends": {
+                "deepseek": {"kind": "api", "provider": "deepseek", "model": "deepseek-v4-pro"},
+                "ollama": {"kind": "api", "provider": "ollama", "model": "qwen2.5-coder"},
+                "claude": {"kind": "claude_cli", "model": "claude-sonnet-4-6"},
+                "codex": {"kind": "codex_cli", "model": "gpt-5.6-sol", "sandbox": "workspace-write"}
+            },
+            "default_backend": "claude"
+        }"#,
+    )
+    .unwrap();
 
     let backends = s.backends().unwrap();
     assert_eq!(backends.len(), 4);

@@ -594,7 +594,6 @@ fn bounded_real_checkout_files() -> BTreeMap<String, Vec<u8>> {
     for relative in [
         "Cargo.toml",
         "Cargo.lock",
-        "settings.json",
         "crates/deepseek-custom-tests/tests/it/procedure_sandbox_e2e.rs",
     ] {
         files.insert(
@@ -602,8 +601,14 @@ fn bounded_real_checkout_files() -> BTreeMap<String, Vec<u8>> {
             std::fs::read(root.join(relative)).unwrap(),
         );
     }
+    let settings_path = root.join("settings.json");
+    if settings_path.is_file() {
+        files.insert(
+            "settings.json".to_string(),
+            std::fs::read(settings_path).unwrap(),
+        );
+    }
     collect_source_files(&root, &root.join("crates/deepseek-custom/src"), &mut files);
-    assert!(files.contains_key("settings.json"));
     files
 }
 

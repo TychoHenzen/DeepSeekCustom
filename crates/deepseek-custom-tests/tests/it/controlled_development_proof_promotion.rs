@@ -39,11 +39,21 @@ fn failing_proof_records_evidence_stops_later_commands_and_never_promotes() {
             VerifierCommandDisposition::Failed
         );
         assert_eq!(run.commands[0].exit_code, Some(7));
+        let expected_execution_root = execution_root
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let combined_output = run.commands[0]
+            .combined_output
+            .text
+            .replace('\\', "/")
+            .to_ascii_lowercase();
         assert!(
-            run.commands[0]
-                .combined_output
-                .text
-                .contains(&execution_root.display().to_string())
+            combined_output.contains(&expected_execution_root),
+            "proof output did not identify the isolated workspace: {combined_output}"
         );
         assert_eq!(
             std::fs::read_to_string(execution_root.join("proof-order.txt"))

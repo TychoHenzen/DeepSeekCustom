@@ -1058,31 +1058,17 @@ fn apply_reports_success_when_post_commit_backup_cleanup_is_retained() {
 }
 
 #[test]
-fn settings_declares_the_four_workspace_gates_and_practical_patch_promotes() {
+fn four_workspace_gates_allow_a_practical_patch_to_promote() {
     run_async(async {
-        let settings_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("settings.json");
-        let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
-        let commands = settings["procedure"]["verifier_commands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| value.as_str().unwrap().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            commands,
-            [
-                "cargo fmt --all -- --check",
-                "cargo check --workspace",
-                "cargo clippy --workspace -- -D warnings",
-                "cargo test --workspace",
-            ]
-        );
+        let commands = [
+            "cargo fmt --all -- --check",
+            "cargo check --workspace",
+            "cargo clippy --workspace -- -D warnings",
+            "cargo test --workspace",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
 
         let fixture = save_fixture(
             "practical-rust",
