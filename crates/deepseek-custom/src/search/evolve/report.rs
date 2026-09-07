@@ -99,7 +99,7 @@ pub fn archive_table(islands: &[Island]) -> String {
         if !island.archive.is_empty() {
             lines.push(format!("  Island {i} ({total} total):"));
             let mut cells: Vec<(&[isize], &Candidate)> = island.archive.iter().collect();
-            cells.sort_by(|(key_a, _), (key_b, _)| key_a.cmp(key_b));
+            cells.sort_by_key(|(key_a, _)| *key_a);
             for (key, c) in &cells {
                 let key_str = key
                     .iter()

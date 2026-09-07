@@ -101,7 +101,7 @@ impl PromotionBaseline {
             .flat_map(PromotionTarget::paths)
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
-        let fingerprints = capture_path_fingerprints(project_root, paths.into_iter())?;
+        let fingerprints = capture_path_fingerprints(project_root, paths)?;
         Ok(Self { fingerprints })
     }
 

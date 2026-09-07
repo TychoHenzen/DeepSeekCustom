@@ -85,7 +85,6 @@ pub fn register_cuda_dll_dirs() {
     #[cfg(not(windows))]
     {
         debug!("cuda dll dirs: Windows DLL registration is unavailable on this platform");
-        return;
     }
 
     #[cfg(windows)]
@@ -112,7 +111,6 @@ pub fn log_real_cuda_provider_status() {
     #[cfg(not(windows))]
     {
         debug!("cuda dll dirs: CUDA provider probing is unavailable on this platform");
-        return;
     }
 
     #[cfg(windows)]

@@ -206,7 +206,7 @@ impl Island {
     pub fn select_parent(&self, round: usize) -> Option<&Candidate> {
         if !self.archive.is_empty() {
             let mut cells: Vec<(&[isize], &Candidate)> = self.archive.iter().collect();
-            cells.sort_by(|(key_a, _), (key_b, _)| key_a.cmp(key_b));
+            cells.sort_by_key(|(key_a, _)| *key_a);
             Some(cells[round % cells.len()].1)
         } else if !self.elites.is_empty() {
             Some(&self.elites[round % self.elites.len()])

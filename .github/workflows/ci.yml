@@ -78,23 +78,11 @@ jobs:
 
   rust-tests:
     name: rust-tests
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev cmake libasound2-dev
-          clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
-          test -n "$clang_library"
-          {
-            echo "LIBCLANG_PATH=$(dirname "$clang_library")"
-            echo "CMAKE=$(command -v cmake)"
-            echo "CMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG"
-            echo "CMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"
-          } >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
