@@ -34,6 +34,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
+          clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
+          test -n "$clang_library"
+          echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -52,6 +55,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
+          clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
+          test -n "$clang_library"
+          echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -71,6 +77,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
+          clang_library="$(find /usr/lib/llvm-* -name 'libclang.so*' -print -quit)"
+          test -n "$clang_library"
+          echo "LIBCLANG_PATH=$(dirname "$clang_library")" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
