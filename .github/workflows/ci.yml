@@ -33,7 +33,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -51,7 +51,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -70,7 +70,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libwayland-dev
+          sudo apt-get install --no-install-recommends -y libwayland-dev libclang-dev
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
