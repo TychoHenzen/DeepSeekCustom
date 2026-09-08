@@ -187,7 +187,7 @@ impl SubagentRegistry {
     /// production getter over `SessionEntry` itself. `None` when no
     /// session is registered under `id`. Gated on
     /// `#[cfg(feature = "test-support")]`, matching every other test-only
-    /// seam in this module. `pub`, not `pub(crate)`: `src/tools/task.rs`'s
+    /// seam in this module. `pub`, not `pub(crate)`: `src/tools/task/`'s
     /// tests, the only caller, moved to the external
     /// `deepseek-custom-tests` crate as part of the workspace split, so
     /// `pub(crate)` can no longer reach them. There is no side-effect-free

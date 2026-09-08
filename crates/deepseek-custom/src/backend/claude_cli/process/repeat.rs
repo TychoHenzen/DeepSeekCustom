@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::agent::events::StreamEvent;
+use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::agent::repeat::RepeatTarget;
 use crate::error::Result;
 
@@ -13,9 +13,7 @@ use super::ClaudeCliDriver;
 impl ClaudeCliDriver {
     /// Publish one `StreamEvent` on this driver's event channel.
     pub(super) fn send_event(&self, event: StreamEvent) {
-        let _ = self
-            .tx_events
-            .send(crate::agent::events::RoutedEvent::own(event));
+        let _ = self.tx_events.send(RoutedEvent::own(event));
     }
 }
 

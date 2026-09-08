@@ -1,12 +1,11 @@
 //! Unit tests for `deepseek_custom::image_bytes` (`src/image_bytes.rs`).
-//! These four moved here from `gui_attachment.rs` when the two functions
-//! they cover moved out of `src/gui/attachment.rs`. Both `gui/attachment.rs`
-//! and `tools/read_image.rs` held their own copy of each before that.
+//! These contracts remain presentation-neutral after native clipboard removal.
 
 use image::ImageFormat;
 
-use deepseek_custom::gui::attachment::decode_image_bytes;
-use deepseek_custom::image_bytes::{attachment_from_image_bytes, mime_for_image_format};
+use deepseek_custom::image_bytes::{
+    attachment_from_image_bytes, decode_image_attachment, mime_for_image_format,
+};
 
 /// A 1x1 PNG, the smallest real image a test can attach.
 fn test_png_bytes() -> Vec<u8> {
@@ -23,7 +22,7 @@ fn attachment_from_image_bytes_accepts_a_real_png_and_keeps_its_bytes() {
     let attachment =
         attachment_from_image_bytes(&bytes, "test.png").expect("a real PNG must be accepted");
     assert_eq!(attachment.media_type, "image/png");
-    let decoded = decode_image_bytes(&attachment).expect("payload must be base64");
+    let decoded = decode_image_attachment(&attachment).expect("payload must be base64");
     assert_eq!(decoded, bytes, "the original bytes must not be re-encoded");
 }
 

@@ -25,6 +25,7 @@ fn chat_request_serializes_correctly() {
         thinking: None,
         thinking_mode: None,
         reasoning_effort: None,
+        response_format: None,
         effort: None,
     };
 
@@ -39,6 +40,11 @@ fn chat_request_serializes_correctly() {
     assert_eq!(parsed["max_tokens"], 1024);
     assert!(parsed.get("thinking").is_none());
     assert!(parsed.get("thinking_mode").is_none());
+    assert!(parsed.get("response_format").is_none());
+    assert_eq!(
+        json,
+        r#"{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"stream":false,"temperature":0.7,"max_tokens":1024}"#
+    );
 }
 
 #[test]
@@ -60,6 +66,7 @@ fn thinking_enabled_serializes_correctly() {
         thinking: None,
         thinking_mode: Some("thinking".into()),
         reasoning_effort: None,
+        response_format: None,
         effort: None,
     };
 
@@ -89,6 +96,7 @@ fn thinking_disabled_serializes_correctly() {
         thinking: None,
         thinking_mode: Some("non-thinking".into()),
         reasoning_effort: None,
+        response_format: None,
         effort: None,
     };
 
@@ -118,6 +126,7 @@ fn reasoning_effort_is_absent_when_none() {
         thinking: None,
         thinking_mode: None,
         reasoning_effort: None,
+        response_format: None,
         effort: None,
     };
 
@@ -146,6 +155,7 @@ fn effort_field_never_appears_on_the_wire_even_when_set() {
         thinking: None,
         thinking_mode: None,
         reasoning_effort: None,
+        response_format: None,
         effort: Some(Effort::Max),
     };
 

@@ -1,7 +1,7 @@
 //! Child-process spawning for `ClaudeCliDriver`. Extracted from
 //! `mod.rs` so that file stays under the 300-line bound.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
@@ -42,7 +42,8 @@ impl ClaudeCliDriver {
             .voice_mode_flag
             .load(std::sync::atomic::Ordering::SeqCst);
         let want_effort = Effort::load(&self.effort_flag);
-        let resume_changed = resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
+        let resume_changed = self.controlled_profile.is_none()
+            && resume_id_changed(&self.claude_session_id, &self.spawned_resume_id);
         let current_dir = self.working_dir.lock().unwrap().clone();
         let dir_changed = working_dir_changed(&current_dir, &self.spawned_working_dir);
         if self.child.is_some()
@@ -89,12 +90,7 @@ impl ClaudeCliDriver {
 
     /// Assemble a `Command` with all the flags, env vars, and pipe
     /// plumbing before spawning.
-    fn build_spawn_command(
-        &self,
-        binary: &std::path::Path,
-        args: &[String],
-        working_dir: &std::path::Path,
-    ) -> Command {
+    fn build_spawn_command(&self, binary: &Path, args: &[String], working_dir: &Path) -> Command {
         let mut command = Command::new(binary);
         command
             .args(args)
@@ -117,11 +113,7 @@ impl ClaudeCliDriver {
     /// Spawn the command, adopt the child into the process group, and
     /// take stdin/stdout/stderr handles. Reports failure as both an
     /// event and an error, same as `resolve_binary_for_spawn`.
-    fn spawn_and_take_handles(
-        &self,
-        mut command: Command,
-        binary: &std::path::Path,
-    ) -> Result<SpawnedChild> {
+    fn spawn_and_take_handles(&self, mut command: Command, binary: &Path) -> Result<SpawnedChild> {
         let mut child = command.spawn().map_err(|e| {
             let message = format!(
                 "failed to spawn claude CLI at {}: {e}; set {CLAUDE_CLI_PATH_KEY}",
@@ -180,7 +172,11 @@ impl ClaudeCliDriver {
         self.turn_done = Some(turn_done_rx);
         self.session_id_rx = Some(session_id_rx);
         self.spawned_voice_mode = voice_mode;
-        self.spawned_resume_id = self.claude_session_id.clone();
+        self.spawned_resume_id = self
+            .controlled_profile
+            .is_none()
+            .then(|| self.claude_session_id.clone())
+            .flatten();
         self.spawned_working_dir = Some(working_dir);
         self.spawned_effort = effort;
     }
@@ -195,14 +191,17 @@ impl ClaudeCliDriver {
     ) -> Result<()> {
         let binary = self.resolve_binary_for_spawn()?;
         let append_prompt = voice_mode.then(voice_mode_instructions);
-        let args = build_args_with_tools(
-            &self.model,
-            self.permission_mode.as_deref(),
-            append_prompt,
-            self.claude_session_id.as_deref(),
-            effort,
-            self.tools_enabled,
-        );
+        let args = match &self.controlled_profile {
+            Some(profile) => profile.args(&self.model, effort),
+            None => build_args_with_tools(
+                &self.model,
+                self.permission_mode.as_deref(),
+                append_prompt,
+                self.claude_session_id.as_deref(),
+                effort,
+                self.tools_enabled,
+            ),
+        };
         let command = self.build_spawn_command(&binary, &args, &working_dir);
         let spawned = self.spawn_and_take_handles(command, &binary)?;
         self.attach_child_io(spawned, voice_mode, working_dir, effort);

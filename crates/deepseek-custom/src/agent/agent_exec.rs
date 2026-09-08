@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use tracing::{info, warn};
 
-use crate::api::types::{Content, Message, Role, ToolCall, Usage};
+use crate::api::types::{Message, ToolCall, Usage};
 use crate::error::HarnessError;
 use crate::tools::ToolOutput;
 
@@ -49,13 +49,8 @@ impl AgentLoop {
                 is_error: result.is_error,
             });
 
-            self.history.push(Message {
-                role: Role::Tool,
-                content: Some(Content::text(result.content)),
-                tool_calls: None,
-                tool_call_id: Some(tc.id.clone()),
-                reasoning_content: None,
-            });
+            self.history
+                .push(Message::tool_result(tc.id.clone(), result.content));
 
             if let Some(image) = result.image {
                 let built = build_user_content(
@@ -79,11 +74,7 @@ impl AgentLoop {
             Ok(v) => v,
             Err(e) => {
                 warn!("execute_tool: failed to parse args for '{}': {}", name, e);
-                return ToolOutput {
-                    content: self.arg_parse_error(name, args, &e),
-                    is_error: true,
-                    image: None,
-                };
+                return ToolOutput::error(self.arg_parse_error(name, args, &e));
             }
         };
 
@@ -96,26 +87,14 @@ impl AgentLoop {
                         registry.close_all().await;
                     }
                     self.send_event(StreamEvent::SessionReset);
-                    ToolOutput {
-                        content: "Session reset initiated.".into(),
-                        is_error: false,
-                        image: None,
-                    }
+                    ToolOutput::ok("Session reset initiated.")
                 }
-                Err(e) => ToolOutput {
-                    content: format!("Tool error: {e}"),
-                    is_error: true,
-                    image: None,
-                },
+                Err(e) => ToolOutput::error(format!("Tool error: {e}")),
             },
-            None => ToolOutput {
-                content: format!(
-                    "Unknown tool: {name}. Available tools: {}",
-                    self.tool_name_list()
-                ),
-                is_error: true,
-                image: None,
-            },
+            None => ToolOutput::error(format!(
+                "Unknown tool: {name}. Available tools: {}",
+                self.tool_name_list()
+            )),
         }
     }
 

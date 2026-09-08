@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use deepseek_custom::backend::claude_cli::events::parse_line;
 use deepseek_custom::backend::claude_cli::map::EventMapper;
 use deepseek_custom::backend::claude_cli::one_shot::{
-    accumulate_one_shot_event, build_one_shot_args, build_restricted_one_shot_args_for_test,
-    spawn_one_shot_child,
+    accumulate_one_shot_event, build_one_shot_args, build_planning_one_shot_args,
+    build_restricted_one_shot_args_for_test, spawn_one_shot_child,
 };
 use deepseek_custom::effort::Effort;
 
@@ -192,4 +192,39 @@ fn one_shot_result_folds_from_tools_fixture_result_event() {
     assert_eq!(result.input_tokens, 20);
     assert_eq!(result.output_tokens, 260);
     assert_eq!(result.total_cost_usd, Some(0.143862));
+}
+
+#[test]
+fn controlled_planning_one_shot_forces_fresh_read_only_structured_output() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"]
+    })
+    .to_string();
+    let args =
+        build_planning_one_shot_args("claude-opus-x", "produce one card", &schema, Effort::Medium);
+
+    assert_eq!(args[0..2], ["-p", "produce one card"]);
+    for required in [
+        "--safe-mode",
+        "--no-session-persistence",
+        "--permission-mode",
+        "plan",
+        "--allowedTools",
+        "Read,Glob,Grep",
+        "--json-schema",
+        schema.as_str(),
+    ] {
+        assert!(
+            args.iter().any(|argument| argument == required),
+            "missing {required}: {args:?}"
+        );
+    }
+    for forbidden in ["--resume", "Task", "SendMessage", "CloseSession", "Bash"] {
+        assert!(
+            !args.iter().any(|argument| argument == forbidden),
+            "unexpected {forbidden}: {args:?}"
+        );
+    }
 }

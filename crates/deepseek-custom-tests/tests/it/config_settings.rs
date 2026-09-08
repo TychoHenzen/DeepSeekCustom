@@ -5,8 +5,17 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use deepseek_custom::config::settings::{
-    ApiProvider, AutopilotConfig, BackendConfig, PermissionsConfig, RecoveryProjectConfig,
-    Settings, TriggerMode, VoiceConfig,
+    ApiProvider, AutopilotConfig, BackendConfig, DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS,
+    DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT, DEFAULT_PROCEDURE_INDEX_MAX_FILES,
+    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT, DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+    DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM, DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
+    DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS, DEFAULT_PROCEDURE_STRUCTURAL_RETRIES,
+    MAX_PROCEDURE_FRONTIER_ATTEMPTS, MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
+    MAX_PROCEDURE_STRUCTURAL_RETRIES, MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
+    MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT, PermissionsConfig, ProcedureSettings,
+    RecoveryProjectConfig, RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
 
@@ -132,13 +141,7 @@ fn trigger_mode_parses_wake_word() {
 
 /// Create a uniquely named directory under the system temp dir.
 fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc", tag)
 }
 
 #[test]
@@ -185,6 +188,28 @@ fn save_then_load_round_trips_values() {
         style: None,
         cascade: None,
         evolve: None,
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("ollama".into()),
+            local_patch_backend: Some("ollama".into()),
+            frontier_patch_backend: Some("codex".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 2_500,
+                max_total_bytes: 8_000_000,
+            },
+            verifier_commands: vec![
+                "cargo fmt --all -- --check".into(),
+                "cargo test --workspace".into(),
+            ],
+            structural_retries: 0,
+            local_verifier_attempts: 2,
+            frontier_attempts: 1,
+            localization_sample_count: 4,
+            localization_agreement_quorum: 3,
+            local_patch_candidate_count: 5,
+            metrics_window_runs: 25,
+            local_success_warning_percent: 65,
+            frontier_escalation_warning_percent: 20,
+        }),
     };
 
     original.save(&dir).unwrap();
@@ -221,6 +246,21 @@ fn save_then_load_round_trips_values() {
     assert_eq!(loaded.autopilot_answerer_model(), "deepseek-v4-pro");
     assert_eq!(loaded.autopilot_task().unwrap(), "do the thing");
     assert_eq!(loaded.subagent_max_depth(), 3);
+    let procedure = loaded.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.local_patch_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.frontier_patch_backend.as_deref(), Some("codex"));
+    assert_eq!(procedure.repository_index.max_files, 2_500);
+    assert_eq!(procedure.repository_index.max_total_bytes, 8_000_000);
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 2);
+    assert_eq!(procedure.frontier_attempts, 1);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -293,6 +333,7 @@ fn save_omits_none_fields() {
         style: None,
         cascade: None,
         evolve: None,
+        procedure: None,
     };
     s.save(&dir).unwrap();
     let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
@@ -704,22 +745,527 @@ fn subagent_max_depth_takes_part_in_merge() {
     assert_eq!(base.subagent_max_depth(), 5);
 }
 
-/// The repo `settings.json` is also the live settings file: the GUI
-/// rewrites it whenever a control changes. So this test checks the
-/// shape it must keep, not the choices a user is free to make. Asserting
-/// an exact `default_backend` here would fail the suite for anyone who
-/// touched the backend picker.
 #[test]
-fn repo_settings_json_includes_codex_among_four_backends() {
-    // The crate now sits two levels under the repo root
-    // (crates/deepseek-custom), so a future move of the crate needs to
-    // update this join count.
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
+fn existing_settings_without_procedure_block_still_load() {
+    let settings: Settings = serde_json::from_str(r#"{"effort":"medium"}"#).unwrap();
+
+    assert!(settings.procedure().is_none());
+    assert!(
+        !serde_json::to_string(&settings)
+            .unwrap()
+            .contains("procedure")
+    );
+}
+
+// covers: deepseek-custom/procedure-localization :: Repository index boundaries are explicit :: Missing index settings use documented defaults
+#[test]
+fn procedure_block_without_repository_index_uses_named_defaults() {
+    let dir = unique_temp_dir("procedure-index-defaults");
+    std::fs::write(
+        dir.join("settings.json"),
+        r#"{
+            "procedure": {
+                "localization_backend": "ollama"
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let settings = Settings::load(&dir).unwrap();
+    let limits = &settings.procedure().unwrap().repository_index;
+
+    assert_eq!(DEFAULT_PROCEDURE_INDEX_MAX_FILES, 10_000);
+    assert_eq!(DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES, 64 * 1024 * 1024);
+    assert_eq!(limits.max_files, DEFAULT_PROCEDURE_INDEX_MAX_FILES);
+    assert_eq!(
+        limits.max_total_bytes,
+        DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
+    );
+    assert!(settings.procedure().unwrap().verifier_commands.is_empty());
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// covers: deepseek-custom/routing-sampling-and-metrics :: Localization uses bounded agreement sampling :: Sample settings are outside bounds
+#[test]
+fn procedure_sampling_settings_reject_out_of_bounds_values_before_dispatch() {
+    let default_settings = Settings::default();
+    let validated = default_settings
+        .validated_procedure_sampling_settings()
         .unwrap();
-    let contents = std::fs::read_to_string(repo_root.join("settings.json")).unwrap();
-    let s: Settings = serde_json::from_str(&contents).unwrap();
+    assert_eq!(
+        validated.localization_sample_count(),
+        DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+    );
+    assert_eq!(
+        validated.localization_agreement_quorum(),
+        DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+    );
+    assert_eq!(
+        validated.local_patch_candidate_count(),
+        DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+    );
+
+    for localization_sample_count in [
+        MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT - 1,
+        MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT + 1,
+    ] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                localization_sample_count,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.localization_sample_count must be between {MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT} and {MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT}, got {localization_sample_count}"
+            )
+        );
+    }
+
+    for local_patch_candidate_count in [
+        MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT - 1,
+        MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT + 1,
+    ] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                local_patch_candidate_count,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.local_patch_candidate_count must be between {MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT} and {MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT}, got {local_patch_candidate_count}"
+            )
+        );
+    }
+
+    for (localization_sample_count, localization_agreement_quorum) in [(3, 1), (3, 4)] {
+        let error = Settings {
+            procedure: Some(ProcedureSettings {
+                localization_sample_count,
+                localization_agreement_quorum,
+                ..ProcedureSettings::default()
+            }),
+            ..Settings::default()
+        }
+        .validated_procedure_sampling_settings()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "procedure.localization_agreement_quorum must be between 2 and procedure.localization_sample_count ({localization_sample_count}), got {localization_agreement_quorum}"
+            )
+        );
+    }
+}
+
+#[test]
+fn procedure_block_loads_from_project_settings() {
+    let dir = unique_temp_dir("procedure-settings-load");
+    std::fs::write(
+        dir.join("settings.json"),
+        r#"{
+            "procedure": {
+                "localization_backend": "ollama",
+                "repository_index": {
+                    "max_files": 321,
+                    "max_total_bytes": 654321
+                },
+                "verifier_commands": ["format", "compile", "test"]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let settings = Settings::load(&dir).unwrap();
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 321);
+    assert_eq!(procedure.repository_index.max_total_bytes, 654_321);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["format", "compile", "test"]
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn procedure_settings_take_part_in_merge() {
+    let mut settings = Settings::default();
+    settings.merge_for_test(Settings {
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("localizer".into()),
+            local_patch_backend: Some("local-drafter".into()),
+            frontier_patch_backend: Some("frontier-drafter".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 100,
+                max_total_bytes: 200,
+            },
+            verifier_commands: vec!["first-gate".into(), "second-gate".into()],
+            structural_retries: 0,
+            local_verifier_attempts: 1,
+            frontier_attempts: 0,
+            localization_sample_count: 4,
+            localization_agreement_quorum: 3,
+            local_patch_candidate_count: 5,
+            metrics_window_runs: 25,
+            local_success_warning_percent: 65,
+            frontier_escalation_warning_percent: 20,
+        }),
+        ..Default::default()
+    });
+
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("localizer"));
+    assert_eq!(
+        procedure.local_patch_backend.as_deref(),
+        Some("local-drafter")
+    );
+    assert_eq!(
+        procedure.frontier_patch_backend.as_deref(),
+        Some("frontier-drafter")
+    );
+    assert_eq!(procedure.repository_index.max_files, 100);
+    assert_eq!(procedure.repository_index.max_total_bytes, 200);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["first-gate", "second-gate"]
+    );
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 1);
+    assert_eq!(procedure.frontier_attempts, 0);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
+    assert_eq!(procedure.frontier_attempts, 0);
+}
+
+#[test]
+fn procedure_mut_creates_and_updates_the_optional_block() {
+    let mut settings = Settings::default();
+    assert!(settings.procedure().is_none());
+
+    let procedure = settings.procedure_mut();
+    assert!(procedure.localization_backend.is_none());
+    assert!(procedure.local_patch_backend.is_none());
+    assert!(procedure.frontier_patch_backend.is_none());
+    assert_eq!(
+        procedure.structural_retries,
+        DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+    );
+    assert_eq!(
+        procedure.local_verifier_attempts,
+        DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+    );
+    assert_eq!(
+        procedure.frontier_attempts,
+        DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+    );
+    assert_eq!(
+        procedure.localization_sample_count,
+        DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+    );
+    assert_eq!(
+        procedure.localization_agreement_quorum,
+        DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+    );
+    assert_eq!(
+        procedure.local_patch_candidate_count,
+        DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+    );
+    assert_eq!(
+        procedure.metrics_window_runs,
+        DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS
+    );
+    assert_eq!(
+        procedure.local_success_warning_percent,
+        DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT
+    );
+    assert_eq!(
+        procedure.frontier_escalation_warning_percent,
+        DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT
+    );
+    procedure.localization_backend = Some("ollama".into());
+    procedure.repository_index.max_files = 77;
+    procedure.verifier_commands = vec!["format".into(), "test".into()];
+    procedure.structural_retries = 0;
+    procedure.local_verifier_attempts = 2;
+    procedure.frontier_attempts = 0;
+    procedure.localization_sample_count = 4;
+    procedure.localization_agreement_quorum = 3;
+    procedure.local_patch_candidate_count = 5;
+    procedure.metrics_window_runs = 25;
+    procedure.local_success_warning_percent = 65;
+    procedure.frontier_escalation_warning_percent = 20;
+
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(procedure.repository_index.max_files, 77);
+    assert_eq!(procedure.verifier_commands, vec!["format", "test"]);
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 2);
+    assert_eq!(procedure.frontier_attempts, 0);
+    assert_eq!(procedure.localization_sample_count, 4);
+    assert_eq!(procedure.localization_agreement_quorum, 3);
+    assert_eq!(procedure.local_patch_candidate_count, 5);
+    assert_eq!(procedure.metrics_window_runs, 25);
+    assert_eq!(procedure.local_success_warning_percent, 65);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 20);
+}
+
+#[test]
+fn procedure_settings_round_trip_through_json() {
+    let original = Settings {
+        procedure: Some(ProcedureSettings {
+            localization_backend: Some("ollama".into()),
+            local_patch_backend: Some("ollama-preview".into()),
+            frontier_patch_backend: Some("codex-preview".into()),
+            repository_index: RepositoryIndexLimits {
+                max_files: 7_500,
+                max_total_bytes: 12_000_000,
+            },
+            verifier_commands: vec!["format".into(), "compile".into(), "test".into()],
+            structural_retries: 0,
+            local_verifier_attempts: 4,
+            frontier_attempts: 1,
+            localization_sample_count: 5,
+            localization_agreement_quorum: 4,
+            local_patch_candidate_count: 4,
+            metrics_window_runs: 50,
+            local_success_warning_percent: 60,
+            frontier_escalation_warning_percent: 25,
+        }),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: Settings = serde_json::from_str(&json).unwrap();
+
+    let procedure = decoded.procedure().unwrap();
+    assert_eq!(procedure.localization_backend.as_deref(), Some("ollama"));
+    assert_eq!(
+        procedure.local_patch_backend.as_deref(),
+        Some("ollama-preview")
+    );
+    assert_eq!(
+        procedure.frontier_patch_backend.as_deref(),
+        Some("codex-preview")
+    );
+    assert_eq!(procedure.repository_index.max_files, 7_500);
+    assert_eq!(procedure.repository_index.max_total_bytes, 12_000_000);
+    assert_eq!(
+        procedure.verifier_commands,
+        vec!["format", "compile", "test"]
+    );
+    assert_eq!(procedure.structural_retries, 0);
+    assert_eq!(procedure.local_verifier_attempts, 4);
+    assert_eq!(procedure.frontier_attempts, 1);
+    assert_eq!(procedure.localization_sample_count, 5);
+    assert_eq!(procedure.localization_agreement_quorum, 4);
+    assert_eq!(procedure.local_patch_candidate_count, 4);
+    assert_eq!(procedure.metrics_window_runs, 50);
+    assert_eq!(procedure.local_success_warning_percent, 60);
+    assert_eq!(procedure.frontier_escalation_warning_percent, 25);
+}
+
+fn frontier_backend() -> BackendConfig {
+    BackendConfig::CodexCli {
+        model: "gpt-5".to_string(),
+        sandbox: Some("workspace-write".to_string()),
+        env: None,
+        models: None,
+    }
+}
+
+fn settings_with_repair_policy(
+    structural_retries: u8,
+    local_verifier_attempts: u8,
+    frontier_backend_name: Option<&str>,
+    frontier_attempts: u8,
+) -> Settings {
+    let backends = frontier_backend_name
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| HashMap::from([(name.to_string(), frontier_backend())]));
+    Settings {
+        procedure: Some(ProcedureSettings {
+            frontier_patch_backend: frontier_backend_name.map(str::to_string),
+            structural_retries,
+            local_verifier_attempts,
+            frontier_attempts,
+            ..ProcedureSettings::default()
+        }),
+        backends,
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn procedure_repair_policy_uses_documented_defaults() {
+    let settings: Settings = serde_json::from_str(
+        r#"{
+            "procedure": { "frontier_patch_backend": "frontier" },
+            "backends": {
+                "frontier": { "kind": "codex_cli", "model": "gpt-5" }
+            }
+        }"#,
+    )
+    .unwrap();
+    let procedure = settings.procedure().unwrap();
+    assert_eq!(DEFAULT_PROCEDURE_STRUCTURAL_RETRIES, 1);
+    assert_eq!(DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, 3);
+    assert_eq!(DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS, 2);
+    assert_eq!(
+        procedure.structural_retries,
+        DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+    );
+    assert_eq!(
+        procedure.local_verifier_attempts,
+        DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+    );
+    assert_eq!(
+        procedure.frontier_attempts,
+        DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+    );
+
+    let policy = settings.validated_procedure_repair_policy().unwrap();
+    assert_eq!(policy.structural_retries(), 1);
+    assert_eq!(policy.local_verifier_attempts(), 3);
+    assert_eq!(policy.frontier_backend(), Some("frontier"));
+    assert_eq!(policy.frontier_attempts(), 2);
+}
+
+#[test]
+fn procedure_repair_policy_accepts_downward_and_maximum_budgets() {
+    let disabled = settings_with_repair_policy(0, 1, None, 0)
+        .validated_procedure_repair_policy()
+        .unwrap();
+    assert_eq!(disabled.structural_retries(), 0);
+    assert_eq!(disabled.local_verifier_attempts(), 1);
+    assert_eq!(disabled.frontier_backend(), None);
+    assert_eq!(disabled.frontier_attempts(), 0);
+
+    let maximum = settings_with_repair_policy(
+        MAX_PROCEDURE_STRUCTURAL_RETRIES,
+        MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS,
+        Some("frontier"),
+        MAX_PROCEDURE_FRONTIER_ATTEMPTS,
+    )
+    .validated_procedure_repair_policy()
+    .unwrap();
+    assert_eq!(maximum.structural_retries(), 1);
+    assert_eq!(maximum.local_verifier_attempts(), 4);
+    assert_eq!(maximum.frontier_backend(), Some("frontier"));
+    assert_eq!(maximum.frontier_attempts(), 2);
+}
+
+#[test]
+fn procedure_repair_policy_rejects_every_budget_outside_its_range() {
+    let cases = [
+        (
+            settings_with_repair_policy(2, 3, Some("frontier"), 2),
+            "procedure.structural_retries must be between 0 and 1, got 2",
+        ),
+        (
+            settings_with_repair_policy(1, 0, Some("frontier"), 2),
+            "procedure.local_verifier_attempts must be between 1 and 4, got 0",
+        ),
+        (
+            settings_with_repair_policy(1, 5, Some("frontier"), 2),
+            "procedure.local_verifier_attempts must be between 1 and 4, got 5",
+        ),
+        (
+            settings_with_repair_policy(1, 3, Some("frontier"), 3),
+            "procedure.frontier_attempts must be between 0 and 2, got 3",
+        ),
+    ];
+
+    for (settings, expected) in cases {
+        assert_eq!(
+            settings.validated_procedure_repair_policy().unwrap_err(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn procedure_repair_policy_rejects_invalid_frontier_backend_names() {
+    let blank = settings_with_repair_policy(1, 3, Some("   "), 0);
+    assert_eq!(
+        blank.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend must not be blank"
+    );
+
+    let missing = settings_with_repair_policy(1, 3, None, 2);
+    assert_eq!(
+        missing.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend is required when procedure.frontier_attempts is greater than 0"
+    );
+
+    let unknown = Settings {
+        procedure: Some(ProcedureSettings {
+            frontier_patch_backend: Some("unknown".to_string()),
+            frontier_attempts: 0,
+            ..ProcedureSettings::default()
+        }),
+        ..Settings::default()
+    };
+    assert_eq!(
+        unknown.validated_procedure_repair_policy().unwrap_err(),
+        "procedure.frontier_patch_backend `unknown` names no configured backend"
+    );
+}
+
+#[test]
+fn procedure_repair_policy_saves_and_loads_all_fields() {
+    let dir = unique_temp_dir("procedure-repair-policy");
+    let original = settings_with_repair_policy(0, 2, Some("frontier"), 1);
+    original.save(&dir).unwrap();
+
+    let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+    assert!(text.contains("\"structural_retries\": 0"));
+    assert!(text.contains("\"local_verifier_attempts\": 2"));
+    assert!(text.contains("\"frontier_patch_backend\": \"frontier\""));
+    assert!(text.contains("\"frontier_attempts\": 1"));
+
+    let loaded = Settings::load(&dir).unwrap();
+    let policy = loaded.validated_procedure_repair_policy().unwrap();
+    assert_eq!(policy.structural_retries(), 0);
+    assert_eq!(policy.local_verifier_attempts(), 2);
+    assert_eq!(policy.frontier_backend(), Some("frontier"));
+    assert_eq!(policy.frontier_attempts(), 1);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The supported backend configuration remains valid without requiring a
+/// machine-local `settings.json` to exist in a clean checkout.
+#[test]
+fn four_supported_backends_deserialize_without_local_settings() {
+    let s: Settings = serde_json::from_str(
+        r#"{
+            "backends": {
+                "deepseek": {"kind": "api", "provider": "deepseek", "model": "deepseek-v4-pro"},
+                "ollama": {"kind": "api", "provider": "ollama", "model": "qwen2.5-coder"},
+                "claude": {"kind": "claude_cli", "model": "claude-sonnet-4-6"},
+                "codex": {"kind": "codex_cli", "model": "gpt-5.6-sol", "sandbox": "workspace-write"}
+            },
+            "default_backend": "claude"
+        }"#,
+    )
+    .unwrap();
 
     let backends = s.backends().unwrap();
     assert_eq!(backends.len(), 4);

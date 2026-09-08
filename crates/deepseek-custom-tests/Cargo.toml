@@ -22,14 +22,6 @@ path = "src/bin/fake_claude.rs"
 name = "fake_codex"
 path = "src/bin/fake_codex.rs"
 
-# Spawns a long-running child, hands it to `process_group::adopt`, then
-# exits without cleaning it up. `tests/process_group.rs` runs this and then
-# checks the grandchild died anyway. See that test for why the check needs
-# a second process to be meaningful.
-[[bin]]
-name = "orphan_probe"
-path = "src/bin/orphan_probe.rs"
-
 # A fake MCP server, so the client and manager tests can drive a real child
 # process without needing `node`, `npx`, or a network. Same reason
 # `fake_claude` lives here: `env!("CARGO_BIN_EXE_...")` only resolves for a
@@ -38,32 +30,35 @@ path = "src/bin/orphan_probe.rs"
 name = "fake_mcp_server"
 path = "src/bin/fake_mcp_server.rs"
 
+# Keeps the embedded production shell on an ephemeral loopback origin for
+# deterministic keyboard, viewport, and accessibility practice in a browser.
+[[bin]]
+name = "web_shell_probe"
+path = "src/bin/web_shell_probe.rs"
+
 [dependencies]
 deepseek-custom = { path = "../deepseek-custom", features = ["test-support"] }
 serde_json = "1"
+sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
-# A binary target cannot use a dev-dependency, and `orphan_probe` needs the
-# same tokio `Command` the production spawn paths use, since that is what
-# `process_group::adopt` takes.
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 wiremock = "0.6"
+reqwest = { version = "0.12", features = ["multipart"] }
 base64 = "0.22"
 async-trait = "0.1"
+futures-util = "0.3"
+# Exact pin keeps the bundled Playwright 1.62.1 driver and installed Chromium
+# build aligned. Browser installation is explicit; normal Rust tests do not
+# download a browser.
+playwright-rs = "=0.17.0"
+tempfile = "=3.27.0"
 # Same version and feature set as deepseek-custom's own dependency, so this
 # resolves to the one already-locked copy instead of a second one. Needed
 # for gui_attachment.rs, which builds and decodes real PNG/JPEG bytes the
 # same way src/gui/attachment.rs does.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-# Same version and feature set as deepseek-custom's own dependency. Needed
-# for gui_attachment.rs to construct an `arboard::ImageData` directly, the
-# same way the moved clipboard-paste tests already did.
-arboard = { version = "3.6", default-features = false, features = ["image-data"] }
-# Same version as deepseek-custom's own dependency, so this resolves to the
-# one already-locked copy. Needed for gui.rs, which asserts a block's colour
-# against `egui::Color32::WHITE`, the same way the moved inline test did.
-eframe = "0.31"
 
 [features]
 # Forwards to deepseek-custom's own voice-models feature. Off by default,

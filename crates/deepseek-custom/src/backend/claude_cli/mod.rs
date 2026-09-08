@@ -1,7 +1,10 @@
 pub mod args;
+mod controlled_profile;
 pub mod events;
+mod execution;
 pub mod io;
 pub mod map;
 pub mod one_shot;
+mod planning;
 pub mod process;
 pub mod stream;

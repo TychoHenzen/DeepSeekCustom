@@ -1,0 +1,19 @@
+{
+  "prompt": "Select only repository targets present in repository_index. Return each path exactly as indexed. Include a symbol only when that symbol appears under the same path.\n\n{\"contract\":{\"change_id\":\"sandbox-change\",\"task\":{\"id\":\"1.1\",\"text\":\"Rename the fixture return value from before to after\",\"covers\":\"deepseek-custom/procedure-sandbox-e2e-test :: Apply fixture edit :: Target is updated\"},\"proposal_scope\":{\"why\":\"Prove the isolated procedure lifecycle.\",\"what_changes\":\"- Rename the fixture return value from before to after.\"},\"selection\":{\"binding\":\"bound\",\"capability\":\"deepseek-custom/procedure-sandbox-e2e-test\",\"requirement\":{\"name\":\"Apply fixture edit\",\"text\":\"The procedure SHALL rename the fixture return value from before to after.\",\"scenarios\":[{\"name\":\"Target is updated\",\"text\":\"- **WHEN** the fixture procedure runs\\n- **THEN** only the target is updated\"}]}}},\"repository_index\":[{\"path\":\"Cargo.toml\",\"symbols\":[]},{\"path\":\"fixture-openspec.cmd\",\"symbols\":[]},{\"path\":\"notes.txt\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/proposal.md\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/specs/deepseek-custom/procedure-sandbox-e2e-test/spec.md\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/tasks.md\",\"symbols\":[]},{\"path\":\"src/lib.rs\",\"symbols\":[\"target_symbol\"]}],\"scratchpad\":{\"goals\":[],\"files\":[],\"changes\":[],\"last_error\":null}}",
+  "provenance": {
+    "backend": "ollama",
+    "capture_date": "2026-08-28",
+    "model": "hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M",
+    "response_encoding": "typed dispatcher result serialized without semantic edits",
+    "stage": "localization"
+  },
+  "response": {
+    "targets": [
+      {
+        "evidence": "repository_index",
+        "path": "src/lib.rs",
+        "symbol": null
+      }
+    ]
+  }
+}

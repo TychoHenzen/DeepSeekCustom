@@ -1,5 +1,4 @@
-# Launch DeepSeekCustom harness in a new PowerShell window.
-# Builds first, then opens the binary in a fresh terminal.
+# Build and run the loopback web application.
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -19,5 +18,7 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
-Write-Host "Launching in new window..." -ForegroundColor Green
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "& '$exe'"
+Write-Host "Starting the local web application..." -ForegroundColor Green
+Write-Host "The server reports its final URL and opens it in your browser." -ForegroundColor Cyan
+& $exe
+exit $LASTEXITCODE

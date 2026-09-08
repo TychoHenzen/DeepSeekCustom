@@ -6,33 +6,58 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use async_trait::async_trait;
-use eframe::egui;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use deepseek_custom::agent::agent_types::grade_to_u8;
 use deepseek_custom::agent::events::{AgentCommand, RecoveryUpdate, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
 use deepseek_custom::api::types::ImageAttachment;
+use deepseek_custom::application::actor::ChatLifecycle;
+use deepseek_custom::application::controlled_development_service::{
+    ControlledDevelopmentEffectRequest, ControlledDevelopmentServiceEvent,
+    run_controlled_development_service,
+};
+use deepseek_custom::application::dto::AppSnapshot;
+use deepseek_custom::application::services::{
+    DomainCommandPort, RuntimeSettingsPort, SettingsController,
+};
+use deepseek_custom::application::session::ApplicationSession;
+use deepseek_custom::application::session_state::{SessionOrigin, SessionState};
 use deepseek_custom::backend::factory::BackendFactory;
+use deepseek_custom::backend::registry::SubagentRegistry;
 use deepseek_custom::backend::{Backend, SharedFlags};
 use deepseek_custom::config::settings::{RecoveryConfig, Settings};
-use deepseek_custom::gui::DeepSeekGui;
-use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
+use deepseek_custom::procedure::ProcedureRunCoordinator;
+use deepseek_custom::procedure::ProcedureRunCoordinatorParams;
+use deepseek_custom::procedure::{
+    FrontierRepairDispatcher, LocalPatchDraftDispatcher, LocalizationAgreementResolver,
+    LocalizationDispatcher, LocalizationSampler, OpenSpecInput, PatchPreviewInputGate,
+    PatchPreviewRunner, ProcedureApplyRunner, ProcedureCommand, ProcedureProgress,
+    ProcedureReportRepository, SampledProcedureOutcome, SampledProcedureRequest,
+    SampledProcedureRunner, SampledRepairContext, SamplingInputGate, VerificationInputGate,
+    WholeChangeProcedureOutcome, WholeChangeProcedureRequest, WholeChangeProcedureRunner,
+    apply_review_decision,
+};
 use deepseek_custom::recovery::{
     IdentityInput, MAX_PERMITTED_RETRIES, ProjectReference, RecoveryCoordinator, RecoveryRun,
     RecoveryRunRecord, RecoveryStatus, RecoveryStore, RepositoryProvider, RetryClaim, RetryResult,
     SafeRetryAction, SafeRetrySpec, resolve_identity,
 };
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
+use deepseek_custom::session::SessionStore;
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
 };
 use deepseek_custom::voice::stt::WhisperEngine;
 use deepseek_custom::voice::tts::TtsHandle;
 use deepseek_custom::voice::{resolve_kokoro_paths, resolve_whisper_model_path};
+use deepseek_custom::web::server::{
+    BindPolicy, BrowserOpener, SystemBrowser, SystemFolderPicker, WebAppState,
+    start_with_policy_and_state,
+};
 
 /// Start the MCP servers Claude Code's own config files name, in the
 /// background.
@@ -362,7 +387,7 @@ async fn main() {
     // subagent it builds, main session or `Task`-tool dispatch, shares
     // this one flag. Escape then reaches a running subagent too, not
     // just the turn in front of the user.
-    // The handles the GUI keeps for the life of the process. Created here
+    // The handles the application keeps for the life of the process. Created here
     // rather than read back off the first backend, because the backend can
     // be replaced at runtime and the controls must keep driving whichever
     // one is current. See `SharedFlags`.
@@ -402,10 +427,24 @@ async fn main() {
 
     // ── Channels ────────────────────────────────────────────
 
-    let (tx_events, rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
+    let (tx_events, mut rx_events) = mpsc::unbounded_channel::<RoutedEvent>();
     let (tx_input, mut rx_input) = mpsc::unbounded_channel::<AgentCommand>();
     let (tx_repeat, mut rx_repeat) = mpsc::unbounded_channel::<RepeatCommand>();
     let (tx_search, mut rx_search) = mpsc::unbounded_channel::<SearchCommand>();
+    let (tx_procedure, mut rx_procedure) = mpsc::unbounded_channel::<ProcedureCommand>();
+    let (tx_procedure_progress, mut rx_procedure_progress) =
+        mpsc::unbounded_channel::<ProcedureProgress>();
+    let (tx_controlled_effects, rx_controlled_effects) =
+        mpsc::unbounded_channel::<ControlledDevelopmentEffectRequest>();
+    let (tx_controlled_events, mut rx_controlled_events) =
+        mpsc::unbounded_channel::<ControlledDevelopmentServiceEvent>();
+    let procedure_interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let controlled_service = tokio::spawn(run_controlled_development_service(
+        Arc::clone(&factory),
+        rx_controlled_effects,
+        tx_controlled_events,
+    ));
 
     // ── Backend construction ─────────────────────────────────
 
@@ -459,6 +498,7 @@ async fn main() {
     // GUI reads.
     let switch_factory = Arc::clone(&factory);
     let search_factory = Arc::clone(&factory);
+    let preview_factory = Arc::clone(&factory);
     let search_interrupt = Arc::clone(&flags.search_interrupt);
     // The same two counters the status bar reads, so its escalation rate
     // covers every run this session made.
@@ -469,6 +509,10 @@ async fn main() {
     let switch_tx_events = tx_events;
     let repeat_project_root = project_root.clone();
     let agent_backend = Arc::clone(&backend);
+    let procedure_project_root = project_root.clone();
+    let procedure_settings = settings.clone();
+    let procedure_working_dir = Arc::clone(&working_dir_flag);
+    let procedure_task_interrupt = Arc::clone(&procedure_interrupt);
 
     tokio::spawn(async move {
         info!("agent task started");
@@ -505,13 +549,16 @@ async fn main() {
                                     } else {
                                         false
                                     };
-                                    if !recovered {
-                                        // A failed turn sends no TurnEnd of
-                                        // its own, so nothing told the GUI
-                                        // the turn was over. Report the
-                                        // failure, then close the turn.
-                                        report_failed_turn(&switch_tx_events, &failure);
+                                    if recovered {
+                                        continue;
                                     }
+                                    // A failed turn sends no TurnEnd of its
+                                    // own, so nothing told the GUI the turn
+                                    // was over: the status bar sat on
+                                    // "Running..." and a held session switch
+                                    // would have waited forever. Report the
+                                    // failure, then close the turn.
+                                    report_failed_turn(&switch_tx_events, &failure);
                                 }
                             }
                         }
@@ -605,73 +652,510 @@ async fn main() {
                         None => break,
                     }
                 }
+                procedure = rx_procedure.recv() => {
+                    match procedure {
+                        Some(ProcedureCommand::Run {
+                            run_id,
+                            backend: selected_backend,
+                            request,
+                        }) => {
+                            let mut run_settings = procedure_settings.clone();
+                            run_settings.procedure_mut().localization_backend =
+                                Some(selected_backend);
+                            match LocalizationDispatcher::from_settings(
+                                &run_settings,
+                                &procedure_project_root,
+                            ) {
+                                Ok(dispatcher) => {
+                                    let working_dir = procedure_working_dir
+                                        .lock()
+                                        .unwrap()
+                                        .clone();
+                                    let limits = run_settings
+                                        .procedure()
+                                        .map(|procedure| procedure.repository_index.clone())
+                                        .unwrap_or_default();
+                                    let runner = ProcedureRunCoordinator::new(
+                                        ProcedureRunCoordinatorParams {
+                                            input: OpenSpecInput::new(&procedure_project_root),
+                                            working_dir,
+                                            index_limits: limits,
+                                            dispatcher,
+                                            reports: ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
+                                            interrupt: Arc::clone(&procedure_task_interrupt),
+                                        },
+                                    )
+                                    .with_progress(tx_procedure_progress.clone());
+                                    if let Err(error) = runner.run_with_id(run_id, request).await {
+                                        let _ = tx_procedure_progress.send(
+                                            ProcedureProgress::RunFailed {
+                                                run_id,
+                                                message: error.to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::RunFailed {
+                                            run_id,
+                                            message: error.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Some(ProcedureCommand::Review { run_id, decision }) => {
+                            apply_review_decision(
+                                &ProcedureReportRepository::for_project(&procedure_project_root),
+                                run_id,
+                                decision,
+                                &tx_procedure_progress,
+                            );
+                        }
+                        Some(ProcedureCommand::Sampled { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let mut local_settings = procedure_settings.clone();
+                            {
+                                let procedure = local_settings.procedure_mut();
+                                procedure.localization_backend = Some(request.local_backend.clone());
+                                procedure.local_patch_backend = Some(request.local_backend.clone());
+                                procedure.frontier_patch_backend = Some(request.frontier_backend.clone());
+                            }
+                            // Localization uses the schema-constrained Ollama adapter.
+                            // The selected frontier backend remains reserved for bounded repair.
+                            // A second localizer enforces the one-call disagreement cap.
+                            let frontier_settings = local_settings.clone();
+                            let prepared: Result<_, String> = (|| {
+                                let local = LocalizationDispatcher::from_settings(
+                                    &local_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?;
+                                let frontier = LocalizationDispatcher::from_settings(
+                                    &frontier_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?;
+                                let patch = LocalPatchDraftDispatcher::from_resolved_backend(
+                                    preview_factory.resolve(
+                                        &request.local_backend,
+                                        Some(&request.local_model),
+                                    ).map_err(|error| error.to_string())?,
+                                    deepseek_custom::effort::Effort::None,
+                                    local_settings.max_tokens(),
+                                ).map_err(|error| error.to_string())?;
+                                let sampling = local_settings
+                                    .validated_procedure_sampling_settings()
+                                    .map_err(|error| error.to_string())?;
+                                let repair = local_settings
+                                    .validated_procedure_repair_policy()
+                                    .map_err(|error| error.to_string())?;
+                                Ok((
+                                    local, frontier, patch, sampling, repair,
+                                ))
+                            })();
+                            match prepared {
+                                Ok((local, frontier, patch, sampling, repair_policy)) => {
+                                    let limits = procedure_index_limits(&local_settings);
+                                    let resolver = LocalizationAgreementResolver::new(
+                                        LocalizationSampler::new(local, sampling.clone(), Arc::clone(&procedure_task_interrupt)),
+                                        frontier,
+                                    );
+                                    let runner = SampledProcedureRunner::new(
+                                        SamplingInputGate::new(
+                                            OpenSpecInput::new(&procedure_project_root),
+                                            procedure_project_root.clone(),
+                                            ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
+                                        ),
+                                        procedure_project_root.clone(),
+                                        limits,
+                                        resolver,
+                                        sampling,
+                                        ProcedureReportRepository::for_project(
+                                            &procedure_project_root,
+                                        ),
+                                        Arc::clone(&procedure_task_interrupt),
+                                    );
+                                    let registry = Arc::new(SubagentRegistry::new());
+                                    let frontier_dispatcher = FrontierRepairDispatcher::new(
+                                        Arc::clone(&preview_factory),
+                                        procedure_project_root.clone(),
+                                        Some(request.frontier_model.clone()),
+                                        local_settings.effort(),
+                                        switch_tx_events.clone(),
+                                        registry,
+                                    );
+                                    let commands = procedure_verifier_commands(&local_settings);
+                                    match runner.run(
+                                        SampledProcedureRequest {
+                                            baseline_localization_run_id: request.localization_run_id,
+                                            change_id: request.change_id,
+                                            task_id: request.task_id,
+                                            route_override: request.route_override,
+                                        },
+                                        &patch,
+                                        &commands,
+                                        Some(SampledRepairContext {
+                                            policy: repair_policy,
+                                            frontier_dispatcher: Some(&frontier_dispatcher),
+                                        }),
+                                    ).await {
+                                        Ok(outcome) => {
+                                            let (disposition, message) = match outcome {
+                                                SampledProcedureOutcome::Promoted { candidate_index } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    format!("Sampled candidate {candidate_index} passed and was promoted."),
+                                                ),
+                                                SampledProcedureOutcome::Repaired => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    "All sampled candidates failed. The bounded repair ladder promoted a verified repair.".to_string(),
+                                                ),
+                                                SampledProcedureOutcome::NeedsBoundedRepair => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Failed {
+                                                        reason: "sampled candidates did not produce a promotable repair".to_string(),
+                                                    },
+                                                    "Sampled candidates and the bounded repair ladder did not produce a promotable patch.".to_string(),
+                                                ),
+                                                SampledProcedureOutcome::Interrupted => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Interrupted,
+                                                    "Sampled procedure was interrupted.".to_string(),
+                                                ),
+                                            };
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::SampledFinished { run_id, disposition, message });
+                                        }
+                                        Err(error) => {
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                }
+                            }
+                        }
+                        Some(ProcedureCommand::WholeChange { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let mut local_settings = procedure_settings.clone();
+                            {
+                                let procedure = local_settings.procedure_mut();
+                                procedure.localization_backend = Some(request.localization_backend.clone());
+                                procedure.local_patch_backend = Some(request.local_backend.clone());
+                                procedure.frontier_patch_backend = Some(request.frontier_backend.clone());
+                            }
+                            let frontier_settings = local_settings.clone();
+                            let prepared: Result<_, String> = (|| {
+                                let local = Arc::new(LocalizationDispatcher::from_settings(
+                                    &local_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?);
+                                let frontier = Arc::new(LocalizationDispatcher::from_settings(
+                                    &frontier_settings,
+                                    &procedure_project_root,
+                                ).map_err(|error| error.to_string())?);
+                                let patch = LocalPatchDraftDispatcher::from_resolved_backend(
+                                    preview_factory.resolve(
+                                        &request.local_backend,
+                                        Some(&request.local_model),
+                                    ).map_err(|error| error.to_string())?,
+                                    deepseek_custom::effort::Effort::None,
+                                    local_settings.max_tokens(),
+                                ).map_err(|error| error.to_string())?;
+                                let sampling = local_settings
+                                    .validated_procedure_sampling_settings()
+                                    .map_err(|error| error.to_string())?;
+                                let repair = local_settings
+                                    .validated_procedure_repair_policy()
+                                    .map_err(|error| error.to_string())?;
+                                Ok((local, frontier, patch, sampling, repair))
+                            })();
+                            match prepared {
+                                Ok((local, frontier, patch, sampling, repair_policy)) => {
+                                    let limits = procedure_index_limits(&local_settings);
+                                    let runner = WholeChangeProcedureRunner::new(
+                                        ProcedureRunCoordinatorParams {
+                                            input: OpenSpecInput::new(&procedure_project_root),
+                                            working_dir: procedure_project_root.clone(),
+                                            index_limits: limits,
+                                            dispatcher: local,
+                                            reports: ProcedureReportRepository::for_project(
+                                                &procedure_project_root,
+                                            ),
+                                            interrupt: Arc::clone(&procedure_task_interrupt),
+                                        },
+                                        frontier,
+                                        sampling,
+                                    );
+                                    let registry = Arc::new(SubagentRegistry::new());
+                                    let frontier_dispatcher = FrontierRepairDispatcher::new(
+                                        Arc::clone(&preview_factory),
+                                        procedure_project_root.clone(),
+                                        Some(request.frontier_model.clone()),
+                                        local_settings.effort(),
+                                        switch_tx_events.clone(),
+                                        registry,
+                                    );
+                                    let commands = procedure_verifier_commands(&local_settings);
+                                    match runner.run(
+                                        WholeChangeProcedureRequest {
+                                            change_id: request.change_id,
+                                            route_override: request.route_override,
+                                        },
+                                        &patch,
+                                        &commands,
+                                        Some(SampledRepairContext {
+                                            policy: repair_policy,
+                                            frontier_dispatcher: Some(&frontier_dispatcher),
+                                        }),
+                                    ).await {
+                                        Ok(outcome) => {
+                                            let (disposition, message) = match outcome {
+                                                WholeChangeProcedureOutcome::Completed { task_ids } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Succeeded,
+                                                    format!("Completed {} unchecked task(s): {}.", task_ids.len(), task_ids.join(", ")),
+                                                ),
+                                                WholeChangeProcedureOutcome::Failed { task_id, reason } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Failed { reason: reason.clone() },
+                                                    format!("Stopped at task {task_id}: {reason}"),
+                                                ),
+                                                WholeChangeProcedureOutcome::Interrupted { completed_task_ids } => (
+                                                    deepseek_custom::procedure::ProcedureTerminalDisposition::Interrupted,
+                                                    format!("Whole-change procedure was interrupted after {} task(s).", completed_task_ids.len()),
+                                                ),
+                                            };
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::SampledFinished { run_id, disposition, message });
+                                        }
+                                        Err(error) => {
+                                            let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(ProcedureProgress::RunFailed { run_id, message: error.to_string() });
+                                }
+                            }
+                        }
+                        Some(ProcedureCommand::Preview {
+                            preview_id,
+                            request,
+                        }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let _ = tx_procedure_progress.send(
+                                ProcedureProgress::PreviewStarted { preview_id },
+                            );
+                            let reports = ProcedureReportRepository::for_project(
+                                &procedure_project_root,
+                            );
+                            let runner = PatchPreviewRunner::new(
+                                PatchPreviewInputGate::new(
+                                    OpenSpecInput::new(&procedure_project_root),
+                                    procedure_project_root.clone(),
+                                    reports,
+                                ),
+                                procedure_project_root.clone(),
+                                Arc::clone(&preview_factory),
+                                Arc::clone(&procedure_task_interrupt),
+                                procedure_settings.effort(),
+                                procedure_settings.max_tokens(),
+                            );
+                            match runner.run(preview_id, request).await {
+                                Ok((preview, report_path)) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::PreviewFinished {
+                                            preview_id,
+                                            preview: Box::new(preview),
+                                            report_path,
+                                        },
+                                    );
+                                }
+                                Err(error) => {
+                                    let _ = tx_procedure_progress.send(
+                                        ProcedureProgress::PreviewFailed {
+                                            preview_id,
+                                            message: error.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Some(ProcedureCommand::Apply { run_id, request }) => {
+                            procedure_task_interrupt.store(false, Ordering::SeqCst);
+                            let commands = procedure_settings
+                                .procedure()
+                                .map(|procedure| procedure.verifier_commands.clone())
+                                .unwrap_or_default();
+                            let runner = ProcedureApplyRunner::new(
+                                VerificationInputGate::new(
+                                    OpenSpecInput::new(&procedure_project_root),
+                                    procedure_project_root.clone(),
+                                    ProcedureReportRepository::for_project(
+                                        &procedure_project_root,
+                                    ),
+                                ),
+                                procedure_project_root.clone(),
+                                Arc::clone(&procedure_task_interrupt),
+                            )
+                            .with_progress(tx_procedure_progress.clone());
+                            if let Err(error) = runner.run(run_id, request, &commands).await {
+                                error!(apply_run_id = %run_id.as_str(), "procedure Apply failed: {error}");
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
         info!("agent task shutting down");
     });
 
-    // ── Run GUI (blocking, main thread) ─────────────────────
+    // ── Run the loopback web application ────────────────────
 
-    info!("starting GUI");
-    let mut gui = DeepSeekGui::new(
-        rx_events,
-        tx_input,
-        AgentHandles {
-            interrupt: Arc::clone(&flags.interrupt),
-            effort: Arc::clone(&flags.effort),
-            voice_mode: Arc::clone(&flags.voice_mode),
-            context_budget: Arc::clone(&flags.context_budget),
-            model: Arc::clone(&flags.model),
-            working_dir: working_dir_flag,
-            cascade_total: Arc::clone(&flags.cascade_total),
-            cascade_escalated: Arc::clone(&flags.cascade_escalated),
-            style_plain_language: Arc::clone(&flags.style_plain_language),
-            style_target_grade: Arc::clone(&flags.style_target_grade),
-        },
-        settings.clone(),
+    let selected_model = flags.model.lock().unwrap().clone();
+    let origin = SessionOrigin {
+        backend: default_name.clone(),
+        model: selected_model.clone(),
+    };
+    let session = ApplicationSession::new(SessionState::new(
+        SessionStore::for_project(&project_root),
+        origin.clone(),
+    ));
+    let runtime_settings = RuntimeSettingsPort::new(
         project_root.clone(),
+        Arc::clone(&flags.effort),
+        Arc::clone(&flags.voice_mode),
+        Arc::clone(&flags.context_budget),
+        Arc::clone(&flags.model),
+        Arc::clone(&working_dir_flag),
+        Arc::clone(&flags.style_plain_language),
+        Arc::clone(&flags.style_target_grade),
+    );
+    let settings_controller = Arc::new(SettingsController::new(
+        project_root.clone(),
+        settings.clone(),
+        runtime_settings,
+        Some(default_name.clone()),
+        Some(selected_model),
+    ));
+    let snapshot = AppSnapshot::initial(settings_controller.visible(), session.session_summary());
+    let mut web_state = WebAppState::with_settings(
+        snapshot,
+        256,
+        Arc::clone(&settings_controller),
+        Arc::new(SystemFolderPicker),
     )
-    .with_repeat(tx_repeat, Arc::clone(&flags.repeat_interrupt))
-    .with_search(tx_search, Arc::clone(&flags.search_interrupt));
+    .with_chat_lifecycle(ChatLifecycle::new(
+        session,
+        DomainCommandPort::new(tx_input),
+        Arc::clone(&flags.interrupt),
+        origin,
+    ))
+    .with_autopilot_port(
+        DomainCommandPort::new(tx_repeat),
+        Arc::clone(&flags.repeat_interrupt),
+    )
+    .with_search_port(
+        DomainCommandPort::new(tx_search),
+        Arc::clone(&flags.search_interrupt),
+    )
+    .with_procedure_port(
+        DomainCommandPort::new(tx_procedure),
+        Arc::clone(&procedure_interrupt),
+    )
+    .with_controlled_development_port(DomainCommandPort::new(tx_controlled_effects))
+    .with_test_control(project_root.clone());
 
-    let voice_forwarder = if let Some(v) = voice {
+    let (voice_forwarder, voice_event_forwarder) = if let Some(runtime) = voice {
+        let VoiceRuntime {
+            mut events_rx,
+            service,
+            tts_worker,
+        } = runtime;
         let (tx_voice_cmd, rx_voice_cmd) = mpsc::unbounded_channel::<VoiceCommand>();
-        gui = gui.with_voice(v.events_rx, tx_voice_cmd);
-        Some(spawn_voice_command_forwarder(
-            rx_voice_cmd,
-            v.service,
-            v.tts_worker,
-        ))
+        let shutdown_voice = tx_voice_cmd.clone();
+        web_state = web_state.with_voice_port(DomainCommandPort::new(tx_voice_cmd));
+        let state = web_state.clone();
+        let event_forwarder = tokio::spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                let _ = state.apply_voice_event(event);
+            }
+        });
+        (
+            Some((
+                spawn_voice_command_forwarder(rx_voice_cmd, service, tts_worker),
+                shutdown_voice,
+            )),
+            Some(event_forwarder),
+        )
     } else {
-        None
+        (None, None)
     };
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 768.0])
-            .with_title("DeepSeekCustom"),
-        ..Default::default()
-    };
+    let event_state = web_state.clone();
+    let event_forwarder = tokio::spawn(async move {
+        while let Some(routed) = rx_events.recv().await {
+            let _ = event_state.apply_routed_stream_event(routed);
+        }
+    });
+    let procedure_state = web_state.clone();
+    let procedure_forwarder = tokio::spawn(async move {
+        while let Some(progress) = rx_procedure_progress.recv().await {
+            let _ = procedure_state.apply_procedure_progress(&progress);
+        }
+    });
+    let controlled_state = web_state.clone();
+    let controlled_forwarder = tokio::spawn(async move {
+        while let Some(event) = rx_controlled_events.recv().await {
+            let _ = controlled_state.apply_controlled_development_event(event);
+        }
+    });
+    let model_discovery_state = web_state.clone();
+    let model_discovery = tokio::spawn(async move {
+        match model_discovery_state.refresh_models().await {
+            Ok(revision) => info!(revision = revision.0, "backend model discovery completed"),
+            Err(error) => warn!("backend model discovery failed: {}", error.message),
+        }
+    });
 
-    eframe::run_native(
-        "DeepSeekCustom",
-        native_options,
-        Box::new(|cc| {
-            // Installs the loader that turns `egui::Image::from_bytes` into
-            // an actual texture, for the transcript's `Image` block (see
-            // `render_image_block` in `src/gui/mod.rs`). Without this call
-            // that widget silently shows nothing: the bytes reach the
-            // context, but no loader is registered to decode them.
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(gui))
-        }),
+    let browser: Option<Arc<dyn BrowserOpener>> = std::env::var_os("DEEPSEEK_DISABLE_BROWSER")
+        .is_none()
+        .then(|| Arc::new(SystemBrowser) as Arc<dyn BrowserOpener>);
+    let server = start_with_policy_and_state(
+        BindPolicy::preferred_loopback(8765, true),
+        browser,
+        web_state.clone(),
     )
-    .expect("GUI failed");
+    .await
+    .expect("web application failed to start");
+    info!(url = server.url(), "web application ready");
+    println!("DeepSeekCustom web application: {}", server.url());
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to wait for shutdown signal");
+    server
+        .shutdown()
+        .await
+        .expect("web application shutdown failed");
+    event_forwarder.abort();
+    procedure_forwarder.abort();
+    controlled_service.abort();
+    controlled_forwarder.abort();
+    model_discovery.abort();
+    let _ = event_forwarder.await;
+    let _ = procedure_forwarder.await;
+    let _ = controlled_service.await;
+    let _ = controlled_forwarder.await;
+    let _ = model_discovery.await;
+    if let Some(forwarder) = voice_event_forwarder {
+        forwarder.abort();
+        let _ = forwarder.await;
+    }
+    drop(web_state);
 
-    // The GUI (and its voice command sender) has just been dropped, so the
-    // forwarder's loop has already ended or is about to. Awaiting it here
-    // blocks until the voice thread has actually shut down.
-    if let Some(forwarder) = voice_forwarder {
+    if let Some((forwarder, shutdown_voice)) = voice_forwarder {
+        let _ = shutdown_voice.send(VoiceCommand::Shutdown);
+        drop(shutdown_voice);
         let _ = forwarder.await;
     }
 
@@ -685,7 +1169,7 @@ async fn main() {
     info!("DeepSeekCustom harness shutting down");
 }
 
-/// Tell the GUI that a turn failed and is over.
+/// Tell the application actor that a turn failed and is over.
 ///
 /// Two events, because neither one alone says both things. `Error` puts the
 /// failure in the transcript, and it is not terminal on its own: it also
@@ -719,7 +1203,7 @@ fn debug_agent_input(input: &str) {
     );
 }
 
-/// Voice subsystem pieces `main` wires into the GUI. `tts_worker` is
+/// Voice subsystem pieces `main` wires into the web application. `tts_worker` is
 /// `None` whenever text to speech never started, so nothing needs joining
 /// at shutdown.
 struct VoiceRuntime {
@@ -822,9 +1306,25 @@ fn log_voice_config(settings: &Settings, stt_ready: bool, tts_ready: bool) {
     );
 }
 
-/// Forward GUI voice commands into the synchronous `VoiceService`, until
-/// the GUI drops its sender. That closes `rx_voice_cmd`. That closed
-/// channel is this task's signal that the GUI has exited. It then shuts
+fn procedure_index_limits(
+    settings: &Settings,
+) -> deepseek_custom::config::settings::RepositoryIndexLimits {
+    settings
+        .procedure()
+        .map(|procedure| procedure.repository_index.clone())
+        .unwrap_or_default()
+}
+
+fn procedure_verifier_commands(settings: &Settings) -> Vec<String> {
+    settings
+        .procedure()
+        .map(|procedure| procedure.verifier_commands.clone())
+        .unwrap_or_default()
+}
+
+/// Forward web application voice commands into the synchronous `VoiceService`, until
+/// the application drops its sender. That closes `rx_voice_cmd`. That closed
+/// channel is this task's signal that the server has exited. It then shuts
 /// the voice service and its text-to-speech worker down cleanly. That
 /// runs on a blocking task. The join calls inside `VoiceService::shutdown`
 /// must never stall the async runtime.
@@ -837,7 +1337,7 @@ fn spawn_voice_command_forwarder(
         while let Some(cmd) = rx_voice_cmd.recv().await {
             service.send(cmd);
         }
-        info!("voice: GUI closed, shutting down voice service");
+        info!("voice: web application closed, shutting down voice service");
         let _ = tokio::task::spawn_blocking(move || {
             service.shutdown();
             if let Some(worker) = tts_worker {

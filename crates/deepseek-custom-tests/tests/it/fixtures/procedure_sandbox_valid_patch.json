@@ -1,0 +1,33 @@
+{
+  "prompt": "Draft a patch preview for the selected OpenSpec task. Return exactly one JSON object and no commentary.\n\nThe object must contain targets, rationale, route, and unified_diff. Copy this route object exactly:\n{\n  \"automatic_tier\": \"local\",\n  \"effective_tier\": \"local\",\n  \"signals\": [\n    {\n      \"kind\": \"mechanical_verb\",\n      \"value\": \"rename\"\n    },\n    {\n      \"kind\": \"target_count\",\n      \"value\": 1\n    }\n  ],\n  \"selected_override\": \"automatic\",\n  \"overridden\": false\n}\n\nOnly these repository paths are allowed, and targets must equal the paths used by the diff:\n[\n  \"src/lib.rs\"\n]\n\nSelected backend: ollama\nSelected model: hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M\n\nOpenSpec contract:\n{\n  \"change_id\": \"sandbox-change\",\n  \"task\": {\n    \"id\": \"1.1\",\n    \"text\": \"Rename before to after with a one-line @@ -1 +1 @@ replacement\",\n    \"covers\": \"deepseek-custom/procedure-sandbox-e2e-test :: Apply fixture edit :: Target is updated\"\n  },\n  \"proposal_scope\": {\n    \"why\": \"Prove the isolated procedure lifecycle.\",\n    \"what_changes\": \"- Rename before to after using exactly this diff string: diff --git a/src/lib.rs b/src/lib.rs\\\\n--- a/src/lib.rs\\\\n+++ b/src/lib.rs\\\\n@@ -1 +1 @@\\\\n-pub fn target_symbol() -> &'static str { \\\"before\\\" }\\\\n\\\\\\\\ No newline at end of file\\\\n+pub fn target_symbol() -> &'static str { \\\"after\\\" }\\\\n\\\\\\\\ No newline at end of file\"\n  },\n  \"selection\": {\n    \"binding\": \"bound\",\n    \"capability\": \"deepseek-custom/procedure-sandbox-e2e-test\",\n    \"requirement\": {\n      \"name\": \"Apply fixture edit\",\n      \"text\": \"The procedure SHALL rename before to after while preserving the one-line function form and missing final newline. The unified_diff SHALL equal `diff --git a/src/lib.rs b/src/lib.rs\\\\n--- a/src/lib.rs\\\\n+++ b/src/lib.rs\\\\n@@ -1 +1 @@\\\\n-pub fn target_symbol() -> &'static str { \\\"before\\\" }\\\\n\\\\\\\\ No newline at end of file\\\\n+pub fn target_symbol() -> &'static str { \\\"after\\\" }\\\\n\\\\\\\\ No newline at end of file`.\",\n      \"scenarios\": [\n        {\n          \"name\": \"Target is updated\",\n          \"text\": \"- **WHEN** the fixture procedure runs\\n- **THEN** the diff uses @@ -1 +1 @@ with exactly one removed line and one added line\"\n        }\n      ]\n    }\n  }\n}\n\nCurrent localized target contents:\n--- BEGIN src/lib.rs ---\npub fn target_symbol() -> &'static str { \"before\" }\n--- END src/lib.rs ---\n\n\nThe unified_diff must be a complete git-style unified diff that applies to the current contents above. Its first line must be exactly `diff --git a/<path> b/<path>` with the real allowed path substituted for both placeholders. Follow it immediately with `--- a/<path>`, `+++ b/<path>`, and valid `@@` hunks. Never put a blank line inside a diff section. Every hunk body line must begin with one space, `+`, `-`, or the exact no-newline marker. A one-line replacement has exactly one `-` line and one `+` line after `@@ -1 +1 @@`. The unified_diff string must end with a newline after its final hunk line. Do not wrap the diff in Markdown. Do not apply the patch.",
+  "provenance": {
+    "backend": "ollama",
+    "capture_date": "2026-08-28",
+    "model": "hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M",
+    "response_encoding": "typed dispatcher result serialized without semantic edits",
+    "stage": "local_patch_preview_after_bounded_retry_exhaustion"
+  },
+  "response": {
+    "rationale": "This patch preview demonstrates an isolated procedure for renaming code using Git's exact diff format. It proves that the procedure can generate a deterministic, minimal change without altering surrounding code.",
+    "route": {
+      "automatic_tier": "local",
+      "effective_tier": "local",
+      "overridden": false,
+      "selected_override": "automatic",
+      "signals": [
+        {
+          "kind": "mechanical_verb",
+          "value": "rename"
+        },
+        {
+          "kind": "target_count",
+          "value": 1
+        }
+      ]
+    },
+    "targets": [
+      "src/lib.rs"
+    ],
+    "unified_diff": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn target_symbol() -> &'static str { \"before\" }\n\\ No newline at end of file\n+pub fn target_symbol() -> &'static str { \"after\" }\n\\ No newline at end of file"
+  }
+}

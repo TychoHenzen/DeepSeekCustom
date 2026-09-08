@@ -1,7 +1,10 @@
 //! One-shot `codex exec --json` backend driver.
 
+mod controlled_profile;
 pub mod events;
+mod execution;
 pub mod map;
+mod planning;
 mod repeat;
 #[cfg_attr(feature = "test-support", doc(hidden))]
 #[cfg_attr(feature = "test-support", allow(missing_docs))]
@@ -27,11 +30,14 @@ use crate::backend::SharedFlags;
 use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
+use self::controlled_profile::ControlledProfile;
 use self::events::{CodexEvent, parse_event};
 use self::map::EventMapper;
-use self::spawn::{build_args, spawn_codex};
+use self::spawn::spawn_codex;
 
 const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DROP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const DROP_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Holds conversation identity and the shared controls for Codex CLI turns.
 pub struct CodexCliDriver {
@@ -48,6 +54,7 @@ pub struct CodexCliDriver {
     context_budget_flag: Arc<AtomicUsize>,
     model_flag: Arc<Mutex<String>>,
     repeat_interrupt_flag: Arc<AtomicBool>,
+    controlled_profile: Option<ControlledProfile>,
 }
 
 impl CodexCliDriver {
@@ -83,6 +90,7 @@ impl CodexCliDriver {
             context_budget_flag: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model_flag: Arc::new(Mutex::new(model)),
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
+            controlled_profile: None,
         }
     }
 
@@ -97,6 +105,10 @@ impl CodexCliDriver {
 
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
+    }
+
+    pub fn set_interrupt_flag(&mut self, interrupt_flag: Arc<AtomicBool>) {
+        self.interrupt_flag = interrupt_flag;
     }
 
     pub fn effort_flag(&self) -> Arc<AtomicU8> {
@@ -124,7 +136,9 @@ impl CodexCliDriver {
     }
 
     pub fn set_thread_id(&mut self, thread_id: Option<String>) {
-        self.thread_id = thread_id;
+        if self.controlled_profile.is_none() {
+            self.thread_id = thread_id;
+        }
     }
 
     pub fn clear_session(&mut self) {
@@ -163,19 +177,7 @@ impl CodexCliDriver {
             .map_err(|_| HarnessError::Tool("model lock is poisoned".to_owned()))?
             .clone();
         let effort = Effort::load(&self.effort_flag);
-        let _voice_mode = self.voice_mode_flag.load(Ordering::SeqCst);
-        let sandbox = if self.tools_enabled {
-            self.sandbox.as_deref()
-        } else {
-            Some("read-only")
-        };
-        let args = build_args(
-            text,
-            self.thread_id.as_deref(),
-            sandbox,
-            Some(&model),
-            effort,
-        );
+        let args = self.turn_args(text, &model, effort);
         let spawned = spawn_codex(&args, &working_dir, self.extra_env.as_ref())?;
         let mut lines = BufReader::new(spawned.stdout).lines();
         let mut stderr = spawned.stderr;
@@ -206,9 +208,7 @@ impl CodexCliDriver {
                     let Some(event) = parse_event(&line) else {
                         continue;
                     };
-                    if let CodexEvent::ThreadStarted(started) = &event {
-                        self.thread_id = Some(started.thread_id.clone());
-                    }
+                    self.capture_thread(&event);
                     terminal = matches!(
                         &event,
                         CodexEvent::TurnCompleted(_) | CodexEvent::TurnFailed(_)
@@ -272,5 +272,44 @@ impl CodexCliDriver {
 
     pub async fn shutdown(&mut self) {
         self.kill_child().await;
+    }
+}
+
+impl Drop for CodexCliDriver {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if let Err(error) = child.start_kill() {
+            tracing::warn!("codex_cli: failed to kill dropped child: {error}");
+        }
+
+        // Dropping a tokio Child with kill_on_drop sends termination but does
+        // not wait for Windows to release the child's current directory. A
+        // disposable preview workspace is dropped immediately afterward, so
+        // that asynchronous release raced its recursive deletion. Poll the
+        // actual process state and reap it before ownership returns to the
+        // workspace guard. This is condition-based cleanup, not a timing
+        // delay in the caller or test.
+        let deadline = std::time::Instant::now() + DROP_REAP_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(DROP_REAP_POLL_INTERVAL);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "codex_cli: dropped child did not exit within {:?}",
+                        DROP_REAP_TIMEOUT
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!("codex_cli: failed to reap dropped child: {error}");
+                    return;
+                }
+            }
+        }
     }
 }

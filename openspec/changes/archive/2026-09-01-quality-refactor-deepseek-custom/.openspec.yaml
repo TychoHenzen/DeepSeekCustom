@@ -1,0 +1,4 @@
+schema: dod-guard-spec-driven
+created: 2026-09-01
+goal: Reduce structural quality violations without changing behavior
+skip_specs: true

@@ -41,33 +41,21 @@ impl Tool for AskUserQuestionTool {
         let parsed: AskInput = match serde_json::from_value(input) {
             Ok(parsed) => parsed,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Invalid AskUserQuestion input: {e}"),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Invalid AskUserQuestion input: {e}"
+                )));
             }
         };
 
         if let Err(e) = question::validate(&parsed) {
-            return Ok(ToolOutput {
-                content: format!("Invalid AskUserQuestion input: {e}"),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(format!(
+                "Invalid AskUserQuestion input: {e}"
+            )));
         }
 
         match self.answerer.answer(&parsed).await {
-            Ok(answers) => Ok(ToolOutput {
-                content: question::format_answers(&answers),
-                is_error: false,
-                image: None,
-            }),
-            Err(e) => Ok(ToolOutput {
-                content: format!("Failed to answer question: {e}"),
-                is_error: true,
-                image: None,
-            }),
+            Ok(answers) => Ok(ToolOutput::ok(question::format_answers(&answers))),
+            Err(e) => Ok(ToolOutput::error(format!("Failed to answer question: {e}"))),
         }
     }
 }

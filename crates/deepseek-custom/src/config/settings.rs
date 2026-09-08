@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, info, warn};
@@ -35,6 +35,9 @@ pub struct Settings {
     /// The Evolve tab's last-used form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolve: Option<EvolveSettings>,
+    /// The Procedure tab's selected localizer and repository-index caps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<ProcedureSettings>,
     /// Context pruning high-water mark, in tokens. Clamped 32000-200000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<usize>,
@@ -307,15 +310,10 @@ impl Settings {
         self.autopilot.get_or_insert_with(AutopilotConfig::default)
     }
 
-    /// The Cascade tab's saved form, creating the block when it is missing
-    /// so a first change is never dropped.
-    pub fn cascade_mut(&mut self) -> &mut CascadeSettings {
-        self.cascade.get_or_insert_with(CascadeSettings::default)
-    }
-
-    /// The Evolve tab's saved form, same rule as `cascade_mut`.
-    pub fn evolve_mut(&mut self) -> &mut EvolveSettings {
-        self.evolve.get_or_insert_with(EvolveSettings::default)
+    /// The Procedure tab's settings, creating the optional block on demand.
+    pub fn procedure_mut(&mut self) -> &mut ProcedureSettings {
+        self.procedure
+            .get_or_insert_with(ProcedureSettings::default)
     }
 
     /// The Cascade tab's saved form, if the file carried one.
@@ -326,6 +324,11 @@ impl Settings {
     /// The Evolve tab's saved form, if the file carried one.
     pub fn evolve(&self) -> Option<&EvolveSettings> {
         self.evolve.as_ref()
+    }
+
+    /// The Procedure tab's settings, if the file carried a block.
+    pub fn procedure(&self) -> Option<&ProcedureSettings> {
+        self.procedure.as_ref()
     }
 
     /// The configured backends map, if any.
@@ -444,7 +447,7 @@ impl Settings {
         serde_json::from_str::<Settings>(&contents).ok()
     }
 
-    fn home_settings(dir: &str) -> Option<std::path::PathBuf> {
+    fn home_settings(dir: &str) -> Option<PathBuf> {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()?;
@@ -482,6 +485,9 @@ impl Settings {
         }
         if other.autopilot.is_some() {
             self.autopilot = other.autopilot;
+        }
+        if other.procedure.is_some() {
+            self.procedure = other.procedure;
         }
         if other.context_budget.is_some() {
             self.context_budget = other.context_budget;
@@ -638,6 +644,320 @@ pub struct EvolveSettings {
     pub migration_interval: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutation_hints: Option<Vec<String>>,
+}
+
+/// Default maximum number of text files inspected by one procedure index.
+pub const DEFAULT_PROCEDURE_INDEX_MAX_FILES: usize = 10_000;
+/// Default maximum text content inspected by one procedure index, in bytes.
+pub const DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Default number of local structural retries after the first invalid candidate.
+pub const DEFAULT_PROCEDURE_STRUCTURAL_RETRIES: u8 = 1;
+/// Hard cap for local structural retries.
+pub const MAX_PROCEDURE_STRUCTURAL_RETRIES: u8 = 1;
+/// Default total number of local candidates that may reach verification.
+pub const DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS: u8 = 3;
+/// Hard cap for total local candidates that may reach verification.
+pub const MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS: u8 = 4;
+/// Default total number of frontier candidates that may reach verification.
+pub const DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
+/// Hard cap for total frontier candidates that may reach verification.
+pub const MAX_PROCEDURE_FRONTIER_ATTEMPTS: u8 = 2;
+/// Default number of bounded local localization samples.
+pub const DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 3;
+/// Smallest supported number of local localization samples.
+pub const MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 3;
+/// Largest supported number of local localization samples.
+pub const MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT: u8 = 5;
+/// Default number of identical normalized samples required to continue locally.
+pub const DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM: u8 = 2;
+/// Smallest supported agreement quorum.
+pub const MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM: u8 = 2;
+/// Default number of local patch candidates generated before repair escalation.
+pub const DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 3;
+/// Smallest supported number of local patch candidates.
+pub const MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 3;
+/// Largest supported number of local patch candidates.
+pub const MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT: u8 = 5;
+/// Default number of completed procedure reports included in recent metrics.
+pub const DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS: usize = 20;
+/// Default local mechanical success percentage below which the view warns.
+pub const DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT: u8 = 70;
+/// Default frontier escalation percentage above which the view warns.
+pub const DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT: u8 = 15;
+
+/// Limits applied while building one procedure's repository index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryIndexLimits {
+    #[serde(default = "default_procedure_index_max_files")]
+    pub max_files: usize,
+    #[serde(default = "default_procedure_index_max_total_bytes")]
+    pub max_total_bytes: u64,
+}
+
+impl Default for RepositoryIndexLimits {
+    fn default() -> Self {
+        Self {
+            max_files: default_procedure_index_max_files(),
+            max_total_bytes: default_procedure_index_max_total_bytes(),
+        }
+    }
+}
+
+const fn default_procedure_index_max_files() -> usize {
+    DEFAULT_PROCEDURE_INDEX_MAX_FILES
+}
+
+const fn default_procedure_index_max_total_bytes() -> u64 {
+    DEFAULT_PROCEDURE_INDEX_MAX_TOTAL_BYTES
+}
+
+const fn default_procedure_structural_retries() -> u8 {
+    DEFAULT_PROCEDURE_STRUCTURAL_RETRIES
+}
+
+const fn default_procedure_local_verifier_attempts() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS
+}
+
+const fn default_procedure_frontier_attempts() -> u8 {
+    DEFAULT_PROCEDURE_FRONTIER_ATTEMPTS
+}
+
+const fn default_procedure_localization_sample_count() -> u8 {
+    DEFAULT_PROCEDURE_LOCALIZATION_SAMPLE_COUNT
+}
+
+const fn default_procedure_localization_agreement_quorum() -> u8 {
+    DEFAULT_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM
+}
+
+const fn default_procedure_local_patch_candidate_count() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT
+}
+
+const fn default_procedure_metrics_window_runs() -> usize {
+    DEFAULT_PROCEDURE_METRICS_WINDOW_RUNS
+}
+
+const fn default_procedure_local_success_warning_percent() -> u8 {
+    DEFAULT_PROCEDURE_LOCAL_SUCCESS_WARNING_PERCENT
+}
+
+const fn default_procedure_frontier_escalation_warning_percent() -> u8 {
+    DEFAULT_PROCEDURE_FRONTIER_ESCALATION_WARNING_PERCENT
+}
+
+/// Settings for the staged read-only procedure runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureSettings {
+    /// Name of an entry in `Settings::backends`. `None` means unselected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub localization_backend: Option<String>,
+    /// Ollama backend used when a patch preview routes to the local tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_patch_backend: Option<String>,
+    /// Claude CLI or Codex CLI backend used for frontier patch previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontier_patch_backend: Option<String>,
+    #[serde(default)]
+    pub repository_index: RepositoryIndexLimits,
+    /// Ordered project commands that must pass before Apply can proceed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_commands: Vec<String>,
+    /// Structural retries after the first invalid local candidate.
+    #[serde(default = "default_procedure_structural_retries")]
+    pub structural_retries: u8,
+    /// Total local candidates that may reach deterministic verification.
+    #[serde(default = "default_procedure_local_verifier_attempts")]
+    pub local_verifier_attempts: u8,
+    /// Total frontier candidates that may reach deterministic verification.
+    /// Zero disables escalation and permits `frontier_patch_backend` to be absent.
+    #[serde(default = "default_procedure_frontier_attempts")]
+    pub frontier_attempts: u8,
+    /// Number of agreement samples requested from the local localization backend.
+    #[serde(default = "default_procedure_localization_sample_count")]
+    pub localization_sample_count: u8,
+    /// Matching normalized localization results required to continue locally.
+    #[serde(default = "default_procedure_localization_agreement_quorum")]
+    pub localization_agreement_quorum: u8,
+    /// Number of distinct local patch candidates generated before repair escalation.
+    #[serde(default = "default_procedure_local_patch_candidate_count")]
+    pub local_patch_candidate_count: u8,
+    /// Completed-report count included in the recent metrics aggregate.
+    #[serde(default = "default_procedure_metrics_window_runs")]
+    pub metrics_window_runs: usize,
+    /// Warn when local mechanical success falls below this percentage.
+    #[serde(default = "default_procedure_local_success_warning_percent")]
+    pub local_success_warning_percent: u8,
+    /// Warn when frontier escalation rises above this percentage.
+    #[serde(default = "default_procedure_frontier_escalation_warning_percent")]
+    pub frontier_escalation_warning_percent: u8,
+}
+
+impl Default for ProcedureSettings {
+    fn default() -> Self {
+        let verifier_attempts = default_procedure_local_verifier_attempts();
+        Self {
+            localization_backend: None,
+            local_patch_backend: None,
+            frontier_patch_backend: None,
+            repository_index: RepositoryIndexLimits::default(),
+            verifier_commands: Vec::new(),
+            structural_retries: default_procedure_structural_retries(),
+            local_verifier_attempts: verifier_attempts,
+            frontier_attempts: default_procedure_frontier_attempts(),
+            localization_sample_count: default_procedure_localization_sample_count(),
+            localization_agreement_quorum: default_procedure_localization_agreement_quorum(),
+            local_patch_candidate_count: default_procedure_local_patch_candidate_count(),
+            metrics_window_runs: default_procedure_metrics_window_runs(),
+            local_success_warning_percent: default_procedure_local_success_warning_percent(),
+            frontier_escalation_warning_percent:
+                default_procedure_frontier_escalation_warning_percent(),
+        }
+    }
+}
+
+/// Finite repair policy accepted for dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedProcedureRepairPolicy {
+    structural_retries: u8,
+    local_verifier_attempts: u8,
+    frontier_backend: Option<String>,
+    frontier_attempts: u8,
+}
+
+/// Sampling settings that passed the pre-dispatch bounds checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedProcedureSamplingSettings {
+    localization_sample_count: u8,
+    localization_agreement_quorum: u8,
+    local_patch_candidate_count: u8,
+}
+
+impl ValidatedProcedureSamplingSettings {
+    pub const fn localization_sample_count(&self) -> u8 {
+        self.localization_sample_count
+    }
+
+    pub const fn localization_agreement_quorum(&self) -> u8 {
+        self.localization_agreement_quorum
+    }
+
+    pub const fn local_patch_candidate_count(&self) -> u8 {
+        self.local_patch_candidate_count
+    }
+}
+
+impl ValidatedProcedureRepairPolicy {
+    pub fn structural_retries(&self) -> u8 {
+        self.structural_retries
+    }
+
+    pub fn local_verifier_attempts(&self) -> u8 {
+        self.local_verifier_attempts
+    }
+
+    pub fn frontier_backend(&self) -> Option<&str> {
+        self.frontier_backend.as_deref()
+    }
+
+    pub fn frontier_attempts(&self) -> u8 {
+        self.frontier_attempts
+    }
+}
+
+impl Settings {
+    /// Validate bounded sampling settings before any localization or candidate dispatch.
+    pub fn validated_procedure_sampling_settings(
+        &self,
+    ) -> std::result::Result<ValidatedProcedureSamplingSettings, String> {
+        let procedure = self.procedure.as_ref().cloned().unwrap_or_default();
+
+        if !(MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT..=MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT)
+            .contains(&procedure.localization_sample_count)
+        {
+            return Err(format!(
+                "procedure.localization_sample_count must be between {MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT} and {MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT}, got {}",
+                procedure.localization_sample_count
+            ));
+        }
+        if !(MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT..=MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT)
+            .contains(&procedure.local_patch_candidate_count)
+        {
+            return Err(format!(
+                "procedure.local_patch_candidate_count must be between {MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT} and {MAX_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT}, got {}",
+                procedure.local_patch_candidate_count
+            ));
+        }
+        if !(MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM..=procedure.localization_sample_count)
+            .contains(&procedure.localization_agreement_quorum)
+        {
+            return Err(format!(
+                "procedure.localization_agreement_quorum must be between {MIN_PROCEDURE_LOCALIZATION_AGREEMENT_QUORUM} and procedure.localization_sample_count ({}), got {}",
+                procedure.localization_sample_count, procedure.localization_agreement_quorum
+            ));
+        }
+
+        Ok(ValidatedProcedureSamplingSettings {
+            localization_sample_count: procedure.localization_sample_count,
+            localization_agreement_quorum: procedure.localization_agreement_quorum,
+            local_patch_candidate_count: procedure.local_patch_candidate_count,
+        })
+    }
+
+    /// Validate the bounded repair policy before any local or frontier dispatch.
+    pub fn validated_procedure_repair_policy(
+        &self,
+    ) -> std::result::Result<ValidatedProcedureRepairPolicy, String> {
+        let procedure = self.procedure.as_ref().cloned().unwrap_or_default();
+
+        if procedure.structural_retries > MAX_PROCEDURE_STRUCTURAL_RETRIES {
+            return Err(format!(
+                "procedure.structural_retries must be between 0 and {MAX_PROCEDURE_STRUCTURAL_RETRIES}, got {}",
+                procedure.structural_retries
+            ));
+        }
+        if !(1..=MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS).contains(&procedure.local_verifier_attempts)
+        {
+            return Err(format!(
+                "procedure.local_verifier_attempts must be between 1 and {MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS}, got {}",
+                procedure.local_verifier_attempts
+            ));
+        }
+        if procedure.frontier_attempts > MAX_PROCEDURE_FRONTIER_ATTEMPTS {
+            return Err(format!(
+                "procedure.frontier_attempts must be between 0 and {MAX_PROCEDURE_FRONTIER_ATTEMPTS}, got {}",
+                procedure.frontier_attempts
+            ));
+        }
+
+        let frontier_backend = procedure.frontier_patch_backend;
+        if let Some(name) = frontier_backend.as_deref()
+            && name.trim().is_empty()
+        {
+            return Err("procedure.frontier_patch_backend must not be blank".to_string());
+        }
+        if procedure.frontier_attempts > 0 && frontier_backend.is_none() {
+            return Err(
+                "procedure.frontier_patch_backend is required when procedure.frontier_attempts is greater than 0"
+                    .to_string(),
+            );
+        }
+        if let Some(name) = frontier_backend.as_deref()
+            && self.resolve_backend(name).is_none()
+        {
+            return Err(format!(
+                "procedure.frontier_patch_backend `{name}` names no configured backend"
+            ));
+        }
+
+        Ok(ValidatedProcedureRepairPolicy {
+            structural_retries: procedure.structural_retries,
+            local_verifier_attempts: procedure.local_verifier_attempts,
+            frontier_backend,
+            frontier_attempts: procedure.frontier_attempts,
+        })
+    }
 }
 
 /// How voice input is triggered.

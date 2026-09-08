@@ -3,13 +3,23 @@ name = "deepseek-custom"
 version = "0.1.0"
 edition = "2024"
 
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["json", "multipart"] }
+rust-embed = "8"
+rand = "0.9"
+open = "5"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-eframe = "0.31"
+sha2 = "0.10"
+rfd = "0.15"
 color-eyre = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -17,40 +27,8 @@ thiserror = "1"
 async-trait = "0.1"
 futures = "0.3"
 bytes = "1"
-egui_commonmark = "0.20"
-# Already in the dependency tree transitively, pulled in by
-# egui_commonmark's own default "load-images" feature (which needs
-# egui_extras/image to render markdown images). Declared directly here so
-# `src/gui/mod.rs` can call `install_image_loaders` and build
-# `egui::Image::from_bytes` for the transcript's own `Image` block, without
-# adding a new library to the tree.
-egui_extras = { version = "0.31", features = ["image"] }
-# Already in the dependency tree transitively (pulled in by reqwest and
-# others). Declared directly so `src/gui/mod.rs` can base64-decode a
-# transcript `Image` block's stored payload before handing it to egui,
-# without adding a new library to the tree.
 base64 = "0.22"
-# Already in the dependency tree transitively: egui-winit's own "clipboard"
-# feature (on by default) pulls this in for its text clipboard and its
-# copy-only `set_image`. Declared directly because egui-winit's own
-# clipboard wrapper exposes no way to read an *image* back off the
-# clipboard, only text: `egui::Event::Paste` never carries image bytes, and
-# a plain `Ctrl+V` with an image-only clipboard produces no egui event at
-# all (confirmed by reading `egui-winit-0.31.1/src/lib.rs`'s
-# `on_keyboard_input`: `is_paste_command` swallows the key event into a
-# text-only paste, or into nothing, before egui ever sees it). `src/gui/mod.rs`
-# uses `arboard::Clipboard::get_image` directly instead, driven off a raw
-# `GetAsyncKeyState` poll for Ctrl+V (see the `windows` dependency below),
-# without adding a new library to the tree.
-arboard = { version = "3.6", default-features = false, features = ["image-data"] }
-# Already in the dependency tree transitively, pulled in by `egui_extras`'s
-# "image" feature and by `arboard`'s "image-data" feature. Declared directly
-# with the "jpeg" feature on so a pasted or dropped JPEG decodes: the
-# decoders enabled elsewhere in the tree (`eframe`, `egui_commonmark`,
-# `arboard`) only turn on "png" and "bmp", not "jpeg". Cargo unifies feature
-# flags for one resolved version of a crate across the whole build, so this
-# also makes JPEG decoding available to egui_extras's own image loader,
-# used by `render_image_block` for the transcript's `Image` block.
+# PNG and JPEG decoding backs browser uploads and stored image attachments.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 cpal = "0.15"
 # GPU build attempted 2026-08-03 and reverted, both backends blocked at the

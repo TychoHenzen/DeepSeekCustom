@@ -23,6 +23,9 @@ pub struct AgentConfig {
     pub effort: Effort,
     /// Cap on the tokens one API reply may produce, reasoning included.
     pub max_tokens: u32,
+    /// Adapt one exact known-tool JSON object when a local provider returns it as text.
+    /// Normal chat and read-only planning leave this disabled.
+    pub accept_exact_text_tool_calls: bool,
 }
 
 impl Default for AgentConfig {
@@ -32,6 +35,7 @@ impl Default for AgentConfig {
             model: "deepseek-v4-flash".into(),
             effort: Effort::None,
             max_tokens: 8192,
+            accept_exact_text_tool_calls: false,
         }
     }
 }

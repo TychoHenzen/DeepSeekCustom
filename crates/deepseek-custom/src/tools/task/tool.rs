@@ -167,13 +167,7 @@ impl Tool for TaskTool {
         let default_effort = Effort::load(&self.parent_effort_flag);
         let request = match build_request(input, self.dispatch_depth, default_effort) {
             Ok(request) => request,
-            Err(e) => {
-                return Ok(ToolOutput {
-                    content: e,
-                    is_error: true,
-                    image: None,
-                });
-            }
+            Err(e) => return Ok(ToolOutput::error(e)),
         };
 
         match run_subagent(
@@ -184,16 +178,11 @@ impl Tool for TaskTool {
         )
         .await
         {
-            Ok(outcome) => Ok(ToolOutput {
-                content: format_success(outcome.text, outcome.session_id),
-                is_error: false,
-                image: None,
-            }),
-            Err(e) => Ok(ToolOutput {
-                content: format!("Task dispatch failed: {e}"),
-                is_error: true,
-                image: None,
-            }),
+            Ok(outcome) => Ok(ToolOutput::ok(format_success(
+                outcome.text,
+                outcome.session_id,
+            ))),
+            Err(e) => Ok(ToolOutput::error(format!("Task dispatch failed: {e}"))),
         }
     }
 }

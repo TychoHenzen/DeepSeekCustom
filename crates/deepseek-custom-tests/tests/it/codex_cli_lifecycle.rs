@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
@@ -16,11 +16,6 @@ use deepseek_custom::config::settings::{BackendConfig, Settings};
 use deepseek_custom::effort::Effort;
 
 const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
-
-fn environment_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 struct TestPath {
     old_path: Option<OsString>,
@@ -99,7 +94,7 @@ fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RoutedEvent>) -> Vec<Stre
 
 #[tokio::test(flavor = "current_thread")]
 async fn two_turn_resume_interrupt_and_recovery() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = super::process_environment_lock().lock().await;
     let path = TestPath::install();
     let (mut driver, mut rx) = driver(&path.args_file);
 
@@ -133,10 +128,19 @@ async fn two_turn_resume_interrupt_and_recovery() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(&invocations[0][..2], ["exec", "--json"]);
     assert_eq!(
-        &invocations[1][..4],
-        ["exec", "resume", "fake-thread-42", "--json"]
+        &invocations[0][..3],
+        ["exec", "--json", "--skip-git-repo-check"]
+    );
+    assert_eq!(
+        &invocations[1][..5],
+        [
+            "exec",
+            "resume",
+            "fake-thread-42",
+            "--json",
+            "--skip-git-repo-check"
+        ]
     );
 
     let interrupt = driver.interrupt_flag();
@@ -169,7 +173,7 @@ async fn two_turn_resume_interrupt_and_recovery() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn subagent_codex_dispatch_returns_text_collected_from_forwarded_events() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = super::process_environment_lock().lock().await;
     let _path = TestPath::install();
     let settings = Settings {
         backends: Some(HashMap::from([(

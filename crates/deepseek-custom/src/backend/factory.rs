@@ -23,18 +23,19 @@ use crate::mcp::McpManager;
 use crate::tools::ToolRegistry;
 
 use super::build_api::build_backend_with_policy;
+pub use super::controlled_api_profile::ControlledApiProfile;
 use super::resolved::{self, ResolvedBackend};
 
 /// True when a backend built at `depth` may dispatch a subagent of its
 /// own, below the configured depth limit. Depth 0 is the main session.
 /// Each dispatch adds one. At `max_depth` this is false, so the chain
 /// stops. A pure function, checkable without building a backend.
-pub(super) fn may_dispatch(depth: u32, max_depth: u32) -> bool {
+pub fn may_dispatch(depth: u32, max_depth: u32) -> bool {
     depth < max_depth
 }
 
-/// Test-only entry onto `may_dispatch` for the workspace-split test crate,
-/// which cannot reach a private free function across a crate boundary.
+/// Compatibility entry point retained for consumers built with
+/// `test-support`. New code can call [`may_dispatch`] directly.
 #[cfg(feature = "test-support")]
 pub fn may_dispatch_for_test(depth: u32, max_depth: u32) -> bool {
     may_dispatch(depth, max_depth)
@@ -144,7 +145,9 @@ impl BackendFactory {
     }
 
     /// Resolve a backend by name without building it.
-    pub(crate) fn resolve(
+    /// Resolve one configured backend and optional model override for an
+    /// independent production runner.
+    pub fn resolve(
         &self,
         name: &str,
         model_override: Option<&str>,

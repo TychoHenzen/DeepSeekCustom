@@ -620,34 +620,27 @@ async fn deepseek_sends_the_documented_thinking_mode_per_effort_level_on_the_wir
     }
 }
 
-/// Proves every `Effort` level reaches the wire as a distinct
-/// `reasoning_effort` value for the Ollama provider, per
-/// `Effort::ollama_reasoning_effort`'s one-to-one mapping. Unlike DeepSeek,
-/// none of Ollama's five levels collapse into another.
+/// Ollama uses each model's default reasoning behavior. The harness does not
+/// send native thinking controls because locally runnable models may reject
+/// the field even when they emit in-band reasoning text.
 #[tokio::test]
-async fn ollama_sends_a_distinct_reasoning_effort_per_effort_level_on_the_wire() {
-    let mut seen = std::collections::HashSet::new();
-
-    for (effort, expected_reasoning_effort) in [
-        (Effort::None, "none"),
-        (Effort::Low, "low"),
-        (Effort::Medium, "medium"),
-        (Effort::High, "high"),
-        (Effort::Max, "max"),
+async fn ollama_omits_reasoning_effort_for_every_effort_level_on_the_wire() {
+    for effort in [
+        Effort::None,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Max,
     ] {
         let body = request_body_for_effort(Provider::Ollama, effort).await;
-        assert_eq!(
-            body["reasoning_effort"], expected_reasoning_effort,
-            "effort {effort:?} should send reasoning_effort {expected_reasoning_effort:?}"
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "effort {effort:?} unexpectedly sent reasoning_effort"
         );
         assert!(
             body.get("thinking_mode").is_none() || body["thinking_mode"].is_null(),
             "Ollama should never send thinking_mode on the wire, got {:?}",
             body.get("thinking_mode")
-        );
-        assert!(
-            seen.insert(expected_reasoning_effort),
-            "reasoning_effort {expected_reasoning_effort:?} was not distinct across levels"
         );
     }
 }

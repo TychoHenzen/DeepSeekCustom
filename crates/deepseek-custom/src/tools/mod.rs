@@ -3,6 +3,7 @@ pub mod bash;
 pub mod cd;
 pub mod close_session;
 pub mod edit;
+mod file_root;
 pub mod glob;
 pub mod grep;
 pub mod line_endings;
@@ -20,9 +21,11 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use async_trait::async_trait;
 
-use crate::api::types::{ImageAttachment, ToolDef};
+use crate::api::types::{FunctionDef, ImageAttachment, ToolDef};
 use crate::config::settings::PermissionsConfig;
 use crate::error::Result;
+
+pub(crate) use file_root::{FileToolRoot, resolve_against};
 
 /// Trait implemented by all tools the agent can invoke.
 #[async_trait]
@@ -48,7 +51,7 @@ pub trait Tool: Send + Sync {
 /// speak accepts an `image_url` content part only inside a `user` role
 /// message, never a `tool` role message. So a tool cannot put the image
 /// straight into its own result. `AgentLoop::run_turn`
-/// (`src/agent/agent_loop.rs`) reads this field after the tool result
+/// (`src/agent/agent_run.rs`) reads this field after the tool result
 /// message is pushed and, when set, appends a synthetic `Role::User`
 /// message carrying the image, mapped through the same
 /// `build_user_content` a pasted or dropped image already goes through.
@@ -61,6 +64,26 @@ pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
     pub image: Option<ImageAttachment>,
+}
+
+impl ToolOutput {
+    /// Construct an error result with no image attachment.
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            image: None,
+        }
+    }
+
+    /// Construct a successful result with no image attachment.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            image: None,
+        }
+    }
 }
 
 /// Registry of all available tools, keyed by name.
@@ -111,7 +134,7 @@ impl ToolRegistry {
             .values()
             .map(|t| ToolDef {
                 tool_type: "function".to_string(),
-                function: crate::api::types::FunctionDef {
+                function: FunctionDef {
                     name: t.name().to_string(),
                     description: t.description().to_string(),
                     parameters: t.input_schema(),

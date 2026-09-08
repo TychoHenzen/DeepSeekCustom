@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(feature = "test-support")]
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -34,6 +36,9 @@ pub(super) fn build_args(
         args.push(thread_id.to_owned());
     }
     args.push("--json".to_owned());
+    // Disposable preview snapshots intentionally exclude `.git`. Codex must
+    // still accept them as isolated working directories.
+    args.push("--skip-git-repo-check".to_owned());
 
     if let Some(sandbox) = sandbox {
         args.push("--sandbox".to_owned());
@@ -47,14 +52,82 @@ pub(super) fn build_args(
         args.push(model.to_owned());
     }
 
-    if let Some(override_arg) = effort.codex_cli_effort() {
-        let value = override_arg
-            .strip_prefix("-c ")
-            .unwrap_or(override_arg.as_str());
+    if let Some(level) = effort.codex_cli_effort_level() {
         args.push("-c".to_owned());
-        args.push(value.to_owned());
+        args.push(format!("reasoning.effort={level}"));
     }
 
+    args.push(prompt.to_owned());
+    args
+}
+
+/// Build one fresh Controlled Development planning invocation.
+///
+/// This profile is always read-only, ignores user configuration and rules,
+/// never resumes a thread, and requires the complete final response to match
+/// the supplied JSON Schema file.
+pub(super) fn build_planning_args(
+    prompt: &str,
+    output_schema: &Path,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "--json".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "--sandbox".to_owned(),
+        "read-only".to_owned(),
+        "--ephemeral".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--ignore-rules".to_owned(),
+        "--output-schema".to_owned(),
+        output_schema.display().to_string(),
+    ];
+    if let Some(model) = model {
+        args.push("-m".to_owned());
+        args.push(model.to_owned());
+    }
+    if let Some(level) = effort.codex_cli_effort_level() {
+        args.push("-c".to_owned());
+        args.push(format!("reasoning.effort={level}"));
+    }
+    args.push(prompt.to_owned());
+    args
+}
+
+/// Build one fresh Controlled Development execution invocation.
+///
+/// The writable sandbox is limited to the child process working directory.
+/// User configuration and rules stay unavailable, and both Codex subagent
+/// implementations are disabled for this invocation.
+pub(super) fn build_execution_args(
+    prompt: &str,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "--json".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "--sandbox".to_owned(),
+        "workspace-write".to_owned(),
+        "--ephemeral".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--ignore-rules".to_owned(),
+        "--disable".to_owned(),
+        "multi_agent".to_owned(),
+        "--disable".to_owned(),
+        "multi_agent_v2".to_owned(),
+    ];
+    if let Some(model) = model {
+        args.push("-m".to_owned());
+        args.push(model.to_owned());
+    }
+    if let Some(level) = effort.codex_cli_effort_level() {
+        args.push("-c".to_owned());
+        args.push(format!("reasoning.effort={level}"));
+    }
     args.push(prompt.to_owned());
     args
 }
@@ -69,6 +142,25 @@ pub fn build_args_for_test(
     effort: Effort,
 ) -> Vec<String> {
     build_args(prompt, thread_id, sandbox, model, effort)
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_planning_args_for_test(
+    prompt: &str,
+    output_schema: &Path,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    build_planning_args(prompt, output_schema, model, effort)
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_execution_args_for_test(
+    prompt: &str,
+    model: Option<&str>,
+    effort: Effort,
+) -> Vec<String> {
+    build_execution_args(prompt, model, effort)
 }
 
 fn build_command(args: &[String], working_dir: &Path) -> Command {
@@ -87,10 +179,7 @@ fn build_command(args: &[String], working_dir: &Path) -> Command {
 
 /// Returns the directory configured on the real spawn command.
 #[cfg(feature = "test-support")]
-pub fn command_working_dir_for_test(
-    args: &[String],
-    working_dir: &Path,
-) -> Option<std::path::PathBuf> {
+pub fn command_working_dir_for_test(args: &[String], working_dir: &Path) -> Option<PathBuf> {
     build_command(args, working_dir)
         .as_std()
         .get_current_dir()

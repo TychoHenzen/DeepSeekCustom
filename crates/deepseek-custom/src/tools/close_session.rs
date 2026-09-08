@@ -78,40 +78,26 @@ impl Tool for CloseSessionTool {
         let parsed: CloseSessionInput = match serde_json::from_value(input) {
             Ok(parsed) => parsed,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Invalid CloseSession input: {e}"),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Invalid CloseSession input: {e}"
+                )));
             }
         };
 
         let id = match SubagentId::from_str(&parsed.session_id) {
             Ok(id) => id,
             Err(_) => {
-                return Ok(ToolOutput {
-                    content: format!(
-                        "Invalid CloseSession input: \"{}\" is not a valid session id",
-                        parsed.session_id
-                    ),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Invalid CloseSession input: \"{}\" is not a valid session id",
+                    parsed.session_id
+                )));
             }
         };
 
         if self.registry.close(id).await {
-            Ok(ToolOutput {
-                content: format!("session {id} closed"),
-                is_error: false,
-                image: None,
-            })
+            Ok(ToolOutput::ok(format!("session {id} closed")))
         } else {
-            Ok(ToolOutput {
-                content: format!("no open session with id {id}"),
-                is_error: true,
-                image: None,
-            })
+            Ok(ToolOutput::error(format!("no open session with id {id}")))
         }
     }
 }

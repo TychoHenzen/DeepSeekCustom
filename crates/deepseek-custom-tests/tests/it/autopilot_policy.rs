@@ -9,13 +9,7 @@ use deepseek_custom::autopilot::policy::{
 
 /// Create a uniquely named directory under the system temp dir.
 fn unique_temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc", tag)
 }
 
 #[test]

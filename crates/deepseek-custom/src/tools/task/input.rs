@@ -11,12 +11,9 @@ use serde::Deserialize;
 use crate::backend::subagent::SubagentRequest;
 use crate::effort::Effort;
 
-/// Raw, deserialized `Task` input. `description` is a label the model
-/// fills in for its own bookkeeping. The dispatch itself never reads it.
+/// Raw, deserialized `Task` input.
 #[derive(Debug, Deserialize, PartialEq)]
 pub(crate) struct TaskInput {
-    #[allow(dead_code)]
-    description: String,
     pub(crate) prompt: String,
     pub(crate) backend: String,
     pub(crate) model: Option<String>,
