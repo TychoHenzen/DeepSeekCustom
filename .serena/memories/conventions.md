@@ -1,0 +1,11 @@
+# Project conventions
+- Production source contains no inline test modules. Tests belong in `crates/deepseek-custom-tests`.
+- Keep `test-support` disabled by default. Gate only external test seams with `cfg(feature = "test-support")`.
+- Prefer an existing ordinary public seam over a new test-only wrapper.
+- Keep Claude CLI and Codex CLI as separate adapters. Do not mix their event, permission, session, or tool assumptions.
+- `BackendFactory` owns backend construction. A test-only Stub must not enter normal production configuration.
+- `Task`, `SendMessage`, and `CloseSession` form one lifecycle. Parent reset or shutdown closes owned child sessions.
+- Resolve Windows commands through PATH and PATHEXT. Run `.cmd` and `.bat` through `cmd /c`.
+- Preserve Claude-compatible file formats unless runtime tracing proves a portability change is required.
+- Keep public Rust API compatibility unless removal is explicitly in scope; zero in-repo callers is insufficient evidence.
+- Preserve unrelated worktree changes, especially `settings.json`.

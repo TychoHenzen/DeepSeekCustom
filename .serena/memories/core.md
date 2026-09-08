@@ -1,0 +1,12 @@
+# DeepSeekCustom core
+- Rust edition 2024 harness for AI coding agents. One loopback web app fronts API, Claude CLI, Codex CLI, and test-only Stub backends.
+- Workspace: production in `crates/deepseek-custom`; external integration target in `crates/deepseek-custom-tests`; TypeScript source in `web`; maintained context in `docs/agent-project-context.md`.
+- `settings.json` is local runtime state. Preserve unrelated edits byte-for-byte and never use its current values as documentation.
+- Production/test separation, backend/session lifecycle, Windows spawning, and compatibility rules are project invariants.
+- Production architecture and process ownership: `mem:production/core`.
+- Frontend source and embedded asset boundary: `mem:frontend/core`.
+- External test structure and deterministic seams: `mem:tests/core`.
+- Dependencies and pinned tools: `mem:tech_stack`.
+- Project-specific implementation rules: `mem:conventions`.
+- Common commands: `mem:suggested_commands`.
+- Completion gates: `mem:task_completion`.
