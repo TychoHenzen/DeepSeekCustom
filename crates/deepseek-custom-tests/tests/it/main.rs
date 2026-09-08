@@ -77,6 +77,7 @@ mod memory;
 mod path_repair;
 mod plugins;
 mod process_group;
+mod recovery;
 mod search_cascade;
 mod search_evolve;
 mod session;

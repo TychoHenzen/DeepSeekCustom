@@ -17,12 +17,12 @@ use crate::agent::events::RoutedEvent;
 use crate::backend::codex_cli::CodexCliDriver;
 #[cfg(feature = "test-support")]
 use crate::backend::stub::StubTurn;
-use crate::backend::{Backend, SharedFlags};
+use crate::backend::{Backend, SharedFlags, ToolPolicy};
 use crate::config::settings::{BackendConfig, Settings};
 use crate::mcp::McpManager;
 use crate::tools::ToolRegistry;
 
-use super::build_api::build_backend;
+use super::build_api::build_backend_with_policy;
 use super::resolved::{self, ResolvedBackend};
 
 /// True when a backend built at `depth` may dispatch a subagent of its
@@ -228,9 +228,38 @@ impl BackendFactory {
         tx_events: mpsc::UnboundedSender<RoutedEvent>,
         depth: u32,
     ) -> Result<crate::backend::Backend, String> {
+        self.build_with_policy(name, model_override, tx_events, depth, ToolPolicy::All)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn build_without_tools_for_test(
+        self: &Arc<Self>,
+        name: &str,
+        model_override: Option<&str>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
+        depth: u32,
+    ) -> Result<crate::backend::Backend, String> {
+        self.build_with_policy(name, model_override, tx_events, depth, ToolPolicy::None)
+    }
+
+    pub(crate) fn build_with_policy(
+        self: &Arc<Self>,
+        name: &str,
+        model_override: Option<&str>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
+        depth: u32,
+        tool_policy: ToolPolicy,
+    ) -> Result<crate::backend::Backend, String> {
         #[cfg(feature = "test-support")]
         if self.stubs.contains_key(name) {
-            return build_backend(self, name, model_override, tx_events, depth);
+            return build_backend_with_policy(
+                self,
+                name,
+                model_override,
+                tx_events,
+                depth,
+                tool_policy,
+            );
         }
 
         if let Some(BackendConfig::CodexCli {
@@ -241,12 +270,13 @@ impl BackendFactory {
         }) = self.settings.resolve_backend(name)
         {
             let model = model_override.unwrap_or(model).to_owned();
-            let driver = CodexCliDriver::new(
+            let driver = CodexCliDriver::new_with_tools(
                 model,
                 sandbox.clone(),
                 env.clone(),
                 self.working_dir(),
                 tx_events,
+                matches!(tool_policy, ToolPolicy::All),
             );
             let mut backend = Backend::CodexCli(Box::new(driver));
             if let Some(flags) = self.session_flags_for(depth) {
@@ -255,6 +285,6 @@ impl BackendFactory {
             return Ok(backend);
         }
 
-        build_backend(self, name, model_override, tx_events, depth)
+        build_backend_with_policy(self, name, model_override, tx_events, depth, tool_policy)
     }
 }

@@ -93,6 +93,24 @@ pub fn build_args(
     resume_id: Option<&str>,
     effort: Effort,
 ) -> Vec<String> {
+    build_args_with_tools(
+        model,
+        permission_mode,
+        append_system_prompt,
+        resume_id,
+        effort,
+        true,
+    )
+}
+
+pub(super) fn build_args_with_tools(
+    model: &str,
+    permission_mode: Option<&str>,
+    append_system_prompt: Option<&str>,
+    resume_id: Option<&str>,
+    effort: Effort,
+    tools_enabled: bool,
+) -> Vec<String> {
     let mode = permission_mode.unwrap_or("bypassPermissions");
     let mut args = vec![
         "-p".to_string(),
@@ -115,6 +133,10 @@ pub fn build_args(
         "--thinking-display".to_string(),
         "summarized".to_string(),
     ];
+    if !tools_enabled {
+        args.push("--tools".to_string());
+        args.push(String::new());
+    }
     if let Some(level) = effort.claude_cli_effort() {
         args.push("--effort".to_string());
         args.push(level.to_string());

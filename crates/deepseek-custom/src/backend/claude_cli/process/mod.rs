@@ -41,6 +41,7 @@ pub struct ClaudeCliDriver {
     pub(super) session_id_rx: Option<mpsc::UnboundedReceiver<String>>,
     pub(super) model: String,
     pub(super) permission_mode: Option<String>,
+    pub(super) tools_enabled: bool,
     pub(super) extra_env: Option<std::collections::HashMap<String, String>>,
     pub(super) working_dir: Arc<Mutex<PathBuf>>,
     pub(super) tx_events: mpsc::UnboundedSender<RoutedEvent>,
@@ -66,6 +67,24 @@ impl ClaudeCliDriver {
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: mpsc::UnboundedSender<RoutedEvent>,
     ) -> Self {
+        Self::new_with_tools(
+            model,
+            permission_mode,
+            extra_env,
+            working_dir,
+            tx_events,
+            true,
+        )
+    }
+
+    pub fn new_with_tools(
+        model: String,
+        permission_mode: Option<String>,
+        extra_env: Option<std::collections::HashMap<String, String>>,
+        working_dir: Arc<Mutex<PathBuf>>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
+        tools_enabled: bool,
+    ) -> Self {
         let model_flag = Arc::new(Mutex::new(model.clone()));
         Self {
             child: None,
@@ -74,6 +93,7 @@ impl ClaudeCliDriver {
             session_id_rx: None,
             model,
             permission_mode,
+            tools_enabled,
             extra_env,
             working_dir,
             tx_events,

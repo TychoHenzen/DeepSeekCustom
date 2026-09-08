@@ -17,11 +17,11 @@ use crate::api::provider::Provider;
 use crate::api::types::ToolDef;
 use crate::autopilot::answerer::{PolicyAnswerer, QuestionAnswerer};
 use crate::autopilot::policy::PolicyStore;
-use crate::backend::Backend;
 use crate::backend::codex_cli::CodexCliDriver;
 use crate::backend::registry::SubagentRegistry;
 #[cfg(feature = "test-support")]
 use crate::backend::stub::StubBackend;
+use crate::backend::{Backend, ToolPolicy};
 use crate::effort::Effort;
 use crate::memory::MemoryStore;
 use crate::skills::{SkillLoader, format_skills_for_prompt};
@@ -160,22 +160,38 @@ fn finish_agent(
 
 /// Build the `Api` backend: an `AgentLoop` wired up with the tool
 /// registry, memory, skills, and system prompt.
-fn build_api_backend(
+struct ApiBackendRequest {
     provider: Provider,
     api_key: String,
     base_url: Option<String>,
     model: String,
-    factory: &Arc<BackendFactory>,
     tx_events: mpsc::UnboundedSender<RoutedEvent>,
     depth: u32,
-) -> Backend {
+    tool_policy: ToolPolicy,
+}
+
+fn build_api_backend(request: ApiBackendRequest, factory: &Arc<BackendFactory>) -> Backend {
+    let ApiBackendRequest {
+        provider,
+        api_key,
+        base_url,
+        model,
+        tx_events,
+        depth,
+        tool_policy,
+    } = request;
     let settings = &factory.settings;
     let project_root = &factory.project_root;
     let client = ApiClient::new(provider, api_key.clone(), base_url.clone());
 
-    let memory = MemoryStore::load(project_root);
-    let skills = Arc::new(SkillLoader::load(project_root));
-    info!("loaded {} skills", skills.len());
+    let (memory_fragment, skills) = if matches!(tool_policy, ToolPolicy::All) {
+        let memory = MemoryStore::load(project_root);
+        let skills = Arc::new(SkillLoader::load(project_root));
+        info!("loaded {} skills", skills.len());
+        (memory.to_system_prompt_fragment(), skills)
+    } else {
+        (String::new(), Arc::new(Vec::new()))
+    };
 
     let answerer = build_answerer(provider, &api_key, &base_url, factory, &model);
 
@@ -192,10 +208,11 @@ fn build_api_backend(
         subagent_registry,
         effort_flag,
     };
-    register_tools(&tools, factory, depth, &gated, &skills, &answerer);
+    if matches!(tool_policy, ToolPolicy::All) {
+        register_tools(&tools, factory, depth, &gated, &skills, &answerer);
+    }
     info!("registered {} tools", tools.list().len());
 
-    let memory_fragment = memory.to_system_prompt_fragment();
     let skills_fragment = format_skills_for_prompt(&skills);
     let tool_defs = tools.to_api_definitions();
     let system_prompt = build_system_prompt(&memory_fragment, &skills_fragment, &tool_defs);
@@ -219,6 +236,7 @@ fn build_from_resolved(
     factory: &Arc<BackendFactory>,
     tx_events: mpsc::UnboundedSender<RoutedEvent>,
     depth: u32,
+    tool_policy: ToolPolicy,
 ) -> Backend {
     match resolved {
         ResolvedBackend::Api {
@@ -237,7 +255,16 @@ fn build_from_resolved(
                 base_url.as_deref().unwrap_or("(provider default)"),
             );
             build_api_backend(
-                provider, api_key, base_url, model, factory, tx_events, depth,
+                ApiBackendRequest {
+                    provider,
+                    api_key,
+                    base_url,
+                    model,
+                    tx_events,
+                    depth,
+                    tool_policy,
+                },
+                factory,
             )
         }
         ResolvedBackend::ClaudeCli {
@@ -255,12 +282,13 @@ fn build_from_resolved(
                     .as_deref()
                     .unwrap_or("(default: bypassPermissions)"),
             );
-            Backend::new_claude_cli(
+            Backend::new_claude_cli_with_tools(
                 model,
                 permission_mode,
                 env,
                 factory.working_dir(),
                 tx_events,
+                matches!(tool_policy, ToolPolicy::All),
             )
         }
         ResolvedBackend::CodexCli {
@@ -275,12 +303,13 @@ fn build_from_resolved(
                 model,
                 sandbox.as_deref().unwrap_or("(default)"),
             );
-            Backend::CodexCli(Box::new(CodexCliDriver::new(
+            Backend::CodexCli(Box::new(CodexCliDriver::new_with_tools(
                 model,
                 sandbox,
                 env,
                 factory.working_dir(),
                 tx_events,
+                matches!(tool_policy, ToolPolicy::All),
             )))
         }
         #[cfg(feature = "test-support")]
@@ -303,15 +332,16 @@ fn build_from_resolved(
 }
 
 /// Build a backend by name from the factory's `backends` map.
-pub(crate) fn build_backend(
+pub(crate) fn build_backend_with_policy(
     factory: &Arc<BackendFactory>,
     name: &str,
     model_override: Option<&str>,
     tx_events: mpsc::UnboundedSender<RoutedEvent>,
     depth: u32,
+    tool_policy: ToolPolicy,
 ) -> Result<Backend, String> {
     let resolved = factory.resolve(name, model_override)?;
-    let mut backend = build_from_resolved(resolved, factory, tx_events, depth);
+    let mut backend = build_from_resolved(resolved, factory, tx_events, depth, tool_policy);
     if let Some(flags) = factory.session_flags_for(depth) {
         backend.adopt_flags(flags);
     }

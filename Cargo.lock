@@ -1054,6 +1054,7 @@ dependencies = [
  "glob",
  "image",
  "kokoro-en",
+ "libc",
  "ort",
  "regex",
  "reqwest",

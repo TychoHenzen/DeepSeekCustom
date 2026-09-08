@@ -37,6 +37,7 @@ const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub struct CodexCliDriver {
     thread_id: Option<String>,
     sandbox: Option<String>,
+    tools_enabled: bool,
     extra_env: Option<HashMap<String, String>>,
     working_dir: Arc<Mutex<PathBuf>>,
     tx_events: UnboundedSender<RoutedEvent>,
@@ -57,9 +58,21 @@ impl CodexCliDriver {
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: UnboundedSender<RoutedEvent>,
     ) -> Self {
+        Self::new_with_tools(model, sandbox, extra_env, working_dir, tx_events, true)
+    }
+
+    pub fn new_with_tools(
+        model: String,
+        sandbox: Option<String>,
+        extra_env: Option<HashMap<String, String>>,
+        working_dir: Arc<Mutex<PathBuf>>,
+        tx_events: UnboundedSender<RoutedEvent>,
+        tools_enabled: bool,
+    ) -> Self {
         Self {
             thread_id: None,
             sandbox,
+            tools_enabled,
             extra_env,
             working_dir,
             tx_events,
@@ -151,10 +164,15 @@ impl CodexCliDriver {
             .clone();
         let effort = Effort::load(&self.effort_flag);
         let _voice_mode = self.voice_mode_flag.load(Ordering::SeqCst);
+        let sandbox = if self.tools_enabled {
+            self.sandbox.as_deref()
+        } else {
+            Some("read-only")
+        };
         let args = build_args(
             text,
             self.thread_id.as_deref(),
-            self.sandbox.as_deref(),
+            sandbox,
             Some(&model),
             effort,
         );

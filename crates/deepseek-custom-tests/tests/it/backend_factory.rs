@@ -401,6 +401,36 @@ fn task_tool_registered_below_the_depth_limit() {
 }
 
 #[test]
+fn restricted_backend_exposes_no_mutation_tools() {
+    let root =
+        std::env::temp_dir().join(format!("deepseek-custom-restricted-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&root.join("CLAUDE.md"), "diagnostic-project-secret").unwrap();
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), root.clone()));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build_without_tools_for_test("deepseek", None, tx, 0)
+        .expect("should build");
+
+    match backend {
+        Backend::Api(agent) => {
+            assert!(agent.tool_names().is_empty());
+            assert!(
+                !agent
+                    .history()
+                    .system_prompt()
+                    .contains("diagnostic-project-secret")
+            );
+        }
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn task_tool_absent_at_the_depth_limit() {
     // Default max depth is 2. Depth 2 sits at the limit, so no Task tool
     // goes in and the dispatch chain stops there.
