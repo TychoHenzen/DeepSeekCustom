@@ -159,9 +159,8 @@ async fn apply_check_cmd(
     failures: &mut Vec<String>,
     work_dir: &Path,
 ) -> Vec<Candidate> {
-    let check_cmd = match &params.check_cmd {
-        Some(cmd) => cmd,
-        None => return candidates,
+    let Some(check_cmd) = &params.check_cmd else {
+        return candidates;
     };
     let mut passed: Vec<Candidate> = Vec::new();
     for candidate in candidates {

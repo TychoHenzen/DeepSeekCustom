@@ -1,4 +1,6 @@
 /target
+/web/node_modules/
+/web/coverage/
 .idea/
 .claude/
 
@@ -61,3 +63,7 @@ hs_err_pid*.log
 # file at the repo root. Not the mutants.out/ scratch dir above, which is
 # the tool's own output directory rather than a redirected log.
 mutants_scoped_run.log
+
+# Local harness configuration and Serena project metadata.
+settings.json
+.serena/

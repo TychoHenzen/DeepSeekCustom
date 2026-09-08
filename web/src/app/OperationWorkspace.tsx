@@ -1,0 +1,233 @@
+import { useState, type FormEvent } from 'react';
+
+import type { AppCommand, AppCommandResult, OperationKind, OperationState } from '../client/contracts.ts';
+import { OperationProgress, OperationWorkspaceView } from './OperationWorkspaceView.tsx';
+
+type WorkspaceKind = Extract<OperationKind, 'autopilot' | 'cascade' | 'evolve' | 'procedure'>;
+
+interface OperationWorkspaceProps {
+  kind: WorkspaceKind;
+  operation: OperationState | null;
+  activeOperation: OperationState | null;
+  send(this: void, command: AppCommand): Promise<AppCommandResult>;
+  backends?: string[];
+  selectedBackend?: string | null;
+  selectedModel?: string | null;
+}
+
+const labels: Record<WorkspaceKind, string> = {
+  autopilot: 'Autopilot',
+  cascade: 'Cascade',
+  evolve: 'Evolve',
+  procedure: 'Procedure',
+};
+
+export function OperationWorkspace({ kind, operation, activeOperation, send, backends = [], selectedBackend = null, selectedModel = null }: OperationWorkspaceProps) {
+  const [primary, setPrimary] = useState('');
+  const [secondary, setSecondary] = useState(kind === 'autopilot' ? '3' : '');
+  const [backend, setBackend] = useState(selectedBackend ?? backends[0] ?? '');
+  const [countA, setCountA] = useState(kind === 'cascade' ? '5' : '10');
+  const [countB, setCountB] = useState(kind === 'cascade' ? '1' : '6');
+  const [countC, setCountC] = useState('1');
+  const [countD, setCountD] = useState('5');
+  const [command, setCommand] = useState('');
+  const [optionalCommand, setOptionalCommand] = useState('');
+  const [hints, setHints] = useState('');
+  const [validation, setValidation] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const active = activeOperation?.phase === 'running' || activeOperation?.phase === 'awaiting_review';
+  const ownsActiveOperation = active && activeOperation?.kind === kind;
+  const blockedBy = active && !ownsActiveOperation ? labels[activeOperation.kind as WorkspaceKind] ?? activeOperation.kind : null;
+  const title = labels[kind];
+
+  if (kind === 'procedure') {
+    return <ProcedureWorkspace activeOperation={activeOperation} backends={backends} operation={operation} selectedBackend={selectedBackend} selectedModel={selectedModel} send={send} />;
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const appCommand = commandFor(kind, primary.trim(), secondary.trim(), {
+      backend, countA, countB, countC, countD, command, optionalCommand, hints,
+    });
+    if ('error' in appCommand) {
+      setValidation(appCommand.error);
+      return;
+    }
+    setValidation(null);
+    setSubmitting(true);
+    try {
+      const result = await send(appCommand);
+      if (result.status === 'rejected') setValidation(result.error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <OperationWorkspaceView
+    active={active} blockedBy={blockedBy} kind={kind} onPrimaryChange={setPrimary}
+    onSecondaryChange={setSecondary} onStop={() => send({ command: 'stop_operation', payload: { kind } })}
+    onSubmit={(event) => void submit(event)} operation={operation} ownsActiveOperation={ownsActiveOperation}
+    primary={primary} search={{ backend, backends, command, countA, countB, countC, countD, hints, optionalCommand, setBackend, setCommand, setCountA, setCountB, setCountC, setCountD, setHints, setOptionalCommand }}
+    secondary={secondary} submitting={submitting} title={title} validation={validation}
+  />;
+}
+
+function ProcedureWorkspace({ operation, activeOperation, send, backends = [], selectedBackend = null, selectedModel = null }: Omit<OperationWorkspaceProps, 'kind'>) {
+  const [changeId, setChangeId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [mode, setMode] = useState<'localize' | 'preview' | 'whole_change' | 'apply'>('localize');
+  const [localizationRunId, setLocalizationRunId] = useState('');
+  const [previewId, setPreviewId] = useState('');
+  const [route, setRoute] = useState<'automatic' | 'force_local' | 'force_frontier'>('automatic');
+  const [localBackend, setLocalBackend] = useState(selectedBackend ?? backends[0] ?? '');
+  const [localModel, setLocalModel] = useState(selectedModel ?? '');
+  const [frontierBackend, setFrontierBackend] = useState(selectedBackend ?? backends[0] ?? '');
+  const [frontierModel, setFrontierModel] = useState(selectedModel ?? '');
+  const [validation, setValidation] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewingRunId, setReviewingRunId] = useState<string | null>(null);
+  const active = activeOperation?.phase === 'running' || activeOperation?.phase === 'awaiting_review';
+  const ownsActiveOperation = active && activeOperation?.kind === 'procedure';
+  const blockedBy = active && !ownsActiveOperation
+    ? labels[activeOperation.kind as WorkspaceKind] ?? activeOperation.kind
+    : null;
+  const reviewRunId = operation?.phase === 'awaiting_review' ? operation.operation_id : null;
+  const reviewInFlight = reviewRunId !== null && reviewingRunId === reviewRunId;
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const required = [changeId.trim()];
+    if (mode !== 'whole_change') required.push(taskId.trim());
+    if (mode === 'preview' || mode === 'apply') required.push(localizationRunId.trim());
+    if (mode === 'preview' || mode === 'whole_change') required.push(localBackend.trim(), localModel.trim(), frontierBackend.trim(), frontierModel.trim());
+    if (mode === 'apply') required.push(previewId.trim());
+    if (required.some((value) => value.length === 0)) {
+      setValidation('All fields for the selected Procedure mode are required.');
+      return;
+    }
+    const command: AppCommand = mode === 'localize'
+      ? { command: 'run_procedure', payload: { change_id: changeId.trim(), task_id: taskId.trim() } }
+      : mode === 'preview'
+        ? { command: 'preview_procedure', payload: { localization_run_id: localizationRunId.trim(), change_id: changeId.trim(), task_id: taskId.trim(), route, local_backend: localBackend.trim(), local_model: localModel.trim(), frontier_backend: frontierBackend.trim(), frontier_model: frontierModel.trim() } }
+        : mode === 'whole_change'
+          ? { command: 'run_whole_change_procedure', payload: { change_id: changeId.trim(), route, localization_backend: localBackend.trim(), local_backend: localBackend.trim(), local_model: localModel.trim(), frontier_backend: frontierBackend.trim(), frontier_model: frontierModel.trim() } }
+          : { command: 'apply_procedure', payload: { localization_run_id: localizationRunId.trim(), preview_id: previewId.trim(), change_id: changeId.trim(), task_id: taskId.trim() } };
+    setValidation(null);
+    setSubmitting(true);
+    try {
+      const result = await send(command);
+      if (result.status === 'rejected') setValidation(result.error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function review(decision: 'approve' | 'reject') {
+    if (reviewRunId === null) return;
+    const selectedRunId = reviewRunId;
+    setReviewingRunId(selectedRunId);
+    try {
+      const result = await send({ command: 'review_procedure', payload: { run_id: selectedRunId, decision } });
+      if (result.status === 'rejected') setValidation(result.error.message);
+    } finally {
+      setReviewingRunId((current) => current === selectedRunId ? null : current);
+    }
+  }
+
+  return <section aria-labelledby="procedure-title" className="operation-workspace procedure-workspace">
+    <h3 id="procedure-title">Procedure operation</h3>
+    <form aria-label="Start Procedure" onSubmit={(event) => void submit(event)}>
+      <fieldset className="operation-parameters">
+        <legend>Run selection</legend>
+        <label htmlFor="procedure-mode">Run mode</label>
+        <select id="procedure-mode" onChange={(event) => setMode(event.target.value as typeof mode)} value={mode}><option value="localize">Localize task</option><option value="preview">Preview patch</option><option value="whole_change">Whole change</option><option value="apply">Apply preview</option></select>
+        <label htmlFor="procedure-change">Change ID</label>
+        <input id="procedure-change" onChange={(event) => setChangeId(event.target.value)} value={changeId} />
+        <label htmlFor="procedure-task">Task ID</label>
+        <input id="procedure-task" onChange={(event) => setTaskId(event.target.value)} value={taskId} />
+        {(mode === 'preview' || mode === 'apply') && <><label htmlFor="procedure-localization-run">Localization run ID</label><input id="procedure-localization-run" onChange={(event) => setLocalizationRunId(event.target.value)} value={localizationRunId} /></>}
+        {mode === 'apply' && <><label htmlFor="procedure-preview-id">Preview ID</label><input id="procedure-preview-id" onChange={(event) => setPreviewId(event.target.value)} value={previewId} /></>}
+        {(mode === 'preview' || mode === 'whole_change') && <>
+          <label htmlFor="procedure-route">Route</label><select id="procedure-route" onChange={(event) => setRoute(event.target.value as typeof route)} value={route}><option value="automatic">Automatic</option><option value="force_local">Force local</option><option value="force_frontier">Force frontier</option></select>
+          <label htmlFor="procedure-local-backend">Local backend</label><input id="procedure-local-backend" onChange={(event) => setLocalBackend(event.target.value)} value={localBackend} />
+          <label htmlFor="procedure-local-model">Local model</label><input id="procedure-local-model" onChange={(event) => setLocalModel(event.target.value)} value={localModel} />
+          <label htmlFor="procedure-frontier-backend">Frontier backend</label><input id="procedure-frontier-backend" onChange={(event) => setFrontierBackend(event.target.value)} value={frontierBackend} />
+          <label htmlFor="procedure-frontier-model">Frontier model</label><input id="procedure-frontier-model" onChange={(event) => setFrontierModel(event.target.value)} value={frontierModel} />
+        </>}
+        <p className="field-help">This run localizes the selected OpenSpec task. Route, patch, diff, report, and failure evidence appears below in execution order.</p>
+      </fieldset>
+      {validation !== null && <p className="validation-message" role="alert">{validation}</p>}
+      <button aria-describedby={blockedBy === null ? undefined : 'procedure-blocked'} disabled={submitting || active} type="submit">Start Procedure</button>
+      {blockedBy !== null && <p className="disabled-reason" id="procedure-blocked">{blockedBy} is active. Stop or finish it before starting Procedure.</p>}
+    </form>
+    <OperationProgress operation={operation} onStop={() => send({ command: 'stop_operation', payload: { kind: 'procedure' } })} showStop={ownsActiveOperation && operation?.phase === 'running'} />
+    {operation?.message !== null && operation?.message !== undefined && <ProcedureEvidence message={operation.message} />}
+    {reviewRunId !== null && <section aria-label="Procedure review" className="procedure-review">
+      <h4>Review Procedure run {reviewRunId}</h4>
+      <p>Complete review evidence</p>
+      <pre aria-label="Complete review evidence">{operation?.message ?? 'No review evidence was supplied.'}</pre>
+      <div className="review-actions">
+        <button disabled={reviewInFlight} onClick={() => void review('approve')} type="button">Approve this run</button>
+        <button disabled={reviewInFlight} onClick={() => void review('reject')} type="button">Reject this run</button>
+      </div>
+    </section>}
+  </section>;
+}
+
+function ProcedureEvidence({ message }: { message: string }) {
+  const entries = message.split('\n').map((line) => {
+    const separator = line.indexOf(':');
+    return separator < 1 ? null : { label: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() };
+  }).filter((entry): entry is { label: string; value: string } => entry !== null);
+  if (entries.length === 0) return null;
+  return <section aria-labelledby="procedure-evidence-title" className="procedure-evidence">
+    <h4 id="procedure-evidence-title">Procedure evidence</h4>
+    <dl>{entries.map((entry, index) => <div key={`${entry.label}-${index}`}><dt>{entry.label}</dt><dd>{entry.value}</dd></div>)}</dl>
+  </section>;
+}
+
+function primaryLabel(kind: WorkspaceKind): string {
+  if (kind === 'procedure') return 'Change ID';
+  if (kind === 'autopilot') return 'Task';
+  return 'Prompt';
+}
+
+interface SearchValues { backend: string; countA: string; countB: string; countC: string; countD: string; command: string; optionalCommand: string; hints: string }
+
+function commandFor(kind: WorkspaceKind, primary: string, secondary: string, values: SearchValues): AppCommand | { error: string } {
+  if (primary.length === 0) return { error: `${primaryLabel(kind)} is required.` };
+  switch (kind) {
+    case 'autopilot': {
+      const iterations = Number(secondary);
+      if (!Number.isSafeInteger(iterations) || iterations < 1) return { error: 'Iterations must be a positive whole number.' };
+      return { command: 'start_autopilot', payload: { task: primary, iterations } };
+    }
+    case 'cascade': {
+      if (values.backend.trim().length === 0) return { error: 'Backend is required.' };
+      const n = boundedInteger(values.countA, 1, 16, 'Attempts');
+      if (typeof n === 'string') return { error: n };
+      const voteK = boundedInteger(values.countB, 1, 8, 'Vote margin');
+      if (typeof voteK === 'string') return { error: voteK };
+      return { command: 'start_cascade', payload: { prompt: primary, backend: values.backend, n, vote_k: voteK, check_cmd: optional(values.command), diversity_hints: lines(values.hints), escalate_backend: optional(values.optionalCommand) } };
+    }
+    case 'evolve': {
+      if (values.backend.trim().length === 0) return { error: 'Backend is required.' };
+      if (values.command.trim().length === 0) return { error: 'Fitness command is required.' };
+      const generations = boundedInteger(values.countA, 1, 50, 'Generations'); if (typeof generations === 'string') return { error: generations };
+      const population = boundedInteger(values.countB, 1, 20, 'Population'); if (typeof population === 'string') return { error: population };
+      const islands = boundedInteger(values.countC, 1, 8, 'Islands'); if (typeof islands === 'string') return { error: islands };
+      const migration = boundedInteger(values.countD, 0, 20, 'Migration interval'); if (typeof migration === 'string') return { error: migration };
+      return { command: 'start_evolve', payload: { prompt: primary, backend: values.backend, generations, population, fitness_cmd: values.command.trim(), feature_cmd: optional(values.optionalCommand), islands, migration_interval: migration, mutation_hints: lines(values.hints) } };
+    }
+    case 'procedure':
+      if (secondary.length === 0) return { error: 'Task ID is required.' };
+      return { command: 'run_procedure', payload: { change_id: primary, task_id: secondary } };
+  }
+}
+
+function optional(value: string): string | null { return value.trim() || null; }
+function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
+function boundedInteger(value: string, min: number, max: number, label: string): number | string {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : `${label} must be a whole number from ${min} to ${max}.`;
+}

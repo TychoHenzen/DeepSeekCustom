@@ -11,6 +11,7 @@
 //! `cmd /C`. Without that, a PowerShell scoring command pays cmd.exe's
 //! inner-quote mangling that the Bash tool already learned to avoid.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -36,7 +37,7 @@ pub struct StdinCmdOutput {
 pub async fn run_command_with_stdin(
     cmd_str: &str,
     stdin_text: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<StdinCmdOutput, String> {
     match timeout(
         COMMAND_TIMEOUT,
@@ -69,7 +70,7 @@ fn program_and_args(cmd_str: &str) -> (String, Vec<String>) {
 async fn spawn_and_wait(
     cmd_str: &str,
     stdin_text: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<StdinCmdOutput, String> {
     let (program, args) = program_and_args(cmd_str);
     let mut child = Command::new(&program)

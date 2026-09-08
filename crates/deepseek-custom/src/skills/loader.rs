@@ -1,7 +1,7 @@
 //! Turning discovered skill files into `Skill` values.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
@@ -26,7 +26,7 @@ impl SkillLoader {
 
     /// Parse an already-discovered file list. Split out so a test can hand
     /// in a fixture list instead of whatever the machine has installed.
-    pub fn parse_all(files: Vec<(std::path::PathBuf, SkillSource)>) -> Vec<Skill> {
+    pub fn parse_all(files: Vec<(PathBuf, SkillSource)>) -> Vec<Skill> {
         let mut by_name: HashMap<String, Skill> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
 

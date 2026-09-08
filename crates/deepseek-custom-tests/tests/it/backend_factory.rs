@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use deepseek_custom::agent::events::SubagentId;
 use deepseek_custom::api::provider::Provider;
-use deepseek_custom::backend::factory::{BackendFactory, may_dispatch_for_test};
+use deepseek_custom::backend::factory::{BackendFactory, ControlledApiProfile, may_dispatch};
 use deepseek_custom::backend::resolved::{ResolvedBackend, resolve_active_backend};
 use deepseek_custom::backend::stub::StubBackend;
 use deepseek_custom::backend::{Backend, SharedFlags};
@@ -358,10 +358,10 @@ fn may_dispatch_true_below_the_limit_false_at_it() {
     // Default depth limit is 2. The main session (depth 0) and a
     // depth-1 subagent may both dispatch further. A depth-2 subagent,
     // sitting at the limit, may not. Neither may one past it.
-    assert!(may_dispatch_for_test(0, 2));
-    assert!(may_dispatch_for_test(1, 2));
-    assert!(!may_dispatch_for_test(2, 2));
-    assert!(!may_dispatch_for_test(3, 2));
+    assert!(may_dispatch(0, 2));
+    assert!(may_dispatch(1, 2));
+    assert!(!may_dispatch(2, 2));
+    assert!(!may_dispatch(3, 2));
 }
 
 fn api_backend_settings() -> Settings {
@@ -377,6 +377,453 @@ fn api_backend_settings() -> Settings {
         },
     );
     settings_with_backends(Some("deepseek"), backends)
+}
+
+fn controlled_api_agent(
+    profile: ControlledApiProfile,
+    root: &Path,
+) -> Box<deepseek_custom::agent::agent_loop::AgentLoop> {
+    let factory = Arc::new(BackendFactory::new(
+        api_backend_settings(),
+        root.to_path_buf(),
+    ));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    match factory
+        .build_controlled_api("deepseek", None, tx, profile, root.to_path_buf())
+        .expect("controlled API backend should build")
+    {
+        Backend::Api(agent) => agent,
+        Backend::ClaudeCli(_) => panic!("expected Api variant"),
+        Backend::CodexCli(_) => panic!("expected Api variant"),
+        Backend::Stub(_) => panic!("expected Api variant"),
+    }
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Planning cannot change the real workspace :: Planning cannot change the real workspace
+#[test]
+fn controlled_api_planning_exposes_only_rooted_read_tools() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let real = super::scratch_dir("controlled-api", "planning");
+        let protected = real.join("protected.txt");
+        std::fs::write(&protected, "original bytes").unwrap();
+        let agent = controlled_api_agent(ControlledApiProfile::Planning, &real);
+
+        let mut names = agent.tool_names();
+        names.sort();
+        assert_eq!(names, ["glob", "grep", "read", "read_image"]);
+
+        for forbidden in [
+            "write",
+            "edit",
+            "bash",
+            "cd",
+            "reset",
+            "AskUserQuestion",
+            "Skill",
+            "Task",
+            "SendMessage",
+            "CloseSession",
+        ] {
+            let output = agent
+                .execute_tool_for_test(
+                    forbidden,
+                    r#"{"file_path":"protected.txt","content":"changed"}"#,
+                )
+                .await;
+            assert!(output.is_error, "{forbidden} unexpectedly ran");
+            assert!(
+                output.content.contains("Unknown tool"),
+                "{}",
+                output.content
+            );
+        }
+        assert_eq!(std::fs::read(&protected).unwrap(), b"original bytes");
+        std::fs::remove_dir_all(real).unwrap();
+    });
+}
+
+#[tokio::test]
+async fn controlled_api_execution_confines_file_tools_to_its_fixed_root() {
+    let root = super::scratch_dir("controlled-api", "execution-root");
+    let outside = super::scratch_dir("controlled-api", "execution-outside");
+    let outside_file = outside.join("outside.txt");
+    std::fs::write(&outside_file, "outside bytes").unwrap();
+    let agent = controlled_api_agent(ControlledApiProfile::Execution, &root);
+
+    let mut names = agent.tool_names();
+    names.sort();
+    assert_eq!(
+        names,
+        ["edit", "glob", "grep", "read", "read_image", "write"]
+    );
+
+    let within = agent
+        .execute_tool_for_test(
+            "write",
+            r#"{"file_path":"nested/inside.txt","content":"inside bytes"}"#,
+        )
+        .await;
+    assert!(!within.is_error, "{}", within.content);
+    assert_eq!(
+        std::fs::read(root.join("nested/inside.txt")).unwrap(),
+        b"inside bytes"
+    );
+
+    for file_path in [
+        outside_file.to_string_lossy().to_string(),
+        "../escape.txt".to_string(),
+        "nested/../../escape.txt".to_string(),
+    ] {
+        let args = serde_json::json!({
+            "file_path": file_path,
+            "content": "escaped bytes"
+        })
+        .to_string();
+        let output = agent.execute_tool_for_test("write", &args).await;
+        assert!(
+            output.is_error,
+            "escape unexpectedly succeeded: {}",
+            output.content
+        );
+    }
+    assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside bytes");
+    assert!(!outside.join("escape.txt").exists());
+
+    for pattern in ["../**/*".to_string(), format!("{}/**/*", outside.display())] {
+        let args = serde_json::json!({ "pattern": pattern }).to_string();
+        let output = agent.execute_tool_for_test("glob", &args).await;
+        assert!(
+            output.is_error,
+            "outside glob unexpectedly ran: {}",
+            output.content
+        );
+        assert!(
+            !output.content.contains("outside.txt"),
+            "{}",
+            output.content
+        );
+    }
+
+    let linked = root.join("linked-outside");
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                linked.to_str().unwrap(),
+                outside.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "directory junction fixture should build");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    let through_link = agent
+        .execute_tool_for_test(
+            "write",
+            r#"{"file_path":"linked-outside/outside.txt","content":"linked escape"}"#,
+        )
+        .await;
+    assert!(through_link.is_error, "{}", through_link.content);
+    assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside bytes");
+
+    #[cfg(windows)]
+    std::fs::remove_dir(&linked).unwrap();
+    #[cfg(unix)]
+    std::fs::remove_file(&linked).unwrap();
+
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn normal_api_profile_keeps_the_existing_unrestricted_tool_set() {
+    let root = super::scratch_dir("controlled-api", "normal-profile");
+    let factory = Arc::new(BackendFactory::new(api_backend_settings(), root.clone()));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let backend = factory
+        .build("deepseek", None, tx, 0)
+        .expect("normal API backend should build");
+    let Backend::Api(agent) = backend else {
+        panic!("expected Api variant");
+    };
+    let names = agent.tool_names();
+    for expected in [
+        "bash",
+        "read",
+        "read_image",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "Skill",
+        "cd",
+        "reset",
+        "AskUserQuestion",
+        "Task",
+        "SendMessage",
+        "CloseSession",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn controlled_planning_factory_selects_fresh_cli_profiles_with_the_fixed_root() {
+    let root = super::scratch_dir("controlled-planning", "cli-profiles");
+    let mut backends = HashMap::new();
+    backends.insert(
+        "codex".to_string(),
+        BackendConfig::CodexCli {
+            model: "gpt-5-codex".to_string(),
+            sandbox: Some("workspace-write".to_string()),
+            env: None,
+            models: None,
+        },
+    );
+    backends.insert(
+        "claude".to_string(),
+        BackendConfig::ClaudeCli {
+            model: "claude-opus-x".to_string(),
+            permission_mode: Some("bypassPermissions".to_string()),
+            env: None,
+            models: None,
+        },
+    );
+    let factory = Arc::new(BackendFactory::new(
+        settings_with_backends(Some("codex"), backends),
+        root.clone(),
+    ));
+
+    let (codex_tx, _codex_rx) = mpsc::unbounded_channel();
+    let codex = factory
+        .build_controlled_planning("codex", None, codex_tx, root.clone())
+        .unwrap();
+    let Backend::CodexCli(mut codex) = codex else {
+        panic!("expected controlled Codex profile");
+    };
+    let schema_path = codex
+        .planning_schema_path_for_test()
+        .expect("controlled Codex profile should own a schema file")
+        .to_path_buf();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&schema_path).unwrap()).unwrap();
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"].as_array().unwrap().len(), 7);
+    let codex_args = codex
+        .planning_args_for_test("produce a card", Effort::None)
+        .unwrap();
+    for required in [
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--output-schema",
+    ] {
+        assert!(codex_args.iter().any(|argument| argument == required));
+    }
+    codex.set_thread_id(Some("must-not-resume".to_string()));
+    assert!(codex.thread_id().is_none());
+    assert_eq!(
+        codex.planning_working_dir_for_test(),
+        Some(std::fs::canonicalize(&root).unwrap())
+    );
+
+    let (claude_tx, _claude_rx) = mpsc::unbounded_channel();
+    let claude = factory
+        .build_controlled_planning("claude", None, claude_tx, root.clone())
+        .unwrap();
+    let Backend::ClaudeCli(mut claude) = claude else {
+        panic!("expected controlled Claude profile");
+    };
+    assert!(claude.is_controlled_planning_for_test());
+    let claude_args = claude.planning_args_for_test(Effort::None).unwrap();
+    for required in [
+        "--safe-mode",
+        "--no-session-persistence",
+        "--permission-mode",
+        "plan",
+        "--allowedTools",
+        "Read,Glob,Grep",
+        "--json-schema",
+    ] {
+        assert!(claude_args.iter().any(|argument| argument == required));
+    }
+    claude.set_claude_session_id(Some("must-not-resume".to_string()));
+    assert!(claude.claude_session_id().is_none());
+    assert_eq!(
+        claude.planning_working_dir_for_test(),
+        Some(std::fs::canonicalize(&root).unwrap())
+    );
+
+    drop(codex);
+    assert!(
+        !schema_path.exists(),
+        "controlled schema file should be removed"
+    );
+    drop(claude);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// covers: deepseek-custom/controlled-development-mode :: Execution uses one isolated current-state workspace :: Codex CLI cannot bypass the outer workspace boundary
+#[test]
+fn controlled_execution_factory_forces_fresh_cli_profiles_at_the_disposable_root() {
+    let real_root = super::scratch_dir("controlled-execution", "real-root");
+    let disposable_root = super::scratch_dir("controlled-execution", "disposable-root");
+    let canonical_disposable = std::fs::canonicalize(&disposable_root).unwrap();
+    let mut backends = HashMap::new();
+    backends.insert(
+        "codex".to_string(),
+        BackendConfig::CodexCli {
+            model: "gpt-5-codex".to_string(),
+            sandbox: None,
+            env: None,
+            models: None,
+        },
+    );
+    backends.insert(
+        "claude".to_string(),
+        BackendConfig::ClaudeCli {
+            model: "claude-opus-x".to_string(),
+            permission_mode: Some("bypassPermissions".to_string()),
+            env: None,
+            models: None,
+        },
+    );
+    let factory = Arc::new(BackendFactory::new(
+        settings_with_backends(Some("codex"), backends),
+        real_root.clone(),
+    ));
+
+    let (codex_tx, _codex_rx) = mpsc::unbounded_channel();
+    let Backend::CodexCli(mut codex) = factory
+        .build_controlled_execution("codex", None, codex_tx, disposable_root.clone())
+        .unwrap()
+    else {
+        panic!("expected controlled Codex execution profile");
+    };
+    codex.set_thread_id(Some("must-not-resume".to_string()));
+    assert!(codex.thread_id().is_none());
+    assert_eq!(
+        codex.execution_working_dir_for_test(),
+        Some(canonical_disposable.clone())
+    );
+    assert_eq!(
+        codex
+            .execution_args_for_test("apply approved card", Effort::None)
+            .unwrap(),
+        vec![
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "multi_agent_v2",
+            "-m",
+            "gpt-5-codex",
+            "apply approved card",
+        ]
+    );
+
+    let (claude_tx, _claude_rx) = mpsc::unbounded_channel();
+    let Backend::ClaudeCli(mut claude) = factory
+        .build_controlled_execution("claude", None, claude_tx, disposable_root.clone())
+        .unwrap()
+    else {
+        panic!("expected controlled Claude execution profile");
+    };
+    claude.set_claude_session_id(Some("must-not-resume".to_string()));
+    assert!(claude.claude_session_id().is_none());
+    assert!(claude.is_controlled_execution_for_test());
+    assert_eq!(
+        claude.execution_working_dir_for_test(),
+        Some(canonical_disposable)
+    );
+    assert_eq!(
+        claude.execution_args_for_test(Effort::None).unwrap(),
+        vec![
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--model",
+            "claude-opus-x",
+            "--permission-mode",
+            "acceptEdits",
+            "--thinking-display",
+            "summarized",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--tools",
+            "Read,Glob,Grep,Write,Edit",
+            "--allowedTools",
+            "Read,Glob,Grep,Write,Edit",
+        ]
+    );
+
+    std::fs::remove_dir_all(real_root).unwrap();
+    std::fs::remove_dir_all(disposable_root).unwrap();
+}
+
+#[test]
+fn normal_cli_factory_profiles_do_not_enable_controlled_planning() {
+    let root = super::scratch_dir("controlled-planning", "normal-cli");
+    let codex_factory = Arc::new(BackendFactory::new(
+        codex_cli_backend_settings(),
+        root.clone(),
+    ));
+    let (codex_tx, _codex_rx) = mpsc::unbounded_channel();
+    let Backend::CodexCli(codex) = codex_factory.build("codex", None, codex_tx, 0).unwrap() else {
+        panic!("expected normal Codex profile");
+    };
+    assert!(codex.planning_schema_path_for_test().is_none());
+    assert!(
+        codex
+            .execution_args_for_test("normal", Effort::None)
+            .is_none()
+    );
+
+    let mut backends = HashMap::new();
+    backends.insert(
+        "claude".to_string(),
+        BackendConfig::ClaudeCli {
+            model: "claude-opus-x".to_string(),
+            permission_mode: None,
+            env: None,
+            models: None,
+        },
+    );
+    let claude_factory = Arc::new(BackendFactory::new(
+        settings_with_backends(Some("claude"), backends),
+        root.clone(),
+    ));
+    let (claude_tx, _claude_rx) = mpsc::unbounded_channel();
+    let Backend::ClaudeCli(claude) = claude_factory.build("claude", None, claude_tx, 0).unwrap()
+    else {
+        panic!("expected normal Claude profile");
+    };
+    assert!(!claude.is_controlled_planning_for_test());
+    assert!(!claude.is_controlled_execution_for_test());
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

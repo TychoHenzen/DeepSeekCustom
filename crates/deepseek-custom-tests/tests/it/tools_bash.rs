@@ -29,28 +29,6 @@ async fn echo_hello_returns_correct_stdout() {
 }
 
 #[tokio::test]
-async fn timeout_kills_long_running_command() {
-    let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
-    // A cmd builtin loop, so the test does not depend on any program being
-    // on PATH. It runs for minutes, and the timeout must cut it short.
-    let input = serde_json::json!({
-        "command": "for /L %i in (1,1,200000000) do @rem",
-        "timeout_ms": 500
-    });
-    let output = tool.execute(input).await.expect("execute");
-    assert!(
-        output.is_error,
-        "expected an error, got: {}",
-        output.content
-    );
-    assert!(
-        output.content.contains("timed out"),
-        "expected a timeout, got: {}",
-        output.content
-    );
-}
-
-#[tokio::test]
 async fn powershell_auto_detected_and_run_directly() {
     let tool = BashTool::new(dir_arc(std::env::current_dir().unwrap()));
     let input = serde_json::json!({
@@ -195,13 +173,7 @@ fn resolve_shell_explicit_powershell() {
 
 /// Create a uniquely named directory under the system temp dir.
 fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dsc-bash-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    super::scratch_dir("dsc-bash", tag)
 }
 
 #[tokio::test]

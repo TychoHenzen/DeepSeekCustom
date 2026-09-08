@@ -1,0 +1,4 @@
+{
+  "rust": "node scripts/run-rust-test-file.mjs",
+  "javascript": "node scripts/run-web-test-file.mjs"
+}

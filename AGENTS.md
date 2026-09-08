@@ -2,7 +2,7 @@
 
 ## Project
 
-DeepSeekCustom is an experimental Rust harness for AI coding agents. It provides four backend kinds behind one egui GUI:
+DeepSeekCustom is an experimental Rust harness for AI coding agents. It provides four backend kinds behind one loopback web application:
 
 - In-process API backends for DeepSeek and Ollama.
 - A Claude CLI backend using a `claude -p` child process.
@@ -46,9 +46,14 @@ Run a focused test with the integration target before its filter:
 
 ```powershell
 cargo test -p deepseek-custom-tests --test it skills
+cargo test -p deepseek-custom-tests --test it procedure_sandbox_e2e -- --test-threads=1
 ```
 
 Do not use `cargo test --lib` as the project test command. The production crate intentionally carries no library tests.
+
+The Windows CI browser-test step removes `CI` and `GITHUB_ACTIONS` before running Cargo. `playwright-rs` otherwise adds `--disable-web-security`.
+
+That flag makes Chromium omit `Origin`, so the application's request guard rejects browser commands.
 
 ## Structural invariants
 
@@ -111,3 +116,12 @@ Do not update recorded test counts by assumption. Use current command output.
 Keep this file short enough for Codex instruction discovery. Put architecture narratives, subsystem inventories, and historical evidence in `docs/agent-project-context.md` or a narrower document.
 
 `AGENTS.md` is the canonical shared instruction file. `CLAUDE.md` imports it and contains only Claude-specific additions.
+
+## GitHub delivery workflow
+
+- Capture new ideas through `/add-backlog-idea` as issues in the linked Project with status `Backlog`.
+- Use `/refine-backlog-item` to research and move one issue to status `Todo`.
+- Use `/next-ticket` to implement and push one issue branch.
+- Use `/submit-draft-pr` to create the draft pull request.
+- Review is read-only until the user explicitly accepts selected findings or completion.
+- Use `/complete-pr` for ready, merge, linked-issue confirmation, and branch deletion.

@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::events::{RoutedEvent, StreamEvent};
 use crate::api::types::ImageAttachment;
+use crate::backend::SharedFlags;
 use crate::effort::Effort;
 use crate::error::Result;
 
@@ -56,6 +57,7 @@ pub struct ClaudeCliDriver {
     pub(super) repeat_interrupt_flag: Arc<AtomicBool>,
     pub(super) claude_session_id: Option<String>,
     pub(super) last_reply: Arc<Mutex<String>>,
+    pub(super) controlled_profile: Option<super::controlled_profile::ControlledProfile>,
 }
 
 impl ClaudeCliDriver {
@@ -89,14 +91,17 @@ impl ClaudeCliDriver {
             repeat_interrupt_flag: Arc::new(AtomicBool::new(false)),
             claude_session_id: None,
             last_reply: Arc::new(Mutex::new(String::new())),
+            controlled_profile: None,
         }
     }
 
     pub fn set_claude_session_id(&mut self, id: Option<String>) {
-        self.claude_session_id = id;
+        if self.controlled_profile.is_none() {
+            self.claude_session_id = id;
+        }
     }
 
-    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+    pub fn adopt_flags(&mut self, flags: &SharedFlags) {
         self.interrupt_flag = Arc::clone(&flags.interrupt);
         self.effort_flag = Arc::clone(&flags.effort);
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);
@@ -115,6 +120,10 @@ impl ClaudeCliDriver {
 
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
+    }
+
+    pub fn set_interrupt_flag(&mut self, interrupt_flag: Arc<AtomicBool>) {
+        self.interrupt_flag = interrupt_flag;
     }
 
     pub fn effort_flag(&self) -> Arc<AtomicU8> {
@@ -165,6 +174,9 @@ impl ClaudeCliDriver {
     }
 
     fn drain_session_id(&mut self) {
+        if self.controlled_profile.is_some() {
+            return;
+        }
         let Some(rx) = self.session_id_rx.as_mut() else {
             return;
         };

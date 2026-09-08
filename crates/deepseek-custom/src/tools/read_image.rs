@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -22,30 +23,26 @@ use crate::tools::{Tool, ToolOutput};
 /// about which behavior it gets. The model instead picks the right tool by
 /// name, the same way it already picks `bash` over `read` over `write`.
 pub struct ReadImageTool {
-    working_dir: Arc<Mutex<std::path::PathBuf>>,
+    root: super::FileToolRoot,
 }
 
 impl ReadImageTool {
-    pub fn new(working_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
-        Self { working_dir }
+    pub fn new(working_dir: Arc<Mutex<PathBuf>>) -> Self {
+        Self {
+            root: super::FileToolRoot::working_directory(working_dir),
+        }
+    }
+
+    pub(crate) fn rooted(root: PathBuf) -> std::result::Result<Self, String> {
+        Ok(Self {
+            root: super::FileToolRoot::fixed(root)?,
+        })
     }
 
     /// Resolve a file path against the current working directory, read
     /// fresh from the shared flag. An absolute path is used as given.
-    /// Mirrors `ReadTool::resolve_path` exactly; kept separate rather than
-    /// shared, since the two tools have no other coupling and a shared
-    /// helper would be the only thing tying them together.
-    fn resolve_path(&self, file_path: &str) -> std::path::PathBuf {
-        let path = std::path::Path::new(file_path);
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        let working_dir = self
-            .working_dir
-            .lock()
-            .expect("working_dir mutex poisoned")
-            .clone();
-        working_dir.join(path)
+    fn resolve_path(&self, file_path: &str) -> std::result::Result<PathBuf, String> {
+        self.root.resolve(file_path)
     }
 }
 
@@ -81,25 +78,26 @@ impl Tool for ReadImageTool {
         let parsed: ReadImageInput = serde_json::from_value(input)
             .map_err(|e| HarnessError::Tool(format!("Invalid read_image input: {e}")))?;
 
-        let path = self.resolve_path(&parsed.file_path);
+        let path = match self.resolve_path(&parsed.file_path) {
+            Ok(path) => path,
+            Err(reason) => return Ok(ToolOutput::error(reason)),
+        };
         debug!("read_image: path={}", path.display());
 
         if path.is_dir() {
-            return Ok(ToolOutput {
-                content: format!("{} is a directory, not an image file", path.display()),
-                is_error: true,
-                image: None,
-            });
+            return Ok(ToolOutput::error(format!(
+                "{} is a directory, not an image file",
+                path.display()
+            )));
         }
 
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
-                return Ok(ToolOutput {
-                    content: format!("Failed to read {}: {e}", path.display()),
-                    is_error: true,
-                    image: None,
-                });
+                return Ok(ToolOutput::error(format!(
+                    "Failed to read {}: {e}",
+                    path.display()
+                )));
             }
         };
 
@@ -117,11 +115,7 @@ impl Tool for ReadImageTool {
                 is_error: false,
                 image: Some(attachment),
             }),
-            Err(reason) => Ok(ToolOutput {
-                content: reason,
-                is_error: true,
-                image: None,
-            }),
+            Err(reason) => Ok(ToolOutput::error(reason)),
         }
     }
 }

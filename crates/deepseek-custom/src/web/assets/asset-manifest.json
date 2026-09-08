@@ -1,0 +1,19 @@
+{
+  "contract_version": 1,
+  "generator": "vite",
+  "build_command": "npm --prefix web run build",
+  "assets": [
+    {
+      "path": "assets/index-mlXWtad3.js",
+      "sha256": "5bfc3e0c853505becaa05c5fcf67afcab12eee4f29bfb34eb941bb87b6df99b3"
+    },
+    {
+      "path": "assets/index-tSq3aoA8.css",
+      "sha256": "80a91de53636ed31cc746356b589ecc9cc0f50f35dba639ac291918490315025"
+    },
+    {
+      "path": "index.html",
+      "sha256": "450aa5961d9776010d32ea4f9237b5fbfb4c2a3191fbfba3706fcab74ae78b09"
+    }
+  ]
+}

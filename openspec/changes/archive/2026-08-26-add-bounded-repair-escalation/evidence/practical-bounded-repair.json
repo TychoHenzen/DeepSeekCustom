@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "run_kind": "controlled_scripted_dispatch_and_fake_verifier",
+  "external_frontier_call": false,
+  "test": "procedure_bounded_repair_end_to_end::frontier_recovery_runs_both_tiers_and_persists_promoted_sequence",
+  "attempt_sequence": [
+    "local:1:attempt_started",
+    "local:1:verifier_failure",
+    "local:2:attempt_started",
+    "local:2:verifier_failure",
+    "local:3:attempt_started",
+    "local:3:verifier_failure",
+    "frontier:1:escalated",
+    "frontier:1:attempt_started",
+    "frontier:1:promoted"
+  ],
+  "tiers": {
+    "local": {
+      "backend": "scripted-local",
+      "model": "local-model",
+      "attempts": 3,
+      "failure_count": 3,
+      "failure_exit_codes": [7, 7, 7]
+    },
+    "frontier": {
+      "backend": "scripted-frontier",
+      "model": "frontier-model",
+      "attempts": 1,
+      "received_local_failure_count": 3,
+      "received_local_attempt_numbers": [1, 2, 3]
+    }
+  },
+  "final_disposition": "promoted",
+  "promotion_gate": "verifier_passed",
+  "report_persisted": true,
+  "persisted_event_count": 9,
+  "workspace_evidence": {
+    "local_dispatch_observations_before_promotion": 3,
+    "frontier_dispatch_observations_before_promotion": 1,
+    "verifier_observations_before_promotion": 4,
+    "target_bytes_original_at_every_observation": true,
+    "unrelated_bytes_original_at_every_observation": true,
+    "target_bytes_promoted_after_all_gates": true,
+    "unrelated_bytes_unchanged_after_promotion": true
+  }
+}

@@ -51,18 +51,27 @@
 //! checksum-verified bundle since the destination no longer exists.
 //! `target/` is gitignored, so this is never a source change.
 
+#[cfg(windows)]
+use std::env;
 use std::ffi::OsStr;
+use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
-use std::{env, fs};
 
+#[cfg(windows)]
 use ort::execution_providers::CUDAExecutionProvider;
+#[cfg(windows)]
 use ort::session::Session;
-use tracing::{debug, info, warn};
+use tracing::debug;
+#[cfg(windows)]
+use tracing::{info, warn};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{
     AddDllDirectory, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_USER_DIRS,
     SetDefaultDllDirectories,
 };
+#[cfg(windows)]
 use windows::core::HSTRING;
 
 /// Find every directory this machine's Python installations and CUDA
@@ -73,37 +82,54 @@ use windows::core::HSTRING;
 /// Must run before the first ort session is built: `AddDllDirectory` only
 /// affects loads that happen after it returns.
 pub fn register_cuda_dll_dirs() {
-    let dirs = find_cuda_dll_dirs();
-    if dirs.is_empty() {
-        debug!("cuda dll dirs: no CUDA runtime DLL dirs found, PATH left unchanged");
-        return;
+    #[cfg(not(windows))]
+    {
+        debug!("cuda dll dirs: Windows DLL registration is unavailable on this platform");
     }
-    if !enable_dll_directory_search() {
-        return;
+
+    #[cfg(windows)]
+    {
+        let dirs = find_cuda_dll_dirs();
+        if dirs.is_empty() {
+            debug!("cuda dll dirs: no CUDA runtime DLL dirs found, PATH left unchanged");
+            return;
+        }
+        if !enable_dll_directory_search() {
+            return;
+        }
+        let registered = dirs.iter().filter(|dir| add_dll_directory(dir)).count();
+        debug!(
+            "cuda dll dirs: registered {registered}/{} dir(s)",
+            dirs.len()
+        );
     }
-    let registered = dirs.iter().filter(|dir| add_dll_directory(dir)).count();
-    debug!(
-        "cuda dll dirs: registered {registered}/{} dir(s)",
-        dirs.len()
-    );
 }
 
 /// Log the true answer to "is the CUDA execution provider actually usable",
 /// instead of trusting kokoro-en's own log line (see module docs).
 pub fn log_real_cuda_provider_status() {
-    match probe_cuda_registration() {
-        Ok(()) => info!(
-            "cuda dll dirs: CUDA execution provider registered successfully, GPU is genuinely in use"
-        ),
-        Err(e) => warn!(
-            "cuda dll dirs: CUDA execution provider registration failed ({e}), actually running on CPU regardless of what kokoro-en logged"
-        ),
+    #[cfg(not(windows))]
+    {
+        debug!("cuda dll dirs: CUDA provider probing is unavailable on this platform");
+    }
+
+    #[cfg(windows)]
+    {
+        match probe_cuda_registration() {
+            Ok(()) => info!(
+                "cuda dll dirs: CUDA execution provider registered successfully, GPU is genuinely in use"
+            ),
+            Err(e) => warn!(
+                "cuda dll dirs: CUDA execution provider registration failed ({e}), actually running on CPU regardless of what kokoro-en logged"
+            ),
+        }
     }
 }
 
 /// Every directory reachable from this machine's Python installations and
 /// CUDA Toolkit install that might hold a CUDA runtime DLL. Empty, never an
 /// error, when neither is present.
+#[cfg(windows)]
 fn find_cuda_dll_dirs() -> Vec<PathBuf> {
     let mut dirs = nvidia_bin_dirs_under(&candidate_site_packages_dirs());
     dirs.extend(cuda_toolkit_bin_dirs());
@@ -139,18 +165,21 @@ fn nvidia_bin_dirs_in_one(site_packages: &Path) -> Vec<PathBuf> {
 /// install locations Windows Python installers use. Never fails: an absent
 /// Python, or a Python with no such directories, just yields fewer or zero
 /// candidates.
+#[cfg(windows)]
 fn candidate_site_packages_dirs() -> Vec<PathBuf> {
     let mut dirs = site_packages_from_python();
     dirs.extend(site_packages_from_known_locations());
     dirs
 }
 
+#[cfg(windows)]
 const SITE_PACKAGES_SCRIPT: &str =
     "import site\nfor p in site.getsitepackages() + [site.getusersitepackages()]:\n    print(p)";
 
 /// Ask Python for its site-packages directories, both the interpreter's own
 /// and the per-user one `pip install --user` uses. Tries `py` (the Windows
 /// launcher, always registered by the official installer) before `python`.
+#[cfg(windows)]
 fn site_packages_from_python() -> Vec<PathBuf> {
     for exe in ["py", "python", "python3"] {
         if let Some(dirs) = query_python_site_packages(exe) {
@@ -160,6 +189,7 @@ fn site_packages_from_python() -> Vec<PathBuf> {
     Vec::new()
 }
 
+#[cfg(windows)]
 fn query_python_site_packages(exe: &str) -> Option<Vec<PathBuf>> {
     let output = Command::new(exe)
         .args(["-c", SITE_PACKAGES_SCRIPT])
@@ -178,6 +208,7 @@ fn query_python_site_packages(exe: &str) -> Option<Vec<PathBuf>> {
 /// covers `pip install --user`.
 /// `%LOCALAPPDATA%\Programs\Python\Python3*\Lib\site-packages` covers the
 /// per-user official installer. Neither hardcodes a Python version.
+#[cfg(windows)]
 fn site_packages_from_known_locations() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(appdata) = env::var("APPDATA") {
@@ -202,6 +233,7 @@ fn site_packages_from_known_locations() -> Vec<PathBuf> {
 /// CUDA Toolkit `bin` directories for every version installed under the
 /// standard Program Files location. Used only when Python's pip wheels
 /// don't cover a DLL the provider needs (see module docs).
+#[cfg(windows)]
 fn cuda_toolkit_bin_dirs() -> Vec<PathBuf> {
     let Ok(program_files) = env::var("ProgramFiles") else {
         return Vec::new();
@@ -255,6 +287,7 @@ fn child_dirs_starting_with(parent: &Path, prefix: &str) -> Vec<PathBuf> {
 
 /// Turn on `AddDllDirectory`-based search for this process. Must happen
 /// before `add_dll_directory` calls take effect.
+#[cfg(windows)]
 fn enable_dll_directory_search() -> bool {
     let flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS;
     // SAFETY: SetDefaultDllDirectories takes a plain flags bitmask, no
@@ -271,6 +304,7 @@ fn enable_dll_directory_search() -> bool {
 }
 
 /// Register one directory with the loader. Returns whether it succeeded.
+#[cfg(windows)]
 fn add_dll_directory(dir: &Path) -> bool {
     let wide = HSTRING::from(dir.to_string_lossy().as_ref());
     // SAFETY: AddDllDirectory takes a wide string naming a directory to
@@ -295,6 +329,7 @@ fn add_dll_directory(dir: &Path) -> bool {
 /// DLL when that is the cause (see module docs). Building the session
 /// itself failing also comes back as `Err`, since that too means no CUDA
 /// session is possible.
+#[cfg(windows)]
 fn probe_cuda_registration() -> Result<(), String> {
     let builder = Session::builder().map_err(|e| e.to_string())?;
     let cuda = CUDAExecutionProvider::default().build().error_on_failure();

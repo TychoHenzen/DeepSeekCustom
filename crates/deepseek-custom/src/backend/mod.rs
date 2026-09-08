@@ -5,8 +5,11 @@
 //! the difference: both variants expose the same six shared flags.
 
 pub mod build_api;
+mod build_controlled_api;
 pub mod claude_cli;
 pub mod codex_cli;
+mod controlled;
+mod controlled_api_profile;
 pub mod factory;
 pub mod registry;
 pub mod resolved;
@@ -14,17 +17,18 @@ pub mod stub;
 pub mod subagent;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
 use crate::agent::agent_loop::AgentLoop;
-use crate::agent::agent_types::DEFAULT_CONTEXT_BUDGET;
+use crate::agent::agent_types::{DEFAULT_CONTEXT_BUDGET, DEFAULT_TARGET_GRADE};
 use crate::agent::events::RoutedEvent;
 use crate::agent::repeat::run_repeat;
 use crate::api::types::{ImageAttachment, Message};
+use crate::effort::Effort;
 use crate::error::Result;
 
 use claude_cli::process::ClaudeCliDriver;
@@ -80,7 +84,7 @@ impl SharedFlags {
     pub fn new(model: String) -> Self {
         Self {
             interrupt: Arc::new(AtomicBool::new(false)),
-            effort: Arc::new(AtomicU8::new(crate::effort::Effort::None.to_u8())),
+            effort: Arc::new(AtomicU8::new(Effort::None.to_u8())),
             voice_mode: Arc::new(AtomicBool::new(false)),
             context_budget: Arc::new(AtomicUsize::new(DEFAULT_CONTEXT_BUDGET)),
             model: Arc::new(Mutex::new(model)),
@@ -88,9 +92,7 @@ impl SharedFlags {
             cascade_total: Arc::new(AtomicUsize::new(0)),
             cascade_escalated: Arc::new(AtomicUsize::new(0)),
             style_plain_language: Arc::new(AtomicBool::new(false)),
-            style_target_grade: Arc::new(AtomicU8::new(
-                crate::agent::agent_types::DEFAULT_TARGET_GRADE,
-            )),
+            style_target_grade: Arc::new(AtomicU8::new(DEFAULT_TARGET_GRADE)),
             search_interrupt: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -121,6 +123,17 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Replace only the ordinary turn interrupt used by this backend.
+    pub fn adopt_interrupt_flag(&mut self, interrupt: Arc<std::sync::atomic::AtomicBool>) {
+        match self {
+            Backend::Api(agent) => agent.set_interrupt_flag(interrupt),
+            Backend::ClaudeCli(driver) => driver.set_interrupt_flag(interrupt),
+            Backend::CodexCli(driver) => driver.set_interrupt_flag(interrupt),
+            #[cfg(feature = "test-support")]
+            Backend::Stub(stub) => stub.set_interrupt_flag(interrupt),
+        }
+    }
+
     /// Build the `ClaudeCli` variant from a resolved config entry. Thin
     /// wrapper so `main.rs` does not need to reach into
     /// `backend::claude_cli::process` directly.
@@ -180,12 +193,7 @@ impl Backend {
     /// Both variants drive the same `run_repeat` loop in
     /// `src/agent/repeat.rs`, through the `RepeatTarget` trait each
     /// implements its own way.
-    pub async fn run_repeat(
-        &mut self,
-        task: &str,
-        iterations: u32,
-        project_root: &std::path::Path,
-    ) {
+    pub async fn run_repeat(&mut self, task: &str, iterations: u32, project_root: &Path) {
         match self {
             Backend::Api(agent) => run_repeat(agent.as_mut(), task, iterations, project_root).await,
             Backend::ClaudeCli(driver) => {

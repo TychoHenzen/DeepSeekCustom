@@ -6,8 +6,12 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::api::client::ApiClient;
-use crate::api::types::{Content, Message, Role};
+use crate::api::types::Message;
+use crate::backend::SharedFlags;
+use crate::backend::registry::SubagentRegistry;
+use crate::context::relevance;
 use crate::effort::Effort;
+use crate::tools::ToolRegistry;
 
 use super::agent_helpers::context_low_water;
 use super::agent_style::StyleState;
@@ -19,7 +23,7 @@ use super::prompt::voice_mode_instructions;
 /// Core agent loop: user input -> API call -> tool execution -> repeat.
 pub struct AgentLoop {
     pub(crate) client: ApiClient,
-    pub(crate) tools: crate::tools::ToolRegistry,
+    pub(crate) tools: ToolRegistry,
     pub(crate) history: MessageHistory,
     pub(crate) config: AgentConfig,
     pub(crate) tx_events: Option<mpsc::UnboundedSender<RoutedEvent>>,
@@ -29,7 +33,7 @@ pub struct AgentLoop {
     pub(crate) voice_mode_flag: Arc<AtomicBool>,
     pub(crate) context_budget: Arc<AtomicUsize>,
     pub(crate) repeat_interrupt_flag: Arc<AtomicBool>,
-    pub(crate) subagent_registry: Option<Arc<crate::backend::registry::SubagentRegistry>>,
+    pub(crate) subagent_registry: Option<Arc<SubagentRegistry>>,
     pub(crate) working_dir: Option<Arc<Mutex<PathBuf>>>,
     pub(crate) style_state: StyleState,
     pub(crate) style_critic_backend: Option<String>,
@@ -38,7 +42,7 @@ pub struct AgentLoop {
 impl AgentLoop {
     pub fn new(
         client: ApiClient,
-        tools: crate::tools::ToolRegistry,
+        tools: ToolRegistry,
         system_prompt: String,
         config: AgentConfig,
         interrupt_flag: Arc<AtomicBool>,
@@ -75,10 +79,7 @@ impl AgentLoop {
         self.tx_events = Some(tx);
     }
 
-    pub fn set_subagent_registry(
-        &mut self,
-        registry: Arc<crate::backend::registry::SubagentRegistry>,
-    ) {
+    pub fn set_subagent_registry(&mut self, registry: Arc<SubagentRegistry>) {
         self.subagent_registry = Some(registry);
     }
 
@@ -105,19 +106,11 @@ impl AgentLoop {
         self.style_critic_backend = critic_backend;
     }
 
-    pub fn style_plain_language_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.style_state.plain_language_flag)
-    }
-
-    pub fn style_target_grade_flag(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.style_state.target_grade_flag)
-    }
-
     pub fn set_effort_flag(&mut self, effort_flag: Arc<AtomicU8>) {
         self.effort_flag = effort_flag;
     }
 
-    pub fn adopt_flags(&mut self, flags: &crate::backend::SharedFlags) {
+    pub fn adopt_flags(&mut self, flags: &SharedFlags) {
         self.interrupt_flag = Arc::clone(&flags.interrupt);
         self.model_name = Arc::clone(&flags.model);
         self.voice_mode_flag = Arc::clone(&flags.voice_mode);
@@ -128,14 +121,16 @@ impl AgentLoop {
     }
 
     #[cfg(feature = "test-support")]
-    pub fn subagent_registry_for_test(
-        &self,
-    ) -> Option<Arc<crate::backend::registry::SubagentRegistry>> {
+    pub fn subagent_registry_for_test(&self) -> Option<Arc<SubagentRegistry>> {
         self.subagent_registry.clone()
     }
 
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.interrupt_flag)
+    }
+
+    pub fn set_interrupt_flag(&mut self, interrupt_flag: Arc<AtomicBool>) {
+        self.interrupt_flag = interrupt_flag;
     }
 
     pub fn effort_flag(&self) -> Arc<AtomicU8> {
@@ -228,9 +223,7 @@ impl AgentLoop {
         }
 
         let messages: Vec<Message> = self.history.iter().cloned().collect();
-        let scores =
-            crate::context::relevance::score_messages(&self.client, &messages, &self.config.model)
-                .await;
+        let scores = relevance::score_messages(&self.client, &messages, &self.config.model).await;
         if scores.is_none() {
             warn!(
                 "context pruning: relevance scoring failed, \
@@ -287,13 +280,7 @@ impl AgentLoop {
     pub fn reset(&mut self, new_system_prompt: String, new_user_prompt: String) {
         info!("agent: session reset");
         self.history = MessageHistory::new(new_system_prompt);
-        self.history.push(Message {
-            role: Role::User,
-            content: Some(Content::text(new_user_prompt)),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        });
+        self.history.push(Message::user(new_user_prompt));
         self.send_event(StreamEvent::SessionReset);
     }
 }

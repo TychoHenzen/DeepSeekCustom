@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,11 +33,11 @@ pub enum Shell {
 /// not captured at construction, so a change takes effect on the next
 /// command run.
 pub struct BashTool {
-    work_dir: Arc<Mutex<std::path::PathBuf>>,
+    work_dir: Arc<Mutex<PathBuf>>,
 }
 
 impl BashTool {
-    pub fn new(work_dir: Arc<Mutex<std::path::PathBuf>>) -> Self {
+    pub fn new(work_dir: Arc<Mutex<PathBuf>>) -> Self {
         Self { work_dir }
     }
 }
@@ -142,15 +143,11 @@ impl Tool for BashTool {
                 })
             }
             Ok(Err(e)) => Err(HarnessError::Tool(format!("bash: {e}"))),
-            Err(_elapsed) => Ok(ToolOutput {
-                content: format!(
-                    "Command timed out after {}ms\nCommand: {}",
-                    timeout_dur.as_millis(),
-                    parsed.command
-                ),
-                is_error: true,
-                image: None,
-            }),
+            Err(_elapsed) => Ok(ToolOutput::error(format!(
+                "Command timed out after {}ms\nCommand: {}",
+                timeout_dur.as_millis(),
+                parsed.command
+            ))),
         }
     }
 }
@@ -179,7 +176,7 @@ fn format_output(out: &CommandOutput) -> String {
 
 pub(crate) async fn run_command(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
     shell: Shell,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let use_powershell = match shell {
@@ -218,7 +215,7 @@ pub(crate) async fn run_command(
 /// run that hit the escaping bug above hit this one right after it.
 async fn run_cmd(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let mut command = Command::new("cmd");
     #[cfg(windows)]
@@ -250,7 +247,7 @@ async fn run_cmd(
 /// avoiding cmd.exe's quote-mangling of inner double-quotes.
 async fn run_powershell_direct(
     cmd_str: &str,
-    work_dir: &std::path::Path,
+    work_dir: &Path,
 ) -> std::result::Result<CommandOutput, std::io::Error> {
     let args = split_shell_words(cmd_str);
     let (program, args) = if args.is_empty() {

@@ -2,7 +2,7 @@
 //! `claude -p`. Pure functions with no dependency on `ClaudeCliDriver`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::api::types::ImageAttachment;
@@ -145,7 +145,7 @@ pub fn resume_id_changed(current: &Option<String>, spawned: &Option<String>) -> 
 /// replaced before the next turn. `ensure_ready` applies the same rule to a
 /// changed voice-mode flag and a changed resume id. `spawned` is `None`
 /// before the first child is ever spawned, which always counts as changed.
-pub fn working_dir_changed(current: &std::path::Path, spawned: &Option<PathBuf>) -> bool {
+pub fn working_dir_changed(current: &Path, spawned: &Option<PathBuf>) -> bool {
     Some(current) != spawned.as_deref()
 }
 

@@ -26,18 +26,35 @@ pub struct ChatRequest {
     /// `effort` instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
-    /// Ollama's `/v1/chat/completions` thinking control: `"high" | "medium" |
-    /// "low" | "max" | "none"`. Unused by DeepSeek. Filled in by
-    /// `ApiClient::prepare_request` from `effort` below, the same way as
-    /// `thinking_mode`.
+    /// OpenAI-compatible thinking control. Ollama requests clear this field
+    /// because the harness does not assume a local model supports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Provider-native structured final-response constraint. `None` keeps
+    /// ordinary agent requests byte-for-byte wire compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     /// The harness's own five-level effort control. Never sent on the wire:
-    /// `ApiClient::prepare_request` reads it to fill in `thinking_mode`
-    /// (DeepSeek) or `reasoning_effort` (Ollama) per provider, at the edge,
-    /// right before the request goes out. See `crate::effort::Effort`.
+    /// `ApiClient::prepare_request` reads it to fill in `thinking_mode` for
+    /// DeepSeek. Ollama ignores it and uses the model's default behavior.
+    /// See `crate::effort::Effort`.
     #[serde(skip)]
     pub effort: Option<Effort>,
+}
+
+/// A structured final-response constraint accepted by compatible providers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    JsonSchema { json_schema: JsonSchemaFormat },
+}
+
+/// Named JSON Schema carried as typed JSON, not as an encoded string.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JsonSchemaFormat {
+    pub name: String,
+    pub strict: bool,
+    pub schema: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,16 +155,16 @@ struct ImageUrlPayload {
 /// payload with no `data:` prefix. `media_type` is the image's MIME type,
 /// e.g. `"image/png"`.
 ///
-/// Backend-agnostic on purpose: `src/agent/agent_loop.rs`'s
+/// Backend-agnostic on purpose: `src/agent/agent_helpers.rs`'s
 /// `build_user_content` maps this onto the OpenAI `image_url` part for
 /// Ollama, or drops it with a transcript notice for DeepSeek.
-/// `src/backend/claude_cli/process.rs`'s `build_user_turn_line` maps it
+/// `src/backend/claude_cli/args.rs`'s `build_user_turn_line` maps it
 /// onto the Anthropic `image` content block instead. Each backend needs its
 /// own shape; see `docs/notes/image-support.md` for what was confirmed
 /// against each one.
 ///
 /// `Serialize`/`Deserialize` are derived so this type can sit inside
-/// `BlockKind::Image` in `src/gui/transcript.rs` and round-trip through a
+/// `BlockKind::Image` in `src/application/transcript.rs` and round-trip through a
 /// session file. The base64 `data` field is what actually goes to disk in
 /// that case: a screenshot-sized payload is a real cost per saved session,
 /// noted where the `Image` block is defined.
@@ -313,13 +330,4 @@ pub struct Delta {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
-}
-
-// ── Tool result (for feeding back into agent loop) ──
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolResult {
-    pub tool_call_id: String,
-    pub role: String,
-    pub content: String,
 }

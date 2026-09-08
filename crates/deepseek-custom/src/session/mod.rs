@@ -1,12 +1,12 @@
 //! Plain data types for one saved conversation.
 //!
-//! This module holds the shapes that will eventually be written to and
-//! read from disk under `.deepseek/sessions/` (a later step, not this
-//! one). No disk IO and no GUI wiring happen here, only the types and
-//! the title derivation logic that later steps depend on.
+//! This file holds the shapes and the title derivation logic, and does no
+//! disk IO of its own. `store` below reads and writes them as one JSON
+//! file per session under `.deepseek/sessions/`, and
+//! `src/application/session_state.rs` drives saving and loading for the application actor.
 
 use crate::api::types::{Content, Message, Role};
-use crate::gui::transcript::{BlockKind, Transcript};
+use crate::application::transcript::{BlockKind, Transcript};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -47,6 +47,11 @@ impl SessionId {
     /// The id's string form, safe to use as a file stem.
     pub fn as_str(&self) -> String {
         self.0.to_string()
+    }
+
+    /// Parse the stable string form accepted by presentation adapters.
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
     }
 }
 
@@ -118,6 +123,9 @@ pub struct SessionRecord {
     /// `None` for an API-backend conversation. `None` on a `claude_cli`
     /// conversation until its first turn completes.
     pub claude_session_id: Option<String>,
+    /// Session-owned Controlled Development state. Older records omit it.
+    #[serde(default)]
+    pub controlled_development: crate::controlled_development::ControlledDevelopmentSessionRecord,
 }
 
 /// Derive a conversation's title from its message history. It takes the

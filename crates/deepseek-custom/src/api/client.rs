@@ -48,14 +48,10 @@ impl ApiClient {
 
     /// Adapt a request to what this client's provider accepts.
     ///
-    /// Both `thinking_mode` (DeepSeek) and `reasoning_effort` (Ollama) are
-    /// filled in here, from `req.effort`, the harness's own five-level
-    /// control. A caller builds a `ChatRequest` by setting `effort` and
-    /// leaving both wire fields `None`; this is the one place that maps
-    /// `effort` onto whichever field the active provider actually reads.
-    /// See `crate::effort::Effort` for the per-provider mapping. A request
-    /// with no `effort` set leaves both fields untouched, whatever the
-    /// caller put there directly.
+    /// DeepSeek's `thinking_mode` is filled from `req.effort`, the harness's
+    /// own five-level control. Ollama requests omit provider-native
+    /// thinking fields because many locally runnable models reject native
+    /// thinking control even when their prompts produce reasoning text.
     ///
     /// Ollama also does not support `tool_choice`, so that is cleared here
     /// too, regardless of `effort`.
@@ -63,16 +59,16 @@ impl ApiClient {
         let mut prepared = req.clone();
         match self.provider {
             Provider::DeepSeek => {
+                prepared.response_format = None;
                 if let Some(effort) = req.effort {
                     prepared.thinking_mode = Some(effort.deepseek_thinking_mode().to_string());
                 }
             }
             Provider::Ollama => {
                 prepared.tool_choice = None;
+                prepared.thinking = None;
                 prepared.thinking_mode = None;
-                if let Some(effort) = req.effort {
-                    prepared.reasoning_effort = Some(effort.ollama_reasoning_effort().to_string());
-                }
+                prepared.reasoning_effort = None;
             }
         }
         prepared
@@ -157,9 +153,17 @@ impl ApiClient {
         status == 429 || status >= 500
     }
 
+    /// Millis to wait before retrying `attempt` (0-indexed): the base delay
+    /// doubled each attempt. Associated (not `&self`) so the streaming
+    /// path's connect retry can share it, keeping the backoff curve from
+    /// drifting between the non-streaming and streaming requests.
+    pub(crate) fn retry_delay_ms(base_delay_ms: u64, attempt: u32) -> u64 {
+        base_delay_ms * 2u64.pow(attempt)
+    }
+
     /// Calculate the retry delay for the given attempt (0-indexed).
     fn retry_delay(&self, attempt: u32) -> Duration {
-        Duration::from_millis(self.base_delay_ms * 2u64.pow(attempt))
+        Duration::from_millis(Self::retry_delay_ms(self.base_delay_ms, attempt))
     }
 
     /// Build the Bearer auth header value.

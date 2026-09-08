@@ -39,27 +39,8 @@ impl SkillSource {
 /// root it came from. Ordered so that a later entry overrides an earlier
 /// one of the same name: plugins first, then global, then project.
 pub fn discover_skill_files(project_root: &Path) -> Vec<(PathBuf, SkillSource)> {
-    let mut found = Vec::new();
-
-    for plugin in enabled_plugin_roots() {
-        collect_from_root(
-            &plugin.root.join("skills"),
-            &SkillSource::Plugin(plugin.name.clone()),
-            &mut found,
-        );
-    }
-
-    if let Some(home) = claude_home() {
-        collect_from_root(&home.join("skills"), &SkillSource::Global, &mut found);
-    }
-
-    collect_from_root(
-        &project_root.join("skills"),
-        &SkillSource::Project,
-        &mut found,
-    );
-
-    found
+    let global = claude_home().map(|home| home.join("skills"));
+    discover_skill_files_in(project_root, global.as_deref(), &enabled_plugin_roots())
 }
 
 /// The same discovery against explicit roots, for a test that must not see

@@ -1,0 +1,86 @@
+{
+  "bounded_repair_history": [
+    {
+      "case": "local_mechanical",
+      "diagnostic": "patch envelope unified_diff is invalid: first line must start with `diff --git `",
+      "stage": "shared_decoder"
+    },
+    {
+      "case": "local_mechanical",
+      "diagnostic": "patch envelope unified_diff is invalid: line 5 has an invalid hunk prefix",
+      "stage": "shared_decoder"
+    },
+    {
+      "case": "local_mechanical",
+      "diagnostic": "patch hunks do not apply to the current source snapshot: error: corrupt patch at line 6",
+      "stage": "git_apply_check"
+    },
+    {
+      "case": "frontier_architectural",
+      "diagnostic": "disposable snapshot required --skip-git-repo-check",
+      "stage": "codex_dispatch"
+    }
+  ],
+  "cases": [
+    {
+      "evidence": {
+        "after_source_sha256": "sha256:55b7ae6c0aef3a9a63aa30e94ec06dd3cac3d0ef748eba14090166a2d506daf0",
+        "automatic_route": "local",
+        "backend": "ollama",
+        "before_source_sha256": "sha256:55b7ae6c0aef3a9a63aa30e94ec06dd3cac3d0ef748eba14090166a2d506daf0",
+        "effective_route": "local",
+        "error": null,
+        "model": "qwen2.5-coder:7b-instruct-q4_K_M",
+        "outcome": "valid_preview",
+        "parser_failure": null,
+        "signals": [
+          {
+            "kind": "mechanical_verb",
+            "value": "rename"
+          },
+          {
+            "kind": "target_count",
+            "value": 1
+          }
+        ],
+        "source_unchanged": true,
+        "targets": [
+          "src/lib.rs"
+        ]
+      },
+      "name": "local_mechanical"
+    },
+    {
+      "evidence": {
+        "after_source_sha256": "sha256:55b7ae6c0aef3a9a63aa30e94ec06dd3cac3d0ef748eba14090166a2d506daf0",
+        "automatic_route": "frontier",
+        "backend": "codex",
+        "before_source_sha256": "sha256:55b7ae6c0aef3a9a63aa30e94ec06dd3cac3d0ef748eba14090166a2d506daf0",
+        "effective_route": "frontier",
+        "error": null,
+        "model": "gpt-5.6-sol",
+        "outcome": "valid_preview",
+        "parser_failure": null,
+        "signals": [
+          {
+            "kind": "mechanical_verb",
+            "value": "rename"
+          },
+          {
+            "kind": "target_count",
+            "value": 1
+          },
+          {
+            "kind": "architecture"
+          }
+        ],
+        "source_unchanged": true,
+        "targets": [
+          "src/lib.rs"
+        ]
+      },
+      "name": "frontier_architectural"
+    }
+  ],
+  "schema_version": 1
+}

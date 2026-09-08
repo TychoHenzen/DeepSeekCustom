@@ -1,12 +1,13 @@
 //! Unit tests for `deepseek_custom::agent::prompt`, moved out of the
 //! production module as part of the two-crate workspace split.
 
-use deepseek_custom::agent::prompt::{SystemPromptBuilder, voice_mode_instructions};
+use deepseek_custom::agent::prompt::{
+    SystemPromptBuilder, build_system_prompt, voice_mode_instructions,
+};
 use deepseek_custom::api::types::{FunctionDef, ToolDef};
 
 #[test]
-fn builder_includes_all_sections() {
-    let builder = SystemPromptBuilder::new();
+fn system_prompt_includes_all_sections() {
     let tools = vec![ToolDef {
         tool_type: "function".into(),
         function: FunctionDef {
@@ -15,7 +16,7 @@ fn builder_includes_all_sections() {
             parameters: serde_json::json!({}),
         },
     }];
-    let prompt = builder.build(Some("memory content"), Some("skill list"), &tools);
+    let prompt = build_system_prompt(Some("memory content"), Some("skill list"), &tools);
 
     assert!(prompt.contains("memory content"));
     assert!(prompt.contains("skill list"));
@@ -23,14 +24,25 @@ fn builder_includes_all_sections() {
 }
 
 #[test]
-fn builder_handles_empty_optionals() {
-    let builder = SystemPromptBuilder::new();
-    let prompt = builder.build(None, None, &[]);
+fn system_prompt_handles_empty_optionals() {
+    let prompt = build_system_prompt(None, None, &[]);
 
     assert!(prompt.contains("DeepSeekCustom"));
     assert!(!prompt.contains("## Project Context"));
     assert!(!prompt.contains("## Available Skills"));
     assert!(!prompt.contains("## Available Tools"));
+}
+
+#[test]
+fn system_prompt_builder_keeps_custom_base_and_date_contract() {
+    let prompt = SystemPromptBuilder::new()
+        .with_base_instructions("custom instructions".to_string())
+        .with_date("2099-12-31".to_string())
+        .build(None, None, &[]);
+
+    assert!(prompt.contains("Today's date is 2099-12-31."));
+    assert!(prompt.contains("custom instructions"));
+    assert!(!prompt.contains("You are DeepSeekCustom"));
 }
 
 #[test]

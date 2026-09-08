@@ -1,0 +1,19 @@
+{
+  "prompt": "Select only repository targets present in repository_index. Return each path exactly as indexed. Include a symbol only when that symbol appears under the same path.\n\n{\"contract\":{\"change_id\":\"sandbox-change\",\"task\":{\"id\":\"1.1\",\"text\":\"Return src/lib.rs and include its exact indexed missing_symbol symbol\",\"covers\":\"deepseek-custom/procedure-sandbox-e2e-test :: Apply fixture edit :: Target is updated\"},\"proposal_scope\":{\"why\":\"Prove the isolated procedure lifecycle.\",\"what_changes\":\"- Rename before to after using exactly this diff string: diff --git a/src/lib.rs b/src/lib.rs\\\\n--- a/src/lib.rs\\\\n+++ b/src/lib.rs\\\\n@@ -1 +1 @@\\\\n-pub fn target_symbol() -> &'static str { \\\\\\\"before\\\\\\\" }\\\\n+pub fn target_symbol() -> &'static str { \\\\\\\"after\\\\\\\" }\\\\n\"},\"selection\":{\"binding\":\"bound\",\"capability\":\"deepseek-custom/procedure-sandbox-e2e-test\",\"requirement\":{\"name\":\"Apply fixture edit\",\"text\":\"The procedure SHALL rename before to after while preserving the one-line function form. The unified_diff SHALL equal `diff --git a/src/lib.rs b/src/lib.rs\\\\n--- a/src/lib.rs\\\\n+++ b/src/lib.rs\\\\n@@ -1 +1 @@\\\\n-pub fn target_symbol() -> &'static str { \\\\\\\"before\\\\\\\" }\\\\n+pub fn target_symbol() -> &'static str { \\\\\\\"after\\\\\\\" }\\\\n`.\",\"scenarios\":[{\"name\":\"Target is updated\",\"text\":\"- **WHEN** the fixture procedure runs\\n- **THEN** the diff uses @@ -1 +1 @@ with exactly one removed line and one added line\"}]}}},\"repository_index\":[{\"path\":\"Cargo.toml\",\"symbols\":[]},{\"path\":\"fixture-openspec.cmd\",\"symbols\":[]},{\"path\":\"notes.txt\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/proposal.md\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/specs/deepseek-custom/procedure-sandbox-e2e-test/spec.md\",\"symbols\":[]},{\"path\":\"openspec/changes/sandbox-change/tasks.md\",\"symbols\":[]},{\"path\":\"src/lib.rs\",\"symbols\":[\"missing_symbol\"]}],\"scratchpad\":{\"goals\":[\"Include the exact indexed symbol missing_symbol\"],\"files\":[\"src/lib.rs\"],\"changes\":[],\"last_error\":\"A path-only target was rejected because the contract requires missing_symbol\"}}",
+  "provenance": {
+    "backend": "ollama",
+    "capture_date": "2026-08-28",
+    "model": "hf.co/mradermacher/Qwen2.5-7B-Instruct-1M-Thinking-Claude-Gemini-GPT5.2-DISTILL-GGUF:Q4_K_M",
+    "response_encoding": "typed dispatcher result serialized without semantic edits",
+    "stage": "localization_bounded_retry_symbol_fixture"
+  },
+  "response": {
+    "targets": [
+      {
+        "evidence": "path exists",
+        "path": "src/lib.rs",
+        "symbol": "missing_symbol"
+      }
+    ]
+  }
+}

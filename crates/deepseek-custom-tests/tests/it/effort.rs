@@ -46,21 +46,21 @@ fn deepseek_thinking_mode_collapses_five_levels_into_three() {
 }
 
 #[test]
-fn ollama_reasoning_effort_is_one_to_one() {
-    assert_eq!(Effort::None.ollama_reasoning_effort(), "none");
-    assert_eq!(Effort::Low.ollama_reasoning_effort(), "low");
-    assert_eq!(Effort::Medium.ollama_reasoning_effort(), "medium");
-    assert_eq!(Effort::High.ollama_reasoning_effort(), "high");
-    assert_eq!(Effort::Max.ollama_reasoning_effort(), "max");
-}
-
-#[test]
 fn claude_cli_effort_omits_the_flag_only_for_none() {
     assert_eq!(Effort::None.claude_cli_effort(), None);
     assert_eq!(Effort::Low.claude_cli_effort(), Some("low"));
     assert_eq!(Effort::Medium.claude_cli_effort(), Some("medium"));
     assert_eq!(Effort::High.claude_cli_effort(), Some("high"));
     assert_eq!(Effort::Max.claude_cli_effort(), Some("max"));
+}
+
+#[test]
+fn codex_cli_effort_keeps_the_public_config_override_contract() {
+    assert_eq!(Effort::None.codex_cli_effort(), None);
+    assert_eq!(
+        Effort::High.codex_cli_effort(),
+        Some("-c reasoning.effort=high".to_string())
+    );
 }
 
 #[test]

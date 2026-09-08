@@ -1,11 +1,6 @@
 //! Building an `ImageAttachment` from raw image bytes.
 //!
-//! Lives at the crate root because its two callers share no parent but
-//! the crate: `src/gui/attachment.rs` builds an attachment from a pasted
-//! or dropped image, and `src/tools/read_image.rs` builds one from a file
-//! the model asked to read. Each held its own copy of both functions
-//! before this module existed, and the copies had already drifted apart in
-//! their error wording.
+//! Shared by browser uploads, tools, and persistence without a UI dependency.
 
 use base64::Engine;
 use image::ImageFormat;
@@ -30,6 +25,10 @@ pub fn attachment_from_image_bytes(bytes: &[u8], label: &str) -> Result<ImageAtt
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
         media_type: mime_for_image_format(format).to_string(),
     })
+}
+
+pub fn decode_image_attachment(image: &ImageAttachment) -> Result<Vec<u8>, base64::DecodeError> {
+    base64::engine::general_purpose::STANDARD.decode(&image.data)
 }
 
 /// The MIME type an `ImageAttachment` carries for a decoded
