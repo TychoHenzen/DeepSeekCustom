@@ -23,11 +23,12 @@ export function ChatWorkspace({ transcript, sessionId, controlledDevelopment, op
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [attachment, setAttachment] = useState<UploadedAttachment | null>(acceptedAttachmentId === null ? null : { attachment_id: acceptedAttachmentId, media_type: 'image/unknown', size: 0 });
-  const [preview, setPreview] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ImageBitmap | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [controlledError, setControlledError] = useState<string | null>(null);
   const [controlledSubmitting, setControlledSubmitting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const previewCanvas = useRef<HTMLCanvasElement>(null);
   const running = operation?.phase === 'running';
 
   async function sendControlled(command: AppCommand) {
@@ -44,7 +45,16 @@ export function ChatWorkspace({ transcript, sessionId, controlledDevelopment, op
     }
   }
 
-  useEffect(() => () => { if (preview !== null) URL.revokeObjectURL(preview); }, [preview]);
+  useEffect(() => {
+    if (preview === null) return;
+    const canvas = previewCanvas.current;
+    if (canvas !== null) {
+      canvas.width = preview.width;
+      canvas.height = preview.height;
+      canvas.getContext('2d')?.drawImage(preview, 0, 0);
+    }
+    return () => preview.close();
+  }, [preview]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -63,12 +73,17 @@ export function ChatWorkspace({ transcript, sessionId, controlledDevelopment, op
   async function acceptFile(file: File | undefined) {
     if (!file || !uploadAttachment) return;
     setAttachmentError(null);
+    let bitmap: ImageBitmap | null = null;
     try {
+      bitmap = await createImageBitmap(file);
       const uploaded = await uploadAttachment(file);
       if (attachment && clearAttachment) await clearAttachment(attachment.attachment_id);
       setAttachment(uploaded);
-      setPreview(URL.createObjectURL(file));
-    } catch (error) { setAttachmentError(error instanceof Error ? error.message : String(error)); }
+      setPreview(bitmap);
+    } catch (error) {
+      bitmap?.close();
+      setAttachmentError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function removeAttachment() {
@@ -107,7 +122,7 @@ export function ChatWorkspace({ transcript, sessionId, controlledDevelopment, op
       <textarea id="chat-message" onChange={(event) => setText(event.target.value)} value={text} />
       <input accept="image/png,image/jpeg,image/bmp" aria-label="Select image" hidden onChange={(event) => void acceptFile(event.target.files?.[0])} ref={fileInput} type="file" />
       <button onClick={() => fileInput.current?.click()} type="button">Attach image</button>
-      {(attachment !== null || acceptedAttachmentId !== null) && <div className="attachment-preview"><p>Accepted image ready. PNG, JPEG, or BMP. Maximum 5 MiB.</p>{preview && <img alt="Pending attachment preview" src={preview} />}<button onClick={() => void removeAttachment()} type="button">Clear image</button></div>}
+      {(attachment !== null || acceptedAttachmentId !== null) && <div className="attachment-preview"><p>Accepted image ready. PNG, JPEG, or BMP. Maximum 5 MiB.</p>{preview && <canvas aria-label="Pending attachment preview" height={preview.height} ref={previewCanvas} role="img" width={preview.width} />}<button onClick={() => void removeAttachment()} type="button">Clear image</button></div>}
       {attachmentError && <p role="alert">Image rejected: {attachmentError}</p>}
       <button disabled={submitting || running || (text.trim().length === 0 && attachment === null && acceptedAttachmentId === null)} type="submit">Send message</button>
     </form>

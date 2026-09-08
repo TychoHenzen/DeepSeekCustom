@@ -7,7 +7,11 @@ import { App, type UiClient } from './App.tsx';
 import type { ClientView } from '../client/browser/client-types.ts';
 import { emptyControlledDevelopmentState, type AppCommand, type AppSnapshot } from '../client/contracts.ts';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function baseSnapshot(): AppSnapshot {
   return {
@@ -42,13 +46,17 @@ function practiceClient(initial: AppSnapshot) {
 }
 
 it('verifies the complete chat milestone through the mounted application paths', async () => {
-  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:practice'), revokeObjectURL: vi.fn() });
+  vi.stubGlobal('createImageBitmap', vi.fn(() => Promise.resolve({ width: 1, height: 1, close: vi.fn() })));
+  const drawImage = vi.fn();
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
   const practice = practiceClient(baseSnapshot());
   render(<App client={practice.client} />);
 
   const image = new File(['png'], 'practice.png', { type: 'image/png' });
   await userEvent.upload(screen.getByLabelText('Select image'), image);
   expect(await screen.findByText(/Accepted image ready/)).toBeVisible();
+  expect(await screen.findByRole('img', { name: 'Pending attachment preview' })).toBeVisible();
+  await waitFor(() => expect(drawImage).toHaveBeenCalledOnce());
   await userEvent.type(screen.getByLabelText('Message'), 'stream this');
   await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
   expect(practice.send).toHaveBeenCalledWith({ command: 'send_message', payload: { text: 'stream this', attachment_id: 'image-practice' } });

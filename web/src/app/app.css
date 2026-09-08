@@ -273,7 +273,7 @@ button:disabled {
 .controlled-raw-details section,
 .controlled-raw-details pre { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
-.attachment-preview img {
+.attachment-preview canvas {
   display: block;
   max-block-size: 8rem;
   max-inline-size: min(100%, 16rem);
