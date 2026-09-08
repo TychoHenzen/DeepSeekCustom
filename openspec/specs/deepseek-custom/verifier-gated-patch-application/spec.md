@@ -86,4 +86,3 @@ The system SHALL record the patch result and each command's text, exit code, bou
 #### Scenario: User inspects a failed run
 - **WHEN** a verifier command fails
 - **THEN** the Procedure view and saved report show the failing command and bounded diagnostic output
-

@@ -15,7 +15,7 @@ use deepseek_custom::config::settings::{
     MAX_PROCEDURE_LOCAL_VERIFIER_ATTEMPTS, MAX_PROCEDURE_LOCALIZATION_SAMPLE_COUNT,
     MAX_PROCEDURE_STRUCTURAL_RETRIES, MIN_PROCEDURE_LOCAL_PATCH_CANDIDATE_COUNT,
     MIN_PROCEDURE_LOCALIZATION_SAMPLE_COUNT, PermissionsConfig, ProcedureSettings,
-    RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
+    RecoveryProjectConfig, RepositoryIndexLimits, Settings, TriggerMode, VoiceConfig,
 };
 use deepseek_custom::effort::Effort;
 
@@ -80,6 +80,38 @@ fn voice_full_block_deserializes() {
     assert_eq!(s.voice_wake_phrase(), "hey computer");
     assert_eq!(s.voice_tts_voice(), "am_michael");
     assert_eq!(s.voice_tts_speed(), 1.3);
+}
+
+#[test]
+fn recovery_block_deserializes_explicit_identity_and_limits() {
+    let settings: Settings = serde_json::from_str(
+        r#"{
+            "recovery": {
+                "repository_reference": "https://github.com/acme/project",
+                "project": {"provider": "github", "key": "acme/7"},
+                "item_reference": "https://github.com/acme/project/pull/9",
+                "current_step": "verify",
+                "diagnostic_backend": "diagnostic",
+                "diagnostic_model": "small",
+                "max_retry_attempts": 1
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let recovery = settings.recovery().expect("recovery block should load");
+    assert_eq!(
+        recovery.repository_reference.as_deref(),
+        Some("https://github.com/acme/project")
+    );
+    assert_eq!(
+        recovery.project,
+        Some(RecoveryProjectConfig {
+            provider: "github".into(),
+            key: "acme/7".into(),
+        })
+    );
+    assert_eq!(recovery.max_retry_attempts, Some(1));
 }
 
 #[test]
@@ -152,6 +184,7 @@ fn save_then_load_round_trips_values() {
         subagent_max_depth: Some(3),
         working_dir: None,
         mcp: None,
+        recovery: None,
         style: None,
         cascade: None,
         evolve: None,
@@ -296,6 +329,7 @@ fn save_omits_none_fields() {
         send_message_call_cap: None,
         working_dir: None,
         mcp: None,
+        recovery: None,
         style: None,
         cascade: None,
         evolve: None,

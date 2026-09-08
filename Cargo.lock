@@ -796,6 +796,7 @@ dependencies = [
  "glob",
  "image",
  "kokoro-en",
+ "libc",
  "open",
  "ort",
  "rand 0.9.5",

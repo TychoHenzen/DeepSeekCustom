@@ -323,7 +323,14 @@ async fn cancelled_codex_dispatch_drops_its_disposable_working_directory() {
     });
 
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while !cwd_file.exists() {
+        loop {
+            let side_effect_ready = std::fs::read_to_string(&cwd_file)
+                .ok()
+                .map(|directory| PathBuf::from(directory).join(SIDE_EFFECT_PATH).is_file())
+                .unwrap_or(false);
+            if side_effect_ready {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })

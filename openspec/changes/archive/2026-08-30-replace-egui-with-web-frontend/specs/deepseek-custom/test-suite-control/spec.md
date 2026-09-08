@@ -93,4 +93,3 @@ The Tests workspace SHALL report only the selected invocation's observed outcome
 - **WHEN** a focused module or individual test exits successfully
 - **THEN** the result names that exact scope as passed
 - **AND** does not claim that unrun checks passed
-

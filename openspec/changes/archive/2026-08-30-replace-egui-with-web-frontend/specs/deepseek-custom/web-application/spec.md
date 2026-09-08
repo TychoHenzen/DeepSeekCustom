@@ -125,4 +125,3 @@ The system SHALL reject state-changing browser requests unless they come from th
 - **WHEN** a request has a missing or foreign origin, missing or invalid process token, or a cross-origin preflight
 - **THEN** the system rejects it before command dispatch
 - **AND** returns no secret settings or application data
-

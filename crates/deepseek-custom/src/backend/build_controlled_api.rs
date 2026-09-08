@@ -8,8 +8,8 @@ use crate::agent::agent_types::AgentConfig;
 use crate::agent::events::RoutedEvent;
 use crate::agent::prompt::build_system_prompt;
 use crate::api::client::ApiClient;
-use crate::backend::Backend;
 use crate::backend::registry::SubagentRegistry;
+use crate::backend::{Backend, ToolPolicy};
 use crate::effort::Effort;
 use crate::tools::ToolRegistry;
 use crate::tools::{
@@ -70,5 +70,6 @@ pub(crate) fn build_controlled_api_backend(
         config,
         factory,
         gated,
+        ToolPolicy::All,
     ))
 }

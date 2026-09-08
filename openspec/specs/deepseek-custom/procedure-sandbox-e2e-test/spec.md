@@ -67,4 +67,3 @@ The fixture SHALL use deterministic in-process dispatch seams and temporary dire
 
 - **WHEN** the acceptance test executes in an environment without live model services
 - **THEN** it completes using fixture dispatchers and reports the same stage, evidence, and terminal assertions
-

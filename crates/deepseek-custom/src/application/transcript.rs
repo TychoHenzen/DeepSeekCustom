@@ -416,6 +416,31 @@ impl Transcript {
                     severity: Severity::Info,
                 });
             }
+            // Recovery updates are already sanitized by the recovery
+            // coordinator. Keep them in the web transcript so a blocked or
+            // retryable turn remains visible after the event stream moves on.
+            StreamEvent::RecoveryUpdated { update } => {
+                let mut text = format!(
+                    "Recovery {} (run {}): {}",
+                    update.status, update.run_id, update.summary
+                );
+                for evidence in update.evidence {
+                    text.push('\n');
+                    text.push_str(&evidence);
+                }
+                if let Some(question) = update.question {
+                    text.push_str("\nQuestion: ");
+                    text.push_str(&question);
+                }
+                if let Some(decision) = update.next_required_decision {
+                    text.push_str("\nNext decision: ");
+                    text.push_str(&decision);
+                }
+                self.push(BlockKind::Notice {
+                    text,
+                    severity: Severity::Warning,
+                });
+            }
             // The running search's own tab draws this, live. Pushing a
             // block per scored candidate would bury the conversation under
             // a few hundred notices and grow the saved session with them.

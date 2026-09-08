@@ -12,8 +12,8 @@ use crate::effort::Effort;
 use crate::error::{HarnessError, Result};
 
 use super::super::args::{
-    CLAUDE_CLI_PATH_KEY, build_args, effort_changed, resolve_claude_binary, resume_id_changed,
-    working_dir_changed,
+    CLAUDE_CLI_PATH_KEY, build_args_with_tools, effort_changed, resolve_claude_binary,
+    resume_id_changed, working_dir_changed,
 };
 use super::super::io::{spawn_stderr_drain, spawn_stdout_reader};
 
@@ -193,12 +193,13 @@ impl ClaudeCliDriver {
         let append_prompt = voice_mode.then(voice_mode_instructions);
         let args = match &self.controlled_profile {
             Some(profile) => profile.args(&self.model, effort),
-            None => build_args(
+            None => build_args_with_tools(
                 &self.model,
                 self.permission_mode.as_deref(),
                 append_prompt,
                 self.claude_session_id.as_deref(),
                 effort,
+                self.tools_enabled,
             ),
         };
         let command = self.build_spawn_command(&binary, &args, &working_dir);

@@ -25,13 +25,20 @@ impl CodexCliDriver {
     pub(super) fn turn_args(&self, prompt: &str, model: &str, effort: Effort) -> Vec<String> {
         match &self.controlled_profile {
             Some(profile) => profile.args(prompt, model, effort),
-            None => build_args(
-                prompt,
-                self.thread_id.as_deref(),
-                self.sandbox.as_deref(),
-                Some(model),
-                effort,
-            ),
+            None => {
+                let sandbox = if self.tools_enabled {
+                    self.sandbox.as_deref()
+                } else {
+                    Some("read-only")
+                };
+                build_args(
+                    prompt,
+                    self.thread_id.as_deref(),
+                    sandbox,
+                    Some(model),
+                    effort,
+                )
+            }
         }
     }
 

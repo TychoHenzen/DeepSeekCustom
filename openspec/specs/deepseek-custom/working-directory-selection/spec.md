@@ -28,4 +28,3 @@ Changing the selected working directory SHALL affect the shared agent working-di
 - **WHEN** the user selects a folder outside the fixed project root
 - **THEN** agent file and shell operations use the selected folder
 - **AND** settings persistence continues to use the fixed project root
-

@@ -77,6 +77,12 @@ pub struct SharedFlags {
     pub search_interrupt: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolPolicy {
+    All,
+    None,
+}
+
 impl SharedFlags {
     /// A fresh set, with `model` seeded to the given name. `main.rs` builds
     /// one of these before it builds any backend at all, then seeds the
@@ -144,12 +150,31 @@ impl Backend {
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: mpsc::UnboundedSender<RoutedEvent>,
     ) -> Self {
-        Backend::ClaudeCli(Box::new(ClaudeCliDriver::new(
+        Backend::new_claude_cli_with_tools(
             model,
             permission_mode,
             env,
             working_dir,
             tx_events,
+            true,
+        )
+    }
+
+    pub(crate) fn new_claude_cli_with_tools(
+        model: String,
+        permission_mode: Option<String>,
+        env: Option<HashMap<String, String>>,
+        working_dir: Arc<Mutex<PathBuf>>,
+        tx_events: mpsc::UnboundedSender<RoutedEvent>,
+        tools_enabled: bool,
+    ) -> Self {
+        Backend::ClaudeCli(Box::new(ClaudeCliDriver::new_with_tools(
+            model,
+            permission_mode,
+            env,
+            working_dir,
+            tx_events,
+            tools_enabled,
         )))
     }
 

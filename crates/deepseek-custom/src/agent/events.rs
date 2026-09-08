@@ -91,6 +91,8 @@ pub enum StreamEvent {
     RepeatFinished { completed: u32, total: u32 },
     /// An informational notice, such as a plain-language revision marker.
     Info { message: String },
+    /// A durable recovery decision became available to the GUI.
+    RecoveryUpdated { update: RecoveryUpdate },
     /// A running search reported its current state. Sent once per scored
     /// candidate, carrying the whole snapshot rather than a delta, so the
     /// view never rebuilds state from a partial history. Boxed because the
@@ -103,6 +105,18 @@ pub enum StreamEvent {
         summary: String,
         is_error: bool,
     },
+}
+
+/// The sanitized recovery fields the GUI can display without owning the
+/// persistence layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryUpdate {
+    pub run_id: String,
+    pub status: String,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub question: Option<String>,
+    pub next_required_decision: Option<String>,
 }
 
 /// Identifies one subagent dispatch, for event routing. Cheap to copy and

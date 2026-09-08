@@ -4,6 +4,9 @@
 .idea/
 .claude/
 
+# Frontend dependencies are installed locally from the web project manifests.
+/web/node_modules/
+
 # Voice models, downloaded separately. See docs/voice-setup.md.
 # 540 MB of whisper and Kokoro weights, plus the Kokoro voice packs.
 /models/

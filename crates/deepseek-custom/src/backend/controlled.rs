@@ -4,12 +4,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agent::events::RoutedEvent;
-use crate::backend::Backend;
 use crate::backend::claude_cli::process::ClaudeCliDriver;
 use crate::backend::codex_cli::CodexCliDriver;
+use crate::backend::{Backend, ToolPolicy};
 use crate::controlled_development::work_card_json_schema;
 
-use super::build_api::build_backend;
+use super::build_api::build_backend_with_policy;
 use super::build_controlled_api::build_controlled_api_backend;
 use super::factory::BackendFactory;
 use super::factory::ControlledApiProfile;
@@ -59,9 +59,14 @@ impl BackendFactory {
                 CodexCliDriver::new_planning(model, env, working_dir, tx_events, &schema)?,
             ))),
             #[cfg(feature = "test-support")]
-            ResolvedBackend::Stub { .. } => {
-                build_backend(&scoped, name, model_override, tx_events, 0)
-            }
+            ResolvedBackend::Stub { .. } => build_backend_with_policy(
+                &scoped,
+                name,
+                model_override,
+                tx_events,
+                0,
+                ToolPolicy::All,
+            ),
         }
     }
 
@@ -92,9 +97,14 @@ impl BackendFactory {
                 CodexCliDriver::new_execution(model, env, working_dir, tx_events),
             ))),
             #[cfg(feature = "test-support")]
-            ResolvedBackend::Stub { .. } => {
-                build_backend(&scoped, name, model_override, tx_events, 0)
-            }
+            ResolvedBackend::Stub { .. } => build_backend_with_policy(
+                &scoped,
+                name,
+                model_override,
+                tx_events,
+                0,
+                ToolPolicy::All,
+            ),
         }
     }
 }

@@ -8,7 +8,7 @@ use deepseek_custom::backend::claude_cli::events::parse_line;
 use deepseek_custom::backend::claude_cli::map::EventMapper;
 use deepseek_custom::backend::claude_cli::one_shot::{
     accumulate_one_shot_event, build_one_shot_args, build_planning_one_shot_args,
-    spawn_one_shot_child,
+    build_restricted_one_shot_args_for_test, spawn_one_shot_child,
 };
 use deepseek_custom::effort::Effort;
 
@@ -125,6 +125,27 @@ fn one_shot_args_builder_omits_input_format() {
 fn one_shot_args_builder_defaults_permission_mode_to_bypass_permissions() {
     let args = build_one_shot_args("claude-opus-x", None, "hello", Effort::None);
     assert_eq!(args[9], "bypassPermissions");
+}
+
+#[test]
+fn restricted_one_shot_args_ignore_bypass_mode_and_disable_project_settings() {
+    let args = build_restricted_one_shot_args_for_test(
+        "claude-opus-x",
+        Some("bypassPermissions"),
+        "diagnose",
+        Effort::None,
+    );
+    assert_eq!(args[9], "default");
+    let restricted = args
+        .iter()
+        .position(|arg| arg == "--restricted")
+        .expect("restricted one-shot args must use Claude safe mode");
+    let tools = args
+        .iter()
+        .position(|arg| arg == "--tools")
+        .expect("restricted one-shot args must carry the no-tools flag");
+    assert!(restricted < tools);
+    assert_eq!(args[tools + 1], "");
 }
 
 #[test]

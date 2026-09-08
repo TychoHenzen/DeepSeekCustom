@@ -55,7 +55,21 @@ pub fn build_one_shot_args(
     prompt: &str,
     effort: Effort,
 ) -> Vec<String> {
-    let mode = permission_mode.unwrap_or("bypassPermissions");
+    build_one_shot_args_with_tools(model, permission_mode, prompt, effort, true)
+}
+
+pub(super) fn build_one_shot_args_with_tools(
+    model: &str,
+    permission_mode: Option<&str>,
+    prompt: &str,
+    effort: Effort,
+    tools_enabled: bool,
+) -> Vec<String> {
+    let mode = match (tools_enabled, permission_mode) {
+        (false, None | Some("bypassPermissions")) => "default",
+        (_, Some(mode)) => mode,
+        (_, None) => "bypassPermissions",
+    };
     let mut args = vec![
         "-p".to_string(),
         prompt.to_string(),
@@ -73,11 +87,26 @@ pub fn build_one_shot_args(
         "--thinking-display".to_string(),
         "summarized".to_string(),
     ];
+    if !tools_enabled {
+        args.push("--restricted".to_string());
+        args.push("--tools".to_string());
+        args.push(String::new());
+    }
     if let Some(level) = effort.claude_cli_effort() {
         args.push("--effort".to_string());
         args.push(level.to_string());
     }
     args
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_restricted_one_shot_args_for_test(
+    model: &str,
+    permission_mode: Option<&str>,
+    prompt: &str,
+    effort: Effort,
+) -> Vec<String> {
+    build_one_shot_args_with_tools(model, permission_mode, prompt, effort, false)
 }
 
 /// Build one fresh Controlled Development planning invocation.
@@ -164,10 +193,31 @@ pub fn spawn_one_shot_child(
     prompt: &str,
     effort: Effort,
 ) -> Result<Child, String> {
+    spawn_one_shot_child_with_tools(
+        model,
+        permission_mode,
+        extra_env,
+        working_dir,
+        prompt,
+        effort,
+        true,
+    )
+}
+
+fn spawn_one_shot_child_with_tools(
+    model: &str,
+    permission_mode: Option<&str>,
+    extra_env: Option<&HashMap<String, String>>,
+    working_dir: &Path,
+    prompt: &str,
+    effort: Effort,
+    tools_enabled: bool,
+) -> Result<Child, String> {
     let binary = resolve_claude_binary(extra_env).ok_or_else(|| {
         format!("could not resolve the claude CLI binary; set {CLAUDE_CLI_PATH_KEY}")
     })?;
-    let args = build_one_shot_args(model, permission_mode, prompt, effort);
+    let args =
+        build_one_shot_args_with_tools(model, permission_mode, prompt, effort, tools_enabled);
 
     let mut command = Command::new(&binary);
     command
@@ -234,6 +284,17 @@ async fn read_one_shot_events(
     }
 }
 
+struct OneShotRequest<'a> {
+    model: &'a str,
+    permission_mode: Option<&'a str>,
+    extra_env: Option<&'a HashMap<String, String>>,
+    working_dir: &'a Path,
+    prompt: &'a str,
+    interrupt_flag: Arc<AtomicBool>,
+    effort: Effort,
+    tools_enabled: bool,
+}
+
 impl ClaudeCliDriver {
     /// Run one prompt against `claude -p` to completion, then exit. This is
     /// an associated function, not a method. A one-shot run owns nothing and
@@ -250,13 +311,50 @@ impl ClaudeCliDriver {
         interrupt_flag: Arc<AtomicBool>,
         effort: Effort,
     ) -> Result<OneShotResult, String> {
-        let mut child = spawn_one_shot_child(
+        Self::run_once_with_tools(OneShotRequest {
             model,
             permission_mode,
             extra_env,
             working_dir,
             prompt,
+            interrupt_flag,
             effort,
+            tools_enabled: true,
+        })
+        .await
+    }
+
+    pub(crate) async fn run_once_without_tools(
+        model: &str,
+        permission_mode: Option<&str>,
+        extra_env: Option<&HashMap<String, String>>,
+        working_dir: &Path,
+        prompt: &str,
+        interrupt_flag: Arc<AtomicBool>,
+        effort: Effort,
+    ) -> Result<OneShotResult, String> {
+        Self::run_once_with_tools(OneShotRequest {
+            model,
+            permission_mode,
+            extra_env,
+            working_dir,
+            prompt,
+            interrupt_flag,
+            effort,
+            tools_enabled: false,
+        })
+        .await
+    }
+
+    async fn run_once_with_tools(request: OneShotRequest<'_>) -> Result<OneShotResult, String> {
+        let mut child = spawn_one_shot_child_with_tools(
+            request.model,
+            request.permission_mode,
+            request.extra_env,
+            request.working_dir,
+            request.prompt,
+            request.effort,
+            request.tools_enabled,
         )?;
         let stdout = child
             .stdout
@@ -266,7 +364,7 @@ impl ClaudeCliDriver {
             spawn_stderr_drain(stderr);
         }
 
-        let outcome = read_one_shot_events(stdout, &interrupt_flag, &mut child).await;
+        let outcome = read_one_shot_events(stdout, &request.interrupt_flag, &mut child).await;
 
         if let Err(e) = child.wait().await {
             tracing::warn!("claude_cli: failed waiting for one-shot child exit: {e}");

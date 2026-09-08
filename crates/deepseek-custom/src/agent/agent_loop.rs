@@ -106,6 +106,16 @@ impl AgentLoop {
         self.style_critic_backend = critic_backend;
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn style_plain_language_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.style_state.plain_language_flag)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn style_target_grade_flag(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.style_state.target_grade_flag)
+    }
+
     pub fn set_effort_flag(&mut self, effort_flag: Arc<AtomicU8>) {
         self.effort_flag = effort_flag;
     }

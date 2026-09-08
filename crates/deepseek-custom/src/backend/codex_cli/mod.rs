@@ -43,6 +43,7 @@ const DROP_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct CodexCliDriver {
     thread_id: Option<String>,
     sandbox: Option<String>,
+    tools_enabled: bool,
     extra_env: Option<HashMap<String, String>>,
     working_dir: Arc<Mutex<PathBuf>>,
     tx_events: UnboundedSender<RoutedEvent>,
@@ -64,9 +65,21 @@ impl CodexCliDriver {
         working_dir: Arc<Mutex<PathBuf>>,
         tx_events: UnboundedSender<RoutedEvent>,
     ) -> Self {
+        Self::new_with_tools(model, sandbox, extra_env, working_dir, tx_events, true)
+    }
+
+    pub fn new_with_tools(
+        model: String,
+        sandbox: Option<String>,
+        extra_env: Option<HashMap<String, String>>,
+        working_dir: Arc<Mutex<PathBuf>>,
+        tx_events: UnboundedSender<RoutedEvent>,
+        tools_enabled: bool,
+    ) -> Self {
         Self {
             thread_id: None,
             sandbox,
+            tools_enabled,
             extra_env,
             working_dir,
             tx_events,

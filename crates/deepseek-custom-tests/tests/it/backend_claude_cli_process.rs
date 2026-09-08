@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use deepseek_custom::agent::events::StreamEvent;
 use deepseek_custom::api::types::ImageAttachment;
 use deepseek_custom::backend::claude_cli::args::{
-    build_args, build_user_turn_line, effort_changed, resolve_claude_binary, resume_id_changed,
-    working_dir_changed,
+    build_args, build_restricted_args_for_test, build_user_turn_line, effort_changed,
+    resolve_claude_binary, resume_id_changed, working_dir_changed,
 };
 use deepseek_custom::backend::claude_cli::process::ClaudeCliDriver;
 use deepseek_custom::effort::Effort;
@@ -217,6 +217,28 @@ fn args_builder_asks_for_visible_thinking() {
 fn args_builder_defaults_permission_mode_to_bypass_permissions() {
     let args = build_args("claude-opus-x", None, None, None, Effort::None);
     assert_eq!(args[10], "bypassPermissions");
+}
+
+#[test]
+fn restricted_args_ignore_bypass_mode_and_disable_project_settings() {
+    let args = build_restricted_args_for_test(
+        "claude-opus-x",
+        Some("bypassPermissions"),
+        None,
+        None,
+        Effort::None,
+    );
+    assert_eq!(args[10], "default");
+    let restricted = args
+        .iter()
+        .position(|arg| arg == "--restricted")
+        .expect("restricted diagnostic args must use Claude safe mode");
+    let tools = args
+        .iter()
+        .position(|arg| arg == "--tools")
+        .expect("restricted diagnostic args must carry the no-tools flag");
+    assert!(restricted < tools);
+    assert_eq!(args[tools + 1], "");
 }
 
 #[test]

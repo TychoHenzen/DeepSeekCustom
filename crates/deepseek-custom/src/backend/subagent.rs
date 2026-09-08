@@ -10,18 +10,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, info};
 
 use crate::agent::events::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
-use crate::backend::Backend;
 use crate::backend::claude_cli::one_shot::OneShotResult;
 use crate::backend::claude_cli::process::ClaudeCliDriver;
 use crate::backend::factory::BackendFactory;
 use crate::backend::registry::SubagentRegistry;
 use crate::backend::resolved::ResolvedBackend;
+use crate::backend::{Backend, ToolPolicy};
 use crate::effort::Effort;
 
 /// What one `Task` call asks for: which backend and model, the subagent's
@@ -56,6 +56,60 @@ pub struct DrainedReply {
     pub text: String,
     pub interrupted: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone)]
+struct ForwarderState {
+    reply: Arc<Mutex<DrainedReply>>,
+    terminal_seen: Arc<AtomicBool>,
+    terminal: Arc<Notify>,
+}
+
+impl ForwarderState {
+    fn new() -> Self {
+        Self {
+            reply: Arc::new(Mutex::new(DrainedReply::default())),
+            terminal_seen: Arc::new(AtomicBool::new(false)),
+            terminal: Arc::new(Notify::new()),
+        }
+    }
+
+    fn record(&self, event: &RoutedEvent) {
+        if self.terminal_seen.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(mut reply) = self.reply.lock() {
+            absorb(&mut reply, &event.event);
+        }
+        if matches!(
+            &event.event,
+            StreamEvent::TurnEnd { .. }
+                | StreamEvent::Interrupted { .. }
+                | StreamEvent::Error { .. }
+        ) {
+            self.terminal_seen.store(true, Ordering::SeqCst);
+            self.terminal.notify_one();
+        }
+    }
+
+    fn snapshot(&self) -> DrainedReply {
+        self.reply
+            .lock()
+            .map(|reply| reply.clone())
+            .unwrap_or_default()
+    }
+
+    async fn wait_for_terminal(&self) {
+        if self.terminal_seen.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            while !self.terminal_seen.load(Ordering::SeqCst) {
+                self.terminal.notified().await;
+            }
+        })
+        .await;
+    }
 }
 
 /// The six values one relayed hop carries, grouped so a relay point passes
@@ -157,10 +211,38 @@ pub fn spawn_event_forwarder(
     registry: Arc<SubagentRegistry>,
     send_message_call_cap: u32,
 ) {
+    spawn_event_forwarder_with_state(
+        id,
+        meta,
+        rx,
+        parent_tx,
+        turns,
+        session_turn_cap,
+        registry,
+        send_message_call_cap,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_event_forwarder_with_state(
+    id: SubagentId,
+    meta: SubagentMeta,
+    rx: mpsc::UnboundedReceiver<RoutedEvent>,
+    parent_tx: mpsc::UnboundedSender<RoutedEvent>,
+    turns: Arc<AtomicU32>,
+    session_turn_cap: u32,
+    registry: Arc<SubagentRegistry>,
+    send_message_call_cap: u32,
+    state: Option<ForwarderState>,
+) {
     let mut rx = rx;
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             debug!(?event, "subagent event forwarded");
+            if let Some(state) = &state {
+                state.record(&event);
+            }
             let hop = Hop {
                 id,
                 meta: meta.clone(),
@@ -216,12 +298,17 @@ struct OneShotSpec {
     model: String,
     permission_mode: Option<String>,
     env: Option<HashMap<String, String>>,
+    tools_enabled: bool,
 }
 
 /// `Some` only for the one dispatch shape that has no session to keep: a
 /// `claude_cli` entry asked for a single answer. Every other shape wants a
 /// backend built through the factory instead.
-fn one_shot_spec(resolved: ResolvedBackend, keep_open: bool) -> Option<OneShotSpec> {
+fn one_shot_spec(
+    resolved: ResolvedBackend,
+    keep_open: bool,
+    tool_policy: ToolPolicy,
+) -> Option<OneShotSpec> {
     if keep_open {
         return None;
     }
@@ -238,6 +325,7 @@ fn one_shot_spec(resolved: ResolvedBackend, keep_open: bool) -> Option<OneShotSp
         model,
         permission_mode,
         env,
+        tools_enabled: matches!(tool_policy, ToolPolicy::All),
     })
 }
 
@@ -279,6 +367,7 @@ struct Dispatch {
     working_dir: Arc<Mutex<PathBuf>>,
     turn_cap: u32,
     call_cap: u32,
+    tool_policy: ToolPolicy,
 }
 
 /// A finished turn plus, for a kept-open session whose registration the
@@ -294,7 +383,7 @@ impl Dispatch {
         req: &SubagentRequest,
         resolved: ResolvedBackend,
     ) -> Result<SubagentOutcome, String> {
-        if let Some(spec) = one_shot_spec(resolved, req.keep_open) {
+        if let Some(spec) = one_shot_spec(resolved, req.keep_open, self.tool_policy) {
             return self.run_one_shot(factory, req, spec).await;
         }
         let (outcome, kept) = self.run_built(factory, req).await?;
@@ -317,7 +406,13 @@ impl Dispatch {
     ) -> Result<(Backend, mpsc::UnboundedReceiver<RoutedEvent>), String> {
         let (tx, rx) = mpsc::unbounded_channel();
         let own = factory.with_working_dir(Arc::clone(&self.working_dir));
-        let backend = own.build(&req.backend, req.model.as_deref(), tx, req.depth)?;
+        let backend = own.build_with_policy(
+            &req.backend,
+            req.model.as_deref(),
+            tx,
+            req.depth,
+            self.tool_policy,
+        )?;
         req.effort.store(&backend.effort_flag());
         Ok((backend, rx))
     }
@@ -375,7 +470,9 @@ impl Dispatch {
         req: &SubagentRequest,
     ) -> Result<RanTurn, String> {
         let turns = Arc::new(AtomicU32::new(1));
-        spawn_event_forwarder(
+        let is_codex = matches!(&backend, Backend::CodexCli(_));
+        let state = is_codex.then(ForwarderState::new);
+        spawn_event_forwarder_with_state(
             self.id,
             self.meta.clone(),
             rx,
@@ -384,9 +481,26 @@ impl Dispatch {
             self.turn_cap,
             Arc::clone(&self.registry),
             self.call_cap,
+            state.clone(),
         );
         let segments = backend.run(&req.prompt).await.map_err(|e| e.to_string())?;
-        let outcome = self.outcome(segments.concat(), req.keep_open);
+        let text = if let Some(state) = state {
+            state.wait_for_terminal().await;
+            let drained = state.snapshot();
+            if let Some(error) = drained.error {
+                return Err(error);
+            }
+            if drained.interrupted {
+                return Err(format!(
+                    "subagent on backend \"{}\" was interrupted",
+                    self.meta.backend
+                ));
+            }
+            drained.text
+        } else {
+            segments.concat()
+        };
+        let outcome = self.outcome(text, req.keep_open);
         Ok((outcome, req.keep_open.then_some((backend, turns))))
     }
 
@@ -433,16 +547,29 @@ impl Dispatch {
     ) -> Result<SubagentOutcome, String> {
         let dir = self.working_dir.lock().unwrap().clone();
         let interrupt = factory.interrupt_flag();
-        let result = ClaudeCliDriver::run_once(
-            &spec.model,
-            spec.permission_mode.as_deref(),
-            spec.env.as_ref(),
-            &dir,
-            &req.prompt,
-            Arc::clone(&interrupt),
-            req.effort,
-        )
-        .await;
+        let result = if spec.tools_enabled {
+            ClaudeCliDriver::run_once(
+                &spec.model,
+                spec.permission_mode.as_deref(),
+                spec.env.as_ref(),
+                &dir,
+                &req.prompt,
+                Arc::clone(&interrupt),
+                req.effort,
+            )
+            .await
+        } else {
+            ClaudeCliDriver::run_once_without_tools(
+                &spec.model,
+                spec.permission_mode.as_deref(),
+                spec.env.as_ref(),
+                &dir,
+                &req.prompt,
+                Arc::clone(&interrupt),
+                req.effort,
+            )
+            .await
+        };
         let run = match result {
             Ok(run) => run,
             Err(message) => {
@@ -520,8 +647,28 @@ pub async fn run_subagent(
     parent_tx: mpsc::UnboundedSender<RoutedEvent>,
     registry: Arc<SubagentRegistry>,
 ) -> Result<SubagentOutcome, String> {
+    run_subagent_with_policy(factory, req, parent_tx, registry, ToolPolicy::All).await
+}
+
+pub(crate) async fn run_subagent_without_tools(
+    factory: &Arc<BackendFactory>,
+    req: SubagentRequest,
+    parent_tx: mpsc::UnboundedSender<RoutedEvent>,
+    registry: Arc<SubagentRegistry>,
+) -> Result<SubagentOutcome, String> {
+    run_subagent_with_policy(factory, req, parent_tx, registry, ToolPolicy::None).await
+}
+
+async fn run_subagent_with_policy(
+    factory: &Arc<BackendFactory>,
+    req: SubagentRequest,
+    parent_tx: mpsc::UnboundedSender<RoutedEvent>,
+    registry: Arc<SubagentRegistry>,
+    tool_policy: ToolPolicy,
+) -> Result<SubagentOutcome, String> {
     let working_dir = resolve_subagent_working_dir(factory, req.working_dir_override.as_deref())?;
     let resolved = factory.resolve(&req.backend, req.model.as_deref())?;
+    let cleanup_registry = Arc::clone(&registry);
     let dispatch = Dispatch {
         id: SubagentId::next(),
         meta: SubagentMeta {
@@ -534,6 +681,7 @@ pub async fn run_subagent(
         working_dir,
         turn_cap: factory.session_turn_cap(),
         call_cap: factory.send_message_call_cap(),
+        tool_policy,
     };
     info!(
         "subagent {} starting: backend={} depth={} keep_open={}",
@@ -541,6 +689,9 @@ pub async fn run_subagent(
     );
     let started = Instant::now();
     let outcome = dispatch.run(factory, &req, resolved).await;
+    if outcome.is_err() {
+        cleanup_registry.close(dispatch.id).await;
+    }
     info!(
         "subagent {} finished in {:?}: model={} ok={}",
         dispatch.id,
@@ -572,6 +723,7 @@ pub async fn run_stub_subagent(
         working_dir,
         turn_cap: factory.session_turn_cap(),
         call_cap: factory.send_message_call_cap(),
+        tool_policy: ToolPolicy::All,
     };
     dispatch.run_built(factory, req).await
 }
