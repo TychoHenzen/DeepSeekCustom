@@ -65,7 +65,11 @@ pub(super) fn build_one_shot_args_with_tools(
     effort: Effort,
     tools_enabled: bool,
 ) -> Vec<String> {
-    let mode = permission_mode.unwrap_or("bypassPermissions");
+    let mode = match (tools_enabled, permission_mode) {
+        (false, None | Some("bypassPermissions")) => "default",
+        (_, Some(mode)) => mode,
+        (_, None) => "bypassPermissions",
+    };
     let mut args = vec![
         "-p".to_string(),
         prompt.to_string(),
@@ -84,6 +88,7 @@ pub(super) fn build_one_shot_args_with_tools(
         "summarized".to_string(),
     ];
     if !tools_enabled {
+        args.push("--restricted".to_string());
         args.push("--tools".to_string());
         args.push(String::new());
     }
@@ -92,6 +97,16 @@ pub(super) fn build_one_shot_args_with_tools(
         args.push(level.to_string());
     }
     args
+}
+
+#[cfg(feature = "test-support")]
+pub fn build_restricted_one_shot_args_for_test(
+    model: &str,
+    permission_mode: Option<&str>,
+    prompt: &str,
+    effort: Effort,
+) -> Vec<String> {
+    build_one_shot_args_with_tools(model, permission_mode, prompt, effort, false)
 }
 
 /// Fold one `ClaudeEvent` into the running one-shot accumulation state.

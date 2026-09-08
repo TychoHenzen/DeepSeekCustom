@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
-use super::state::{
-    AttemptStatus, RecoveryRun, RecoveryRunId, RecoveryRunRecord, RecoveryStateError,
-};
+use super::state::{RecoveryRun, RecoveryRunId, RecoveryRunRecord, RecoveryStateError};
 use crate::error::{HarnessError, Result};
 
 const RECOVERY_SUBDIR: &str = ".deepseek/recovery";
@@ -84,17 +82,9 @@ impl RecoveryStore {
                 path.display()
             ))
         })?;
-        let should_persist_recovery = record.status == super::state::RecoveryStatus::Diagnosing
-            || record
-                .attempted_actions
-                .iter()
-                .any(|action| action.status == AttemptStatus::Pending);
         let run = RecoveryRun::from_record(record).map_err(|error| {
             HarnessError::Parse(format!("invalid recovery run {}: {error}", path.display()))
         })?;
-        if should_persist_recovery {
-            self.save(&run)?;
-        }
         Ok(run)
     }
 

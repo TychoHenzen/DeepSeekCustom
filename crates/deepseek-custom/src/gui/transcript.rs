@@ -411,6 +411,9 @@ impl Transcript {
                     severity: Severity::Info,
                 });
             }
+            // Recovery updates are rendered by the GUI side-effect handler,
+            // which also retains the latest decision for the status panel.
+            StreamEvent::RecoveryUpdated { .. } => {}
             // The running search's own tab draws this, live. Pushing a
             // block per scored candidate would bury the conversation under
             // a few hundred notices and grow the saved session with them.

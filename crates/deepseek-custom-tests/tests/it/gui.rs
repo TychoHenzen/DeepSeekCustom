@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use deepseek_custom::agent::events::{
-    AgentCommand, RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
+    AgentCommand, RecoveryUpdate, RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta,
 };
 use deepseek_custom::api::types::{Content, ImageAttachment, Message, Role};
 use deepseek_custom::config::settings::{
@@ -186,6 +186,33 @@ fn reasoning_event_adds_payload_line() {
         only_assistant_spans(&gui),
         vec![Span::Reasoning("Let me think about this...".into())]
     );
+}
+
+#[test]
+fn recovery_update_is_retained_and_shows_a_blocked_decision() {
+    let mut gui = make_gui();
+    gui.handle_stream_event(StreamEvent::RecoveryUpdated {
+        update: RecoveryUpdate {
+            run_id: "run-1".into(),
+            status: "needs_decision".into(),
+            summary: "diagnostic could not identify the owner".into(),
+            evidence: vec!["diagnostic: provider was ambiguous".into()],
+            question: Some("Which provider owns this item?".into()),
+            next_required_decision: Some("Confirm the provider identity".into()),
+        },
+    });
+
+    let update = gui
+        .recovery_update_for_test()
+        .expect("GUI should retain the latest recovery decision");
+    assert_eq!(update.run_id, "run-1");
+    assert_eq!(gui.session_status_for_test(), "Ready");
+    let BlockKind::Notice { text, severity } = &gui.transcript_for_test().blocks()[0].kind else {
+        panic!("expected a recovery notice");
+    };
+    assert_eq!(*severity, Severity::Warning);
+    assert!(text.contains("Which provider owns this item?"));
+    assert!(text.contains("Confirm the provider identity"));
 }
 
 #[test]

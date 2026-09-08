@@ -269,6 +269,12 @@ impl BackendFactory {
             models: _,
         }) = self.settings.resolve_backend(name)
         {
+            if matches!(tool_policy, ToolPolicy::None) {
+                return Err(
+                    "codex_cli cannot run in a no-tools diagnostic session; choose an isolated diagnostic backend"
+                        .to_string(),
+                );
+            }
             let model = model_override.unwrap_or(model).to_owned();
             let driver = CodexCliDriver::new_with_tools(
                 model,

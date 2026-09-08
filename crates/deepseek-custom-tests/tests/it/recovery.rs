@@ -145,6 +145,45 @@ fn azure_devops_project_mismatch_is_rejected_even_when_repository_names_match() 
 }
 
 #[test]
+fn azure_devops_path_segments_are_percent_decoded_before_matching() {
+    let input = IdentityInput {
+        repository_reference: Some(
+            "https://dev.azure.com/acme/engineering%20space/_git/deepseekcustom%20repo"
+                .to_string(),
+        ),
+        checkout_remote: Some(
+            "https://acme@dev.azure.com/acme/engineering%20space/_git/deepseekcustom%20repo"
+                .to_string(),
+        ),
+        project: Some(ProjectReference::azure_devops("acme/engineering space")),
+        item_reference: Some(
+            "https://dev.azure.com/acme/engineering%20space/_git/deepseekcustom%20repo/pullrequest/7"
+                .to_string(),
+        ),
+    };
+
+    let identity = resolve_identity(&input).unwrap();
+    assert_eq!(
+        identity.repository.project.as_deref(),
+        Some("engineering space")
+    );
+    assert_eq!(identity.repository.name, "deepseekcustom repo");
+    assert_eq!(identity.project.key, "acme/engineering space");
+}
+
+#[test]
+fn invalid_percent_encoded_identity_path_is_rejected() {
+    let mut input = github_input("https://github.com/tychohenzen/deepseekcustom/pull/42");
+    input.repository_reference =
+        Some("https://github.com/TychoHenzen/DeepSeek%ZZCustom.git".into());
+
+    assert!(matches!(
+        resolve_identity(&input),
+        Err(IdentityError::InvalidPathEncoding(_))
+    ));
+}
+
+#[test]
 fn equivalent_azure_project_keys_are_canonicalized() {
     let mut short_project = IdentityInput {
         repository_reference: Some(
@@ -690,6 +729,42 @@ fn persisted_pending_retry_is_not_replayed_after_restart() {
 }
 
 #[test]
+fn a_retry_completion_from_before_restart_is_rejected_as_stale() {
+    let identity = resolve_identity(&github_input(
+        "https://github.com/tychohenzen/deepseekcustom/pull/42",
+    ))
+    .unwrap();
+    let mut run = RecoveryRun::new(identity, "verify", 2);
+    let token = run
+        .begin_diagnosis(
+            FailureContext::new("verify", "failure", &[]),
+            vec![retry_spec()],
+        )
+        .unwrap();
+    run.apply_diagnosis(
+        &token,
+        DiagnosticResponse {
+            outcome: DiagnosisOutcome::Retryable,
+            summary: "retry once".to_string(),
+            evidence: Vec::new(),
+            retry_key: Some("safe-reset".to_string()),
+            question: None,
+            requested_action: None,
+        },
+        true,
+    )
+    .unwrap();
+    let claim = run.claim_retry().unwrap();
+    let mut recovered = RecoveryRun::from_record(run.record().clone()).unwrap();
+
+    assert!(matches!(
+        recovered.finish_retry(&claim, Ok("late completion".to_string())),
+        Err(deepseek_custom::recovery::RecoveryStateError::StaleRetryClaim)
+    ));
+    assert_eq!(recovered.status(), RecoveryStatus::NeedsDecision);
+}
+
+#[test]
 fn retained_decision_fields_are_sanitized() {
     let identity = resolve_identity(&github_input(
         "https://github.com/tychohenzen/deepseekcustom/pull/42",
@@ -770,6 +845,19 @@ fn sanitize_text_redacts_common_provider_tokens() {
 }
 
 #[test]
+fn sanitize_text_redacts_basic_authorization_and_paths_with_spaces() {
+    let text = sanitize_text(
+        r#"Authorization: Basic dXNlcjpwYXNz "C:\Users\person\Project With Spaces\file.txt" '/home/person/project with spaces/file.txt'"#,
+    );
+
+    assert!(!text.contains("dXNlcjpwYXNz"));
+    assert!(!text.contains("C:\\Users\\person\\Project With Spaces\\file.txt"));
+    assert!(!text.contains("/home/person/project with spaces/file.txt"));
+    assert!(text.contains("[REDACTED]"));
+    assert!(text.contains("[PATH_REDACTED]"));
+}
+
+#[test]
 fn recovery_record_round_trips_through_store() {
     let directory = temp_dir("store");
     let store = RecoveryStore::new(directory.clone());
@@ -781,5 +869,27 @@ fn recovery_record_round_trips_through_store() {
     store.save(&run).unwrap();
     let loaded = store.load(&run.id()).unwrap();
     assert_eq!(loaded.record(), run.record());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn loading_interrupted_state_does_not_rewrite_the_record_without_a_run_lock() {
+    let directory = temp_dir("load-no-rewrite");
+    let store = RecoveryStore::new(directory.clone());
+    let identity = resolve_identity(&github_input(
+        "https://github.com/tychohenzen/deepseekcustom/pull/42",
+    ))
+    .unwrap();
+    let mut run = RecoveryRun::new(identity, "verify", 1);
+    run.begin_diagnosis(FailureContext::new("verify", "failure", &[]), Vec::new())
+        .unwrap();
+    store.save(&run).unwrap();
+    let path = directory.join(format!("{}.json", run.id().as_str()));
+    let before = std::fs::read(&path).unwrap();
+
+    let loaded = store.load(&run.id()).unwrap();
+
+    assert_eq!(loaded.status(), RecoveryStatus::NeedsDecision);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
     std::fs::remove_dir_all(directory).unwrap();
 }

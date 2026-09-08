@@ -1,23 +1,31 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 
+use async_trait::async_trait;
 use eframe::egui;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use deepseek_custom::agent::agent_types::grade_to_u8;
-use deepseek_custom::agent::events::{AgentCommand, RoutedEvent, StreamEvent};
+use deepseek_custom::agent::events::{AgentCommand, RecoveryUpdate, RoutedEvent, StreamEvent};
 use deepseek_custom::agent::repeat::RepeatCommand;
-use deepseek_custom::backend::SharedFlags;
+use deepseek_custom::api::types::ImageAttachment;
 use deepseek_custom::backend::factory::BackendFactory;
-use deepseek_custom::config::settings::Settings;
+use deepseek_custom::backend::{Backend, SharedFlags};
+use deepseek_custom::config::settings::{RecoveryConfig, Settings};
 use deepseek_custom::gui::DeepSeekGui;
 use deepseek_custom::gui::agent_handles::AgentHandles;
 use deepseek_custom::mcp::McpManager;
+use deepseek_custom::recovery::{
+    IdentityInput, MAX_PERMITTED_RETRIES, ProjectReference, RecoveryCoordinator, RecoveryRun,
+    RecoveryRunRecord, RecoveryStatus, RecoveryStore, RepositoryProvider, RetryClaim, RetryResult,
+    SafeRetryAction, SafeRetrySpec, resolve_identity,
+};
 use deepseek_custom::search::{CascadeCounters, SearchCommand, run_cascade, run_evolve};
 use deepseek_custom::voice::service::{
     RealCaptureFactory, Speaker, Transcriber, VoiceCommand, VoiceEvent, VoiceService,
@@ -62,6 +70,229 @@ fn find_project_root() -> PathBuf {
         }
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+const FAILED_TURN_RETRY_KEY: &str = "repeat-failed-turn";
+
+/// The configured identity and coordinator for one failed-turn workflow.
+/// Recovery is disabled when the settings block is absent or incomplete.
+struct RecoveryRuntime {
+    coordinator: Arc<RecoveryCoordinator>,
+    identity: IdentityInput,
+    current_step: String,
+    max_retry_attempts: u32,
+}
+
+/// The only action the recovery coordinator may execute for a failed user
+/// turn. The diagnostic backend never receives this adapter or its backend.
+struct FailedTurnRetryAction {
+    backend: Arc<AsyncMutex<Backend>>,
+    text: String,
+    image: Option<ImageAttachment>,
+}
+
+#[async_trait]
+impl SafeRetryAction for FailedTurnRetryAction {
+    async fn retry(&self, _claim: &RetryClaim) -> Result<String, String> {
+        let mut backend = self.backend.lock().await;
+        let responses = backend
+            .run_with_image(&self.text, self.image.as_ref())
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(format!(
+            "failed user turn retried with {} response segments",
+            responses.len()
+        ))
+    }
+}
+
+fn git_origin_remote(project_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "config",
+            "--get",
+            "remote.origin.url",
+        ])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|remote| !remote.is_empty())
+}
+
+fn recovery_provider(config: &RecoveryConfig) -> Option<RepositoryProvider> {
+    match config
+        .project
+        .as_ref()
+        .map(|project| project.provider.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("github") => Some(RepositoryProvider::GitHub),
+        Some("azure_devops") => Some(RepositoryProvider::AzureDevOps),
+        Some(provider) => {
+            tracing::warn!(provider, "recovery disabled: unsupported project provider");
+            None
+        }
+        None => {
+            tracing::warn!("recovery disabled: no project provider configured");
+            None
+        }
+    }
+}
+
+fn build_recovery_runtime(
+    settings: &Settings,
+    factory: Arc<BackendFactory>,
+    project_root: &Path,
+) -> Option<RecoveryRuntime> {
+    let config = settings.recovery()?;
+    let provider = recovery_provider(config)?;
+    let project = config.project.as_ref()?;
+    let identity = IdentityInput {
+        repository_reference: config.repository_reference.clone(),
+        checkout_remote: config
+            .checkout_remote
+            .clone()
+            .or_else(|| git_origin_remote(project_root)),
+        project: Some(ProjectReference::new(provider, project.key.clone())),
+        item_reference: config.item_reference.clone(),
+    };
+    if let Err(error) = resolve_identity(&identity) {
+        tracing::warn!(error = %error, "recovery disabled: configured identity did not resolve");
+        return None;
+    }
+
+    let diagnostic_backend = config
+        .diagnostic_backend
+        .clone()
+        .unwrap_or_else(|| factory.default_backend_name());
+    let max_retry_attempts = config
+        .max_retry_attempts
+        .unwrap_or(1)
+        .min(MAX_PERMITTED_RETRIES as u32);
+    Some(RecoveryRuntime {
+        coordinator: Arc::new(RecoveryCoordinator::new(
+            factory,
+            RecoveryStore::for_project(project_root),
+            diagnostic_backend,
+            config.diagnostic_model.clone(),
+        )),
+        identity,
+        current_step: config
+            .current_step
+            .clone()
+            .unwrap_or_else(|| "user_turn".to_string()),
+        max_retry_attempts,
+    })
+}
+
+fn recovery_update_from_record(record: &RecoveryRunRecord) -> RecoveryUpdate {
+    RecoveryUpdate {
+        run_id: record.id.as_str(),
+        status: record.status.to_string(),
+        summary: record
+            .last_diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.summary.clone())
+            .unwrap_or_else(|| "Recovery run started.".to_string()),
+        evidence: record
+            .evidence
+            .iter()
+            .rev()
+            .take(5)
+            .map(|evidence| format!("{}: {}", evidence.source, evidence.detail))
+            .collect(),
+        question: record.question.clone(),
+        next_required_decision: record.next_required_decision.clone(),
+    }
+}
+
+fn recovery_update(run: &RecoveryRun) -> RecoveryUpdate {
+    recovery_update_from_record(run.record())
+}
+
+fn emit_recovery_update(tx_events: &mpsc::UnboundedSender<RoutedEvent>, run: &RecoveryRun) {
+    let _ = tx_events.send(RoutedEvent::own(StreamEvent::RecoveryUpdated {
+        update: recovery_update(run),
+    }));
+}
+
+fn emit_persisted_recovery_updates(
+    tx_events: &mpsc::UnboundedSender<RoutedEvent>,
+    runtime: &RecoveryRuntime,
+) {
+    for record in runtime.coordinator.store().list() {
+        if let Ok(run) = RecoveryStore::validate_record(record) {
+            emit_recovery_update(tx_events, &run);
+        }
+    }
+}
+
+async fn try_recover_failed_turn(
+    runtime: &RecoveryRuntime,
+    backend: Arc<AsyncMutex<Backend>>,
+    tx_events: &mpsc::UnboundedSender<RoutedEvent>,
+    text: String,
+    image: Option<ImageAttachment>,
+    failure: String,
+) -> bool {
+    let mut run = match runtime.coordinator.start_run(
+        &runtime.identity,
+        runtime.current_step.clone(),
+        runtime.max_retry_attempts,
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            tracing::warn!(error = %error, "recovery could not start");
+            return false;
+        }
+    };
+    emit_recovery_update(tx_events, &run);
+
+    let permitted_retries = if runtime.max_retry_attempts == 0 {
+        Vec::new()
+    } else {
+        vec![
+            SafeRetrySpec::new(FAILED_TURN_RETRY_KEY, "Repeat the failed user turn once.")
+                .expect("static retry key is valid"),
+        ]
+    };
+    let status = match runtime
+        .coordinator
+        .diagnose(&mut run, failure, &[], permitted_retries)
+        .await
+    {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::warn!(error = %error, "recovery diagnosis failed");
+            emit_recovery_update(tx_events, &run);
+            return false;
+        }
+    };
+    emit_recovery_update(tx_events, &run);
+    if status != RecoveryStatus::Retryable {
+        return false;
+    }
+
+    let action = FailedTurnRetryAction {
+        backend,
+        text,
+        image,
+    };
+    let result = match runtime.coordinator.execute_retry(&mut run, &action).await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(error = %error, "recovery retry could not execute");
+            emit_recovery_update(tx_events, &run);
+            return false;
+        }
+    };
+    emit_recovery_update(tx_events, &run);
+    matches!(result, RetryResult::Succeeded { .. })
 }
 
 #[tokio::main]
@@ -178,7 +409,7 @@ async fn main() {
 
     // ── Backend construction ─────────────────────────────────
 
-    let mut backend = match factory.build(&default_name, None, tx_events.clone(), 0) {
+    let backend = match factory.build(&default_name, None, tx_events.clone(), 0) {
         Ok(b) => b,
         Err(e) => {
             error!("{e}");
@@ -186,6 +417,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let backend = Arc::new(AsyncMutex::new(backend));
+    let recovery_runtime = build_recovery_runtime(&settings, Arc::clone(&factory), &project_root);
+    if let Some(runtime) = recovery_runtime.as_ref() {
+        emit_persisted_recovery_updates(&tx_events, runtime);
+    }
 
     // ── Voice ───────────────────────────────────────────────
 
@@ -232,6 +468,7 @@ async fn main() {
     };
     let switch_tx_events = tx_events;
     let repeat_project_root = project_root.clone();
+    let agent_backend = Arc::clone(&backend);
 
     tokio::spawn(async move {
         info!("agent task started");
@@ -241,7 +478,11 @@ async fn main() {
                     match input {
                         Some(AgentCommand::UserTurn { text, image }) => {
                             debug_agent_input(&text);
-                            match backend.run_with_image(&text, image.as_ref()).await {
+                            let result = {
+                                let mut backend = agent_backend.lock().await;
+                                backend.run_with_image(&text, image.as_ref()).await
+                            };
+                            match result {
                                 Ok(responses) => {
                                     info!(
                                         "agent turn complete: {} response segments",
@@ -250,26 +491,44 @@ async fn main() {
                                 }
                                 Err(e) => {
                                     error!("agent error: {e}");
-                                    // A failed turn sends no TurnEnd of its
-                                    // own, so nothing told the GUI the turn
-                                    // was over: the status bar sat on
-                                    // "Running..." and a held session switch
-                                    // would have waited forever. Report the
-                                    // failure, then close the turn.
-                                    report_failed_turn(&switch_tx_events, &e.to_string());
+                                    let failure = e.to_string();
+                                    let recovered = if let Some(runtime) = recovery_runtime.as_ref() {
+                                        try_recover_failed_turn(
+                                            runtime,
+                                            Arc::clone(&agent_backend),
+                                            &switch_tx_events,
+                                            text,
+                                            image,
+                                            failure.clone(),
+                                        )
+                                        .await
+                                    } else {
+                                        false
+                                    };
+                                    if !recovered {
+                                        // A failed turn sends no TurnEnd of
+                                        // its own, so nothing told the GUI
+                                        // the turn was over. Report the
+                                        // failure, then close the turn.
+                                        report_failed_turn(&switch_tx_events, &failure);
+                                    }
                                 }
                             }
                         }
                         Some(AgentCommand::NewSession) => {
                             info!("new session command received");
-                            backend.start_new_session().await;
+                            agent_backend.lock().await.start_new_session().await;
                         }
                         Some(AgentCommand::LoadSession { messages, claude_session_id }) => {
                             info!(
                                 message_count = messages.len(),
                                 "load session command received"
                             );
-                            backend.load_session(messages, claude_session_id).await;
+                            agent_backend
+                                .lock()
+                                .await
+                                .load_session(messages, claude_session_id)
+                                .await;
                         }
                         Some(AgentCommand::SwitchBackend { name, model }) => {
                             info!(backend = %name, model = ?model, "backend switch requested");
@@ -279,8 +538,9 @@ async fn main() {
                                     // `claude -p` child is killed rather
                                     // than left running with nothing
                                     // reading its output.
+                                    let mut backend = agent_backend.lock().await;
                                     backend.shutdown().await;
-                                    backend = replacement;
+                                    *backend = replacement;
                                     info!(backend = %name, "backend switched");
                                 }
                                 Err(e) => {
@@ -298,7 +558,11 @@ async fn main() {
                     match repeat {
                         Some(RepeatCommand { task, iterations }) => {
                             info!(iterations, "repeat command received");
-                            backend.run_repeat(&task, iterations, &repeat_project_root).await;
+                            agent_backend
+                                .lock()
+                                .await
+                                .run_repeat(&task, iterations, &repeat_project_root)
+                                .await;
                         }
                         None => break,
                     }

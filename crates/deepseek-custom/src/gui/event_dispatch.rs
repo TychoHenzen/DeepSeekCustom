@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::agent::events::{RoutedEvent, StreamEvent};
+use crate::agent::events::{RecoveryUpdate, RoutedEvent, StreamEvent};
 use crate::search::SearchKind;
 use crate::voice::service::VoiceCommand;
 
@@ -128,10 +128,33 @@ impl DeepSeekGui {
                     *kind,
                 );
             }
+            StreamEvent::RecoveryUpdated { update } => self.on_recovery_update(update),
             StreamEvent::Reasoning { .. }
             | StreamEvent::Error { .. }
             | StreamEvent::Info { .. } => {}
         }
+    }
+
+    fn on_recovery_update(&mut self, update: &RecoveryUpdate) {
+        self.recovery_update = Some(update.clone());
+        let mut text = format!("Recovery {}: {}", update.status, update.summary);
+        for evidence in update.evidence.iter().take(5) {
+            text.push_str("\nEvidence: ");
+            text.push_str(evidence);
+        }
+        if let Some(question) = &update.question {
+            text.push_str("\nQuestion: ");
+            text.push_str(question);
+        }
+        if let Some(next) = &update.next_required_decision {
+            text.push_str("\nNext: ");
+            text.push_str(next);
+        }
+        let severity = match update.status.as_str() {
+            "blocked" | "needs_decision" => Severity::Warning,
+            _ => Severity::Info,
+        };
+        self.transcript.push(BlockKind::Notice { text, severity });
     }
 
     /// Move whichever search tab owns this run to its new state. The kind

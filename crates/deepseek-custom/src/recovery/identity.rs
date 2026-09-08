@@ -166,6 +166,8 @@ pub enum IdentityError {
     ProjectMismatch,
     #[error("item number is invalid: {0}")]
     InvalidItemNumber(String),
+    #[error("invalid percent-encoded path segment: {0}")]
+    InvalidPathEncoding(String),
 }
 
 #[derive(Debug, Clone)]
@@ -270,7 +272,7 @@ fn ensure_same_repository(
 
 fn parse_repository_reference(reference: &str) -> Result<RepositoryIdentity, IdentityError> {
     let (host, path) = split_reference(reference)?;
-    let segments = path_segments(&path);
+    let segments = path_segments(&path, reference)?;
     match provider_for_host(&host) {
         Some(RepositoryProvider::GitHub) => {
             if segments.len() != 2 {
@@ -298,7 +300,7 @@ fn parse_item_reference(
     }
 
     let (host, path) = split_reference(trimmed)?;
-    let segments = path_segments(&path);
+    let segments = path_segments(&path, trimmed)?;
     let provider = provider_for_host(&host)
         .ok_or_else(|| IdentityError::UnsupportedReference(trimmed.to_string()))?;
     let (repository, kind, number) = match provider {
@@ -422,12 +424,49 @@ fn split_reference(reference: &str) -> Result<(String, String), IdentityError> {
     ))
 }
 
-fn path_segments(path: &str) -> Vec<String> {
+fn path_segments(path: &str, reference: &str) -> Result<Vec<String>, IdentityError> {
     path.trim_matches('/')
         .split('/')
         .filter(|segment| !segment.is_empty())
-        .map(|segment| segment.trim_end_matches(".git").to_string())
+        .map(|segment| {
+            decode_path_segment(segment, reference)
+                .map(|segment| segment.trim_end_matches(".git").to_string())
+        })
         .collect()
+}
+
+fn decode_path_segment(segment: &str, reference: &str) -> Result<String, IdentityError> {
+    let mut bytes = Vec::with_capacity(segment.len());
+    let mut index = 0;
+    let raw = segment.as_bytes();
+    while index < raw.len() {
+        if raw[index] != b'%' {
+            bytes.push(raw[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= raw.len() {
+            return Err(IdentityError::InvalidPathEncoding(reference.to_string()));
+        }
+        let Some(high) = hex_value(raw[index + 1]) else {
+            return Err(IdentityError::InvalidPathEncoding(reference.to_string()));
+        };
+        let Some(low) = hex_value(raw[index + 2]) else {
+            return Err(IdentityError::InvalidPathEncoding(reference.to_string()));
+        };
+        bytes.push((high << 4) | low);
+        index += 3;
+    }
+    String::from_utf8(bytes).map_err(|_| IdentityError::InvalidPathEncoding(reference.to_string()))
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn provider_for_host(host: &str) -> Option<RepositoryProvider> {

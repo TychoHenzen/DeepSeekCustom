@@ -60,6 +60,10 @@ impl DeepSeekGui {
         &self.session_status
     }
 
+    pub fn recovery_update_for_test(&self) -> Option<&crate::agent::events::RecoveryUpdate> {
+        self.recovery_update.as_ref()
+    }
+
     pub fn token_count_for_test(&self) -> &str {
         &self.token_count
     }

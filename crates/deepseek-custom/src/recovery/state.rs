@@ -52,6 +52,20 @@ pub enum RecoveryStatus {
     NeedsDecision,
 }
 
+impl fmt::Display for RecoveryStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Ready => "ready",
+            Self::Diagnosing => "diagnosing",
+            Self::Resolved => "resolved",
+            Self::Retryable => "retryable",
+            Self::Blocked => "blocked",
+            Self::NeedsDecision => "needs_decision",
+        };
+        f.write_str(label)
+    }
+}
+
 /// One retained piece of sanitized evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryEvidence {
@@ -162,6 +176,7 @@ pub struct RecoveryRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryClaim {
     pub run_id: RecoveryRunId,
+    pub generation: u64,
     pub identity: ResolvedWorkIdentity,
     pub current_step: String,
     pub attempt: u32,
@@ -512,6 +527,7 @@ impl RecoveryRun {
         });
         Ok(RetryClaim {
             run_id: self.id(),
+            generation: self.record.generation,
             identity: self.record.identity.clone(),
             current_step: self.record.current_step.clone(),
             attempt,
@@ -524,7 +540,14 @@ impl RecoveryRun {
         claim: &RetryClaim,
         result: Result<String, String>,
     ) -> Result<RetryResult, RecoveryStateError> {
-        if claim.run_id != self.id() || claim.identity != self.record.identity {
+        if claim.run_id != self.id()
+            || claim.generation != self.record.generation
+            || claim.identity != self.record.identity
+            || claim.current_step != self.record.current_step
+            || self.record.status != RecoveryStatus::Retryable
+            || self.record.retry_count != claim.attempt
+            || self.record.pending_retry_key.as_deref() != Some(claim.key.as_str())
+        {
             return Err(RecoveryStateError::StaleRetryClaim);
         }
         let Some(action) = self.record.attempted_actions.iter_mut().find(|action| {

@@ -74,6 +74,10 @@ pub struct Settings {
     /// MCP servers for the `Api` backend. See `Settings::mcp_enabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpSettings>,
+    /// Explicit identity and diagnostic settings for failed-turn recovery.
+    /// Recovery stays disabled when this block is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryConfig>,
     /// Plain-language gate, the readability check from Diversity.md #9-10.
     /// Defaults to off. See `Settings::style_plain_language_enabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -380,6 +384,11 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Explicit recovery configuration, if the project enabled it.
+    pub fn recovery(&self) -> Option<&RecoveryConfig> {
+        self.recovery.as_ref()
+    }
+
     /// Whether the plain-language gate is on. Defaults to `false`.
     pub fn style_plain_language_enabled(&self) -> bool {
         self.style
@@ -503,6 +512,9 @@ impl Settings {
         }
         if other.mcp.is_some() {
             self.mcp = other.mcp;
+        }
+        if other.recovery.is_some() {
+            self.recovery = other.recovery;
         }
         if other.style.is_some() {
             self.style = other.style;
@@ -701,6 +713,38 @@ pub struct VoiceConfig {
     /// Speaking speed, clamped 0.5-2.0. Defaults to 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tts_speed: Option<f32>,
+}
+
+/// Explicit facts and limits used by the failed-turn recovery workflow.
+///
+/// Project and item_reference are required at runtime. The repository can
+/// come from repository_reference, checkout_remote, or the checkout's
+/// origin remote. No work-item number is inferred from a branch name.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RecoveryConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<RecoveryProjectConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retry_attempts: Option<u32>,
+}
+
+/// The provider and key of a verified linked project.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoveryProjectConfig {
+    pub provider: String,
+    pub key: String,
 }
 
 /// Plain-language gate, one block under `style` in settings.json.

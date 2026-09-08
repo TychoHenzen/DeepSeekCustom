@@ -244,7 +244,7 @@ pub fn sanitize_text(input: &str) -> String {
         .into_owned();
 
     let credential = Regex::new(
-        r"(?i)(authorization\s*:\s*bearer\s+|(?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+",
+        r"(?i)(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+|(?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+",
     )
     .expect("credential redaction pattern is valid");
     value = credential.replace_all(&value, "$1[REDACTED]").into_owned();
@@ -255,15 +255,34 @@ pub fn sanitize_text(input: &str) -> String {
         .replace_all(&value, "$1[REDACTED]@")
         .into_owned();
 
+    let quoted_windows_path =
+        Regex::new(r#"(?i)"(?:[A-Z]:\\|\\\\)[^"\r\n]*"|'(?:[A-Z]:\\|\\\\)[^'\r\n]*'"#)
+            .expect("quoted Windows path redaction pattern is valid");
+    value = quoted_windows_path
+        .replace_all(&value, "[PATH_REDACTED]")
+        .into_owned();
+
     let windows_path =
-        Regex::new(r"(?i)\b[A-Z]:\\[^\s,;]+").expect("Windows path redaction pattern is valid");
+        Regex::new(r"(?i)\b[A-Z]:\\[^\r\n,;]+").expect("Windows path redaction pattern is valid");
     value = windows_path
         .replace_all(&value, "[PATH_REDACTED]")
         .into_owned();
 
-    let unc_path = Regex::new(r"(?i)\\\\[^\s,;]+(?:\\[^\s,;]+)+")
-        .expect("UNC path redaction pattern is valid");
+    let unc_path = Regex::new(r"(?i)\\\\[^\r\n,;]+").expect("UNC path redaction pattern is valid");
     value = unc_path.replace_all(&value, "[PATH_REDACTED]").into_owned();
+
+    let quoted_posix_path =
+        Regex::new(r#"(?i)"/(?:[^/"\r\n]+/)+[^/"\r\n]*"|'/(?:[^/'\r\n]+/)+[^/'\r\n]*'"#)
+            .expect("quoted POSIX path redaction pattern is valid");
+    value = quoted_posix_path
+        .replace_all(&value, "[PATH_REDACTED]")
+        .into_owned();
+
+    let posix_path = Regex::new(r"(^|[^\w:])((?:/[^/\s,;]+){2,})")
+        .expect("POSIX path redaction pattern is valid");
+    value = posix_path
+        .replace_all(&value, "$1[PATH_REDACTED]")
+        .into_owned();
 
     let token = Regex::new(
         r"(?i)\b(?:sk-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_-]+)\b",

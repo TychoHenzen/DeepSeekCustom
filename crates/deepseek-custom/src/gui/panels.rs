@@ -54,6 +54,10 @@ impl DeepSeekGui {
             }
             ui.separator();
             ui.label(&self.session_status);
+            if let Some(recovery) = &self.recovery_update {
+                ui.separator();
+                ui.label(format!("Recovery: {}", recovery.status));
+            }
             if !self.token_count.is_empty() {
                 ui.separator();
                 ui.label(format!("Tokens: {}", self.token_count));

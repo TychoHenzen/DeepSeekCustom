@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, info};
 
 use crate::agent::events::{RouteHop, RoutedEvent, StreamEvent, SubagentId, SubagentMeta};
@@ -56,6 +56,60 @@ pub struct DrainedReply {
     pub text: String,
     pub interrupted: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone)]
+struct ForwarderState {
+    reply: Arc<Mutex<DrainedReply>>,
+    terminal_seen: Arc<AtomicBool>,
+    terminal: Arc<Notify>,
+}
+
+impl ForwarderState {
+    fn new() -> Self {
+        Self {
+            reply: Arc::new(Mutex::new(DrainedReply::default())),
+            terminal_seen: Arc::new(AtomicBool::new(false)),
+            terminal: Arc::new(Notify::new()),
+        }
+    }
+
+    fn record(&self, event: &RoutedEvent) {
+        if self.terminal_seen.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(mut reply) = self.reply.lock() {
+            absorb(&mut reply, &event.event);
+        }
+        if matches!(
+            &event.event,
+            StreamEvent::TurnEnd { .. }
+                | StreamEvent::Interrupted { .. }
+                | StreamEvent::Error { .. }
+        ) {
+            self.terminal_seen.store(true, Ordering::SeqCst);
+            self.terminal.notify_one();
+        }
+    }
+
+    fn snapshot(&self) -> DrainedReply {
+        self.reply
+            .lock()
+            .map(|reply| reply.clone())
+            .unwrap_or_default()
+    }
+
+    async fn wait_for_terminal(&self) {
+        if self.terminal_seen.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            while !self.terminal_seen.load(Ordering::SeqCst) {
+                self.terminal.notified().await;
+            }
+        })
+        .await;
+    }
 }
 
 /// The six values one relayed hop carries, grouped so a relay point passes
@@ -157,10 +211,38 @@ pub fn spawn_event_forwarder(
     registry: Arc<SubagentRegistry>,
     send_message_call_cap: u32,
 ) {
+    spawn_event_forwarder_with_state(
+        id,
+        meta,
+        rx,
+        parent_tx,
+        turns,
+        session_turn_cap,
+        registry,
+        send_message_call_cap,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_event_forwarder_with_state(
+    id: SubagentId,
+    meta: SubagentMeta,
+    rx: mpsc::UnboundedReceiver<RoutedEvent>,
+    parent_tx: mpsc::UnboundedSender<RoutedEvent>,
+    turns: Arc<AtomicU32>,
+    session_turn_cap: u32,
+    registry: Arc<SubagentRegistry>,
+    send_message_call_cap: u32,
+    state: Option<ForwarderState>,
+) {
     let mut rx = rx;
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             debug!(?event, "subagent event forwarded");
+            if let Some(state) = &state {
+                state.record(&event);
+            }
             let hop = Hop {
                 id,
                 meta: meta.clone(),
@@ -360,7 +442,9 @@ impl Dispatch {
         req: &SubagentRequest,
     ) -> Result<RanTurn, String> {
         let turns = Arc::new(AtomicU32::new(1));
-        spawn_event_forwarder(
+        let is_codex = matches!(&backend, Backend::CodexCli(_));
+        let state = is_codex.then(ForwarderState::new);
+        spawn_event_forwarder_with_state(
             self.id,
             self.meta.clone(),
             rx,
@@ -369,9 +453,26 @@ impl Dispatch {
             self.turn_cap,
             Arc::clone(&self.registry),
             self.call_cap,
+            state.clone(),
         );
         let segments = backend.run(&req.prompt).await.map_err(|e| e.to_string())?;
-        let outcome = self.outcome(segments.concat(), req.keep_open);
+        let text = if let Some(state) = state {
+            state.wait_for_terminal().await;
+            let drained = state.snapshot();
+            if let Some(error) = drained.error {
+                return Err(error);
+            }
+            if drained.interrupted {
+                return Err(format!(
+                    "subagent on backend \"{}\" was interrupted",
+                    self.meta.backend
+                ));
+            }
+            drained.text
+        } else {
+            segments.concat()
+        };
+        let outcome = self.outcome(text, req.keep_open);
         Ok((outcome, req.keep_open.then_some((backend, turns))))
     }
 

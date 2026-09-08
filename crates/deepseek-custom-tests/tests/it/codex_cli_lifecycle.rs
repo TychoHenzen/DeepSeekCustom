@@ -9,6 +9,11 @@ use std::time::Duration;
 
 use deepseek_custom::agent::events::{RoutedEvent, StreamEvent};
 use deepseek_custom::backend::codex_cli::CodexCliDriver;
+use deepseek_custom::backend::factory::BackendFactory;
+use deepseek_custom::backend::registry::SubagentRegistry;
+use deepseek_custom::backend::subagent::{SubagentRequest, run_subagent};
+use deepseek_custom::config::settings::{BackendConfig, Settings};
+use deepseek_custom::effort::Effort;
 
 const BLOCK_MARKER: &str = "__FAKE_CODEX_BLOCK__";
 
@@ -160,4 +165,56 @@ async fn two_turn_resume_interrupt_and_recovery() {
         |event| matches!(event, StreamEvent::Text { text, .. } if text == "echo: after interrupt")
     ));
     driver.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn subagent_codex_dispatch_returns_text_collected_from_forwarded_events() {
+    let _guard = environment_lock().lock().unwrap();
+    let _path = TestPath::install();
+    let settings = Settings {
+        backends: Some(HashMap::from([(
+            "codex".to_owned(),
+            BackendConfig::CodexCli {
+                model: "test-model".to_owned(),
+                sandbox: Some("workspace-write".to_owned()),
+                env: None,
+                models: None,
+            },
+        )])),
+        default_backend: Some("codex".to_owned()),
+        ..Settings::default()
+    };
+    let factory = Arc::new(BackendFactory::new(settings, PathBuf::from(".")));
+    let (parent_tx, mut parent_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_subagent(
+            &factory,
+            SubagentRequest {
+                backend: "codex".to_owned(),
+                model: None,
+                prompt: "diagnostic prompt".to_owned(),
+                depth: 1,
+                keep_open: false,
+                working_dir_override: None,
+                effort: Effort::None,
+            },
+            parent_tx,
+            Arc::new(SubagentRegistry::new()),
+        ),
+    )
+    .await
+    .expect("Codex subagent should finish within the test bound")
+    .expect("fake Codex subagent should succeed");
+
+    assert_eq!(outcome.text, "echo: diagnostic prompt");
+    let routed = parent_rx
+        .recv()
+        .await
+        .expect("expected forwarded Codex text");
+    assert!(matches!(
+        routed.event,
+        StreamEvent::Text { ref text, .. } if text == "echo: diagnostic prompt"
+    ));
 }

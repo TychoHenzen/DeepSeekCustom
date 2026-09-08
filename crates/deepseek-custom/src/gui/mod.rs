@@ -40,7 +40,7 @@ use egui_commonmark::CommonMarkCache;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::agent::events::{AgentCommand, RoutedEvent};
+use crate::agent::events::{AgentCommand, RecoveryUpdate, RoutedEvent};
 use crate::agent::repeat::RepeatCommand;
 use crate::config::settings::Settings;
 use crate::effort::Effort;
@@ -121,6 +121,8 @@ pub struct DeepSeekGui {
     pub(super) total_cache_hit_tokens: u32,
     pub(super) total_cache_miss_tokens: u32,
     pub(super) session_status: String,
+    /// Latest durable failed-turn recovery decision, if recovery is enabled.
+    pub(super) recovery_update: Option<RecoveryUpdate>,
     /// Whether a turn is in flight. Set when a turn is sent, cleared by the
     /// event that ends it. A session switch asked for while this is true is
     /// held in `pending_switch` instead of applied.
@@ -183,6 +185,7 @@ impl DeepSeekGui {
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,
             session_status: "Ready".into(),
+            recovery_update: None,
             turn_active: false,
             pending_switch: None,
             follow_output: false,

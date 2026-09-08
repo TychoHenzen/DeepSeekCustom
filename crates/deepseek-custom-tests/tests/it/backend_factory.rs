@@ -13,7 +13,7 @@ use deepseek_custom::backend::factory::{BackendFactory, may_dispatch_for_test};
 use deepseek_custom::backend::resolved::{ResolvedBackend, resolve_active_backend};
 use deepseek_custom::backend::stub::StubBackend;
 use deepseek_custom::backend::{Backend, SharedFlags};
-use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings};
+use deepseek_custom::config::settings::{ApiProvider, BackendConfig, Settings, StyleConfig};
 use deepseek_custom::effort::Effort;
 
 use tokio::sync::mpsc;
@@ -428,6 +428,44 @@ fn restricted_backend_exposes_no_mutation_tools() {
         Backend::Stub(_) => panic!("expected Api variant"),
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn no_tools_diagnostic_build_rejects_codex_instead_of_granting_read_access() {
+    let factory = Arc::new(BackendFactory::new(
+        codex_cli_backend_settings(),
+        PathBuf::from("."),
+    ));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let error = match factory.build_without_tools_for_test("codex", None, tx, 1) {
+        Ok(_) => panic!("Codex must not be used for a no-tools diagnostic session"),
+        Err(error) => error,
+    };
+    assert!(error.contains("no-tools diagnostic session"));
+}
+
+#[test]
+fn no_tools_api_diagnostic_build_disables_plain_language_rewrite() {
+    let mut settings = api_backend_settings();
+    settings.style = Some(StyleConfig {
+        plain_language_enabled: true,
+        ..StyleConfig::default()
+    });
+    let factory = Arc::new(BackendFactory::new(settings, PathBuf::from(".")));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let backend = factory
+        .build_without_tools_for_test("deepseek", None, tx, 1)
+        .expect("restricted API backend should build");
+    match backend {
+        Backend::Api(agent) => {
+            assert!(!agent.style_plain_language_flag().load(Ordering::SeqCst));
+        }
+        Backend::ClaudeCli(_) => panic!("expected API variant"),
+        Backend::CodexCli(_) => panic!("expected API variant"),
+        Backend::Stub(_) => panic!("expected API variant"),
+    }
 }
 
 #[test]

@@ -135,6 +135,7 @@ fn finish_agent(
     config: AgentConfig,
     factory: &Arc<BackendFactory>,
     gated: GatedToolCtx,
+    tool_policy: ToolPolicy,
 ) -> Backend {
     let settings = &factory.settings;
     let mut agent = AgentLoop::new(
@@ -149,7 +150,7 @@ fn finish_agent(
     agent.set_subagent_registry(gated.subagent_registry);
     agent.set_effort_flag(gated.effort_flag);
     agent.set_style_config(
-        settings.style_plain_language_enabled(),
+        matches!(tool_policy, ToolPolicy::All) && settings.style_plain_language_enabled(),
         settings.style_target_grade(),
         settings.style_grade_tolerance(),
         settings.style_max_revise_attempts(),
@@ -227,7 +228,15 @@ fn build_api_backend(request: ApiBackendRequest, factory: &Arc<BackendFactory>) 
         max_tokens: settings.max_tokens(),
         ..Default::default()
     };
-    finish_agent(client, tools, system_prompt, config, factory, gated)
+    finish_agent(
+        client,
+        tools,
+        system_prompt,
+        config,
+        factory,
+        gated,
+        tool_policy,
+    )
 }
 
 /// Build a `Backend` from an already-resolved config.
