@@ -186,7 +186,7 @@ impl WorkflowStore {
                     })
             })
             .collect::<Vec<_>>();
-        records.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+        records.sort_by_key(|record| record.created_at);
         records
     }
 
