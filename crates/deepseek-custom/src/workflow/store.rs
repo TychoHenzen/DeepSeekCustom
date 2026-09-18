@@ -28,12 +28,17 @@ impl Drop for WorkflowLock {
 }
 
 impl WorkflowStore {
-    pub fn new(workflow_dir: PathBuf) -> Self {
+    fn from_directory(workflow_dir: PathBuf) -> Self {
         Self { workflow_dir }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn new(workflow_dir: PathBuf) -> Self {
+        Self::from_directory(workflow_dir)
+    }
+
     pub fn for_project(project_root: &Path) -> Self {
-        Self::new(project_root.join(WORKFLOW_SUBDIR))
+        Self::from_directory(project_root.join(WORKFLOW_SUBDIR))
     }
 
     pub fn directory(&self) -> &Path {
