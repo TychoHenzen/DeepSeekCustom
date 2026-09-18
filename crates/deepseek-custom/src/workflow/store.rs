@@ -41,8 +41,17 @@ impl WorkflowStore {
         &self.workflow_dir
     }
 
+    fn run_file_stem(id: &WorkflowRunId) -> String {
+        let value = id.as_str();
+        assert!(!value.contains(".."));
+        assert!(!value.contains('/'));
+        assert!(!value.contains('\\'));
+        value
+    }
+
     fn record_path(&self, id: &WorkflowRunId) -> PathBuf {
-        self.workflow_dir.join(format!("{}.json", id.as_str()))
+        self.workflow_dir
+            .join(format!("{}.json", Self::run_file_stem(id)))
     }
 
     fn registry_path(&self) -> PathBuf {
@@ -51,7 +60,9 @@ impl WorkflowStore {
 
     pub(crate) fn lock_run(&self, id: &WorkflowRunId) -> Result<WorkflowLock, HarnessError> {
         std::fs::create_dir_all(&self.workflow_dir)?;
-        let path = self.workflow_dir.join(format!("{}.lock", id.as_str()));
+        let path = self
+            .workflow_dir
+            .join(format!("{}.lock", Self::run_file_stem(id)));
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -96,7 +107,7 @@ impl WorkflowStore {
         let target = self.record_path(&run.id());
         let temporary = self
             .workflow_dir
-            .join(format!("{}.json.tmp", run.id().as_str()));
+            .join(format!("{}.json.tmp", Self::run_file_stem(&run.id())));
         let json = serde_json::to_string_pretty(run.record()).map_err(|error| {
             HarnessError::Parse(format!("could not serialize workflow: {error}"))
         })?;
