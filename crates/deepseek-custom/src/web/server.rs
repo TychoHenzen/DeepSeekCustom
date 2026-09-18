@@ -44,6 +44,9 @@ use crate::procedure::ProcedureCommand;
 use crate::procedure::ProcedureProgress;
 use crate::search::SearchCommand;
 use crate::voice::service::{VoiceCommand, VoiceEvent, VoiceState};
+use crate::workflow::{
+    WorkflowEvidence, WorkflowRegistry, WorkflowRunId, WorkflowRunRecord, WorkflowStore,
+};
 use std::sync::atomic::AtomicBool;
 
 const APPLICATION_SHELL: &str = "index.html";
@@ -68,6 +71,7 @@ struct WebAppStateInner {
     settings: Option<Arc<SettingsController>>,
     folder_picker: Option<Arc<dyn NativeFolderPicker>>,
     tests: Option<Mutex<TestService>>,
+    workflow_store: Option<WorkflowStore>,
 }
 
 struct TestService {
@@ -91,6 +95,7 @@ impl WebAppState {
                 settings: None,
                 folder_picker: None,
                 tests: None,
+                workflow_store: None,
             }),
         }
     }
@@ -112,6 +117,7 @@ impl WebAppState {
                 settings: Some(settings),
                 folder_picker: Some(folder_picker),
                 tests: None,
+                workflow_store: None,
             }),
         }
     }
@@ -124,6 +130,137 @@ impl WebAppState {
             Arc::new(SystemTestClock),
         );
         self
+    }
+
+    pub fn with_workflow_store(mut self, store: WorkflowStore) -> Self {
+        if let Err(error) = store.recover_inflight() {
+            tracing::warn!(error = %error, "workflow startup recovery could not normalize in-flight runs");
+        }
+        Arc::get_mut(&mut self.inner)
+            .expect("workflow store must be connected before state is shared")
+            .workflow_store = Some(store);
+        self
+    }
+
+    pub fn workflow_runs(&self) -> Vec<WorkflowRunRecord> {
+        self.inner
+            .workflow_store
+            .as_ref()
+            .map(WorkflowStore::list)
+            .unwrap_or_default()
+    }
+
+    pub fn resume_workflow(&self, value: &str) -> Result<WorkflowRunRecord, String> {
+        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
+        let store = self
+            .inner
+            .workflow_store
+            .as_ref()
+            .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        let current = store.load(&run_id).map_err(|error| error.to_string())?;
+        if !current.state().needs_explicit_resume() {
+            return Err("workflow run is not interrupted".to_string());
+        }
+        self.select_workflow(value)?;
+        let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
+        let mut run = store.load(&run_id).map_err(|error| error.to_string())?;
+        run.resume_after_restart()
+            .map_err(|error| error.to_string())?;
+        store.save(&run).map_err(|error| error.to_string())?;
+        Ok(run.record().clone())
+    }
+
+    pub fn select_workflow(&self, value: &str) -> Result<WorkflowRunRecord, String> {
+        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
+        let store = self
+            .inner
+            .workflow_store
+            .as_ref()
+            .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        let mut registry =
+            WorkflowRegistry::open(store.clone(), 4).map_err(|error| error.to_string())?;
+        registry.select(run_id).map_err(|error| error.to_string())?;
+        Ok(registry
+            .load(run_id)
+            .map_err(|error| error.to_string())?
+            .record()
+            .clone())
+    }
+
+    pub fn approve_workflow(
+        &self,
+        value: &str,
+        decision_id: &str,
+    ) -> Result<WorkflowRunRecord, String> {
+        self.finish_workflow_decision(value, decision_id, true)
+    }
+
+    pub fn reject_workflow(
+        &self,
+        value: &str,
+        decision_id: &str,
+    ) -> Result<WorkflowRunRecord, String> {
+        self.finish_workflow_decision(value, decision_id, false)
+    }
+
+    pub fn answer_workflow_feedback(
+        &self,
+        value: &str,
+        feedback_id: &str,
+        answer: &str,
+    ) -> Result<WorkflowRunRecord, String> {
+        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
+        let store = self
+            .inner
+            .workflow_store
+            .as_ref()
+            .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        self.require_selected_workflow(store, run_id)?;
+        let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
+        let mut run = store.load(&run_id).map_err(|error| error.to_string())?;
+        run.resume_feedback(feedback_id, vec![WorkflowEvidence::new("operator", answer)])
+            .map_err(|error| error.to_string())?;
+        store.save(&run).map_err(|error| error.to_string())?;
+        Ok(run.record().clone())
+    }
+
+    fn finish_workflow_decision(
+        &self,
+        value: &str,
+        decision_id: &str,
+        approved: bool,
+    ) -> Result<WorkflowRunRecord, String> {
+        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
+        let store = self
+            .inner
+            .workflow_store
+            .as_ref()
+            .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        self.require_selected_workflow(store, run_id)?;
+        let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
+        let mut run = store.load(&run_id).map_err(|error| error.to_string())?;
+        if approved {
+            run.approve(decision_id)
+        } else {
+            run.reject(decision_id)
+        }
+        .map_err(|error| error.to_string())?;
+        store.save(&run).map_err(|error| error.to_string())?;
+        Ok(run.record().clone())
+    }
+
+    fn require_selected_workflow(
+        &self,
+        store: &WorkflowStore,
+        run_id: WorkflowRunId,
+    ) -> Result<(), String> {
+        let registry =
+            WorkflowRegistry::open(store.clone(), 4).map_err(|error| error.to_string())?;
+        if registry.selected_run_id() == Some(run_id) {
+            Ok(())
+        } else {
+            Err("workflow run is not selected".to_string())
+        }
     }
 
     pub fn with_test_service(
@@ -660,6 +797,15 @@ fn router(state: WebAppState, origin: String) -> Router {
         .route("/api/health", get(health))
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/workflows", get(workflows))
+        .route("/api/workflows/{id}/resume", post(resume_workflow))
+        .route("/api/workflows/{id}/select", post(select_workflow))
+        .route("/api/workflows/{id}/approve", post(approve_workflow))
+        .route("/api/workflows/{id}/reject", post(reject_workflow))
+        .route(
+            "/api/workflows/{id}/feedback",
+            post(answer_workflow_feedback),
+        )
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
         .route("/api/attachments", post(upload_attachment))
@@ -790,6 +936,90 @@ async fn bootstrap(State(security): State<WebSecurity>) -> Response {
 
 async fn snapshot(State(security): State<WebSecurity>) -> Json<AppSnapshot> {
     Json(security.state.snapshot())
+}
+
+async fn workflows(State(security): State<WebSecurity>) -> Json<Vec<WorkflowRunRecord>> {
+    Json(security.state.workflow_runs())
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowDecisionRequest {
+    decision_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowFeedbackRequest {
+    feedback_id: String,
+    answer: String,
+}
+
+async fn resume_workflow(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    workflow_mutation_response(security.state.resume_workflow(&id))
+}
+
+async fn select_workflow(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    workflow_mutation_response(security.state.select_workflow(&id))
+}
+
+async fn approve_workflow(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<WorkflowDecisionRequest>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    workflow_mutation_response(security.state.approve_workflow(&id, &request.decision_id))
+}
+
+async fn reject_workflow(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<WorkflowDecisionRequest>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    workflow_mutation_response(security.state.reject_workflow(&id, &request.decision_id))
+}
+
+async fn answer_workflow_feedback(
+    State(security): State<WebSecurity>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<WorkflowFeedbackRequest>,
+) -> Response {
+    if !authorized(&security, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    workflow_mutation_response(security.state.answer_workflow_feedback(
+        &id,
+        &request.feedback_id,
+        &request.answer,
+    ))
+}
+
+fn workflow_mutation_response(result: Result<WorkflowRunRecord, String>) -> Response {
+    match result {
+        Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
+    }
 }
 
 async fn command(

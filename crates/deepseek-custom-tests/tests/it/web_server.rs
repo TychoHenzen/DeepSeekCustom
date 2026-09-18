@@ -24,6 +24,7 @@ use deepseek_custom::web::server::{
     BindPolicy, BrowserOpener, NativeFolderPicker, REQUEST_TOKEN_HEADER, ServerStartError,
     WebAppState, start, start_production, start_with_policy, start_with_policy_and_state,
 };
+use deepseek_custom::workflow::{WorkflowIdentity, WorkflowRun, WorkflowStore};
 
 struct FixedFolderPicker(Mutex<VecDeque<Option<std::path::PathBuf>>>);
 impl NativeFolderPicker for FixedFolderPicker {
@@ -721,6 +722,91 @@ fn bootstrap_and_reload_return_the_complete_current_visible_snapshot() {
         assert!(!bootstrap_text.contains("secret"));
 
         server.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn workflow_endpoint_lists_durable_runs_for_operator_inspection() {
+    run_async_test(async {
+        let root = super::scratch_dir("dsc-workflow-web", "list");
+        let store = WorkflowStore::new(root.join("workflows"));
+        let run = WorkflowRun::new(WorkflowIdentity::github(
+            "TychoHenzen",
+            "DeepSeekCustom",
+            "project-2",
+            8,
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+            "codex/8-workflow",
+            Some("revision-8".into()),
+        ));
+        let run_id = run.id();
+        store.save(&run).unwrap();
+        let state = WebAppState::new(visible_snapshot(), 8).with_workflow_store(store);
+        let server = start_state(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{}api/workflows", server.url()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let records: Vec<deepseek_custom::workflow::WorkflowRunRecord> =
+            response.json().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, run_id);
+        assert_eq!(
+            records[0].state,
+            deepseek_custom::workflow::WorkflowRunState::Queued
+        );
+        server.shutdown().await.unwrap();
+        std::fs::remove_dir_all(root).ok();
+    });
+}
+
+#[test]
+fn workflow_resume_endpoint_requires_request_token_and_releases_restart_state() {
+    run_async_test(async {
+        let root = super::scratch_dir("dsc-workflow-web", "resume");
+        let store = WorkflowStore::new(root.join("workflows"));
+        let mut run = WorkflowRun::new(WorkflowIdentity::github(
+            "TychoHenzen",
+            "DeepSeekCustom",
+            "project-2",
+            9,
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+            "codex/9-workflow",
+            Some("revision-9".into()),
+        ));
+        let claim = run.claim("worker-a").unwrap();
+        run.start(&claim).unwrap();
+        let run_id = run.id();
+        store.save(&run).unwrap();
+        let state = WebAppState::new(visible_snapshot(), 8).with_workflow_store(store);
+        let server = start_state(state).await;
+        let client = reqwest::Client::new();
+        let unauthorized = client
+            .post(format!("{}api/workflows/{run_id}/resume", server.url()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), reqwest::StatusCode::FORBIDDEN);
+        let token = request_token(&client, server.url()).await;
+        let resumed = client
+            .post(format!("{}api/workflows/{run_id}/resume", server.url()))
+            .header(reqwest::header::ORIGIN, server.url().trim_end_matches('/'))
+            .header(REQUEST_TOKEN_HEADER, token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resumed.status(), reqwest::StatusCode::OK);
+        let record: deepseek_custom::workflow::WorkflowRunRecord = resumed.json().await.unwrap();
+        assert_eq!(
+            record.state,
+            deepseek_custom::workflow::WorkflowRunState::Queued
+        );
+        server.shutdown().await.unwrap();
+        std::fs::remove_dir_all(root).ok();
     });
 }
 

@@ -4,11 +4,14 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agent::events::RoutedEvent;
+use crate::backend::Backend;
+#[cfg(feature = "test-support")]
+use crate::backend::ToolPolicy;
 use crate::backend::claude_cli::process::ClaudeCliDriver;
 use crate::backend::codex_cli::CodexCliDriver;
-use crate::backend::{Backend, ToolPolicy};
 use crate::controlled_development::work_card_json_schema;
 
+#[cfg(feature = "test-support")]
 use super::build_api::build_backend_with_policy;
 use super::build_controlled_api::build_controlled_api_backend;
 use super::factory::BackendFactory;

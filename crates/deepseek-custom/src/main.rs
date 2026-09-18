@@ -58,6 +58,8 @@ use deepseek_custom::web::server::{
     BindPolicy, BrowserOpener, SystemBrowser, SystemFolderPicker, WebAppState,
     start_with_policy_and_state,
 };
+use deepseek_custom::workflow::WorkflowStore;
+use deepseek_custom::workflow::github::{GitHubWorkflowConfig, spawn_github_worker};
 
 /// Start the MCP servers Claude Code's own config files name, in the
 /// background.
@@ -1064,7 +1066,22 @@ async fn main() {
         Arc::clone(&procedure_interrupt),
     )
     .with_controlled_development_port(DomainCommandPort::new(tx_controlled_effects))
-    .with_test_control(project_root.clone());
+    .with_test_control(project_root.clone())
+    .with_workflow_store(WorkflowStore::for_project(&project_root));
+
+    let _workflow_worker = GitHubWorkflowConfig::from_env(&project_root).map(|config| {
+        info!(
+            owner = %config.owner,
+            project = config.project_number,
+            repository = %config.repository,
+            "starting GitHub workflow worker"
+        );
+        spawn_github_worker(
+            config,
+            WorkflowStore::for_project(&project_root),
+            "deepseek-custom",
+        )
+    });
 
     let (voice_forwarder, voice_event_forwarder) = if let Some(runtime) = voice {
         let VoiceRuntime {

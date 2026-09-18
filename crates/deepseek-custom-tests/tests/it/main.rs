@@ -173,3 +173,4 @@ mod voice_wake;
 mod web_assets;
 mod web_browser;
 mod web_server;
+mod workflow;
