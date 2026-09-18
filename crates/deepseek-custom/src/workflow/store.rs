@@ -32,9 +32,9 @@ impl WorkflowStore {
         let project_root = project_root
             .canonicalize()
             .expect("workflow project root must exist");
-        Self {
-            workflow_dir: project_root.join(WORKFLOW_SUBDIR),
-        }
+        let workflow_dir = project_root.join(WORKFLOW_SUBDIR);
+        assert!(workflow_dir.starts_with(&project_root));
+        Self { workflow_dir }
     }
 
     pub fn directory(&self) -> &Path {
