@@ -29,6 +29,9 @@ impl Drop for WorkflowLock {
 
 impl WorkflowStore {
     pub fn for_project(project_root: &Path) -> Self {
+        let project_root = project_root
+            .canonicalize()
+            .expect("workflow project root must exist");
         Self {
             workflow_dir: project_root.join(WORKFLOW_SUBDIR),
         }
