@@ -29,6 +29,9 @@ impl WorkflowRunId {
     }
 
     pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        if value.contains("..") || value.contains('/') || value.contains('\\') {
+            return Err(Uuid::parse_str("").expect_err("an empty UUID must be invalid"));
+        }
         Uuid::parse_str(value).map(Self)
     }
 }
