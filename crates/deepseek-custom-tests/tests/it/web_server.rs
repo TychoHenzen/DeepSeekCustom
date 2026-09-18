@@ -729,7 +729,7 @@ fn bootstrap_and_reload_return_the_complete_current_visible_snapshot() {
 fn workflow_endpoint_lists_durable_runs_for_operator_inspection() {
     run_async_test(async {
         let root = super::scratch_dir("dsc-workflow-web", "list");
-        let store = WorkflowStore::new(root.join("workflows"));
+        let store = WorkflowStore::for_project(&root);
         let run = WorkflowRun::new(WorkflowIdentity::github(
             "TychoHenzen",
             "DeepSeekCustom",
@@ -767,7 +767,7 @@ fn workflow_endpoint_lists_durable_runs_for_operator_inspection() {
 fn workflow_resume_endpoint_requires_request_token_and_releases_restart_state() {
     run_async_test(async {
         let root = super::scratch_dir("dsc-workflow-web", "resume");
-        let store = WorkflowStore::new(root.join("workflows"));
+        let store = WorkflowStore::for_project(&root);
         let mut run = WorkflowRun::new(WorkflowIdentity::github(
             "TychoHenzen",
             "DeepSeekCustom",

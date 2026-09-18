@@ -31,7 +31,7 @@ fn identity(issue: u64, project: &str) -> WorkflowIdentity {
 #[test]
 fn persisted_running_work_becomes_interrupted_and_resumes_without_authority() {
     let directory = temp_dir("restart");
-    let store = WorkflowStore::new(directory.clone());
+    let store = WorkflowStore::for_project(&directory);
     let mut run = WorkflowRun::new(identity(5, "project-a"));
     let claim = run.claim("worker-a").unwrap();
     run.start(&claim).unwrap();
@@ -232,7 +232,7 @@ impl WorkflowStepExecutor for CompletingExecutor {
 #[test]
 fn worker_executes_one_claimed_route_step_without_bypassing_the_scheduler() {
     let directory = temp_dir("worker");
-    let registry = WorkflowRegistry::new(WorkflowStore::new(directory.clone()), 1).unwrap();
+    let registry = WorkflowRegistry::new(WorkflowStore::for_project(&directory), 1).unwrap();
     let queue = FakeQueue {
         items: vec![candidate(12, "project-a", 1)],
         ..Default::default()
@@ -255,7 +255,7 @@ fn worker_executes_one_claimed_route_step_without_bypassing_the_scheduler() {
 #[test]
 fn registry_persists_selection_and_normalizes_inflight_runs_after_restart() {
     let directory = temp_dir("registry-restart");
-    let store = WorkflowStore::new(directory.clone());
+    let store = WorkflowStore::for_project(&directory);
     let mut registry = WorkflowRegistry::new(store.clone(), 2).unwrap();
     let run = WorkflowRun::new(identity(11, "project-a"));
     let run_id = run.id();
@@ -288,7 +288,7 @@ fn candidate(issue: u64, project: &str, priority: i32) -> EligibleWorkItem {
 #[test]
 fn scheduler_claims_once_publishes_feedback_and_advances_after_merge() {
     let directory = temp_dir("scheduler");
-    let store = WorkflowStore::new(directory.clone());
+    let store = WorkflowStore::for_project(&directory);
     let registry = WorkflowRegistry::new(store, 2).unwrap();
     let first = candidate(8, "project-a", 1);
     let second = candidate(9, "project-b", 2);
