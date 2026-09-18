@@ -151,17 +151,19 @@ impl WebAppState {
     }
 
     pub fn resume_workflow(&self, value: &str) -> Result<WorkflowRunRecord, String> {
-        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
         let store = self
             .inner
             .workflow_store
             .as_ref()
             .ok_or_else(|| "workflow store is unavailable".to_string())?;
-        let current = store.load(&run_id).map_err(|error| error.to_string())?;
+        let current = store
+            .load_by_external_id(value)
+            .map_err(|error| error.to_string())?;
+        let run_id = current.id();
         if !current.state().needs_explicit_resume() {
             return Err("workflow run is not interrupted".to_string());
         }
-        self.select_workflow(value)?;
+        self.select_workflow_id(run_id)?;
         let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
         let mut run = store.load(&run_id).map_err(|error| error.to_string())?;
         run.resume_after_restart()
@@ -171,7 +173,19 @@ impl WebAppState {
     }
 
     pub fn select_workflow(&self, value: &str) -> Result<WorkflowRunRecord, String> {
-        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
+        let store = self
+            .inner
+            .workflow_store
+            .as_ref()
+            .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        let run_id = store
+            .load_by_external_id(value)
+            .map_err(|error| error.to_string())?
+            .id();
+        self.select_workflow_id(run_id)
+    }
+
+    fn select_workflow_id(&self, run_id: WorkflowRunId) -> Result<WorkflowRunRecord, String> {
         let store = self
             .inner
             .workflow_store
@@ -209,12 +223,15 @@ impl WebAppState {
         feedback_id: &str,
         answer: &str,
     ) -> Result<WorkflowRunRecord, String> {
-        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
         let store = self
             .inner
             .workflow_store
             .as_ref()
             .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        let run_id = store
+            .load_by_external_id(value)
+            .map_err(|error| error.to_string())?
+            .id();
         self.require_selected_workflow(store, run_id)?;
         let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
         let mut run = store.load(&run_id).map_err(|error| error.to_string())?;
@@ -230,12 +247,15 @@ impl WebAppState {
         decision_id: &str,
         approved: bool,
     ) -> Result<WorkflowRunRecord, String> {
-        let run_id = WorkflowRunId::parse(value).map_err(|error| error.to_string())?;
         let store = self
             .inner
             .workflow_store
             .as_ref()
             .ok_or_else(|| "workflow store is unavailable".to_string())?;
+        let run_id = store
+            .load_by_external_id(value)
+            .map_err(|error| error.to_string())?
+            .id();
         self.require_selected_workflow(store, run_id)?;
         let _lock = store.lock_run(&run_id).map_err(|error| error.to_string())?;
         let mut run = store.load(&run_id).map_err(|error| error.to_string())?;

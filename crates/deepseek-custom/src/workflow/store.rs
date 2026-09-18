@@ -128,6 +128,15 @@ impl WorkflowStore {
         WorkflowRun::from_record(record).map_err(|error| HarnessError::Parse(error.to_string()))
     }
 
+    pub fn load_by_external_id(&self, value: &str) -> Result<WorkflowRun, HarnessError> {
+        let record = self
+            .list()
+            .into_iter()
+            .find(|record| record.id.to_string().eq_ignore_ascii_case(value))
+            .ok_or_else(|| HarnessError::Tool("workflow run was not found".to_string()))?;
+        WorkflowRun::from_record(record).map_err(|error| HarnessError::Parse(error.to_string()))
+    }
+
     pub fn load_after_restart(&self, id: &WorkflowRunId) -> Result<WorkflowRun, HarnessError> {
         let mut run = self.load(id)?;
         run.normalize_after_restart();
